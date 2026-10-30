@@ -1,4 +1,4 @@
-# ADR-0032: Ingestion Pipeline for Universal VTT and Asset Storage Abstraction
+# ADR-0033: Ingestion Pipeline for Universal VTT and Asset Storage Abstraction
 
 ## Context
 TRAME requires support for importing Universal VTT (`.uvtt` and `.dd2vtt`) battlemaps produced by tools like Dungeondraft and Dungeon Alchemist. An imported map includes a raster image encoded in Base64, grid geometry, line of sight (LOS) blockers, doors (portals), and ambient/point light sources.

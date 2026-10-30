@@ -1,3 +1,10 @@
+#![allow(
+    async_fn_in_trait,
+    clippy::unnecessary_sort_by,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
+
 pub mod assets;
 pub mod dice;
 pub mod http;
