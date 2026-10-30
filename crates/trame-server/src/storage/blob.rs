@@ -46,7 +46,7 @@ impl PartialEq for BlobStoreError {
 }
 
 /// Asynchronous streaming storage abstraction for campaigns and assets.
-pub trait BlobStore: Send + Sync {
+pub trait BlobStore: Send + Sync + 'static {
     /// Atomically stores an incoming stream of bytes under the specified asset ID.
     async fn put_stream(
         &self,
@@ -58,7 +58,10 @@ pub trait BlobStore: Send + Sync {
     async fn get_descriptor(&self, id: &str) -> Result<AssetDescriptor, BlobStoreError>;
 
     /// Opens an asynchronous read stream yielding 64 KiB chunks for an existing asset.
-    async fn open_read_stream(&self, id: &str) -> Result<BlobStream, BlobStoreError>;
+    fn open_read_stream(
+        &self,
+        id: &str,
+    ) -> impl std::future::Future<Output = Result<BlobStream, BlobStoreError>> + Send;
 
     /// Lists descriptors for all assets stored in this backend.
     async fn list_descriptors(&self) -> Result<Vec<AssetDescriptor>, BlobStoreError>;
