@@ -177,9 +177,9 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **Definition**: Game Master history drawer displaying recent table mutations and triggering single-click rollbacks.
 
-- **Allowed Context**: Game Master override controls and mutation inspection.
+- **Allowed Context**: Game Master HUD, table history drawer, and transaction rollback interfaces.
 
-- **_Avoid_**: HistoryDrawer, RollbackPanel, UndoHistoryModal.
+- **_Avoid_**: HistoryDrawer, RollbackPanel, UndoList.
 
 ### AbilityModifier
 - **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
@@ -297,6 +297,6 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Avoid**: `HP shield`, `bonus HP`
 
 ### TurnTrigger
-- **Definition**: Combat phase evaluation point (`ROUNDS`, `TURNS_START`, `TURNS_END`) governing when active condition durations decrement.
+- **Definition**: Combat turn lifecycle hook (such as START_OF_TURN or END_OF_TURN) evaluated during initiative progression to process condition durations, ongoing saving throws, and resource resets.
 - **Allowed**: `TurnTrigger`, `turn trigger`
 - **Avoid**: `initiative phase`, `round tick`
