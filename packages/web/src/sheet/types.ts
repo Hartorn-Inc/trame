@@ -85,6 +85,96 @@ export type CanonicalWidgetType = (typeof CANONICAL_WIDGET_TYPES)[number];
 
 export type CommandDispatcher = (command: unknown) => void;
 
+export interface RollDiceCommand {
+  cmd: "ROLL_DICE";
+  type: "ROLL_DICE";
+  formula: string;
+  expression: string;
+  reason?: string;
+  visibility?: string;
+  [key: string]: unknown;
+}
+
+export interface UpdateActorSheetCommand {
+  cmd: "UPDATE_ACTOR_SHEET";
+  type: "UPDATE_ACTOR_SHEET";
+  path?: string;
+  value?: unknown;
+  changes?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface ProjectAoECommand {
+  cmd: "PROJECT_AOE";
+  type: "PROJECT_AOE";
+  template?: unknown;
+  aoeShape?: unknown;
+  spellId?: string;
+  [key: string]: unknown;
+}
+
+export interface DropCompendiumEntryCommand {
+  cmd: "DROP_COMPENDIUM_ENTRY";
+  type: "DROP_COMPENDIUM_ENTRY";
+  actorId?: string;
+  entryRef?: string;
+  targetContainerId?: string | null;
+  [key: string]: unknown;
+}
+
+export interface CreateActorCommand {
+  cmd: "CREATE_ACTOR";
+  type: "CREATE_ACTOR";
+  data?: unknown;
+  [key: string]: unknown;
+}
+
+export type TrameCommandPayload =
+  | RollDiceCommand
+  | UpdateActorSheetCommand
+  | ProjectAoECommand
+  | DropCompendiumEntryCommand
+  | CreateActorCommand;
+
+export const TrameCommand = {
+  RollDice(payload: { formula: string; expression?: string; reason?: string; visibility?: string; [key: string]: unknown }): RollDiceCommand {
+    return {
+      cmd: "ROLL_DICE",
+      type: "ROLL_DICE",
+      expression: payload.expression ?? payload.formula,
+      ...payload,
+    };
+  },
+  UpdateActorSheet(payload: Record<string, unknown>): UpdateActorSheetCommand {
+    return {
+      cmd: "UPDATE_ACTOR_SHEET",
+      type: "UPDATE_ACTOR_SHEET",
+      ...payload,
+    };
+  },
+  ProjectAoE(payload: Record<string, unknown>): ProjectAoECommand {
+    return {
+      cmd: "PROJECT_AOE",
+      type: "PROJECT_AOE",
+      ...payload,
+    };
+  },
+  DropCompendiumEntry(payload: Record<string, unknown>): DropCompendiumEntryCommand {
+    return {
+      cmd: "DROP_COMPENDIUM_ENTRY",
+      type: "DROP_COMPENDIUM_ENTRY",
+      ...payload,
+    };
+  },
+  CreateActor(payload: Record<string, unknown>): CreateActorCommand {
+    return {
+      cmd: "CREATE_ACTOR",
+      type: "CREATE_ACTOR",
+      ...payload,
+    };
+  },
+};
+
 export interface RenderedWidgetNode {
   id: string;
   kind: "widget";
