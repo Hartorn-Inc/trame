@@ -74,7 +74,8 @@ export class GmOverrideToolbarManager {
       deathSaves?: DeathSaveCounters;
     },
     input: TokenResourceOverrideInput,
-  ): void {
+  ):
+    void {
     if (input.hp !== undefined) {
       token.hp = Math.max(0, Math.min(token.maxHp, Math.trunc(input.hp)));
     }
@@ -106,7 +107,8 @@ export class GmOverrideToolbarManager {
     },
     economyType: ActionEconomyType,
     amountFt?: number,
-  ): void {
+  ):
+    void {
     const kind = normalizeActionEconomyType(economyType);
     switch (kind) {
       case "ACTION":
