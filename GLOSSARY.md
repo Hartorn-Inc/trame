@@ -65,11 +65,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **Definition**: Environmental lighting and atmospheric configuration (`Daylight`, `Dusk`, `NightMoonlight`, `PitchDarkness`).
 
-- **Allowed Context**: Spatial audio processing and WebAudio filter graphs.
+- **Allowed Context**: Combat turn management, HUD badges, and Game Master refunds.
 
-- **_Avoid_**: SoundMuffling, AudioBlocking, AcousticShadow.
+- **_Avoid_**: TurnResource, ActionSlot, TokenAllowance.
 
-### ActionEconomyType
+### AmbientPreset
 
 - **Definition**: HUD component displaying the combat turn order carousel, initiative values, and action economy badges.
 
@@ -177,19 +177,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **Definition**: Game Master history drawer displaying recent table mutations and triggering single-click rollbacks.
 
-<<<<<<< HEAD
 - **Allowed Context**: Combat turn management, HUD badges, and Game Master refunds.
 
 - **_Avoid_**: TurnResource, ActionSlot, TokenAllowance.
 
 ### AmbientPreset
-=======
-- **Allowed Context**: Lighting shader uniforms, SceneGraph render passes, and GM override controls.
-
-- **_Avoid_**: TimeOfDay, LightSetting, MoodPreset.
-
-### CombatTracker
->>>>>>> origin/dev
 - **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
 - **Allowed**: `AbilityScore`, `ability score`
 - **Avoid**: `stat mod`, `ability bonus`
@@ -201,7 +193,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ActiveEffect
 - **Definition**: Declarative mutation applied to a numeric or string actor property following the strict 5-phase order (`BASE_FORMULA` -> `ADD` -> `OVERRIDE_CONDITIONAL` -> `MULTIPLY` -> `FINAL_CLAMP`).
-- **Allowed**: `AbilityModifier`, `ability modifier`
+- **Allowed**: `AbilityScore`, `ability score`
 - **Avoid**: `buff`, `debuff`, `stat modifier`, `status effect`
 
 ### Actor
@@ -305,98 +297,8 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Avoid**: `HP shield`, `bonus HP`
 
 ### TurnTrigger
-- **Definition**: Combat turn lifecycle hook (such as `START_OF_TURN` or `END_OF_TURN`) evaluated during initiative progression to process condition durations, ongoing saving throws, and resource resets.
-- **Allowed**: `TurnTrigger`, `turn trigger`
-- **Avoid**: `initiative phase`, `round tick`
+- **Definition**: Attenuation of sound high frequencies calculated via raycasting through walls with `blocks_sound: true`.
+- **Allowed**: `AbilityScore`, `ability score`
+- **Avoid**: `stat mod`, `ability bonus`
 
-### Companion Mode
-- **Definition**: Lightweight touch-friendly UI dedicated to mobile and tablet viewports strictly narrower than 768 pixels, disabling the WebGL rendering engine to preserve battery life and performance.
-- **Avoid**: Mobile view, Lite app, Responsive fallback, Phone skin.
-
-### CRDT (Conflict-free Replicated Data Type)
-- **Definition**: Conflict-free replicated data structure (Yjs on client, `yrs` on server) guaranteeing mathematical convergence of a shared text document across peers without distributed locks.
-- **Avoid**: Real-time sync engine, Operational Transform, Delta merge.
-
-### Directive Block
-- **Definition**: Markdown syntax block delimited by triple colons `:::name{key="value"}` parsed by the AST compiler to encapsulate interactive or RBAC-filtered blocks (`:::handout`, `:::dm`).
-- **Avoid**: Shortcode, Custom tag, Special markup, Admonition.
-
-### Handout
-- **Definition**: Secret textual or visual artifact authored by the Game Master inside a note, possessing a unique identifier and kept hidden until explicitly revealed to all players.
-- **Avoid**: Secret clue, Player reveal, Clue card, Public paper.
-
-### Handout Reveal Modal
-- **Definition**: Full-screen overlay component displayed on all connected clients when a Game Master broadcasts a Handout reveal event.
-- **Avoid**: Popup, Dialog window, Handout lightbox, Alert box.
-
-### MobileCompanionLayout
-- **Definition**: Root UI shell mounted when viewport width is strictly less than 768 pixels, providing a bottom navigation bar with four touch tabs (`Sheet`, `Dice`, `Inventory`, `Journal`).
-- **Avoid**: MobileShell, SmallScreenLayout, TabContainer.
-
-### Party Journal
-- **Definition**: Shared campaign notebook accessible to all campaign participants, permanently archiving revealed events and Handouts.
-- **Avoid**: Group log, Campaign diary, Shared notebook, Quest log.
-
-### Public Snapshot
-- **Definition**: Sanitized Markdown text representation stripped of all secret blocks (`:::dm` and `:::handout{revealed="false"}`), broadcast by `trame-server` to non-GM clients over WebSocket.
-- **Avoid**: Sanitized content, Public markdown, Filtered copy.
-
-### Session Timeline
-- **Definition**: Append-only event stream strictly ordered by ascending `seq_id` and indexed by `campaign_id` and `session_num`, recording all verifiable actions of a game session.
-- **Avoid**: Game history, Event stream, Activity feed, Audit trail.
-
-### TableCanvas
-- **Definition**: Heavyweight application component mounting the virtual tabletop viewport, initializing the PixiJS instance, dynamic lighting shaders, and WebGL Framebuffer Objects (FBO).
-- **Avoid**: GameMap, BoardView, PixiContainer, CanvasRenderer.
-
-### Wiki Autocomplete
-- **Definition**: Text suggestion mechanism triggered by typing double brackets `[[` to insert internal hyperlinks referencing actors, locations, or compendium items.
-- **Avoid**: Wiki link popup, Entity suggester, Smart mention, Quick search.
-
-### Archive
-- **Definition**: A compressed ZIP container file with the `.trame` extension. The file packages `manifest.json`, `database.jsonl`, notes in Markdown format, and assets in WebP format for campaign portability.
-- **Avoid**: package, bundle, zip file, export file.
-
-### Asset
-- **Definition**: A binary media file stored in WebP format within the BlobStore or within the `assets/` directory of an Archive.
-- **Avoid**: image, picture, texture, media file.
-
-### BlobStore
-- **Definition**: The storage abstraction trait that manages binary asset persistence across local filesystem storage (`LocalFsStore`) and cloud object storage (`S3Store`).
-- **Avoid**: object storage, bucket, file store.
-
-### Campaign
-- **Definition**: The top-level administrative and organizational unit in TRAME that groups tables, scenes, actors, assets, notes, and user permissions.
-- **Avoid**: game, world, adventure, module.
-
-### Graceful Shutdown Sequence
-- **Definition**: The deterministic termination procedure executed by `trame-server` upon receipt of a `SIGTERM` signal. The sequence terminates WebSocket loops, commits memory snapshots to persistent storage via `TableRoomHandle::hibernate()`, and closes database pools.
-- **Avoid**: graceful hibernation sequence, server stop, quick shutdown.
-
-### Identity Binding
-- **Definition**: The cryptographic process that associates an existing guest player session record with a persistent credential record (Argon2id password hash or OAuth2 identity provider identifier) without altering the user identifier or character assignments.
-- **Avoid**: account link, account linking, account merge, bind.
-
-### Magic Link URL
-- **Definition**: A single-use or scoped Uniform Resource Locator containing a signed JSON Web Token in the query parameter `?invite=<jwt>` that authenticates a player directly into an assigned Actor Sheet without preliminary credential registration.
-- **Avoid**: invite link, magic URL, invite token, login link.
-
-### Manifest
-- **Definition**: The JSON file named `manifest.json` located at the root of an Archive. The file specifies format version, export timestamp, campaign metadata, and cryptographic SHA-256 digests for all archive entries.
-- **Avoid**: header, descriptor, index.
-
-### Personal Access Token
-- **Definition**: A cryptographically random authentication token prefixed with `trame_pat_` that grants programmatic API and Model Context Protocol access scoped to specific campaign boundaries.
-- **Avoid**: API key, bearer token, PAT.
-
-### Room Lease
-- **Definition**: A time-bounded memory lease managed by `RoomLeaseManager` that keeps active campaign table rooms hydrated in memory during client activity and triggers room hibernation after 15 minutes of inactivity.
-- **Avoid**: session lease, table lease, idle timer.
-
-### Table Room
-- **Definition**: The in-memory actor synchronization unit managed by `TableRoomHandle` that coordinates real-time WebSocket state distribution for a single active campaign table.
-- **Avoid**: game room, channel, table session.
-
-### TOTP Secret
-- **Definition**: A 160-bit shared secret key used for Time-based One-Time Password multi-factor authentication (RFC 6238). The server encrypts the secret at rest using AES-256-GCM before database insertion.
-- **Avoid**: MFA key, 2FA secret, auth code.
+### AbilityScore
