@@ -1,0 +1,131 @@
+---
+description: Enforce English-only and architectural-grade inline code documentation across all Rust and TypeScript modules
+alwaysApply: true
+---
+
+# Language & Code Documentation Standard
+
+## 1. Language Policy: English Only
+
+- **Strict English Only**: All source code, identifiers, module headers, docstrings (`//!`, `///`, `/** */`), inline comments, test descriptions, error messages, commit messages, PR titles/bodies, `GLOSSARY.md`, `AGENTS.md`, ADRs (`docs/adr/`), and technical specifications (`docs/specs/`) MUST be written strictly in **English**.
+- **Zero Language Mixing**: Never mix French and English in the same file, comment, test, or glossary entry.
+- **Future End-User Docs Exception**: French is reserved exclusively for dedicated end-user documentation or UI localization files when explicitly requested later.
+
+## 2. Architectural-Grade Code Documentation
+
+Every core module, security boundary, spatial/physics algorithm, state machine, and network/storage pipeline MUST carry self-contained, pedagogical, architectural-grade documentation explaining **why** the design exists, **what invariants or failure modes** it prevents, and **how** the execution flow works step by step.
+
+### Required Elements
+
+1. **Module-Level Banner (`//!` in Rust or `/** === ... === */` in TypeScript)**:
+   - **`PURPOSE`**: Explain the architectural role of the module and what problem or failure mode would occur without it.
+   - **`INVARIANTS & SAFETY BOUNDARIES`**: Document numbered mechanisms, trust boundaries, byte/payload limits, or concurrency guarantees (e.g., RBAC stripping, magic-byte checks, 5-phase effect order, BVH clipping).
+   - **`EXECUTION LIFECYCLE` (when applicable)**: Show the compact step-by-step call tree or pipeline stages.
+2. **Exported Types & Configuration Contracts**:
+   - Document every public struct/type and each of its fields (`///` or `/** */`), including units (`ft`, `ms`, `bytes`), valid ranges, and fallback behavior.
+   - Document enum variants and mode selectors with explicit behavior for each variant (including fail-closed conditions).
+3. **Public Functions & Complex Algorithms**:
+   - Document resolution order, mathematical formulas, tie-breaking rules, and edge-case guards (e.g., why a check runs before an allocation or slice index).
+4. **No Redundant Noise**:
+   - Do not write trivial comments that merely restate the syntax (e.g., `// increment i`). Document **intent, invariants, and trade-offs**.
+
+## 3. Concrete Examples
+
+### Rust Module & Function Example (`crates/**`)
+
+```rust
+//! ============================================================================
+//! UVTT MAP IMPORTER & WEBP ASSET PIPELINE (uvtt.rs)
+//! ============================================================================
+//!
+//! PURPOSE:
+//! --------
+//! Parses Universal VTT (`.uvtt` / `.dd2vtt`) map bundles uploaded by the Game
+//! Master, extracts embedded base64 imagery into content-addressed WebP assets,
+//! and translates grid-relative wall/portal/light coordinates into authoritative
+//! `WallSegment` and `LightSource` primitives for `trame-engine`.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//! -------------------------------
+//!   1. `Payload Size Guard`:
+//!      - Rejects raw payloads exceeding 64 MiB (`MAX_PAYLOAD_SIZE_BYTES`) prior
+//!        to JSON deserialization to prevent heap exhaustion (OOM).
+//!   2. `Magic-Byte Verification`:
+//!      - Inspects decoded image buffers for canonical PNG, JPEG, or RIFF/WebP
+//!        magic headers before invoking image decoding, blocking polyglot or
+//!        corrupted uploads (`UvttImportError::InvalidMagicBytes`).
+//!   3. `Dimension Ceiling`:
+//!      - Caps decoded canvas dimensions at 16,384 x 16,384 pixels so malicious
+//!        decompression bombs cannot exhaust server RAM or WebGL texture limits.
+//!
+//! EXECUTION LIFECYCLE:
+//! --------------------
+//!   `import_uvtt_map(payload, instance_id, campaign_id, store)`
+//!     ├── 1. Validate byte length <= 64 MiB & deserialize `UvttDocument`.
+//!     ├── 2. Base64-decode embedded map image & verify magic bytes.
+//!     ├── 3. Transcode full-resolution WebP + 512px thumbnail WebP.
+//!     ├── 4. Store content-addressed blobs under `{instance}/{campaign}/{sha256}`.
+//!     └── 5. Scale `line_of_sight`, `portals`, and `lights` by `pixels_per_grid`.
+//! ============================================================================
+
+/// Parses a `#RRGGBB`, `#AARRGGBB`, or `#RGB` hexadecimal color string into
+/// normalized linear `[r, g, b]` floats in `0.0..=1.0`.
+///
+/// Guards against non-ASCII multi-byte UTF-8 input before byte-slicing so
+/// malformed user strings safely fall back to pure white (`[1.0, 1.0, 1.0]`)
+/// instead of panicking on char boundary splits.
+pub fn parse_hex_color(hex_str: &str) -> [f32; 3] {
+    let trimmed = hex_str.trim().trim_start_matches('#');
+    if !trimmed.is_ascii() {
+        return [1.0, 1.0, 1.0];
+    }
+    // ...
+    [1.0, 1.0, 1.0]
+}
+```
+
+### TypeScript Module & Type Contract Example (`packages/**`)
+
+```typescript
+/**
+ * ============================================================================
+ * SPATIAL AUDIO & ACOUSTIC WALL OCCLUSION (spatialAudio.ts)
+ * ============================================================================
+ *
+ * PURPOSE:
+ * --------
+ * Manages the WebAudio 3D listener and active sound emitters on the live table,
+ * computing real-time distance attenuation and low-pass filter (LPF) cutoff
+ * frequencies by raycasting against sound-blocking walls (`blocks_sound: true`).
+ *
+ * HOW THIS MODULE PRESERVES 60 FPS FRAME BUDGETS:
+ * -----------------------------------------------
+ *   1. `Nearest-16 Raycast Cap`:
+ *      - Sorting emitters by 3D Euclidean distance (`compute3DDistance`) ensures
+ *        only the 16 closest active emitters perform 2D segment intersection
+ *        checks per frame (`MAX_RAYCAST_EMITTERS = 16`).
+ *      - Emitters ranked 17+ reuse their last cached `cutoffHz` value while
+ *        still updating cheap distance gain attenuation.
+ *   2. `Selective Wall Filtering`:
+ *      - `countSoundOccludingWalls()` ignores open doors and walls where
+ *        `blocksSound === false` (such as glass windows or illusionary walls
+ *        that block vision or movement without muffling audio).
+ * ============================================================================
+ */
+
+/** Configuration for a 3D spatial sound emitter attached to the table map. */
+export type SoundEmitterSpec = {
+  /** Unique identifier for the emitter instance on the active map. */
+  id: string;
+  /** Horizontal X coordinate in table feet. */
+  x: number;
+  /** Horizontal Y coordinate in table feet. */
+  y: number;
+  /** Vertical elevation in integer feet (`ElevationFt`) relative to table zero. */
+  elevationFt: number;
+  /** Maximum audible radius in feet beyond which gain drops to `0`. */
+  radiusFt: number;
+  /** When true, applies BiquadFilter low-pass muffling per intersected sound wall. */
+  occludedByWalls: boolean;
+};
+```

@@ -7,7 +7,7 @@ models:
   review: google/gemini-3.8-flash
 merge_policy: strict
 task_auto_merge_enabled: false
-max_code_fix_attempts: 3
+max_code_fix_attempts: 6
 max_transient_api_retries: 4
 transient_retry_backoff_seconds: [5, 15, 45, 120]
 llm_request_timeout_seconds: 900
@@ -27,19 +27,20 @@ verification:
       working_directory: .
       kind: rust
       path_patterns: ["Cargo.toml", "crates/**"]
-      typecheck_command: "cargo check --workspace --all-targets"
-      lint_command: "cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features -- -D warnings"
-      test_command: "cargo test --workspace --all-targets"
-      build_command: "cargo build --workspace"
+      install_command: "cargo fetch"
+      typecheck_command: "cargo check --offline --workspace --all-targets"
+      lint_command: "cargo fmt --all -- --check && cargo clippy --offline --workspace --all-targets --all-features -- -D warnings"
+      test_command: "cargo test --offline --workspace --all-targets"
+      build_command: "cargo build --offline --workspace"
     - name: packages/web
-      working_directory: packages/web
+      working_directory: .
       kind: node
-      path_patterns: ["packages/web/**"]
-      install_command: "npm install"
-      typecheck_command: "npm run typecheck"
-      lint_command: "npm run lint"
-      test_command: "npm test"
-      build_command: "npm run build"
+      path_patterns: ["packages/web/**", "packages/game-systems/**"]
+      install_command: "npm --prefix packages/web install"
+      typecheck_command: "npm --prefix packages/web run typecheck"
+      lint_command: "npm --prefix packages/web run lint"
+      test_command: "npm --prefix packages/web test"
+      build_command: "npm --prefix packages/web run build"
 web_tools:
   enabled: true
   phases: ["plan", "spec", "implementation"]
