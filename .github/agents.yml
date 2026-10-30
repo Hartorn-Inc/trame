@@ -27,19 +27,20 @@ verification:
       working_directory: .
       kind: rust
       path_patterns: ["Cargo.toml", "crates/**"]
+      install_command: "cargo fetch"
       typecheck_command: "cargo check --workspace --all-targets"
       lint_command: "cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features -- -D warnings"
       test_command: "cargo test --workspace --all-targets"
       build_command: "cargo build --workspace"
     - name: packages/web
-      working_directory: packages/web
+      working_directory: .
       kind: node
-      path_patterns: ["packages/web/**"]
-      install_command: "npm install"
-      typecheck_command: "npm run typecheck"
-      lint_command: "npm run lint"
-      test_command: "npm test"
-      build_command: "npm run build"
+      path_patterns: ["packages/web/**", "packages/game-systems/**"]
+      install_command: "npm --prefix packages/web install"
+      typecheck_command: "npm --prefix packages/web run typecheck"
+      lint_command: "npm --prefix packages/web run lint"
+      test_command: "npm --prefix packages/web test"
+      build_command: "npm --prefix packages/web run build"
 web_tools:
   enabled: true
   phases: ["plan", "spec", "implementation"]
