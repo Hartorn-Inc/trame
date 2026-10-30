@@ -8,6 +8,7 @@
 pub mod dice;
 pub mod http;
 pub mod room;
+pub mod storage;
 pub mod sync;
 pub mod wal;
 

@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 trame-engine = { path = "../trame-engine" }
 axum.workspace = true
+bytes = "1.12"
 futures-util.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
