@@ -1,196 +1,196 @@
-# TRAME — Phase 1 : Spécification de la Table & des Actions en Jeu
+# TRAME — Phase 1: Virtual Table & In-Game Actions Specification
 
-Ce document détaille le fonctionnement exhaustif de la **Table Virtuelle** de **TRAME** (*Tabletop Rules, Actors, Maps & Encounters*), propulsée par **PixiJS v8 (WebGL2/WebGPU)** côté rendu et par **`trame-engine` (Rust / WASM)** côté géométrie, physique et visibilité.
+This document details the comprehensive operation of the **Virtual Table** in **TRAME** (*Tabletop Rules, Actors, Maps & Encounters*), powered by **PixiJS v8 (WebGL2/WebGPU)** for rendering and **`trame-engine` (Rust / WASM)** for geometry, physics, and visibility.
 
 ---
 
-## 1. Les Deux Modes de Jeu de la Table : Exploration vs Tour-par-Tour
+## 1. The Two Table Game Modes: Exploration vs. Turn-Based
 
-La Table possède une machine à états explicite contrôlée par le MJ avec **deux modes de jeu** distincts (plus un état transversal **Pause MJ** activable avec `Espace`).
+The Table features an explicit state machine controlled by the DM with **two distinct game modes** (plus a cross-cutting **DM Pause** state toggled via `Space`).
 
 ```mermaid
 stateDiagram-v2
     [*] --> Exploration
-    Exploration --> Pause_MJ : Espace (MJ) ou Trigger Auto (Porte / Piège / Ennemi)
-    Pause_MJ --> Exploration : Reprise (MJ)
-    Exploration --> Combat_Tour_Par_Tour : Lancer l'Initiative (MJ)
-    Pause_MJ --> Combat_Tour_Par_Tour : Lancer l'Initiative (MJ)
-    Combat_Tour_Par_Tour --> Exploration : Fin du Combat (MJ)
+    Exploration --> DM_Pause : Space (DM) or Auto Trigger (Door / Trap / Enemy)
+    DM_Pause --> Exploration : Resume (DM)
+    Exploration --> Turn_Based_Combat : Roll Initiative (DM)
+    DM_Pause --> Turn_Based_Combat : Roll Initiative (DM)
+    Turn_Based_Combat --> Exploration : End Combat (DM)
 ```
 
-### 1.1 Mode Exploration (Hors Combat)
+### 1.1 Exploration Mode (Out of Combat)
 
-* **Déplacement Direct + Waypoints** :
-  * Le joueur glisse son token librement sur la grille (avec `Espace` ou clic droit pendant le glisser pour poser des points de passage et contourner les coins).
-  * **Collision stricte** : Le trajet est bloqué par les murs et les portes fermées (le MJ peut ignorer les collisions en maintenant `Alt`).
-  * **Anti-scout au survol** : Le masque de vision/lumière du joueur n'est recalculé qu'au **relâchement** du token sur sa case d'arrivée, empêchant de balayer une pièce sombre avec son curseur sans s'y déplacer.
-* **Contrôle du rythme réglable par le MJ** :
-  * **Pause globale (`Espace`)** : Figer instantanément tous les mouvements des joueurs avec un bandeau *"Jeu en pause par le MJ"*.
-  * **Triggers d'arrêt automatiques (configurables par le MJ)** :
-    * *Pause à l'ouverture d'une porte* (`on/off`) : Dès qu'un joueur ouvre une porte fermée, son mouvement s'arrête et la Table peut optionnellement se mettre en pause pour laisser le MJ décrire la salle.
-    * *Pause à la détection d'un ennemi* (`on/off`) : Si le déplacement d'un joueur fait entrer un token hostile dans son champ de vision, le mouvement du joueur s'interrompt sur cette case.
-    * *Zones de déclenchement MJ (Trap / Event Triggers)* : Polygones invisibles dessinés par le MJ qui stoppent le token entrant et notifient le MJ (ex: dalle piégée, embuscade).
+* **Direct Movement + Waypoints**:
+  * Players drag their token freely across the grid (pressing `Space` or right-clicking while dragging to drop waypoints and navigate around corners).
+  * **Strict Collision**: Movement paths are blocked by walls and closed doors (the DM can bypass collisions by holding `Alt`).
+  * **Hover Anti-Scout**: The player's vision/light mask is recalculated only upon **releasing** the token on its destination cell, preventing players from sweeping a dark room with their cursor without actually moving there.
+* **DM-Configurable Pacing Controls**:
+  * **Global Pause (`Space`)**: Instantly freezes all player movement with a *"Game paused by DM"* banner.
+  * **Automatic Stop Triggers (configurable by the DM)**:
+    * *Pause on Door Open* (`on/off`): As soon as a player opens a closed door, their movement stops and the Table can optionally pause so the DM can describe the room.
+    * *Pause on Enemy Sighting* (`on/off`): If a player's movement brings a hostile token into their field of view, the player's movement halts on that cell.
+    * *DM Trigger Zones (Trap / Event Triggers)*: Invisible polygons drawn by the DM that stop an entering token and notify the DM (e.g., pressure plate, ambush).
 
-### 1.2 Mode Tour-par-Tour (Combat avec Initiative)
+### 1.2 Turn-Based Mode (Initiative Combat)
 
-Dès que le MJ bascule en mode **Combat / Initiative**, les règles de la Table deviennent tactiques (style *Baldur's Gate 3*) :
+As soon as the DM switches to **Combat / Initiative** mode, Table rules become tactical:
 
-* **Verrouillage de tour** : Seul le joueur contrôlant le token actif dans l'ordre d'initiative peut déplacer son token (le MJ peut toujours tout déplacer ou autoriser un déplacement hors-tour/réaction).
-* **Déplacement Planifié avec Budget de Vitesse** :
-  * Cliquer/déplacer depuis son token ne le bouge pas immédiatement : cela trace une **trajectoire prévisualisée** case par case (en prenant en compte les diagonales du système de jeu et les zones de **terrain difficile** qui coûtent double, ex: `10 ft` au lieu de `5 ft`).
-  * **Code couleur de la trajectoire** :
-    * **Vert** : Dans le budget de mouvement restant du tour (ex: `0 → 30 ft`).
-    * **Jaune (Dash / Foncer)** : Nécessite de consommer une Action pour doubler son mouvement (`35 → 60 ft`).
-    * **Rouge** : Au-delà de la capacité maximale du tour.
-  * **Validation** : Le joueur clique sur *"Confirmer le déplacement"* (ou double-clic / `Entrée`). Le token se déplace alors le long du chemin, déduit la distance parcourue de sa jauge de mouvement (`ex: 15 / 30 ft restants`), et met à jour sa vision.
-* **Suivi de l'Économie d'Action par Tour** :
-  * Autour du token actif (et dans le HUD de combat), le moteur affiche le budget du tour défini par le `GameSystemPack` (pour D&D 5e : **Mouvement**, **Action** ●, **Action Bonus** ◆, **Réaction** ↺).
-  * Lancer un sort d'1 Action ou une Attaque coche automatiquement la pastille correspondante (avec possibilité pour le joueur ou le MJ de la cocher/décocher manuellement). Au début du tour suivant du personnage, son mouvement et ses pastilles (y compris sa Réaction) sont réinitialisés.
+* **Turn Locking**: Only the player controlling the active token in the initiative order can move their token (the DM can always move any token or authorize out-of-turn/reaction movement).
+* **Planned Movement with Speed Budget**:
+  * Clicking and dragging from a token does not move it immediately; instead, it plots a **previewed path** cell by cell (accounting for the game system's diagonal rules and **difficult terrain** zones that cost double, e.g., `10 ft` instead of `5 ft`).
+  * **Path Color Coding**:
+    * **Green**: Within the remaining movement budget for the turn (e.g., `0 -> 30 ft`).
+    * **Yellow (Dash)**: Requires spending an Action to double movement speed (`35 -> 60 ft`).
+    * **Red**: Beyond maximum movement capacity for the turn.
+  * **Confirmation**: The player clicks *"Confirm Movement"* (or double-clicks / presses `Enter`). The token then moves along the path, deducts the distance traveled from its movement gauge (e.g., `15 / 30 ft remaining`), and updates its vision.
+* **Per-Turn Action Economy Tracking**:
+  * Around the active token (and in the combat HUD), the engine displays the turn budget defined by the `GameSystemPack` (for D&D 5e: **Movement**, **Action** ●, **Bonus Action** ◆, **Reaction** ↺).
+  * Casting a 1-Action spell or making an Attack automatically checks off the corresponding pip (with manual toggle support for the player or DM). At the start of the character's next turn, their movement and action pips (including Reaction) reset.
 
-### 1.3 Empreinte multi-cases, Occupation & Empilement de Tokens (Q1)
+### 1.3 Multi-Tile Footprint, Occupancy & Token Stacking (Q1)
 
-* **Empreinte sur la grille (`Footprint`)** :
-  * *Tiny (TP)* : $0.5 \times 0.5$ case (jusqu'à 4 créatures Tiny par case).
-  * *Small (P) / Medium (M)* : $1 \times 1$ case.
-  * *Large (G)* : $2 \times 2$ cases (4 cases).
-  * *Huge (TG)* : $3 \times 3$ cases (9 cases).
-  * *Gargantuan (Gig)* : $4 \times 4$ cases ou plus.
-  * En **Mode Exploration (ou combat) pour les Tokens > $1 \times 1$** : un token *Large* ($2 \times 2$) peut passer dans un couloir d'1 case de large via la règle d'**Étroitesse (`Squeezing`)**, ce qui coûte automatiquement `2x` en mouvement (comme du terrain difficile) et signale l'état *Squeezing* sur le token.
-* **Traversée et Arrêt sur une Case Occupée** :
-  * Un token peut **traverser** les cases d'un allié (coût de terrain difficile `2x` en mode Combat), mais **ne peut pas terminer son déplacement** sur une case déjà occupée par une autre créature vivante (la case finale est marquée en rouge).
-  * **Corps au sol / Créatures à $0\text{ PV}$ (`Prone / Dead Stack`)** : Lorsqu'un token tombe à $0\text{ PV}$ ou est marqué *Mort/Inconscient*, il bascule automatiquement dans la sous-couche **Au Sol (`Corpse/Prone Sub-Layer`)**. Un token vivant peut alors se déplacer et s'arrêter sur cette case : une icône de pile (*Stack Badge*) en coin de case permet au MJ ou aux joueurs de sélectionner ou fouiller le corps sous le token actif.
+* **Grid Footprint (`Footprint`)**:
+  * *Tiny*: $0.5 \times 0.5$ cell (up to 4 Tiny creatures per cell).
+  * *Small / Medium*: $1 \times 1$ cell.
+  * *Large*: $2 \times 2$ cells (4 cells).
+  * *Huge*: $3 \times 3$ cells (9 cells).
+  * *Gargantuan*: $4 \times 4$ cells or larger.
+  * In **Exploration (or Combat) Mode for Tokens > $1 \times 1$**: a *Large* ($2 \times 2$) token can pass through a 1-cell-wide corridor via the **Squeezing** rule, which automatically costs `2x` movement (like difficult terrain) and displays the *Squeezing* state on the token.
+* **Moving Through and Ending on an Occupied Cell**:
+  * A token can **move through** an ally's spaces (`2x` difficult terrain cost in Combat mode), but **cannot end its movement** on a cell already occupied by another living creature (the destination cell is highlighted in red).
+  * **Corpses / Creatures at $0\text{ HP}$ (`Prone / Dead Stack`)**: When a token drops to $0\text{ HP}$ or is marked *Dead/Unconscious*, it automatically moves to the **Ground Sub-Layer (`Corpse/Prone Sub-Layer`)**. A living token can then move onto and stop on that cell; a *Stack Badge* icon in the cell corner allows the DM or players to select or loot the body beneath the active token.
 
-### 1.4 Élévation (Axe Z), Vol & Portée 3D (Q2)
+### 1.4 Elevation (Z-Axis), Flight & 3D Range (Q2)
 
-* Chaque token, mur de terrain et source lumineuse possède une propriété d'altitude **`elevation_ft`** (par défaut `0 ft`, modifiable avec `Alt + Molette` ou saisie directe, affichée sous forme de badge `+20 ft` avec ombre portée décalée sur le sol).
-* **Calcul de Distance et Portée 3D (`trame-engine`)** :
-  * La distance vers une cible volante ou en hauteur est calculée en 3D selon la règle de campagne choisie :
-    * *Mode Standard 5e (Chebyshev 3D)* : $\max(\Delta X, \Delta Y, \Delta Z)$.
-    * *Mode Tactique / Diagonales 5-10-5 ou Euclidien 3D* : $\sqrt{\Delta X^2 + \Delta Y^2 + \Delta Z^2}$ arrondi à la case.
-* **Occlusion 3D des Murs et Toits** :
-  * Chaque segment de mur et polygone de toit possède une hauteur (`bottom_z`, `top_z`, par défaut `0 -> +∞` pour un donjon souterrain, ou `0 -> 15 ft` pour un mur d'enceinte / toit de maison).
-  * Un token volant à `+30 ft` voit par-dessus un mur de `15 ft` et peut survoler un toit sans être bloqué.
+* Every token, terrain wall, and light source has an altitude property **`elevation_ft`** (default `0 ft`, adjustable via `Alt + Scroll Wheel` or direct input, displayed as a `+20 ft` badge with an offset drop shadow on the ground).
+* **3D Distance and Range Calculation (`trame-engine`)**:
+  * Distance to a flying or elevated target is calculated in 3D according to the selected campaign rule:
+    * *Standard 5e Mode (3D Chebyshev)*: $\max(\Delta X, \Delta Y, \Delta Z)$.
+    * *Tactical / 5-10-5 Diagonals or 3D Euclidean Mode*: $\sqrt{\Delta X^2 + \Delta Y^2 + \Delta Z^2}$ rounded to the nearest cell.
+* **3D Occlusion of Walls and Roofs**:
+  * Every wall segment and roof polygon has a vertical span (`bottom_z`, `top_z`, defaulting to `0 -> +∞` for an underground dungeon, or `0 -> 15 ft` for a perimeter wall or house roof).
+  * A token flying at `+30 ft` sees over a `15 ft` wall and can fly over a roof without being blocked.
 
-### 1.5 Interruptions de Mouvement & Réactions en Temps-Réel (Q3)
+### 1.5 Movement Interrupts & Real-Time Reactions (Q3)
 
-Lorsqu'un token valide un déplacement en mode Tour-par-Tour, il glisse case par case le long de sa trajectoire :
-* **Détection automatique d'Attaque d'Opportunité (AoO)** : Si la trajectoire quitte la zone d'allonge (`reach`, `5 ft` ou `10 ft`) d'un ennemi visible et que le token ne possède pas l'état *Désengagement (`Disengage`)*, le moteur met le déplacement en **Pause d'Interruption** sur la case de sortie et affiche une alerte (`⚡ Opportunité d'Attaque / Réaction`) au MJ et au joueur concerné.
-* **Bouton d'Interruption Manuelle ("⚡ Demander Réaction")** : À tout moment pendant le tour d'un adversaire (sort lancé, attaque déclarée, mouvement), un joueur disposant encore de sa pastille **Réaction ↺** peut cliquer sur **⚡ Réaction** (*Bouclier*, *Contresort*, * Action préparée*), ce qui suspend brièvement la résolution pour permettre au MJ de valider ou d'ignorer l'interruption.
+When a token confirms movement in Turn-Based mode, it glides cell by cell along its path:
+* **Automatic Opportunity Attack (AoO) Detection**: If the path leaves the reach (`5 ft` or `10 ft`) of a visible enemy and the moving token does not have the *Disengage* state, the engine places movement into **Interrupt Pause** on the exit cell and displays an alert (`⚡ Opportunity Attack / Reaction`) to the DM and the relevant player.
+* **Manual Interrupt Button ("⚡ Request Reaction")**: At any time during an opponent's turn (spell cast, declared attack, movement), a player who still has their **Reaction ↺** pip can click **⚡ Reaction** (*Shield*, *Counterspell*, *Readied Action*), briefly pausing resolution so the DM can approve or dismiss the interrupt.
 
 ---
 
-## 2. Géométrie, Murs, Portes, Calques Verticaux & Cycle Jour/Nuit
+## 2. Geometry, Walls, Doors, Vertical Layers & Day/Night Cycle
 
-### 2.1 Les 5 Types de Segments Vectoriels (Indexés en BVH dans `trame-engine`)
+### 2.1 The 5 Vector Segment Types (BVH-Indexed in `trame-engine`)
 
-| Type de segment | Mouvement | Vision & Lumière | Zones d'Effet (AoE) | Interaction Joueur |
+| Segment Type | Movement | Vision & Light | Areas of Effect (AoE) | Player Interaction |
 | :--- | :--- | :--- | :--- | :--- |
-| **1. Mur Plein** | Bloqué (sauf si `elevation > top_z`) | Bloqué | Bloque l'explosion | Aucune |
-| **2. Fenêtre / Grille** | Bloqué | Laisse passer vision & lumière | Bloque (vitre) ou Laisse passer (grille) | Ouvrable si déverrouillée |
-| **3. Mur de Terrain / Falaise** | Bloqué (ou escalade `2x`) | Visible de l'extérieur (1er mur ignoré), bloque tout ce qui est derrière | Bloque derrière | Aucune |
-| **4. Porte** (`Ouverte`, `Fermée`, `Verrouillée`, `Secrète`) | Bloqué si fermée/verrouillée | Bloqué si fermée | Bloque si fermée | Clic pour Ouvrir/Fermer si le token du joueur est à $\le 1$ case. Si verrouillée : son + message *"Verrouillée"*. Si secrète : invisible pour le joueur (rendue comme un mur normal). |
-| **5. Rideau / Illusion** | Libre (franchissable) | Bloqué | Laisse passer | Franchissable à pied |
+| **1. Solid Wall** | Blocked (unless `elevation > top_z`) | Blocked | Blocks blast | None |
+| **2. Window / Grate** | Blocked | Allows vision & light through | Blocks (glass) or Allows through (grate) | Openable if unlocked |
+| **3. Terrain Wall / Cliff** | Blocked (or `2x` climb) | Visible from outside (1st wall ignored), blocks everything behind it | Blocks behind | None |
+| **4. Door** (`Open`, `Closed`, `Locked`, `Secret`) | Blocked if closed/locked | Blocked if closed | Blocks if closed | Click to Open/Close if player token is within $\le 1$ cell. If locked: sound + *"Locked"* message. If secret: invisible to players (rendered as a normal wall). |
+| **5. Curtain / Illusion** | Free (passable) | Blocked | Allows through | Passable on foot |
 
-### 2.2 Calque des Toits / Façades (`Overhead / Roof Layer`)
+### 2.2 Overhead / Roof Layer (`Overhead / Roof Layer`)
 
-* Le MJ peut placer des tuiles d'images (toits d'auberges, cimes d'arbres, ponts) sur le calque **Toits (`Overhead`)** avec un polygone d'occultation automatique et une altitude `top_z`.
-* Tant que le token d'un joueur est à l'extérieur du bâtiment (et en dessous de `top_z`), il voit le toit et les murs extérieurs bloquent sa vue.
-* Dès que le token franchit la porte ou entre sous le polygone du bâtiment, le toit s'estompe en fondu (`alpha: 0.15` ou `0.0`) pour ce joueur, dévoilant l'intérieur de la pièce.
+* The DM can place image tiles (inn roofs, tree canopies, bridges) on the **Roofs (`Overhead`)** layer with an automatic occlusion polygon and a `top_z` altitude.
+* As long as a player's token is outside the building (and below `top_z`), they see the roof and the exterior walls block their sight.
+* As soon as the token steps through the door or enters beneath the building polygon, the roof fades out (`alpha: 0.15` or `0.0`) for that player, revealing the room interior.
 
-### 2.3 Cycle Jour / Nuit & Éclairage Ambiant par Défaut
+### 2.3 Day/Night Cycle & Default Ambient Lighting
 
-* **Comportement par défaut (si non précisé par le MJ)** :
-  * Une nouvelle carte démarre en **Plein Jour (`Day` — Illumination Globale active, niveau `1.0 / Bright`)** : tant qu'aucun mur ne bloque la ligne de vue d'un token, celui-ci voit clairement toute la zone ouverte sans avoir besoin de torche ni de vision dans le noir.
-* **Sélecteur Rapide de Cycle Jour / Nuit (1 clic dans le HUD MJ)** :
-  * **Jour (`Day`)** : Lumière vive globale (`1.0`) + teinte naturelle.
-  * **Aube / Crépuscule (`Dawn / Dusk`)** : Lumière faible globale (`0.5 / Dim`) + teinte ambrée/orangée.
-  * **Nuit Étoilée / Clair de Lune (`Moonlight`)** : Lumière faible globale (`0.5`) + teinte bleutée nocturne à l'extérieur des bâtiments.
-  * **Nuit Noire / Donjon Souterrain (`Pitch Dark / Dungeon`)** : Illumination globale désactivée (`0.0 / Darkness`).
-* **Zonage Extérieur vs Intérieur (`Indoor Polygons`)** :
-  * Un bâtiment (ou une zone sous un toit `Overhead`) marqué **`Indoor`** reste dans l'obscurité même s'il fait **Plein Jour** dehors, tant qu'une porte ouverte ou une fenêtre ne laisse pas entrer la lumière extérieure.
+* **Default Behavior (when unspecified by the DM)**:
+  * A new map starts in **Full Daylight (`Day` — Global Illumination active, level `1.0 / Bright`)**: as long as no wall blocks a token's line of sight, it clearly sees the entire open area without needing a torch or darkvision.
+* **Quick Day/Night Cycle Selector (1 click in the DM HUD)**:
+  * **Day (`Day`)**: Global bright light (`1.0`) + natural tint.
+  * **Dawn / Dusk (`Dawn / Dusk`)**: Global dim light (`0.5 / Dim`) + amber/orange tint.
+  * **Starlight / Moonlight (`Moonlight`)**: Global dim light (`0.5`) + nocturnal blue tint outdoors.
+  * **Pitch Dark / Underground Dungeon (`Pitch Dark / Dungeon`)**: Global illumination disabled (`0.0 / Darkness`).
+* **Outdoor vs. Indoor Zoning (`Indoor Polygons`)**:
+  * A building (or area beneath an `Overhead` roof) marked **`Indoor`** remains in darkness even during **Full Daylight** outside, unless an open door or window lets exterior light in.
 
-### 2.4 Téléporteurs, Escaliers & Transitions Multi-Cartes (Q18)
+### 2.4 Teleporters, Stairs & Multi-Map Transitions (Q18)
 
-* Le MJ peut placer des **Régions de Transition (`Stairs / Teleporter Zones`)** sur une carte :
-  * **Intra-carte (Multi-étages sur le même canevas)** : Lorsqu'un token marche sur l'escalier du Rez-de-Chaussée, il est automatiquement déplacé vers l'arrivée de l'escalier à l'Étage 1 (avec mise à jour de son `elevation_ft` et recalibrage instantané de la caméra et de la vision).
-  * **Inter-cartes (Vers une autre carte préparée)** : Permet de diviser le groupe (*Split Party*) ou de faire descendre un éclaireur au sous-sol : le serveur supporte **plusieurs cartes actives simultanément** au sein d'une même session, chaque joueur voyant la carte sur laquelle se trouve son token principal.
+* The DM can place **Transition Regions (`Stairs / Teleporter Zones`)** on a map:
+  * **Intra-Map (Multi-Floor on the Same Canvas)**: When a token steps onto the Ground Floor stairs, it is automatically moved to the Floor 1 stair landing (updating its `elevation_ft` and instantly recalibrating camera and vision).
+  * **Inter-Map (To Another Prepared Map)**: Supports splitting the party (*Split Party*) or sending a scout into a basement: the server supports **multiple simultaneously active maps** within a single session, with each player viewing the map where their primary token is located.
 
 ---
 
-## 3. Vision par Token, Canaux de Visibilité & Brouillard de Guerre
+## 3. Per-Token Vision, Visibility Channels & Fog of War
 
-### 3.1 Vision Individuelle vs Vision de Groupe (Optionnelle)
+### 3.1 Individual Vision vs. Party Vision (Optional)
 
-1. **Mode Vision Individuelle (Par défaut)** : Chaque joueur ne voit que ce que voient les tokens qu'il contrôle (et s'il sélectionne l'un de ses tokens, ex: son Familier, il voit uniquement à travers les yeux de ce token).
-2. **Mode Vision Partagée de Groupe (Optionnel)** : Tous les joueurs voient l'union des polygones de vision de tous les tokens alliés du groupe.
+1. **Individual Vision Mode (Default)**: Each player sees only what the tokens they control can see (and if they select one of their specific tokens, e.g., their Familiar, they see exclusively through that token's eyes).
+2. **Shared Party Vision Mode (Optional)**: All players see the union of the vision polygons of all allied party tokens.
 
-### 3.2 Capteurs de Vision (`SenseModes`) & Canaux de Visibilité (`VisibilityChannels`)
+### 3.2 Vision Sensors (`SenseModes`) & Visibility Channels (`VisibilityChannels`)
 
-| Canal du Token Cible | Qui peut le voir (Filtrage Serveur + Rendu Client) ? | Rendu Visuel sur la Table |
+| Target Token Channel | Who Can See It (Server Filtering + Client Rendering)? | Visual Rendering on the Table |
 | :--- | :--- | :--- |
-| **`MATERIAL` (Normal)** | Tout token ayant une ligne de vue (`LoS`) éclairée, ou possédant `Darkvision` / `Blindsight` / `Truesight` à portée. | Couleurs normales en lumière vive ; légèrement assombri en lumière faible ; **monochrome désaturé** si vu uniquement grâce à la *Vision dans le noir (`Darkvision`)*. |
-| **`INVISIBLE`** | Le MJ + tout token possédant le capteur `see_invisibility`, `blindsight`, `tremorsense` ou `truesight` à portée et en ligne de vue. | Aura translucide / contour irisé indiquant que la créature est invisible pour le reste du monde. |
-| **`ETHEREAL` / `ASTRAL`** | Le MJ + tout token étant lui-même sur le canal `ETHEREAL` ou possédant `truesight` / `see_ethereal`. | Rendu spectral bleuté ; un token en mode `ETHEREAL` ignore les murs matériels non-magiques et voit le plan matériel en grisé vaporeux. |
-| **`HIDDEN_BY_DM` (Furtif / Caché MJ)** | Uniquement le MJ (tant que le MJ ne le révèle pas ou qu'un test de Perception ne réussit pas). | Semi-transparent sur l'écran du MJ ; strictement absent des paquets réseau envoyés aux joueurs. |
+| **`MATERIAL` (Normal)** | Any token with an illuminated Line of Sight (`LoS`), or possessing `Darkvision` / `Blindsight` / `Truesight` within range. | Full color in bright light; slightly dimmed in dim light; **desaturated monochrome** when seen solely via *Darkvision*. |
+| **`INVISIBLE`** | The DM + any token possessing `see_invisibility`, `blindsight`, `tremorsense`, or `truesight` within range and line of sight. | Translucent aura / iridescent outline indicating the creature is invisible to everyone else. |
+| **`ETHEREAL` / `ASTRAL`** | The DM + any token itself on the `ETHEREAL` channel or possessing `truesight` / `see_ethereal`. | Bluish spectral rendering; a token in `ETHEREAL` mode ignores non-magical material walls and sees the Material Plane in hazy grayscale. |
+| **`HIDDEN_BY_DM` (Stealth / DM Hidden)** | Only the DM (until the DM reveals it or a Perception check succeeds). | Semi-transparent on the DM's screen; strictly omitted from network packets sent to players. |
 
-### 3.3 Les 3 Couches de Brouillard de Guerre
+### 3.3 The 3 Fog of War Layers
 
-1. **Inexploré (Noir total)** : Zones jamais vues par le joueur.
-2. **Mémoire d'Exploration par Joueur (`Explored Memory FBO`)** : Zones déjà visitées par le joueur mais hors de sa ligne de vue actuelle, affichées en grisé/sépia sombre (ne montre que le décor statique, **jamais les tokens**).
-3. **Brouillard Manuel du MJ** : Surcouche prioritaire permettant au MJ de révéler ou masquer manuellement une zone au pinceau ou au lasso.
-
----
-
-## 4. Sorts, Zones d'Effet (AoE) & Terrain Persistant
-
-### 4.1 Les 5 Formes Géométriques AoE & Règles de Discrétisation sur Grille (Q4)
-
-* **Formes** : **Sphère / Cercle**, **Cône**, **Cube**, **Ligne**, **Cylindre / Anneau**.
-* **Règle de Discrétisation des Cases Touchées (Réglage de Campagne)** :
-  1. **`center_point` (Défaut D&D 5e DMG / XGE)** : Une case de la grille est affectée si et seulement si son point central ($+0.5, +0.5$) est contenu dans le polygone géométrique du gabarit (après découpage par les murs).
-  2. **`area_threshold_50`** : Une case est affectée si au moins 50% de sa surface est couverte.
-  3. **`any_intersection` (Généreux)** : Toute case effleurée par le gabarit est affectée.
-  4. **`grid_template` (Manhattan / Bresenham)** : Gabarit en escalier strictement aligné sur les cases de la grille.
-
-### 4.2 Workflow en 3 Étapes : Prévisualisation $\rightarrow$ Ciblage $\rightarrow$ Résolution ou Persistance
-
-1. **Étape 1 — Prévisualisation Interactive (Fantôme local à 60 FPS)** :
-   * Affiche la portée du sort, le gabarit AoE découpé en temps réel contre les murs pleins (via `trame-engine` WASM), les cases de grille affectées et le nombre de cibles touchées.
-2. **Étape 2 — Ciblage Assisté & Résolution (Sorts Instantanés)** :
-   * Au clic de validation, verrouille les tokens touchés et permet en 1 clic de lancer les jets de sauvegarde groupés et d'appliquer les dégâts (`100%`, `50%`, ou `0%` avec *Dérobade / Evasion*).
-3. **Étape 3 — Zones d'Effet Persistantes (Modification Physique de la Table)** :
-   * Les zones persistantes restent sur la carte (liées à la **Concentration** du lanceur) et modifient dynamiquement `trame-engine` :
-     * **Terrain Difficile (`2x` coût de mouvement)** : *Toile d'araignée*, *Enchevêtrement*, *Graisse*.
-     * **Occultation & Lumière** : *Nappe de brouillard* (bloque la vision), *Ténèbres magiques* (bloque vision + `darkvision` standard), *Lumière du jour* (éclaire à `60 ft`).
-     * **Déclencheur d'Entrée / Début de Tour (`Zone Hazard`)** : *Esprits gardiens*, *Mur de feu* $\rightarrow$ déclenche une notification de sauvegarde dès qu'un token entre dans la zone ou y débute son tour.
+1. **Unexplored (Pitch Black)**: Areas never seen by the player.
+2. **Per-Player Exploration Memory (`Explored Memory FBO`)**: Areas previously visited by the player but outside their current line of sight, rendered in dark grayscale/sepia (displays static scenery only, **never tokens**).
+3. **DM Manual Fog**: High-priority overlay allowing the DM to manually reveal or hide an area using a brush or lasso tool.
 
 ---
 
-## 5. Dessins à Main Levée, Annotations Tactiques & Ambiance Sonore (Q19, Q20)
+## 4. Spells, Areas of Effect (AoE) & Persistent Terrain
 
-### 5.1 Calque de Dessin & Annotations (`Freehand & Tactical Drawing Layer`)
+### 4.1 The 5 Geometric AoE Shapes & Grid Discretization Rules (Q4)
 
-* **Outils vectoriels légers** : Crayon à main levée (lissé par courbes de Bézier), Flèche tactique, Rectangle, Cercle et Texte sur la carte.
-* **Modes de visibilité du tracé** :
-  * **Éphémère (`Ping / Tactique — 10s`)** : Permet à un joueur de dessiner rapidement une flèche *"Je contourne par ici"* qui s'efface toute seule après 10 secondes sans polluer la carte.
-  * **Permanent Groupe** : Annotations durables sur la carte (contrôlables et effaçables en 1 clic par le MJ).
-  * **Note Visuelle MJ (`DM Layer Only`)** : Croquis ou repères visibles uniquement par le MJ.
+* **Shapes**: **Sphere / Circle**, **Cone**, **Cube**, **Line**, **Cylinder / Ring**.
+* **Affected Cell Discretization Rule (Campaign Setting)**:
+  1. **`center_point` (D&D 5e DMG / XGE Default)**: A grid cell is affected if and only if its center point ($+0.5, +0.5$) lies inside the template's geometric polygon (after wall clipping).
+  2. **`area_threshold_50`**: A cell is affected if at least 50% of its surface area is covered.
+  3. **`any_intersection` (Generous)**: Any cell touched by the template is affected.
+  4. **`grid_template` (Manhattan / Bresenham)**: Stepped grid template strictly aligned to grid cells.
 
-### 5.2 Moteur Audio & Soundboard Synchronisé
+### 4.2 3-Step Workflow: Preview $\rightarrow$ Targeting $\rightarrow$ Resolution or Persistence
 
-* **3 Canaux Audio Indépendants (réglables individuellement en volume par chaque joueur)** :
-  1. **Musique (`Music`)** : Pistes musicales avec fondu enchaîné (*crossfade* de 2s) lors des changements de scène ou du passage en mode Combat.
-  2. **Ambiance & Météo (`Ambience`)** : Boucles sonores continues (pluie, taverne, vent souterrain, crépitement de feu) synchronisées avec les filtres visuels météo de la carte.
-  3. **Effets Sonores (`SFX Soundboard`)** : Déclenchés en 1 clic par le MJ ou automatiquement lors d'événements de table (ouverture de porte, porte verrouillée, tonnerre, explosion de *Boule de feu*, critique au dé).
-* **Sources Audio Spatialisées sur la Carte (`Positional Audio Sources`)** : Le MJ peut placer un émetteur sonore sur la carte (ex: rivière souterraine, forge, incantation derrière une porte) avec un rayon d'atténuation : le volume augmente au fur et à mesure que le token du joueur s'en approche !
+1. **Step 1 — Interactive Preview (Local 60 FPS Ghost)**:
+   * Displays spell range, the AoE template clipped in real time against solid walls (via `trame-engine` WASM), affected grid cells, and the number of hit targets.
+2. **Step 2 — Assisted Targeting & Resolution (Instantaneous Spells)**:
+   * On confirmation click, locks onto hit tokens and enables 1-click grouped saving throws and damage application (`100%`, `50%`, or `0%` with *Evasion*).
+3. **Step 3 — Persistent Areas of Effect (Physical Table Modification)**:
+   * Persistent zones remain on the map (linked to the caster's **Concentration**) and dynamically modify `trame-engine`:
+     * **Difficult Terrain (`2x` movement cost)**: *Web*, *Entangle*, *Grease*.
+     * **Obscurement & Light**: *Fog Cloud* (blocks vision), *Darkness* (blocks vision + standard `darkvision`), *Daylight* (illuminates within `60 ft`).
+     * **Enter / Start-of-Turn Trigger (`Zone Hazard`)**: *Spirit Guardians*, *Wall of Fire* $\rightarrow$ triggers a saving throw prompt as soon as a token enters the zone or starts its turn there.
 
 ---
 
-## 6. Outils de Correction Rapide MJ ("DM Override & Undo / Redo")
+## 5. Freehand Drawings, Tactical Annotations & Soundscape (Q19, Q20)
 
-1. **Historique d'Actions & Bouton "Annuler le dernier Mouvement / Action" (`Ctrl+Z` MJ)** :
-   * Annuler un déplacement remet le token du joueur à sa case de départ, recrédite son budget de mouvement **et restaure le masque de mémoire d'exploration** d'avant le mouvement erroné.
-2. **Déplacement Forcé par le MJ ("Grab & Teleport")** :
-   * Le MJ peut déplacer n'importe quel token à tout moment sans consommer le mouvement du joueur et en traversant les murs (`Alt + Drag`).
-3. **Correction en 1 Clic de l'Économie d'Action & des Ressources** :
-   * Bascule directe des pastilles `Action` ●, `Action Bonus` ◆, `Réaction` ↺, réinitialisation du mouvement (`Reset to 30 ft`) et restauration de PV/emplacements de sorts depuis le journal du tour.
+### 5.1 Freehand & Tactical Drawing Layer (`Freehand & Tactical Drawing Layer`)
+
+* **Lightweight Vector Tools**: Freehand pencil (Bezier-smoothed), Tactical arrow, Rectangle, Circle, and Map text.
+* **Stroke Visibility Modes**:
+  * **Ephemeral (`Ping / Tactical — 10s`)**: Allows a player to quickly sketch a *"Flanking this way"* arrow that automatically fades out after 10 seconds without cluttering the map.
+  * **Party Permanent**: Durable annotations on the map (controllable and clearable in 1 click by the DM).
+  * **DM Visual Note (`DM Layer Only`)**: Sketches or markers visible exclusively to the DM.
+
+### 5.2 Synchronized Audio Engine & Soundboard
+
+* **3 Independent Audio Channels (individually volume-adjustable by each player)**:
+  1. **Music (`Music`)**: Musical tracks with a 2s crossfade during scene changes or transitions into Combat mode.
+  2. **Ambience & Weather (`Ambience`)**: Continuous sound loops (rain, tavern, underground wind, crackling fire) synchronized with the map's visual weather filters.
+  3. **Sound Effects (`SFX Soundboard`)**: Triggered in 1 click by the DM or automatically upon table events (door opening, locked door, thunderclap, *Fireball* explosion, critical hit roll).
+* **Spatialized Map Audio Sources (`Positional Audio Sources`)**: The DM can place a sound emitter on the map (e.g., underground river, forge, chanting behind a door) with an attenuation radius: volume increases as the player's token approaches it.
+
+---
+
+## 6. Quick DM Correction Tools ("DM Override & Undo / Redo")
+
+1. **Action History & "Undo Last Movement / Action" Button (`Ctrl+Z` DM)**:
+   * Undoing a move returns the player's token to its starting cell, refunds its movement budget, **and restores the exploration memory mask** from before the erroneous move.
+2. **DM Forced Movement ("Grab & Teleport")**:
+   * The DM can move any token at any time without spending the player's movement budget and while passing through walls (`Alt + Drag`).
+3. **1-Click Action Economy & Resource Correction**:
+   * Direct toggling of `Action` ●, `Bonus Action` ◆, and `Reaction` ↺ pips, movement reset (`Reset to 30 ft`), and HP/spell slot restoration from the turn log.

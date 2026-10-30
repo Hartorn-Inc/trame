@@ -5,6 +5,38 @@
     clippy::type_complexity
 )]
 
+//! ============================================================================
+//! TRAME MULTIPLAYER RUNTIME & ROOM ACTOR CRATE ROOT (lib.rs)
+//! ============================================================================
+//!
+//! PURPOSE:
+//! --------
+//! Orchestrates the authoritative multiplayer server runtime for `trame`:
+//! content-addressed WebP asset storage (`assets`), Universal VTT map importing
+//! (`importers`), cryptographically seeded ChaCha20 dice resolution (`dice`),
+//! Axum HTTP/WebSocket transport (`http`), isolated per-campaign Tokio actor
+//! loops with `Idle-Lease` hibernation (`room`), MessagePack binary wire framing
+//! with 2.5D BVH line-of-sight state stripping (`sync`), and Write-Ahead Log
+//! (WAL) + write-behind snapshot crash recovery (`wal`).
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//! -------------------------------
+//!   1. `Information-Theoretic Wire Stripping`:
+//!      - Non-GM recipients never receive tokens on `CHANNEL_GM_HIDDEN` or
+//!        tokens occluded behind walls outside their owned tokens' 2.5D BVH
+//!        line-of-sight (`project_state_for_recipient`). Closed `SecretDoor`
+//!        segments are masked as `WallKind::Normal` on player sockets.
+//!   2. `Blind GM Roll Privacy`:
+//!      - `RollVisibility::BlindGm` reveals full roll totals and terms to the
+//!        GM, echoes a masked acknowledgment (`blind_masked: true`, `total: None`,
+//!        empty `terms`) to the rolling player, and drops the packet for all
+//!        bystanders.
+//!   3. `WAL Durability Before Broadcast`:
+//!      - Every accepted `TrameCommand` increments `seq_id` and appends a
+//!        `WalEntry` prior to broadcasting `ServerEnvelope::CommandAccepted`,
+//!        ensuring zero state loss across room hibernation or process restarts.
+//! ============================================================================
+
 pub mod assets;
 pub mod dice;
 pub mod http;

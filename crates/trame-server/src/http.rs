@@ -1,3 +1,31 @@
+//! ============================================================================
+//! AXUM HTTP HEALTHCHECK, ASSET PRESIGN & WEBSOCKET UPGRADE ROUTER (http.rs)
+//! ============================================================================
+//!
+//! PURPOSE:
+//! --------
+//! Exposes the HTTP liveness probe (`GET /healthz`), the campaign-scoped asset
+//! presigned URL endpoint (`GET /api/v1/campaigns/{campaign_id}/assets/{hash}/presign`),
+//! and the binary MessagePack WebSocket upgrade endpoint (`GET /ws/campaigns/{campaign_id}`)
+//! backed by `RoomLeaseManager`.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//! -------------------------------
+//!   1. `Least-Privilege Role Default`:
+//!      - `ws_campaign_handler` parses the `role` query parameter and defaults
+//!        any unrecognized or omitted role string to `CampaignRole::Player`,
+//!        preventing accidental privilege escalation to `CampaignRole::Gm`.
+//!   2. `Campaign Membership & Hash Validation on Presigned URLs`:
+//!      - `presign_asset_handler` validates hexadecimal asset hashes (`_thumb`
+//!        optional suffix) and enforces `CampaignMembershipValidator::is_member`
+//!        before minting short-lived presigned GET URLs (`PRESIGNED_URL_DEFAULT_TTL`).
+//!   3. `Deterministic Session Cleanup`:
+//!      - When the client WebSocket stream closes or errors, the handler
+//!        unconditionally invokes `disconnect_client(session_id)` and aborts the
+//!        outbound forwarding task so `RoomLeaseManager` accurately tracks zero
+//!        active connections for `Idle-Lease` hibernation.
+//! ============================================================================
+
 use crate::assets::store::{AssetStore, AssetStoreError, PRESIGNED_URL_DEFAULT_TTL};
 use crate::room::{ConnectedClient, RoomLeaseManager};
 use crate::sync::decode_client_envelope;
@@ -15,20 +43,28 @@ use tokio::sync::mpsc;
 use trame_engine::commands::CampaignRole;
 use uuid::Uuid;
 
+/// Query parameters extracted during the WebSocket handshake on `/ws/campaigns/{campaign_id}`.
 #[derive(Debug, Deserialize)]
 pub struct WsAuthQuery {
+    /// Authenticated user UUID connecting to the campaign room.
     pub user_id: Uuid,
+    /// Optional role string (`"gm"`, `"spectator"`, or `"player"`); defaults to `CampaignRole::Player`.
     pub role: Option<String>,
 }
 
+/// Query parameters extracted when requesting a presigned GET URL for a campaign asset.
 #[derive(Debug, Deserialize)]
 pub struct PresignQuery {
+    /// Authenticated user UUID requesting the asset download URL.
     pub user_id: Uuid,
 }
 
+/// JSON payload returned by the `GET /healthz` liveness endpoint.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
+    /// Static service health status indicator (`"ok"`).
     pub status: &'static str,
+    /// Number of campaign rooms currently awake in memory inside `RoomLeaseManager`.
     pub active_rooms: usize,
 }
 

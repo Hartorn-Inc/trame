@@ -1,7 +1,49 @@
-//! `trame-engine`: Pure Rust spatial BVH raycasting, AoE wall-clipping,
-//! `derivedDAG` formula evaluator, 5-phase `ActiveEffect` modifier resolver,
-//! and `TrameCommand` state reducer compiled to both native Rust (`trame-server`)
-//! and WebAssembly (`packages/web`).
+//! ============================================================================
+//! TRAME ENGINE CORE & WEBASSEMBLY ENTRYPOINTS (lib.rs)
+//! ============================================================================
+//!
+//! PURPOSE:
+//! --------
+//! Exposes the deterministic spatial 2.5D Bounding Volume Hierarchy (BVH)
+//! raycaster, Area of Effect (AoE) wall-clipping discretizer, `derivedDAG`
+//! formula evaluator, 5-phase `ActiveEffect` modifier pipeline, and
+//! authoritative `TrameCommand` state reducer to both the native server runtime
+//! (`trame-server`) and the browser WebAssembly runtime (`packages/web`).
+//! Sharing this exact crate across client and server eliminates client-server
+//! divergence during token drag previews, dynamic lighting polygon generation,
+//! and spell template aiming.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//! -------------------------------
+//!   1. `Client-Server Mathematical Parity`:
+//!      - Both native server validation and browser WASM previews invoke the
+//!        identical `Bvh2D::compute_visibility_polygon` and
+//!        `AoeTemplate::evaluate_targets` algorithms, guaranteeing zero drift
+//!        between local aiming overlays and authoritative server resolution.
+//!   2. `Fail-Closed JSON Boundary`:
+//!      - WebAssembly entrypoints (`wasm_compute_visibility_polygon` and
+//!        `wasm_preview_aoe_cells`) deserialize untrusted JSON inputs via
+//!        `serde_json` and return explicit `Result<String, JsValue>` errors
+//!        rather than panicking across the WASM FFI boundary.
+//!   3. `Pure Deterministic Execution`:
+//!      - All functions in `trame-engine` are free of I/O, network calls, and
+//!        ambient system clocks so that state transitions and WAL replays
+//!        remain 100% reproducible.
+//!
+//! EXECUTION LIFECYCLE:
+//! --------------------
+//!   `wasm_compute_visibility_polygon(walls_json, origin_x, origin_y, ...)`
+//!     ├── 1. Deserialize `Vec<WallSegment>` from `walls_json`.
+//!     ├── 2. Construct balanced 2.5D `Bvh2D` acceleration tree.
+//!     ├── 3. Cast radial rays across wall endpoints (`±1e-4` rad offsets).
+//!     └── 4. Serialize resulting `Vec<Point2D>` polygon back to JSON string.
+//!
+//!   `wasm_preview_aoe_cells(walls_json, aoe_json, cell_size_px, feet_per_cell)`
+//!     ├── 1. Deserialize `Vec<WallSegment>` and `AoeTemplate` payloads.
+//!     ├── 2. Build `Bvh2D` spatial index for wall-occlusion clipping.
+//!     ├── 3. Discretize affected `GridCell` coordinates under the chosen mode.
+//!     └── 4. Serialize affected `Vec<GridCell>` list back to JSON string.
+//! ============================================================================
 
 pub mod aoe;
 pub mod commands;
@@ -12,8 +54,14 @@ use crate::aoe::AoeTemplate;
 use crate::geometry::{Bvh2D, Point2D, WallSegment};
 use wasm_bindgen::prelude::*;
 
-/// WebAssembly entrypoint: computes a JSON-serialized radial visibility polygon
-/// around `(origin_x, origin_y)` at `observer_eye_ft` given a JSON array of `WallSegment`s.
+/// WebAssembly entrypoint that computes a JSON-serialized 2D radial visibility
+/// polygon around `(origin_x, origin_y)` (in canvas pixels) at eye elevation
+/// `observer_eye_ft` (in feet) up to `max_range_px` (in pixels) against a JSON
+/// array of `WallSegment` primitives.
+///
+/// When `has_truesight` is `true`, illusionary walls marked with
+/// `pierced_by_truesight: true` do not block the visibility rays. Returns a
+/// `JsValue` error string if `walls_json` fails schema deserialization.
 #[wasm_bindgen]
 pub fn wasm_compute_visibility_polygon(
     walls_json: &str,
@@ -35,8 +83,13 @@ pub fn wasm_compute_visibility_polygon(
     serde_json::to_string(&poly).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
-/// WebAssembly entrypoint: computes the affected grid cells for an `AoeTemplate`
-/// clipped against `WallSegment`s for zero-latency client-side spell aiming.
+/// WebAssembly entrypoint that computes the JSON-serialized list of `GridCell`
+/// coordinates affected by an `AoeTemplate` (`aoe_json`) clipped against
+/// `WallSegment`s (`walls_json`), given `cell_size_px` (in pixels, `> 0.0`) and
+/// `feet_per_cell` (in feet, typically `5.0`).
+///
+/// Used by the browser canvas for 60 FPS zero-latency spell aiming previews.
+/// Fails closed with a `JsValue` error if either JSON payload is malformed.
 #[wasm_bindgen]
 pub fn wasm_preview_aoe_cells(
     walls_json: &str,

@@ -1,77 +1,77 @@
-# 32. Architecture du GameSystemPack D&D 5e : Pipeline de dégâts multi-types, repos déterministes et compendium hiérarchique à 3 niveaux
+# 32. D&D 5e GameSystemPack Architecture: Multi-Type Damage Pipeline, Deterministic Rests, and 3-Tier Hierarchical Compendium
 
-- **Statut** : Accepté
-- **Date** : 2025-05-18
-- **Auteurs** : Équipe TRAME & Architecte EPURE
-- **Contexte** : Issue #7 ([E1] Built-in D&D 5e GameSystemPack (SRD 5.1))
+- **Status**: Accepted
+- **Date**: 2025-05-18
+- **Authors**: TRAME Team & EPURE Architect
+- **Context**: Issue #7 ([E1] Built-in D&D 5e GameSystemPack (SRD 5.1))
 
-## Contexte et Problématique
+## Context and Problem Statement
 
-L'épopée TRAME V1 requiert un pack de système de jeu complet et prêt à l'emploi pour Dungeons & Dragons 5e (SRD 5.1 sous licence Creative Commons CC-BY-4.0).
-Le moteur central `crates/trame-engine` (Rust/WASM) fournit les fondations mathématiques génériques : l'évaluateur déclaratif `derivedDAG`, le gestionnaire d'effets actifs en 5 phases et la fonction d'atténuation mono-instance `resolve_damage_application`.
+The TRAME V1 milestone requires a complete, out-of-the-box game system pack for Dungeons & Dragons 5e (SRD 5.1 licensed under Creative Commons CC-BY-4.0).
+The core engine `crates/trame-engine` (Rust/WASM) provides the generic mathematical foundations: the declarative `derivedDAG` evaluator, the 5-phase active effects manager, and the single-instance mitigation primitive `resolve_damage_application`.
 
-Cependant, les règles complètes de combat et d'évolution du SRD 5.1 introduisent des exigences spécifiques à D&D 5e :
-1. Le calcul de multiples instances de dégâts simultanées aux types distincts (par exemple, arme contondante + dégâts radiants).
-2. La séquence stricte d'absorption : absorption par les PV temporaires (`hp.temp`), puis par les points de vie courants (`hp.current`).
-3. Les règles de mort instantanée (`InstantDeath`) si le surplus de dégâts atteint ou dépasse les PV maximaux (`hp.max`), et l'attribution automatique d'échecs de jets de sauvegarde contre la mort (`DeathSavingThrow`) lorsqu'un acteur à 0 PV subit des dégâts (avec 2 échecs sur un coup critique).
-4. L'émission déterministe d'un prompt d'invitation au jet de concentration (`ConcentrationCheckPrompt`) avec un Degré de Difficulté (DD) calculé par `Math.max(10, Math.floor(damageTaken / 2))` lorsqu'un acteur maintenant une concentration subit des dégâts.
-5. La gestion déterministe des repos courts et longs incluant la dépense de dés de vie, la réinitialisation des réserves de ressources (`ResourcePool`), la récupération de la moitié des dés de vie au repos long et le traitement différencié des emplacements de sorts (magie classique vs pacte du Démoniste).
-6. L'expiration temporelle ordonnée des conditions actives selon trois déclencheurs (`ROUNDS`, `TURNS_START`, `TURNS_END`) corrélée à l'acteur actif du tour.
-7. La mise à disposition d'un compendium à 3 niveaux hiérarchiques (`SYSTEM_SRD` lecture seule, `INSTANCE_LIBRARY` partagée, `CAMPAIGN_HOMEBREW` surcharge prioritaire) conforme à la licence CC-BY-4.0.
+However, the full combat and progression rules of SRD 5.1 introduce requirements specific to D&D 5e:
+1. Computing multiple simultaneous damage instances with distinct damage types (for example, bludgeoning weapon damage + radiant damage).
+2. Enforcing a strict absorption sequence: absorption by temporary HP (`hp.temp`) first, followed by current hit points (`hp.current`).
+3. Enforcing instant death rules (`InstantDeath`) when excess damage equals or exceeds maximum HP (`hp.max`), and automatically recording death saving throw failures (`DeathSavingThrow`) when an actor at 0 HP takes damage (adding 2 failures on a critical hit).
+4. Deterministically emitting a concentration check prompt (`ConcentrationCheckPrompt`) with a Difficulty Class (DC) calculated as `Math.max(10, Math.floor(damageTaken / 2))` whenever an actor maintaining concentration takes damage.
+5. Deterministically managing short and long rests, including spending hit dice, resetting resource pools (`ResourcePool`), recovering half of maximum hit dice on a long rest, and handling spell slots according to caster type (standard spellcasting vs. Warlock Pact Magic).
+6. Expiring active conditions in strict temporal order across three turn triggers (`ROUNDS`, `TURNS_START`, `TURNS_END`) correlated with the active turn actor.
+7. Providing a 3-tier hierarchical compendium (`SYSTEM_SRD` read-only base, `INSTANCE_LIBRARY` shared layer, `CAMPAIGN_HOMEBREW` priority override) compliant with the CC-BY-4.0 license.
 
-## Décision d'Architecture
+## Architectural Decision
 
-### 1. Frontière d'Exécution Rust/WASM vs TypeScript
-Le crate Rust `crates/trame-engine` demeure 100 % agnostique à D&D 5e. Il fournit le moteur de graphe acyclique générique et la primitive d'atténuation élémentaire.
-Toute la logique applicative D&D 5e est encapsulée dans `packages/game-systems/dnd5e` en modules TypeScript purs et typés sans état externe ni dépendance UI :
-- `system.json` : manifeste système déclarant les types d'acteurs, caractéristiques, compétences et formules de calcul `derivedDAG`.
-- `manifest.ts` : interfaces TypeScript, types d'identifiants stricts et schéma de l'acteur `Dnd5eActorData`.
-- `pipeline.ts` : fonctions pures `resolveDamagePipeline`, `rollDeathSavingThrow`, `applyShortRest`, `applyLongRest` et `decrementConditionDurations`.
-- `progression.ts` : tables et fonctions de progression des niveaux 1 à 20 (bonus de maîtrise, matrices d'emplacements de sorts pleins/demi/pacte et montée de niveau).
-- `compendium.ts` : classe `CompendiumResolver` implémentant la recherche hiérarchique et la mention de licence légale CC-BY-4.0.
+### 1. Rust/WASM vs. TypeScript Execution Boundary
+The Rust crate `crates/trame-engine` remains 100% agnostic to D&D 5e. It provides the generic directed acyclic graph engine and the elementary damage mitigation primitive.
+All D&D 5e domain logic is encapsulated in `packages/game-systems/dnd5e` as pure, strictly typed TypeScript modules with no external state or UI dependencies:
+- `system.json`: system manifest declaring actor types, abilities, skills, and `derivedDAG` calculation formulas.
+- `manifest.ts`: TypeScript interfaces, strict identifier types, and the `Dnd5eActorData` actor schema.
+- `pipeline.ts`: pure functions `resolveDamagePipeline`, `rollDeathSavingThrow`, `applyShortRest`, `applyLongRest`, and `decrementConditionDurations`.
+- `progression.ts`: progression tables and functions for levels 1 through 20 (proficiency bonus, full/half/pact spell slot matrices, and level-up helpers).
+- `compendium.ts`: `CompendiumResolver` class implementing hierarchical lookup and the mandatory CC-BY-4.0 legal attribution notice.
 
-### 2. Pipeline de Dégâts Déterministe Multi-Types
-La fonction `resolveDamagePipeline(actor, damageInstances, options)` s'exécute comme une fonction pure synchrone sans effet de bord :
-1. Elle calcule l'atténuation pour chaque instance selon la règle : `IMMUNE` (0x) -> `RESISTANT` (`Math.floor(amount * 0.5)`) -> `VULNERABLE` (2x) -> neutre (1x).
-2. Elle totalise les dégâts effectifs dans `totalDamage`.
-3. Si `actor.attributes.hp.current === 0` :
-   - Si `totalDamage >= actor.attributes.hp.max`, elle applique `instantDeath = true` et `failures = 3`.
-   - Sinon, elle incrémente `failures` de 2 si `options.isCritical === true`, ou de 1 dans le cas contraire.
-4. Si `actor.attributes.hp.current > 0` :
-   - Elle déduit prioritairement les dégâts de `hp.temp`.
-   - Elle applique le reliquat à `hp.current`.
-   - Si `hp.current` atteint 0 et que le surplus de dégâts non absorbé atteint ou dépasse `hp.max`, elle déclenche `instantDeath = true`.
-5. Si `actor.concentratingOnSpellId` est défini et que des dégâts effectifs ont été absorbés (`totalDamage > 0`), elle inclut dans le résultat un `concentrationPrompt` avec `dc = Math.max(10, Math.floor(totalDamage / 2))`.
+### 2. Deterministic Multi-Type Damage Pipeline
+The `resolveDamagePipeline(actor, damageInstances, options)` function executes as a pure, side-effect-free synchronous function:
+1. Computes mitigation for each instance according to the rule: `IMMUNE` (0x) -> `RESISTANT` (`Math.floor(amount * 0.5)`) -> `VULNERABLE` (2x) -> neutral (1x).
+2. Sums effective damage into `totalDamage`.
+3. If `actor.attributes.hp.current === 0`:
+   - If `totalDamage >= actor.attributes.hp.max`, applies `instantDeath = true` and `failures = 3`.
+   - Otherwise, increments `failures` by 2 if `options.isCritical === true`, or by 1 otherwise.
+4. If `actor.attributes.hp.current > 0`:
+   - Deducts damage from `hp.temp` first.
+   - Applies any remainder to `hp.current`.
+   - If `hp.current` reaches 0 and unabsorbed excess damage equals or exceeds `hp.max`, triggers `instantDeath = true`.
+5. If `actor.concentratingOnSpellId` is defined and effective damage was taken (`totalDamage > 0`), includes a `concentrationPrompt` in the result with `dc = Math.max(10, Math.floor(totalDamage / 2))`.
 
-### 3. Modélisation Déterministe des Réserves de Ressources et Repos
-Le type `Dnd5eActorData` intègre le champ optionnel `resources: Record<string, ResourcePool>` où chaque réserve définit `{ current: number; max: number; resetOn: 'SHORT_REST' | 'LONG_REST' }`.
-- `applyShortRest` permet la dépense interactive de dés de vie (`hitDieRoll + conMod`, minimum 1 PV regagné par dé), réinitialise toutes les ressources dont `resetOn === 'SHORT_REST'` et recharge les emplacements de magie de pacte au maximum.
-- `applyLongRest` restaure l'intégralité des PV courants, réinitialise `hp.temp` à 0, récupère `Math.max(1, Math.floor(hitDiceMax / 2))` dés de vie, réduit le niveau d'épuisement de 1, réinitialise l'intégralité des emplacements de sorts et réinitialise toutes les ressources (`resetOn === 'SHORT_REST'` ou `resetOn === 'LONG_REST'`).
+### 3. Deterministic Modeling of Resource Pools and Rests
+The `Dnd5eActorData` type includes the optional field `resources: Record<string, ResourcePool>` where each pool defines `{ current: number; max: number; resetOn: 'SHORT_REST' | 'LONG_REST' }`.
+- `applyShortRest` supports interactive spending of hit dice (`hitDieRoll + conMod`, minimum 1 HP regained per die), resets all resources with `resetOn === 'SHORT_REST'`, and recharges Pact Magic spell slots to maximum.
+- `applyLongRest` restores all current HP, resets `hp.temp` to 0, recovers `Math.max(1, Math.floor(hitDiceMax / 2))` hit dice, reduces exhaustion level by 1, resets all spell slots, and resets all resources (`resetOn === 'SHORT_REST'` or `resetOn === 'LONG_REST'`).
 
-### 4. Décrémentation Temporelle des Conditions
-La fonction pure `decrementConditionDurations(conditions, trigger, currentTurnActorId)` applique la règle d'isolation des tours :
-- Lorsque `trigger` vaut `'TURNS_START'` ou `'TURNS_END'`, la durée `durationRounds` d'une condition décrémente d'une unité **uniquement si** `condition.appliedTurnActorId === currentTurnActorId`.
-- Lorsque `trigger` vaut `'ROUNDS'`, toutes les conditions avec `durationRounds > 0` décrémentent d'une unité, indépendamment de l'acteur actif.
-- Toute condition atteignant `durationRounds <= 0` est éliminée du tableau des conditions actives.
+### 4. Temporal Condition Decrementation
+The pure function `decrementConditionDurations(conditions, trigger, currentTurnActorId)` enforces turn-scoping rules:
+- When `trigger` is `'TURNS_START'` or `'TURNS_END'`, a condition's `durationRounds` decrements by 1 **only if** `condition.appliedTurnActorId === currentTurnActorId`.
+- When `trigger` is `'ROUNDS'`, all conditions with `durationRounds > 0` and `trigger === 'ROUNDS'` decrement by 1, regardless of the active actor.
+- Any condition reaching `durationRounds <= 0` is removed from the active conditions array.
 
-### 5. Compendium Hiérarchique à 3 Niveaux et Licence CC-BY-4.0
-La classe `CompendiumResolver` garantit l'immuabilité du SRD de base :
-- La cascade prioritaire applique : `CAMPAIGN_HOMEBREW` > `INSTANCE_LIBRARY` > `SYSTEM_SRD`.
-- La déduplication des entrées s'effectue sur le champ `slug`.
-- La recherche textuelle dans `list(query)` opère un filtrage insensible à la casse sur `entry.name` et `entry.slug`.
-- La méthode `getAttribution()` retourne la notice de licence obligatoire de Wizards of the Coast LLC pour le SRD 5.1 sous licence CC-BY-4.0.
+### 5. 3-Tier Hierarchical Compendium and CC-BY-4.0 License
+The `CompendiumResolver` class guarantees the immutability of the base SRD:
+- The priority cascade enforces: `CAMPAIGN_HOMEBREW` > `INSTANCE_LIBRARY` > `SYSTEM_SRD`.
+- Entry deduplication is keyed on the `slug` field.
+- Text search in `list(query)` performs case-insensitive filtering on `entry.name` and `entry.slug`.
+- The `getAttribution()` method returns the mandatory legal license notice from Wizards of the Coast LLC for SRD 5.1 under CC-BY-4.0.
 
-### 6. Stratégie de Test
-Tous les tests unitaires et d'intégration du package sont rédigés pour le test runner natif de Node 24 (`node --test`), exécutables via `npm test` dans `packages/web` sans dépendance vers un serveur actif ou une interface graphique.
+### 6. Testing Strategy
+All unit and integration tests for the package are written for the native Node 24 test runner (`node --test`), executable via `npm test` in `packages/web` with no dependency on a running server or graphical interface.
 
-## Conséquences
+## Consequences
 
-### Positives
-- **Séparation stricte** : Le moteur Rust `trame-engine` reste générique et indépendant des règles d'un jeu spécifique.
-- **Déterminisme** : Toutes les règles D&D 5e sont des fonctions pures et sans effets de bord, facilement auditables et testables sous `node --test`.
-- **Conformité juridique** : L'attribution Creative Commons CC-BY-4.0 est incluse au coeur du compendium et vérifiable par les tests.
-- **Extensibilité Homebrew** : Les créateurs de campagnes peuvent surcharger toute entité sans risquer d'altérer la base de données SRD officielle.
+### Positive
+- **Strict Separation**: The Rust engine `trame-engine` remains generic and independent of any specific game system's rules.
+- **Determinism**: All D&D 5e rules are pure, side-effect-free functions that are straightforward to audit and test under `node --test`.
+- **Legal Compliance**: Creative Commons CC-BY-4.0 attribution is built directly into the compendium and verified by automated tests.
+- **Homebrew Extensibility**: Campaign creators can override any entity without risking alteration to the official SRD baseline.
 
-### Négatives / Contraintes
-- Le typage strict impose la définition de structures exhaustives pour l'ensemble des compétences (`SkillId`), caractéristiques (`AbilityId`) et rangs de maîtrise (`ProficiencyRank`).
-- L'évaluation des tours de combat nécessite le passage explicite de l'identifiant de l'acteur du tour courant (`currentTurnActorId`) lors de l'appel à `decrementConditionDurations`.
+### Negative / Constraints
+- Strict typing requires exhaustive structure definitions across all skills (`SkillId`), abilities (`AbilityId`), and proficiency ranks (`ProficiencyRank`).
+- Combat turn evaluation requires explicitly passing the active turn actor identifier (`currentTurnActorId`) when invoking `decrementConditionDurations`.
