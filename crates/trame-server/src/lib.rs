@@ -513,6 +513,42 @@ Party moves forward."#;
     }
 
     #[test]
+    fn test_filter_for_role_case_insensitive_directives() {
+        let input = r#"# Adventure Notes
+:::DM
+Uppercase DM secret
+:::
+:::Dm
+Mixed case DM secret
+:::
+:::Handout{id="h-secret" title="Secret Handout" revealed="false"}
+Secret Handout content
+:::
+:::HANDOUT{id="h-revealed" title="Public Handout" revealed="true"}
+Public Handout content
+:::
+Party moves forward."#;
+
+        let filtered = FilteredNoteDocument::filter_for_role(input, UserRole::Player);
+        assert!(!filtered.contains(":::DM"));
+        assert!(!filtered.contains("Uppercase DM secret"));
+        assert!(!filtered.contains(":::Dm"));
+        assert!(!filtered.contains("Mixed case DM secret"));
+        assert!(!filtered.contains(":::Handout"));
+        assert!(!filtered.contains("Secret Handout content"));
+        assert!(
+            filtered.contains(
+                ":::HANDOUT{id=\"h-revealed\" title=\"Public Handout\" revealed=\"true\"}"
+            )
+        );
+        assert!(filtered.contains("Public Handout content"));
+        assert!(filtered.contains("Party moves forward."));
+
+        let gm_filtered = FilteredNoteDocument::filter_for_role(input, UserRole::GameMaster);
+        assert_eq!(gm_filtered, input);
+    }
+
+    #[test]
     fn test_filter_for_role_preserves_everything_for_gamemaster() {
         let input = r#"# Adventure Notes
 :::dm

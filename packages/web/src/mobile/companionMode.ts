@@ -211,10 +211,12 @@ export class TrameAppRoot {
   }
 
   public mount(): void {
+    this.unsubscribeHandout?.();
     this.container.children = [];
 
     if (isMobileCompanionMode(this.viewportWidth)) {
       // Mobile Companion Mode: strictly bypass PixiJS and WebGL FBO creation
+      this.tableCanvasElement = null;
       this.mobileLayout = new MobileCompanionLayout(this.container);
       this.mobileLayout.mount();
     } else {
@@ -247,6 +249,7 @@ export class TrameAppRoot {
   public destroy(): void {
     if (this.unsubscribeHandout) {
       this.unsubscribeHandout();
+      this.unsubscribeHandout = undefined;
     }
     this.container.children = [];
   }

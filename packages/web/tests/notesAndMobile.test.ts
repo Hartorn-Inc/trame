@@ -91,6 +91,35 @@ Hidden info
     const gmView = filterWikiMarkdownForRole(markdown, true);
     assert.equal(gmView, markdown);
   });
+
+  it("purges case-insensitive :::DM, :::Dm, and :::Handout unrevealed blocks for non-GM", () => {
+    const markdown = `# Notes
+:::DM
+Secret uppercase DM block
+:::
+:::Dm
+Secret mixed-case Dm block
+:::
+:::Handout{id="h-secret" title="Secret Handout" revealed="false"}
+Secret Handout content
+:::
+:::HANDOUT{id="h-revealed" title="Public Handout" revealed="true"}
+Public Handout content
+:::`;
+
+    const playerView = filterWikiMarkdownForRole(markdown, false);
+    assert.ok(!playerView.includes(":::DM"));
+    assert.ok(!playerView.includes(":::Dm"));
+    assert.ok(!playerView.includes("Secret uppercase DM block"));
+    assert.ok(!playerView.includes("Secret mixed-case Dm block"));
+    assert.ok(!playerView.includes("Secret Handout content"));
+    assert.ok(!playerView.includes(":::Handout"));
+    assert.ok(playerView.includes("Public Handout content"));
+    assert.ok(playerView.includes(":::HANDOUT"));
+
+    const gmView = filterWikiMarkdownForRole(markdown, true);
+    assert.equal(gmView, markdown);
+  });
 });
 
 describe("[E5-T1] Mobile Companion Mode (< 768px) & Handout Reveal Modal", () => {
@@ -227,5 +256,30 @@ describe("[E5-T1] Mobile Companion Mode (< 768px) & Handout Reveal Modal", () =>
     assert.equal(container.querySelector('[data-testid="handout-reveal-modal"]'), null);
 
     root.destroy();
+  });
+
+  it("test_viewport_resize_does_not_leak_handout_subscribers and cleans up on destroy", () => {
+    const container = new LightweightElement("div");
+    const handoutManager = new HandoutRevealManager();
+
+    const root = new TrameAppRoot({
+      viewportWidth: 1024,
+      container,
+      handoutManager,
+    });
+
+    assert.equal((handoutManager as any).subscribers.size, 1);
+
+    root.setViewportWidth(600);
+    assert.equal((handoutManager as any).subscribers.size, 1);
+
+    root.setViewportWidth(1200);
+    assert.equal((handoutManager as any).subscribers.size, 1);
+
+    root.setViewportWidth(400);
+    assert.equal((handoutManager as any).subscribers.size, 1);
+
+    root.destroy();
+    assert.equal((handoutManager as any).subscribers.size, 0);
   });
 });

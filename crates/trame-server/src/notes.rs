@@ -136,7 +136,7 @@ impl FilteredNoteDocument {
             let line = lines[idx];
             let trimmed = line.trim();
 
-            if trimmed == ":::dm" {
+            if trimmed.eq_ignore_ascii_case(":::dm") {
                 idx += 1;
                 while idx < lines.len() {
                     if lines[idx].trim() == ":::" {
@@ -148,7 +148,7 @@ impl FilteredNoteDocument {
                 continue;
             }
 
-            if trimmed.starts_with(":::handout") {
+            if trimmed.to_ascii_lowercase().starts_with(":::handout") {
                 let is_revealed = parse_handout_revealed_attr(trimmed);
                 if !is_revealed {
                     idx += 1;
@@ -237,7 +237,7 @@ pub(crate) fn parse_handout_revealed_attr(header: &str) -> bool {
         if let Some((k, v)) = part.split_once('=') {
             let key = k.trim().trim_matches('"').trim_matches('\'');
             let val = v.trim().trim_matches('"').trim_matches('\'');
-            if key == "revealed" {
+            if key.eq_ignore_ascii_case("revealed") {
                 return val.eq_ignore_ascii_case("true");
             }
         }

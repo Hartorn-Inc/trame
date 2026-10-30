@@ -72,10 +72,11 @@ function parseDirectiveAttributes(header: string): Record<string, string> {
     return attrs;
   }
   const inner = header.slice(start + 1, end);
-  const attrRegex = /(\w+)="([^"]*)"/g;
+  const attrRegex = /(\w+)=["']([^"']*)["']/g;
   let match: RegExpExecArray | null;
   while ((match = attrRegex.exec(inner)) !== null) {
     attrs[match[1]] = match[2];
+    attrs[match[1].toLowerCase()] = match[2];
   }
   return attrs;
 }
@@ -107,7 +108,7 @@ export function parseWikiMarkdown(rawMarkdown: string): ParsedWikiDocument {
     const line = lines[i];
     const trimmed = line.trim();
 
-    if (trimmed === ":::dm") {
+    if (trimmed.toLowerCase() === ":::dm") {
       flushText();
       const blockRawLines = [line];
       const contentLines: string[] = [];
@@ -132,7 +133,7 @@ export function parseWikiMarkdown(rawMarkdown: string): ParsedWikiDocument {
       continue;
     }
 
-    if (trimmed.startsWith(":::handout")) {
+    if (trimmed.toLowerCase().startsWith(":::handout")) {
       flushText();
       const attrs = parseDirectiveAttributes(trimmed);
       const blockRawLines = [line];
@@ -152,7 +153,7 @@ export function parseWikiMarkdown(rawMarkdown: string): ParsedWikiDocument {
         type: "handout",
         id: attrs.id || "",
         title: attrs.title || "Handout",
-        revealed: attrs.revealed === "true",
+        revealed: (attrs.revealed || "").toLowerCase() === "true",
         content: contentLines.join("\n"),
         raw: blockRawLines.join("\n"),
       };
