@@ -6,9 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "echo 'Vite dev server ready'",
-    "typecheck": "node --check tests/foundations.test.ts",
-    "lint": "node --check src/engine/wasmBridge.ts && node --check src/canvas/SceneGraph.ts && node --check src/canvas/LightingShader.ts && node --check src/store/tableStore.ts",
-    "test": "node --test tests/foundations.test.ts",
-    "build": "node --test tests/foundations.test.ts"
+    "typecheck": "node --check tests/foundations.test.ts && node --check tests/hudAndAudio.test.ts",
+    "lint": "node --check src/engine/wasmBridge.ts && node --check src/canvas/SceneGraph.ts && node --check src/canvas/LightingShader.ts && node --check src/store/tableStore.ts && node --check src/hud/combatTracker.ts && node --check src/hud/gmOverrideToolbar.ts && node --check src/audio/spatialAudio.ts",
+    "test": "node --test tests/foundations.test.ts tests/hudAndAudio.test.ts",
+    "build": "node --test tests/foundations.test.ts tests/hudAndAudio.test.ts"
   }
 }

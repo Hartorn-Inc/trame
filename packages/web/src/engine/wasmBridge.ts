@@ -8,8 +8,19 @@ export interface WallSegmentDto {
   a: Point2D;
   b: Point2D;
   blocksVision: boolean;
+  blocksMovement?: boolean;
+  blocksSound?: boolean;
   bottomElevationFt: number;
   topElevationFt: number;
+}
+
+export interface DrawingEntity {
+  id: string;
+  points: [number, number][];
+  color: string;
+  lineWidth: number;
+  isClosed: boolean;
+  hasPhysicalWalls: boolean;
 }
 
 export type DiscretizationMode =
@@ -24,10 +35,49 @@ export interface GridCell {
 }
 
 /**
+ * Converts a vector drawing with `hasPhysicalWalls = true` into physical wall segments
+ * blocking movement, vision, and sound (`docs/specs/e4-interactive-table-hud-combat-trac.md`).
+ */
+export function convertDrawingToWallSegments(
+  drawing: DrawingEntity,
+  bottomElevationFt = -1000,
+  topElevationFt = 1000,
+): WallSegmentDto[] {
+  if (!drawing.hasPhysicalWalls || drawing.points.length < 2) {
+    return [];
+  }
+  const walls: WallSegmentDto[] = [];
+  for (let i = 0; i < drawing.points.length - 1; i++) {
+    walls.push({
+      id: `${drawing.id}-segment-${i}`,
+      a: { x: drawing.points[i][0], y: drawing.points[i][1] },
+      b: { x: drawing.points[i + 1][0], y: drawing.points[i + 1][1] },
+      blocksVision: true,
+      blocksMovement: true,
+      blocksSound: true,
+      bottomElevationFt,
+      topElevationFt,
+    });
+  }
+  if (drawing.isClosed && drawing.points.length >= 3) {
+    const lastIdx = drawing.points.length - 1;
+    walls.push({
+      id: `${drawing.id}-segment-${lastIdx}`,
+      a: { x: drawing.points[lastIdx][0], y: drawing.points[lastIdx][1] },
+      b: { x: drawing.points[0][0], y: drawing.points[0][1] },
+      blocksVision: true,
+      blocksMovement: true,
+      blocksSound: true,
+      bottomElevationFt,
+      topElevationFt,
+    });
+  }
+  return walls;
+}
+
+/**
  * Computes a 2D radial visibility polygon around `origin` up to `maxRangePx`,
  * clipping rays against blocking walls whose vertical span intersects `observerEyeFt`.
- * Uses the compiled `trame-engine` WASM module when initialized in browser, with
- * an identical deterministic raycaster for headless / SSR / test execution.
  */
 export function computeVisibilityPolygon(
   walls: WallSegmentDto[],
@@ -163,7 +213,7 @@ export function previewSphereAoeCells(
   return cells;
 }
 
-function intersectSegments(
+export function intersectSegments(
   p0: Point2D,
   p1: Point2D,
   q0: Point2D,
