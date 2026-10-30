@@ -6,9 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "echo 'Vite dev server ready'",
-    "typecheck": "node --check tests/foundations.test.ts && node --check tests/sheet/DeclarativeSheetRenderer.test.ts && node --check tests/sheet/widgets.test.ts",
-    "lint": "node --check src/engine/wasmBridge.ts && node --check src/canvas/SceneGraph.ts && node --check src/canvas/LightingShader.ts && node --check src/store/tableStore.ts && node --check src/sheet/types.ts && node --check src/sheet/binding.ts && node --check src/sheet/WidgetRegistry.ts && node --check src/sheet/DeclarativeSheetRenderer.ts && node --check src/sheet/index.ts && node --check src/sheet/widgets/index.ts",
-    "test": "node --test tests/foundations.test.ts tests/sheet/DeclarativeSheetRenderer.test.ts tests/sheet/widgets.test.ts",
-    "build": "node --test tests/foundations.test.ts tests/sheet/DeclarativeSheetRenderer.test.ts tests/sheet/widgets.test.ts"
+    "typecheck": "node --check tests/foundations.test.ts && node --check tests/sheet/DeclarativeSheetRenderer.test.ts && node --check tests/sheet/widgets.test.ts && node --check tests/dnd/CompendiumDragDropManager.test.ts",
+    "lint": "node --check src/engine/wasmBridge.ts && node --check src/canvas/SceneGraph.ts && node --check src/canvas/LightingShader.ts && node --check src/store/tableStore.ts && node --check src/sheet/types.ts && node --check src/sheet/binding.ts && node --check src/sheet/WidgetRegistry.ts && node --check src/sheet/DeclarativeSheetRenderer.ts && node --check src/sheet/index.ts && node --check src/sheet/widgets/index.ts && node --check src/dnd/types.ts && node --check src/dnd/containerWeight.ts && node --check src/dnd/CompendiumDragDropManager.ts && node --check src/dnd/index.ts",
+    "test": "node --test tests/foundations.test.ts tests/sheet/DeclarativeSheetRenderer.test.ts tests/sheet/widgets.test.ts tests/dnd/CompendiumDragDropManager.test.ts",
+    "build": "node --test tests/foundations.test.ts tests/sheet/DeclarativeSheetRenderer.test.ts tests/sheet/widgets.test.ts tests/dnd/CompendiumDragDropManager.test.ts"
   }
 }
