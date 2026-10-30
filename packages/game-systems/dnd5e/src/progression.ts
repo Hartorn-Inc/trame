@@ -1,3 +1,43 @@
+/**
+ * ============================================================================
+ * D&D 5E LEVEL PROGRESSION, SPELL SLOT TABLES & CONDITION TIMERS (progression.ts)
+ * ============================================================================
+ *
+ * PURPOSE:
+ * --------
+ * Governs character level advancement (`applyLevelUp`), canonical SRD 5.1 spell
+ * slot progression tables across Full, Half, and Warlock Pact Magic casters,
+ * and combat turn/round condition duration ticking (`decrementConditionDurations`).
+ *
+ * INVARIANTS & SAFETY BOUNDARIES:
+ * -------------------------------
+ *   1. `Level 20 Ceiling Guard`:
+ *      - `applyLevelUp` rejects advancement when `actor.attributes.level >= 20`
+ *        to enforce the SRD 5.1 level cap and guarantee valid table lookups in
+ *        `FULL_CASTER_SPELL_SLOTS`, `HALF_CASTER_SPELL_SLOTS`, and `PACT_MAGIC_SPELL_SLOTS`.
+ *   2. `Minimum +1 HP Per Level Floor`:
+ *      - Both `"fixed"` (`floor(hitDieSize / 2) + 1 + conMod`) and `"roll"`
+ *        (`rolledHp + conMod`) modes clamp HP gained per level to `>= 1` so a
+ *        severe negative Constitution modifier can never reduce maximum HP on level-up.
+ *   3. `Incremental Spell Slot Preservation`:
+ *      - Advancing a caster increases `current` available slots only by the delta
+ *        `max(0, newMax - existing.max)` so previously expended spell slots are
+ *        not illicitly refunded mid-adventuring day upon leveling up.
+ *   4. `Turn-Scoped Condition Expiry`:
+ *      - `decrementConditionDurations` only decrements `"TURNS_START"` and
+ *        `"TURNS_END"` conditions when `appliedTurnActorId === currentTurnActorId`,
+ *        and automatically prunes conditions whose `durationRounds` drops to `<= 0`.
+ *
+ * EXECUTION LIFECYCLE:
+ * --------------------
+ *   `applyLevelUp(actor, options)`
+ *     ├── 1. Verify `actor.attributes.level < 20` and deep-clone `actor`.
+ *     ├── 2. Increment `level`, `hitDiceMax`, and `hitDiceCurrent` by `1`.
+ *     ├── 3. Compute `hpGain = max(1, baseGain + conMod)` and add to `hp.max` & `hp.current`.
+ *     └── 4. Reconcile `spellSlots` against the target level's `casterType` progression row.
+ * ============================================================================
+ */
+
 import type {
   ActiveConditionState,
   Dnd5eActorData,
@@ -5,18 +45,38 @@ import type {
   TurnTrigger,
 } from "./types.ts";
 
+/**
+ * Spellcasting progression archetype used to allocate spell slots upon level-up:
+ * - `"full"`: 9-level progression (Bard, Cleric, Druid, Sorcerer, Wizard)
+ * - `"half"`: 5-level progression starting at level 2 (Paladin, Ranger)
+ * - `"pact"`: Warlock Pact Magic progression (uniform slot level, short-rest recovery)
+ * - `"none"`: Non-spellcasting martial progression
+ */
 export type CasterType = "full" | "half" | "pact" | "none";
 
+/**
+ * Configuration options passed to `applyLevelUp`.
+ */
 export interface LevelUpOptions {
+  /** Hit Point gain calculation mode: `"fixed"` takes average die (`d/2 + 1`), `"roll"` uses `rolledHp`. */
   hpIncreaseMode: "fixed" | "roll";
+  /** Natural Hit Die roll (`1..=hitDieSize`) used when `hpIncreaseMode === "roll"`. */
   rolledHp?: number;
+  /** Optional spellcaster progression table to apply for the new character level. */
   casterType?: CasterType;
 }
 
+/**
+ * Computes the D&D 5e proficiency bonus (`+2` to `+6`) for a character level clamped to `[1, 20]`.
+ */
 export function calculateProficiencyBonus(level: number): number {
   return Math.floor((Math.max(1, Math.min(20, Math.trunc(level))) - 1) / 4) + 2;
 }
 
+/**
+ * SRD 5.1 Full Caster spell slot table indexed by character level (`1..=20`),
+ * mapping to a 9-element tuple of maximum slots for spell levels 1 through 9.
+ */
 export const FULL_CASTER_SPELL_SLOTS: Record<number, number[]> = {
   1: [2, 0, 0, 0, 0, 0, 0, 0, 0],
   2: [3, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -40,6 +100,10 @@ export const FULL_CASTER_SPELL_SLOTS: Record<number, number[]> = {
   20: [4, 3, 3, 3, 3, 2, 2, 1, 1],
 };
 
+/**
+ * SRD 5.1 Half Caster spell slot table indexed by character level (`1..=20`),
+ * mapping to a 5-element tuple of maximum slots for spell levels 1 through 5.
+ */
 export const HALF_CASTER_SPELL_SLOTS: Record<number, number[]> = {
   1: [0, 0, 0, 0, 0],
   2: [2, 0, 0, 0, 0],
@@ -63,11 +127,19 @@ export const HALF_CASTER_SPELL_SLOTS: Record<number, number[]> = {
   20: [4, 3, 3, 3, 2],
 };
 
+/**
+ * Warlock Pact Magic slot quantity and spell level at a given character level.
+ */
 export interface PactMagicProgression {
+  /** Total number of Pact Magic slots (`1..=4`). */
   slots: number;
+  /** Spell level at which Pact Magic slots are cast (`1..=5`). */
   slotLevel: number;
 }
 
+/**
+ * SRD 5.1 Warlock Pact Magic progression table indexed by character level (`1..=20`).
+ */
 export const PACT_MAGIC_SPELL_SLOTS: Record<number, PactMagicProgression> = {
   1: { slots: 1, slotLevel: 1 },
   2: { slots: 2, slotLevel: 1 },
@@ -91,6 +163,10 @@ export const PACT_MAGIC_SPELL_SLOTS: Record<number, PactMagicProgression> = {
   20: { slots: 4, slotLevel: 5 },
 };
 
+/**
+ * Advances `actor` by one character level (up to level 20), increasing Hit Dice,
+ * maximum/current Hit Points, and spell slot capacities according to `options`.
+ */
 export function applyLevelUp(
   actor: Dnd5eActorData,
   options: LevelUpOptions
@@ -182,6 +258,11 @@ export function applyLevelUp(
   return clone;
 }
 
+/**
+ * Advances active condition timers matching `trigger` (and `currentTurnActorId` for
+ * turn-scoped triggers) by `1` round, returning a new array with expired (`<= 0` rounds)
+ * conditions removed.
+ */
 export function decrementConditionDurations(
   conditions: ActiveConditionState[],
   trigger: TurnTrigger,

@@ -1,30 +1,100 @@
+/**
+ * ============================================================================
+ * D&D 5E 3-TIER COMPENDIUM RESOLVER & SRD STARTER CONTENT (compendium.ts)
+ * ============================================================================
+ *
+ * PURPOSE:
+ * --------
+ * Implements the 3-tier hierarchical compendium lookup and search engine
+ * (`SYSTEM_SRD` < `INSTANCE_LIBRARY` < `CAMPAIGN_HOMEBREW`), along with
+ * canonical CC-BY-4.0 SRD 5.1 attribution, starter spell/breath actions, and
+ * the Adult Red Dragon reference boss sheet.
+ *
+ * INVARIANTS & SAFETY BOUNDARIES:
+ * -------------------------------
+ *   1. `Strict 3-Tier Override Precedence`:
+ *      - `CompendiumResolver.get(idOrSlug)` and `CompendiumResolver.list(query)`
+ *        guarantee that `CAMPAIGN_HOMEBREW` entries shadow `INSTANCE_LIBRARY`
+ *        entries, which in turn shadow base `SYSTEM_SRD` entries sharing the
+ *        same `id` or `slug` without mutating the underlying SRD catalog.
+ *   2. `Dual-Key Indexing`:
+ *      - Every `CompendiumEntry` is indexed by both `id` and `slug` in each
+ *        tier's internal lookup map for `O(1)` resolution, while `list()`
+ *        deduplicates by `slug` in ascending precedence order before sorting
+ *        alphabetically by `name`.
+ *   3. `Mandatory CC-BY-4.0 Attribution`:
+ *      - `SRD_51_ATTRIBUTION` and `CompendiumResolver.getAttribution()` expose
+ *        the verbatim Wizards of the Coast SRD 5.1 Creative Commons legal notice.
+ *
+ * EXECUTION LIFECYCLE:
+ * --------------------
+ *   `CompendiumResolver.list(query)`
+ *     ├── 1. Populate `bySlug` map in order: `SYSTEM_SRD` -> `INSTANCE_LIBRARY` -> `CAMPAIGN_HOMEBREW`.
+ *     ├── 2. Filter deduplicated entries by `query.entityType` if specified.
+ *     ├── 3. Filter case-insensitively by `query.searchTerm` against `name` and `slug`.
+ *     └── 4. Sort surviving entries lexicographically via `localeCompare`.
+ * ============================================================================
+ */
+
 import type { ActionDefinition, Dnd5eActorSheet } from "./pipeline.ts";
 
+/**
+ * Hierarchical compendium storage layer ordered from lowest to highest precedence:
+ * - `"SYSTEM_SRD"`: Built-in read-only SRD 5.1 baseline catalog.
+ * - `"INSTANCE_LIBRARY"`: Server-wide shared custom content overriding `"SYSTEM_SRD"`.
+ * - `"CAMPAIGN_HOMEBREW"`: Campaign-local overrides taking highest precedence.
+ */
 export type CompendiumTier = "SYSTEM_SRD" | "INSTANCE_LIBRARY" | "CAMPAIGN_HOMEBREW";
 
+/**
+ * Single entity record stored in one of the three compendium tiers.
+ */
 export interface CompendiumEntry {
+  /** Globally unique identifier for this specific entry record. */
   id: string;
+  /** Canonical URL/lookup slug shared across tiers when overriding an entity (e.g., `"fireball"`). */
   slug: string;
+  /** Human-readable display name of the monster, spell, item, class, or feat. */
   name: string;
+  /** Domain category of the compendium entry. */
   entityType: "monster" | "spell" | "item" | "class" | "feat";
+  /** Authoritative tier from which this entry originates. */
   tier: CompendiumTier;
+  /** Arbitrary system-specific payload describing stats, mechanics, or descriptions. */
   data: Record<string, unknown>;
+  /** Optional ID of the upstream entry in a lower tier that this entry overrides. */
   overrideEntityId?: string;
 }
 
+/**
+ * Filter criteria for `CompendiumResolver.list()`.
+ */
 export interface CompendiumQuery {
+  /** Case-insensitive substring matched against `entry.name` or `entry.slug`. */
   searchTerm?: string;
+  /** Optional entity category filter. */
   entityType?: "monster" | "spell" | "item" | "class" | "feat";
 }
 
+/**
+ * Verbatim Creative Commons Attribution 4.0 International (CC-BY-4.0) legal notice
+ * required when distributing D&D 5e SRD 5.1 Open Game Content.
+ */
 export const SRD_51_ATTRIBUTION =
   'This work includes material taken from the System Reference Document 5.1 ("SRD 5.1") by Wizards of the Coast LLC and available at https://dnd.wizards.com/resources/systems-reference-document. The SRD 5.1 is licensed under the Creative Commons Attribution 4.0 International License available at https://creativecommons.org/licenses/by/4.0/legalcode.';
 
+/**
+ * Three-tier compendium lookup and query engine enforcing
+ * `CAMPAIGN_HOMEBREW > INSTANCE_LIBRARY > SYSTEM_SRD` precedence.
+ */
 export class CompendiumResolver {
   private readonly systemSrd: Map<string, CompendiumEntry>;
   private readonly instanceLibrary: Map<string, CompendiumEntry>;
   private readonly campaignHomebrew: Map<string, CompendiumEntry>;
 
+  /**
+   * Indexes the three compendium tiers by both `id` and `slug` for `O(1)` lookup.
+   */
   constructor(
     systemSrd: CompendiumEntry[],
     instanceLibrary: CompendiumEntry[] = [],
@@ -47,6 +117,10 @@ export class CompendiumResolver {
     }
   }
 
+  /**
+   * Resolves a single compendium entry by `id` or `slug`, checking
+   * `CAMPAIGN_HOMEBREW` first, then `INSTANCE_LIBRARY`, and finally `SYSTEM_SRD`.
+   */
   public get(idOrSlug: string): CompendiumEntry | undefined {
     if (this.campaignHomebrew.has(idOrSlug)) {
       return this.campaignHomebrew.get(idOrSlug);
@@ -60,6 +134,11 @@ export class CompendiumResolver {
     return undefined;
   }
 
+  /**
+   * Lists all compendium entries deduplicated by `slug` according to tier
+   * precedence, optionally filtered by `entityType` and `searchTerm`, and
+   * sorted alphabetically by `name`.
+   */
   public list(query?: CompendiumQuery): CompendiumEntry[] {
     const bySlug = new Map<string, CompendiumEntry>();
     for (const entry of this.systemSrd.values()) {
@@ -91,11 +170,18 @@ export class CompendiumResolver {
     return entries;
   }
 
+  /**
+   * Returns the mandatory SRD 5.1 CC-BY-4.0 attribution text.
+   */
   public getAttribution(): string {
     return SRD_51_ATTRIBUTION;
   }
 }
 
+/**
+ * Starter SRD 5.1 action definitions (`fireball`, `hold_person`, `fire_breath`)
+ * used by combat encounter pipelines and automated integration tests.
+ */
 export const SRD_STARTER_ACTIONS: Record<string, ActionDefinition> = {
   fireball: {
     id: "fireball",
@@ -131,6 +217,10 @@ export const SRD_STARTER_ACTIONS: Record<string, ActionDefinition> = {
   },
 };
 
+/**
+ * Constructs a pre-populated SRD 5.1 Adult Red Dragon (`CR 17`, `256 HP`, `AC 19`)
+ * `Dnd5eActorSheet` equipped with `3/Day` Legendary Resistance and `Recharge 5-6` Fire Breath.
+ */
 export function createAdultRedDragonSheet(id = "npc-adult-red-dragon"): Dnd5eActorSheet {
   return {
     id,
