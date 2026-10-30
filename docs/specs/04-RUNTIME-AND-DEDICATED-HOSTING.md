@@ -1,12 +1,12 @@
-# TRAME — Phase 4: Real-Time Architecture (Command Handler, In-Memory Actors) & Dedicated Hosting
+# TRAME — Phase 4 : Architecture Temps-Réel (Command Handler, Acteurs RAM) & Hébergement Dédié
 
-This document specifies the internal runtime architecture of the Rust server (`trame-server`), the **Command Handler + Reversible Event Log** pattern, zero-loss write-ahead logging (WAL), the WebSocket protocol, authentication, and the **On-Demand Dedicated Hosting** model (1 multi-campaign Micro-Instance + 1 dedicated Neon Serverless Postgres database + Cloudflare R2).
+Ce document spécifie l'architecture d'exécution interne du serveur Rust (`trame-server`), le pattern **Command Handler + Reversible Event Log**, la résilience zéro-perte (WAL), le protocole WebSocket, l'authentification et le modèle d'**Hébergement Dédié à la Demande** (1 Micro-Instance multi-campagnes + 1 base Neon Serverless Postgres dédiée + Cloudflare R2).
 
 ---
 
-## 1. Core Pattern: Command Handler + Reversible Event Log
+## 1. Pattern Central : Command Handler + Reversible Event Log
 
-Every state mutation in TRAME — whether originating from a click on the PixiJS Canvas, a React character sheet edit, a REST request, or an MCP tool call — flows through a single unified **Command Dispatcher**.
+Toute mutation d'état dans TRAME — qu'elle provienne d'un clic sur le Canvas PixiJS, d'une édition de feuille React, d'une requête REST ou d'un appel d'outil MCP — passe obligatoirement par un **Command Dispatcher** unique.
 
 ```mermaid
 sequenceDiagram
@@ -14,22 +14,22 @@ sequenceDiagram
     participant Auth as Auth & RBAC Guard
     participant Dispatcher as CommandHandler (Rust)
     participant Actor as TableRoomActor (RAM)
-    participant Engine as trame-engine (Rules & Raycasting)
+    participant Engine as trame-engine (Règles & Raycasting)
     participant DB as Write-Behind + WAL (Neon Postgres)
 
-    Client->>Auth: Sends `TrameCommand` + User Context
+    Client->>Auth: Envoie `TrameCommand` + Contexte Utilisateur
     Auth->>Dispatcher: `AuthenticatedCommand { user_id, role, cmd }`
-    Dispatcher->>Actor: Routes to Campaign Actor
-    Actor->>Engine: Validates rules + collisions + computes visibility (< 1ms)
+    Dispatcher->>Actor: Route vers l'Acteur de la Campagne
+    Actor->>Engine: Valide règles + collisions + calcule visibilité (< 1ms)
     Engine-->>Actor: `StateTransition { new_state, events, undo_patch }`
-    Actor->>Actor: Pushes `undo_patch` onto DM history stack
-    Actor-->>Client: Broadcasts per-player filtered `TrameEvent` (WebSocket)
-    Actor-)DB: Logs WAL & enqueues mutation in async write-behind buffer
+    Actor->>Actor: Pousse `undo_patch` dans la pile d'historique MJ
+    Actor-->>Client: Diffuse `TrameEvent` filtré par joueur (WebSocket)
+    Actor-)DB: Journalise WAL & enfile la mutation dans le buffer asynchrone
 ```
 
-### 1.1 Rust Structure of `TrameCommand` and Automatic MCP Generation
+### 1.1 Structure Rust du `TrameCommand` et Auto-Génération MCP
 
-Every command is a strongly typed enum variant annotated with `serde` and `schemars::JsonSchema`. The MCP server reads these schemas directly at compile time to expose MCP `Tools` with zero code duplication:
+Chaque commande est une variante d'énumération fortement typée annotée avec `serde` et `schemars::JsonSchema`. Le serveur MCP lit directement ces schémas à la compilation pour exposer les `Tools` MCP sans aucune duplication de code :
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -44,9 +44,9 @@ pub enum TrameCommand {
 }
 ```
 
-### 1.2 Native DM `Undo / Redo` Management (`ReversiblePatch`)
+### 1.2 Gestion Native du `Undo / Redo` MJ (`ReversiblePatch`)
 
-When a `CommandHandler` executes a command on the Table, it returns a `CommandOutcome` struct:
+Lorsqu'un `CommandHandler` exécute une commande sur la Table, il retourne une structure `CommandOutcome` :
 
 ```rust
 pub struct CommandOutcome {
@@ -57,98 +57,98 @@ pub struct CommandOutcome {
 pub struct UndoEntry {
     pub action_id: Uuid,
     pub actor_user_id: Uuid,
-    pub summary: String,               // e.g., "Moved Thorin (6 cells) + Revealed fog"
-    pub inverse_ops: Vec<StatePatch>,  // Restores x/y, refunds 30ft movement, restores exploration mask
+    pub summary: String,               // ex: "Déplacement de Thorin (6 cases) + Révélation brouillard"
+    pub inverse_ops: Vec<StatePatch>,  // Remet x/y, recrédite 30ft de mouvement, restaure le masque d'exploration
 }
 ```
 
-* The `TableRoomActor` maintains a circular in-memory stack of the **last 100 actions** of the session.
-* When the DM clicks **"Undo"** (or calls `table.undo_last_action` via MCP), the actor applies `inverse_ops` in $< 1\text{ ms}$, restores the fog mask from before the erroneous move, and broadcasts the corrected state to all players.
+* Le `TableRoomActor` conserve une pile circulaire des **100 dernières actions** de la session en mémoire.
+* Quand le MJ clique sur **"Annuler (`Undo`)"** (ou appelle `table.undo_last_action` via MCP), l'acteur applique `inverse_ops` en $< 1\text{ ms}$, restaure le masque de brouillard d'avant le mouvement fautif, et diffuse l'état corrigé à tous les joueurs.
 
 ---
 
-## 2. The `TableRoomActor`: In-Memory Real-Time State & Zero-Loss Guarantee (Q9)
+## 2. Le `TableRoomActor` : État Temps-Réel en Mémoire & Garantie Zéro-Perte (Q9)
 
-### 2.1 In-Memory Execution, `Write-Behind` Persistence & Critical `Immediate Commit`
+### 2.1 Exécution en RAM, Persistance `Write-Behind` & `Immediate Commit` Critique
 
-1. **Hot Loading (`Hydration`)**:
-   * As soon as the first member (or MCP agent) opens a campaign, `trame-server` instantiates a `TableRoomActor`, loads the active map, its walls (building the spatial BVH in $< 2\text{ ms}$), its tokens, and the actor sheets from Neon Postgres.
-2. **Two Persistence Tiers (High-Frequency vs. Critical)**:
-   * **High-Frequency Mutations (`Write-Behind Batching — 1s`)**: Token drags, LZ4 fog mask updates, and continuous adjustments are batched and written to Neon every **1 second**.
-   * **Critical Mutations (`Immediate Commit` + `command_wal` Event Log)**: Final dice rolls, HP losses, spell slot expenditures, inventory transfers, turn changes, and note edits are **written immediately** to a lightweight append-only table (`command_wal`) on Neon and acknowledged to the client.
-3. **Graceful Shutdown & Client Resynchronization (`last_acked_seq`)**:
-   * Every event sent by the server carries a monotonic sequence number `seq: u64`.
-   * Upon receiving a `SIGTERM` signal (e.g., Cloud Run scaling down an instance), the server blocks new incoming commands and **flushes all in-memory actors to Neon in $< 150\text{ ms}$** before exiting.
-   * Even in the event of an abrupt container crash, a reconnecting client resends any unacknowledged commands (`seq > server_seq`), guaranteeing **zero lost actions**.
+1. **Chargement à chaud (`Hydration`)** :
+   * Dès que le premier membre (ou agent MCP) ouvre une campagne, `trame-server` instancie un `TableRoomActor`, charge la carte active, ses murs (construit le BVH spatial en $< 2\text{ ms}$), ses tokens et les fiches des acteurs depuis Neon Postgres.
+2. **Deux Niveaux de Persistance (Haute Fréquence vs Critique)** :
+   * **Mutations haute fréquence (`Write-Behind Batching — 1s`)** : Les glissements de tokens, mises à jour de masques de brouillard LZ4 et ajustements continus sont regroupés et écrits vers Neon toutes les **1 seconde**.
+   * **Mutations critiques (`Immediate Commit` + Journal d'Événements `command_wal`)** : Les jets de dés finaux, pertes de PV, dépenses d'emplacements de sorts, transferts d'inventaire, changements de tour et éditions de notes sont **écrits immédiatement** dans une table append-only légère (`command_wal`) sur Neon + acquittés au client.
+3. **Graceful Shutdown & Resynchronisation Client (`last_acked_seq`)** :
+   * Chaque événement envoyé par le serveur porte un numéro de séquence monotone `seq: u64`.
+   * Sur réception d'un signal `SIGTERM` (ex: Cloud Run arrêtant une instance), le serveur bloque les nouvelles entrées et **flush l'intégralité des acteurs en RAM vers Neon en $< 150\text{ ms}$** avant de rendre la main.
+   * Même en cas de crash brutal du conteneur, le client reconnecté renvoie les éventuelles commandes non-acquittées (`seq > server_seq`), garantissant **zéro perte d'action**.
 
-### 2.2 Cryptographic Dice Roll Security (`Server-Side CSPRNG` — Q14)
+### 2.2 Sécurité Cryptographique des Jets de Dés (`Server-Side CSPRNG` — Q14)
 
-* **No dice roll is ever generated by the client browser.**
-* The client-side WASM formula evaluator is used strictly to **validate syntax** (`2d20kh1 + 5`) and preview modifiers before rolling.
-* Actual random number generation executes **exclusively on the Rust server** via a cryptographically secure pseudorandom number generator (`ChaCha20Rng` seeded by OS entropy), signed and timestamped in the session log.
+* **Aucun jet de dé n'est jamais tiré par le navigateur du client.**
+* L'évaluateur de formules dans WASM côté client ne sert qu'à **valider la syntaxe** (`2d20kh1 + 5`) et afficher l'aperçu des modificateurs avant le jet.
+* Le tirage aléatoire réel est exécuté **exclusivement sur le serveur Rust** via un générateur cryptographiquement sûr (`ChaCha20Rng` initialisé par l'entropie de l'OS), signé et horodaté dans le journal de session.
 
-### 2.3 Resetting & Managing Exploration Fog (Q15)
+### 2.3 Réinitialisation & Gestion du Brouillard d'Exploration (Q15)
 
-* When a DM reuses a map (or guards patrol after the players leave), the DM has **3 tools for resetting Exploration Memory (`Explored Memory`)**:
-  1. **Exploration Memory Eraser (Brush / Polygon)**: Clears the grayed-out memory of a specific room (players must re-enter to see what changed).
-  2. **Per-Player or Party Reset (1 Click)**: Resets exploration memory across the entire map.
-  3. **"No Exploration Memory" Mode (*Hardcore / Shifting Labyrinth*)**: Per-map setting where only the active field of view is visible; everything outside the current line of sight immediately returns to pitch black.
-
----
-
-## 3. Authentication, Media Security & Full Portability
-
-### 3.1 Frictionless Authentication & Onboarding
-
-1. **Direct Campaign Invite Link + Magic Link / Argon2id**.
-2. **Optional OAuth2 / OIDC (Discord & Google)**.
-3. **Administrator / DM Security (TOTP MFA) & Personal Access Tokens (`trame_pat_...`)** scoped by role and campaign for the MCP server.
-
-### 3.2 Map Access Security on Cloudflare R2 / S3 (DM Anti-Leak — Q10)
-
-To prevent a curious player from guessing a map URL or downloading the high-resolution image of a dungeon containing secret rooms before entering it:
-
-1. **Unguessable Opaque Object Keys**: Every file on R2/S3 is stored under a random `UUIDv4` identifier (`instances/{instance_id}/maps/{random_uuid}.webp`) with no human-readable filename.
-2. **Short-Lived Presigned URLs (`Presigned URLs — 15 min TTL`) Generated After RBAC Verification**:
-   * The R2/S3 bucket is **100% private** (zero direct public access).
-   * `trame-server` generates a signed URL for a map or handout only if the player is currently on that map (or the handout has `revealed = true`).
-3. **Player Layer vs. DM Layer Separation (Zero Secrets Baked into Background Image)**:
-   * During `.uvtt` import or map creation, secret DM annotations (room numbers, traps, secret passages) are placed on the `DM_ONLY` vector layer (never sent to players), while the WebP image delivered to the browser contains only the bare graphical scenery.
-
-### 3.3 Portability & Backup: Open `.trame` Archive Format (Q11)
-
-To guarantee complete reversibility between **Dedicated Cloud (Cloud Run + Neon + R2)** and **Local Self-Hosting (Docker / `e2-micro` VM / NAS)**:
-
-* The administration UI (and the `trame-cli archive export` CLI command) allows exporting **a Campaign** or **the entire Instance** at any time as a standard **`.trame` archive (AES-256-GCM encryptable ZIP)** containing:
-  1. `manifest.json` (format version, metadata, SHA-256 checksums),
-  2. `systems/` (all declarative YAML/JSON `GameSystemPack` files used),
-  3. `data/` (all actors, maps, walls, lights, tokens, and session logs in clean, SQL-agnostic JSONL),
-  4. `notes/` (the complete directory tree of Wiki Markdown files with YAML frontmatter, directly openable in any standard Markdown knowledge base),
-  5. `assets/` (all WebP images and audio tracks).
-* Importing a `.trame` file into any other TRAME instance restores 100% of the campaign in seconds.
+* Lorsqu'un MJ réutilise une carte (ou que des gardes patrouillent après le départ des joueurs), il dispose de **3 outils de réinitialisation de la Mémoire d'Exploration (`Explored Memory`)** :
+  1. **Gomme de Mémoire d'Exploration (Pinceau / Polygone)** : Efface la mémoire grisée d'une salle spécifique (les joueurs devront à nouveau y entrer pour voir ce qui a changé).
+  2. **Réinitialisation par Joueur ou Groupe (1 clic)** : Remet à zéro la mémoire d'exploration de toute la carte.
+  3. **Mode "Sans Mémoire d'Exploration" (*Hardcore / Labyrinthe mouvant*)** : Option par carte où seul le champ de vision actif est visible ; tout ce qui sort de la ligne de vue redevient noir.
 
 ---
 
-## 4. On-Demand Dedicated Hosting: Cloud Run vs. `e2-micro` VM
+## 3. Authentification, Sécurité des Médias & Portabilité Totale
 
-### 4.1 Target Model: 1 Dedicated Micro-Instance = 1 Multi-Campaign Group Server
+### 3.1 Authentification & Onboarding Sans Friction
 
-* **1 `trame-server` container / binary** (~20–35 MB RAM).
-* **1 dedicated Neon Serverless Postgres database** (via PgBouncer pooler `:6543`).
-* **1 private prefix on Cloudflare R2 / S3** or local volume.
+1. **Lien d'Invitation Directe à une Campagne + Magic Link / Argon2id**.
+2. **OAuth2 / OIDC Optionnel (Discord & Google)**.
+3. **Sécurité Administrateur / MJ (TOTP MFA) & Personal Access Tokens (`trame_pat_...`)** scopés par rôle et par campagne pour le serveur MCP.
 
-### 4.2 `Scale-to-Zero` & `Idle-Lease` Lifecycle ($0 at Rest on Cloud Run + Neon)
+### 3.2 Sécurité d'Accès aux Cartes sur Cloudflare R2 / S3 (Anti-Leak MJ — Q10)
 
-* Network heartbeats/pings do not reset the inactivity timer.
-* After **15 minutes without human action** (or 5 minutes if all browser tabs are in the background), `trame-server` flushes its in-memory state to Neon, sends `HIBERNATING` to clients, and closes WebSockets $\rightarrow$ Cloud Run and Neon scale down to **0 CPU / $0**.
-* Upon the slightest player click or MCP call, the instance wakes up in **~25 ms** (Rust) + **~300 ms** (Neon) and resumes the session seamlessly.
+Pour empêcher un joueur curieux de deviner l'URL d'une carte ou de télécharger l'image haute résolution d'un donjon contenant des salles secrètes avant d'y être entré :
+
+1. **Clés d'Objets Opaques Non-Devables** : Chaque fichier sur R2/S3 est stocké sous un identifiant `UUIDv4` aléatoire (`instances/{instance_id}/maps/{random_uuid}.webp`) sans aucun nom de fichier lisible.
+2. **URLs Pré-Signées Courtes (`Presigned URLs — TTL 15 min`) générées après contrôle RBAC** :
+   * Le bucket R2/S3 est **100% privé** (aucun accès public direct).
+   * `trame-server` ne génère une URL signée pour une carte ou un handout que si le joueur est actuellement sur cette carte (ou que le handout a `revealed = true`).
+3. **Séparation Calque Joueur vs Calque MJ (zéro secret sur l'image de fond)** :
+   * Lors de l'import `.uvtt` ou de la création d'une carte, les annotations secrètes du MJ (numéros de salles, pièges, passages secrets) sont placées sur le calque vectoriel `DM_ONLY` (jamais envoyées aux joueurs), tandis que l'image WebP envoyée au navigateur ne contient que le décor graphique nu.
+
+### 3.3 Portabilité & Sauvegarde : Format Ouvert `.trame` (Q11)
+
+Pour garantir la réversibilité totale entre **Cloud Dédié (Cloud Run + Neon + R2)** et **Auto-Hébergement local (Docker / VM `e2-micro` / NAS)** :
+
+* L'interface d'administration (et la commande CLI `trame-cli archive export`) permet d'exporter à tout moment **une Campagne** ou **l'Instance entière** sous forme d'une archive standard **`.trame` (ZIP chiffrable AES-256-GCM)** contenant :
+  1. `manifest.json` (version du format, métadonnées, checksums SHA-256),
+  2. `systems/` (tous les `GameSystemPack` YAML/JSON utilisés),
+  3. `data/` (tous les acteurs, cartes, murs, lumières, tokens et journal de sessions en JSONL propre et indépendant du moteur SQL),
+  4. `notes/` (l'arborescence complète des fichiers Markdown du Wiki avec leur frontmatter YAML, directement ouvrable dans **Obsidian** !),
+  5. `assets/` (toutes les images WebP et pistes audio).
+* Importer un fichier `.trame` sur n'importe quelle autre instance TRAME restaure 100% de la campagne en quelques secondes.
 
 ---
 
-## 5. Responsive Tablet / Mobile UX & Accessibility (Q21, Q22)
+## 4. Hébergement Dédié à la Demande : Cloud Run vs VM `e2-micro`
 
-1. **Player Companion Mode on Tablet & Mobile (`Companion Mode`)**:
-   * On iPad / tablet: full touch navigation on the PixiJS map (*pinch-to-zoom*, *two-finger pan*, long press to ping/measure).
-   * On smartphone (or around a physical table with a central TV screen): automatic or manual switch to an ultra-fast **Mobile Companion View** displaying the **D&D 5e Character Sheet**, **Dice Roller**, **Inventory**, **Initiative Tracker**, and **Notes**, synchronized in real time with the main Table.
-2. **Themes, WCAG AA Contrast & Visual Comfort**:
-   * Semantic CSS token system supporting dark/light/parchment themes, colorblind mode on tactical rings and AoE templates (hatched patterns in addition to green/yellow/red colors), and compliance with `prefers-reduced-motion` (disabling screen shake and weather/light animations).
+### 4.1 Modèle Cible : 1 Micro-Instance Dédiée = 1 Serveur de Groupe Multi-Campagnes
+
+* **1 conteneur / binaire `trame-server`** (~20–35 Mo RAM).
+* **1 base de données Neon Serverless Postgres dédiée** (via pooler PgBouncer `:6543`).
+* **1 préfixe privé sur Cloudflare R2 / S3** ou volume local.
+
+### 4.2 Cycle de Vie `Scale-to-Zero` & `Idle-Lease` (0 € au repos sur Cloud Run + Neon)
+
+* Les *pings* réseau ne réinitialisent pas le compteur d'inactivité.
+* Après **15 minutes sans action humaine** (ou 5 minutes si tous les onglets sont en arrière-plan), `trame-server` flush son état en RAM vers Neon, envoie `HIBERNATING` aux clients et ferme les WebSockets $\rightarrow$ Cloud Run et Neon retombent à **0 CPU / 0 €**.
+* Au moindre clic d'un joueur ou appel MCP, l'instance se réveille en **~25 ms** (Rust) + **~300 ms** (Neon) et reprend la session sans aucune couture.
+
+---
+
+## 5. UX Responsive Tablette / Mobile & Accessibilité (Q21, Q22)
+
+1. **Mode Compagnon Joueur sur Tablette & Mobile (`Companion Mode`)** :
+   * Sur iPad / tablette : navigation tactile complète sur la carte PixiJS (*pinch-to-zoom*, *two-finger pan*, appui long pour ping/mesure).
+   * Sur smartphone (ou autour d'une table physique avec écran TV central) : bascule automatique ou manuelle en **Vue Compagnon Mobile** ultra-rapide affichant la **Feuille de Personnage D&D 5e**, le **Lanceur de Dés**, l'**Inventaire**, le **Suivi d'Initiative** et les **Notes**, synchronisés en temps réel avec la Table principale !
+2. **Thèmes, Contrastes WCAG AA & Confort Visuel** :
+   * Système de jetons CSS sémantiques supportant les thèmes sombres/clairs/parchemin, mode daltonien sur les anneaux tactiques et les gabarits AoE (motifs hachurés en plus des couleurs vert/jaune/rouge), et respect de `prefers-reduced-motion` (désactivation des secousses d'écran et animations de météo/lumières).
