@@ -174,26 +174,11 @@ export class CharacterBuilderWizard {
               "Standard array requires assigning [15, 14, 13, 12, 10, 8] without duplicates.",
             );
           }
-        } else if (method === "pointBuy") {
-          const cost = calculatePointBuyCost(draft.abilityScores);
-          if (cost > MAX_POINT_BUY_BUDGET) {
-            errors.push(
-              `Point buy cost (${cost}) exceeds the maximum budget of ${MAX_POINT_BUY_BUDGET} points.`,
-            );
-          }
-        } else if (method === "manual") {
-          for (const ab of DND5E_ABILITIES) {
-            const score = draft.abilityScores[ab];
-            if (typeof score !== "number" || Number.isNaN(score) || score <= 0) {
-              errors.push(`Invalid ability score for ${ab}.`);
-            }
-          }
         } else {
-          const isStd = validateStandardArray(draft.abilityScores);
           const cost = calculatePointBuyCost(draft.abilityScores);
-          if (!isStd && cost > MAX_POINT_BUY_BUDGET) {
+          if (cost > MAX_POINT_BUY_BUDGET || !Number.isFinite(cost)) {
             errors.push(
-              `Ability scores exceed point buy budget (${cost} > ${MAX_POINT_BUY_BUDGET}) and do not match standard array.`,
+              `Point buy cost (${cost}) exceeds the maximum budget of ${MAX_POINT_BUY_BUDGET} points or contains invalid point buy values.`,
             );
           }
         }
