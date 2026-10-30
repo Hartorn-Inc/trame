@@ -47,7 +47,8 @@ export function calculateContainerWeight(
         (it.containerId === containerId || it.parentId === containerId) &&
         it.id !== containerId,
     );
-  } else if (containerObj) {
+  }
+  if (children.length === 0 && containerObj) {
     if (Array.isArray(containerObj.children)) {
       children = containerObj.children;
     } else if (Array.isArray(containerObj.items)) {
@@ -91,6 +92,14 @@ export function calculateContainerWeight(
     }
   }
 
+  if (options?.applyMultiplier && containerObj?.weightMultiplier !== undefined) {
+    const selfMultiplier = Math.max(
+      0,
+      sanitizeNumber(containerObj.weightMultiplier, 1.0),
+    );
+    childWeightsSum *= selfMultiplier;
+  }
+
   if (options?.includeSelf && containerObj) {
     const selfQty = Math.max(
       0,
@@ -101,14 +110,6 @@ export function calculateContainerWeight(
       sanitizeNumber(containerObj.unitWeight ?? containerObj.weight, 0),
     );
     childWeightsSum += selfUnitWeight * selfQty;
-  }
-
-  if (options?.applyMultiplier && containerObj?.weightMultiplier !== undefined) {
-    const selfMultiplier = Math.max(
-      0,
-      sanitizeNumber(containerObj.weightMultiplier, 1.0),
-    );
-    childWeightsSum *= selfMultiplier;
   }
 
   return Math.round((childWeightsSum + Number.EPSILON) * 100) / 100;
@@ -126,7 +127,9 @@ export function calculateTotalInventoryWeight(
 
   let total = 0;
   const rootItems = items.filter(
-    (it) => it.containerId === null || it.containerId === undefined,
+    (it) =>
+      (it.containerId === null || it.containerId === undefined) &&
+      (it.parentId === null || it.parentId === undefined),
   );
 
   for (const item of rootItems) {

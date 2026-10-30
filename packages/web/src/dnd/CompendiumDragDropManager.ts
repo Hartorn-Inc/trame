@@ -39,11 +39,23 @@ function checkIsDescendant(
   }
 
   const itemMap = new Map<string, InventoryContainerItem>();
-  for (const item of items) {
-    if (item && item.id) {
-      itemMap.set(String(item.id), item);
+  const indexTree = (list: InventoryContainerItem[]): void => {
+    for (const item of list) {
+      if (item && item.id) {
+        const idStr = String(item.id);
+        if (!itemMap.has(idStr)) {
+          itemMap.set(idStr, item);
+          if (Array.isArray(item.children)) {
+            indexTree(item.children);
+          }
+          if (Array.isArray(item.items)) {
+            indexTree(item.items);
+          }
+        }
+      }
     }
-  }
+  };
+  indexTree(items);
 
   let currentId: string | null = targetContainerId;
   const visited = new Set<string>();
