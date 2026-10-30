@@ -203,12 +203,25 @@ export function filterWikiMarkdownForRole(rawMarkdown: string, isGameMaster: boo
 }
 
 /**
+ * Escapes HTML special characters (`&`, `<`, `>`, `"`, `'`) to prevent XSS injection
+ * when interpolating user-supplied wiki targets and labels into DOM markup.
+ */
+function escapeHtml(raw: string): string {
+  return raw
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
  * Replaces `[[Entity]]` wikilinks with styled anchors/spans for preview rendering.
  */
 export function renderWikiLinksToHtml(text: string): string {
   return text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match, target, label) => {
-    const linkTarget = (target as string).trim();
-    const linkLabel = label ? (label as string).trim() : linkTarget;
+    const linkTarget = escapeHtml((target as string).trim());
+    const linkLabel = escapeHtml(label ? (label as string).trim() : (target as string).trim());
     return `<a class="wiki-entity-link" data-entity="${linkTarget}">${linkLabel}</a>`;
   });
 }
