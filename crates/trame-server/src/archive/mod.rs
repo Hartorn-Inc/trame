@@ -390,11 +390,7 @@ mod tests {
                 "Root Fallback",
                 "notes/root-fallback.md",
             ),
-            (
-                None,
-                "!!!",
-                "notes/7b354366-0ec1-456e-8260-2ff0d4e9c71f.md",
-            ),
+            (None, "!!!", "notes/7b354366-0ec1-456e-8260-2ff0d4e9c71f.md"),
         ];
 
         for (folder, title, expected_path) in cases {
