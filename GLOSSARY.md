@@ -161,50 +161,8 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Avoid**: `HP shield`, `bonus HP`
 
 ### TurnTrigger
-- **Definition**: Combat phase evaluation point (`ROUNDS`, `TURNS_START`, `TURNS_END`) governing when active condition durations decrement.
-- **Allowed**: `TurnTrigger`, `turn trigger`
-- **Avoid**: `initiative phase`, `round tick`
+- **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
+- **Allowed**: `AbilityModifier`, `ability modifier`
+- **Avoid**: `stat mod`, `ability bonus`
 
-### Companion Mode
-- **Definition**: Lightweight touch-friendly UI dedicated to mobile and tablet viewports strictly narrower than 768 pixels, disabling the WebGL rendering engine to preserve battery life and performance.
-- **Avoid**: Mobile view, Lite app, Responsive fallback, Phone skin.
-
-### CRDT (Conflict-free Replicated Data Type)
-- **Definition**: Conflict-free replicated data structure (Yjs on client, `yrs` on server) guaranteeing mathematical convergence of a shared text document across peers without distributed locks.
-- **Avoid**: Real-time sync engine, Operational Transform, Delta merge.
-
-### Directive Block
-- **Definition**: Markdown syntax block delimited by triple colons `:::name{key="value"}` parsed by the AST compiler to encapsulate interactive or RBAC-filtered blocks (`:::handout`, `:::dm`).
-- **Avoid**: Shortcode, Custom tag, Special markup, Admonition.
-
-### Handout
-- **Definition**: Secret textual or visual artifact authored by the Game Master inside a note, possessing a unique identifier and kept hidden until explicitly revealed to all players.
-- **Avoid**: Secret clue, Player reveal, Clue card, Public paper.
-
-### Handout Reveal Modal
-- **Definition**: Full-screen overlay component displayed on all connected clients when a Game Master broadcasts a Handout reveal event.
-- **Avoid**: Popup, Dialog window, Handout lightbox, Alert box.
-
-### MobileCompanionLayout
-- **Definition**: Root UI shell mounted when viewport width is strictly less than 768 pixels, providing a bottom navigation bar with four touch tabs (`Sheet`, `Dice`, `Inventory`, `Journal`).
-- **Avoid**: MobileShell, SmallScreenLayout, TabContainer.
-
-### Party Journal
-- **Definition**: Shared campaign notebook accessible to all campaign participants, permanently archiving revealed events and Handouts.
-- **Avoid**: Group log, Campaign diary, Shared notebook, Quest log.
-
-### Public Snapshot
-- **Definition**: Sanitized Markdown text representation stripped of all secret blocks (`:::dm` and `:::handout{revealed="false"}`), broadcast by `trame-server` to non-GM clients over WebSocket.
-- **Avoid**: Sanitized content, Public markdown, Filtered copy.
-
-### Session Timeline
-- **Definition**: Append-only event stream strictly ordered by ascending `seq_id` and indexed by `campaign_id` and `session_num`, recording all verifiable actions of a game session.
-- **Avoid**: Game history, Event stream, Activity feed, Audit trail.
-
-### TableCanvas
-- **Definition**: Heavyweight application component mounting the virtual tabletop viewport, initializing the PixiJS instance, dynamic lighting shaders, and WebGL Framebuffer Objects (FBO).
-- **Avoid**: GameMap, BoardView, PixiContainer, CanvasRenderer.
-
-### Wiki Autocomplete
-- **Definition**: Text suggestion mechanism triggered by typing double brackets `[[` to insert internal hyperlinks referencing actors, locations, or compendium items.
-- **Avoid**: Wiki link popup, Entity suggester, Smart mention, Quick search.
+### AbilityScore
