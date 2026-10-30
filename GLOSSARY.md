@@ -177,11 +177,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **Definition**: Game Master history drawer displaying recent table mutations and triggering single-click rollbacks.
 
-- **Allowed Context**: Spatial audio processing and WebAudio filter graphs.
+- **Allowed Context**: Game Master HUD, table history drawer, and transaction rollback interfaces.
 
-- **_Avoid_**: SoundMuffling, AudioBlocking, AcousticShadow.
+- **_Avoid_**: HistoryDrawer, RollbackPanel, UndoList.
 
-### ActionEconomyType
+### AbilityModifier
 - **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
 - **Allowed**: `AbilityModifier`, `ability modifier`
 - **Avoid**: `stat mod`, `ability bonus`
@@ -297,6 +297,6 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Avoid**: `HP shield`, `bonus HP`
 
 ### TurnTrigger
-- **Definition**: Attenuation of sound high frequencies calculated via raycasting through walls with `blocks_sound: true`.
+- **Definition**: Combat turn lifecycle hook (such as START_OF_TURN or END_OF_TURN) evaluated during initiative progression to process condition durations, ongoing saving throws, and resource resets.
 - **Allowed**: `TurnTrigger`, `turn trigger`
 - **Avoid**: `initiative phase`, `round tick`
