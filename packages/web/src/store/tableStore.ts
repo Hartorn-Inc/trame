@@ -1,81 +1,80 @@
-/**
- * ============================================================================
- * AUTHORITATIVE TABLE CLIENT STORE & OPTIMISTIC ROLLBACK (tableStore.ts)
- * ============================================================================
- *
- * PURPOSE:
- * --------
- * Maintains the client-side tactical table state (`seqId`, token positions/HP,
- * and blind-aware dice roll log), providing zero-latency optimistic token
- * dragging (`beginOptimisticTokenMove`) paired with deterministic rollback
- * (`rollbackRejectedCommand`) when the authoritative server rejects an illegal
- * move (e.g., wall collision or insufficient movement speed).
- *
- * INVARIANTS & SAFETY BOUNDARIES:
- * -------------------------------
- *   1. `Original-Anchor Rollback Preservation`:
- *      - `beginOptimisticTokenMove` records a token's pre-drag `topLeft` anchor
- *        into `optimisticRollbackPositions` only on the first optimistic step
- *        (`!has(tokenId)`), ensuring multi-waypoint client drags still revert
- *        all the way back to the last server-confirmed coordinate on rejection.
- *   2. `Defensive Coordinate Cloning`:
- *      - `applySnapshot`, `beginOptimisticTokenMove`, `commitServerTokenMove`,
- *        and `rollbackRejectedCommand` clone `{ x, y }` `Point2D` objects so
- *        external caller mutations cannot corrupt internal store or rollback state.
- *   3. `Blind Roll Privacy Masking`:
- *      - `ClientDiceLogEntry` represents blind GM rolls with `blindMasked: true`
- *        and `total: null` for non-GM clients so secret roll outcomes are never
- *        exposed in the player store.
- *
- * EXECUTION LIFECYCLE:
- * --------------------
- *   1. `applySnapshot(seqId, tokens)` -> Hydrates baseline state & clears pending rollbacks.
- *   2. `beginOptimisticTokenMove(tokenId, newTopLeft)` -> Caches original position & moves token locally.
- *   3. Server response:
- *      ├── `commitServerTokenMove(seqId, tokenId, confirmedTopLeft)` -> Advances `seqId` & drops rollback anchor.
- *      └── `rollbackRejectedCommand(reason)` -> Restores cached anchor positions & records `lastRejectionReason`.
- * ============================================================================
- */
+import { DualBufferFogOfWar } from "../canvas/LightingShader.ts";
+import {
+  type DrawingEntity,
+  type Point2D,
+  type WallSegmentDto,
+  convertDrawingToWallSegments,
+} from "../engine/wasmBridge.ts";
+import {
+  type ActionEconomyType,
+  CombatTrackerManager,
+  type CombatTokenState,
+  type TableMode,
+} from "../hud/combatTracker.ts";
+import {
+  type AmbientPreset,
+  type AmbientPresetConfig,
+  type DeathSaveCounters,
+  GmOverrideToolbarManager,
+  type TokenResourceOverrideInput,
+  type UndoEntry,
+} from "../hud/gmOverrideToolbar.ts";
 
-import type { Point2D } from "../engine/wasmBridge.ts";
-
-/**
- * Client-side projection of a tactical token on the active map.
- */
 export interface ClientTokenView {
-  /** Unique identifier of the token instance. */
   id: string;
-  /** Display name rendered on the token nameplate. */
   name: string;
-  /** Top-left coordinate of the token in world canvas pixels (`px`). */
   topLeft: Point2D;
-  /** Current Hit Points (`0..=maxHp`). */
   hp: number;
-  /** Maximum Hit Points (`>= 1`). */
   maxHp: number;
+  tempHp?: number;
+  elevationFt?: number;
+  speedRemainingFt?: number;
+  speedMaxFt?: number;
+  actionAvailable?: boolean;
+  bonusActionAvailable?: boolean;
+  reactionAvailable?: boolean;
+  spellSlots?: number[];
+  deathSaves?: DeathSaveCounters;
 }
 
-/**
- * Single entry in the client-side real-time dice roll log.
- */
 export interface ClientDiceLogEntry {
-  /** Unique server-assigned identifier for the roll event. */
   rollId: string;
-  /** User ID of the participant who initiated the roll. */
   rollerUserId: string;
-  /** Canonical dice notation expression (e.g., `"2d20kh1+5"`). */
   expression: string;
-  /** Context label describing the roll purpose (e.g., `"Stealth Check"`). */
   reason: string;
-  /** True when the roll outcome is hidden from the local player (`total === null`). */
   blindMasked: boolean;
-  /** Evaluated integer total, or `null` when masked by a blind GM roll. */
   total: number | null;
 }
 
+export type PingType = "ALERT" | "ATTENTION" | "QUESTION" | "Alert" | "Attention" | "Question";
+
+export interface RadarPing {
+  id: string;
+  x: number;
+  y: number;
+  pingType: "ALERT" | "ATTENTION" | "QUESTION";
+  userId: string;
+  color: string;
+  timestamp: number;
+}
+
+export const RADIAL_PING_COLORS: Record<"ALERT" | "ATTENTION" | "QUESTION", string> = {
+  ALERT: "#ff3333",
+  ATTENTION: "#ffaa00",
+  QUESTION: "#3388ff",
+};
+
+export function normalizePingType(type: PingType): "ALERT" | "ATTENTION" | "QUESTION" {
+  const upper = String(type).toUpperCase();
+  if (upper === "QUESTION") return "QUESTION";
+  if (upper === "ATTENTION") return "ATTENTION";
+  return "ALERT";
+}
+
 /**
- * Client-side authoritative state store with optimistic token movement and instant rollback
- * upon server `CommandRejected`.
+ * Client-side authoritative state store combining optimistic token movement,
+ * combat tracking, GM override toolbar, radar pings, vector drawing walls,
+ * and 1-click Fog of War rollback.
  */
 export class TableClientStore {
   private seqId = 0;
@@ -83,25 +82,40 @@ export class TableClientStore {
   private optimisticRollbackPositions = new Map<string, Point2D>();
   private diceLog: ClientDiceLogEntry[] = [];
   private lastRejectionReason: string | null = null;
+  private combatTracker = new CombatTrackerManager();
+  private gmOverride = new GmOverrideToolbarManager();
+  private pings: RadarPing[] = [];
+  private drawings = new Map<string, DrawingEntity>();
+  private serverTimeOffsetMs = 0;
+  private fogOfWar: DualBufferFogOfWar | null = null;
 
-  /**
-   * Replaces the local token collection with a full authoritative server snapshot
-   * at sequence number `seqId` and clears any pending optimistic rollback anchors.
-   */
+  public setFogOfWar(fog: DualBufferFogOfWar): void {
+    this.fogOfWar = fog;
+  }
+
+  public getFogOfWar(): DualBufferFogOfWar | null {
+    return this.fogOfWar;
+  }
+
   public applySnapshot(seqId: number, tokens: ClientTokenView[]): void {
     this.seqId = seqId;
     this.tokens.clear();
     this.optimisticRollbackPositions.clear();
     for (const tok of tokens) {
-      this.tokens.set(tok.id, { ...tok, topLeft: { ...tok.topLeft } });
+      this.tokens.set(tok.id, {
+        ...tok,
+        topLeft: { ...tok.topLeft },
+        tempHp: tok.tempHp ?? 0,
+        elevationFt: tok.elevationFt ?? 0,
+        speedRemainingFt: tok.speedRemainingFt ?? tok.speedMaxFt ?? 30,
+        speedMaxFt: tok.speedMaxFt ?? 30,
+        actionAvailable: tok.actionAvailable ?? true,
+        bonusActionAvailable: tok.bonusActionAvailable ?? true,
+        reactionAvailable: tok.reactionAvailable ?? true,
+      });
     }
   }
 
-  /**
-   * Optimistically moves `tokenId` to `newTopLeft` (in world `px`) for immediate
-   * visual feedback while preserving the last server-confirmed coordinate in
-   * `optimisticRollbackPositions` until the server commits or rejects the command.
-   */
   public beginOptimisticTokenMove(tokenId: string, newTopLeft: Point2D): void {
     const tok = this.tokens.get(tokenId);
     if (!tok) {
@@ -113,10 +127,6 @@ export class TableClientStore {
     tok.topLeft = { ...newTopLeft };
   }
 
-  /**
-   * Commits an authoritative server `TokenMoved` broadcast at `seqId`, updating
-   * `tokenId` to `confirmedTopLeft` (in world `px`) and clearing its rollback anchor.
-   */
   public commitServerTokenMove(seqId: number, tokenId: string, confirmedTopLeft: Point2D): void {
     this.seqId = seqId;
     this.optimisticRollbackPositions.delete(tokenId);
@@ -126,10 +136,6 @@ export class TableClientStore {
     }
   }
 
-  /**
-   * Reverts all in-flight optimistic token moves back to their server-confirmed
-   * coordinates and stores `reason` when the server emits `CommandRejected`.
-   */
   public rollbackRejectedCommand(reason: string): void {
     this.lastRejectionReason = reason;
     for (const [tokenId, originalPos] of this.optimisticRollbackPositions.entries()) {
@@ -141,38 +147,183 @@ export class TableClientStore {
     this.optimisticRollbackPositions.clear();
   }
 
-  /**
-   * Appends a server-broadcast `ClientDiceLogEntry` to the session dice log.
-   */
   public recordDiceRoll(entry: ClientDiceLogEntry): void {
     this.diceLog.push(entry);
   }
 
-  /**
-   * Looks up the current `ClientTokenView` for `tokenId`, or `undefined` if not present.
-   */
   public getToken(tokenId: string): ClientTokenView | undefined {
     return this.tokens.get(tokenId);
   }
 
-  /**
-   * Returns the latest authoritative sequence number (`seqId`) applied by the store.
-   */
+  public getTokens(): ClientTokenView[] {
+    return Array.from(this.tokens.values()).map((t) => ({ ...t, topLeft: { ...t.topLeft } }));
+  }
+
   public getSeqId(): number {
     return this.seqId;
   }
 
-  /**
-   * Returns the human-readable reason from the most recent `CommandRejected` event, or `null`.
-   */
   public getLastRejectionReason(): string | null {
     return this.lastRejectionReason;
   }
 
-  /**
-   * Returns a read-only view of all recorded dice roll log entries in chronological order.
-   */
   public getDiceLog(): readonly ClientDiceLogEntry[] {
     return this.diceLog;
+  }
+
+  public setServerTimeOffsetMs(offsetMs: number): void {
+    this.serverTimeOffsetMs = offsetMs;
+  }
+
+  public getServerTimeOffsetMs(): number {
+    return this.serverTimeOffsetMs;
+  }
+
+  public getCombatTracker(): CombatTrackerManager {
+    return this.combatTracker;
+  }
+
+  public getGmOverride(): GmOverrideToolbarManager {
+    return this.gmOverride;
+  }
+
+  public setTableMode(mode: TableMode): void {
+    this.combatTracker.setTableMode(mode);
+  }
+
+  public getTableMode(): TableMode {
+    return this.combatTracker.getState().mode;
+  }
+
+  public toggleTablePause(isPaused?: boolean): boolean {
+    return this.combatTracker.togglePause(isPaused);
+  }
+
+  public isTablePaused(): boolean {
+    return this.combatTracker.getState().isPaused;
+  }
+
+  public setAmbientPreset(preset: AmbientPreset): AmbientPresetConfig {
+    return this.gmOverride.setAmbientPreset(preset);
+  }
+
+  public getAmbientPreset(): AmbientPresetConfig {
+    return this.gmOverride.getAmbientPreset();
+  }
+
+  public gmOverrideHp(tokenId: string, input: TokenResourceOverrideInput): boolean {
+    const token = this.tokens.get(tokenId);
+    if (!token) return false;
+    this.gmOverride.overrideHpAndResources(token, input);
+    return true;
+  }
+
+  public gmRefundAction(tokenId: string, economyType: ActionEconomyType, amountFt?: number): boolean {
+    const token = this.tokens.get(tokenId);
+    if (!token) return false;
+    const adapter = {
+      actionAvailable: token.actionAvailable ?? true,
+      bonusActionAvailable: token.bonusActionAvailable ?? true,
+      reactionAvailable: token.reactionAvailable ?? true,
+      speedRemainingFt: token.speedRemainingFt ?? token.speedMaxFt ?? 30,
+      speedMaxFt: token.speedMaxFt ?? 30,
+    };
+    this.gmOverride.refundAction(adapter, economyType, amountFt);
+    token.actionAvailable = adapter.actionAvailable;
+    token.bonusActionAvailable = adapter.bonusActionAvailable;
+    token.reactionAvailable = adapter.reactionAvailable;
+    token.speedRemainingFt = adapter.speedRemainingFt;
+    this.combatTracker.refundAction(tokenId, economyType, amountFt);
+    return true;
+  }
+
+  public gmTeleportToken(tokenId: string, targetX: number, targetY: number, targetElevationFt?: number): boolean {
+    const token = this.tokens.get(tokenId);
+    if (!token) return false;
+    this.gmOverride.teleportToken(token, targetX, targetY, targetElevationFt);
+    if (targetElevationFt !== undefined) {
+      this.combatTracker.syncToken({ id: tokenId, elevationFt: targetElevationFt });
+    }
+    return true;
+  }
+
+  public addRadarPing(params: {
+    id?: string;
+    x: number;
+    y: number;
+    pingType: PingType;
+    userId?: string;
+    color?: string;
+    timestamp?: number;
+  }): RadarPing {
+    const normType = normalizePingType(params.pingType);
+    const ping: RadarPing = {
+      id: params.id ?? `ping-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      x: params.x,
+      y: params.y,
+      pingType: normType,
+      userId: params.userId ?? "local-user",
+      color: params.color ?? RADIAL_PING_COLORS[normType],
+      timestamp: params.timestamp ?? Date.now(),
+    };
+    this.pings.push(ping);
+    return ping;
+  }
+
+  public getActiveRadarPings(currentTimeMs = Date.now()): RadarPing[] {
+    this.pings = this.pings.filter((p) => currentTimeMs - p.timestamp < 1500);
+    return this.pings;
+  }
+
+  public getRadarPingOpacity(ping: RadarPing, currentTimeMs = Date.now()): number {
+    const elapsed = currentTimeMs - ping.timestamp;
+    if (elapsed < 0 || elapsed >= 1500) {
+      return 0.0;
+    }
+    return Math.max(0.0, Math.exp((-3.0 * elapsed) / 1500));
+  }
+
+  public addDrawing(drawing: DrawingEntity): void {
+    this.drawings.set(drawing.id, { ...drawing, points: [...drawing.points] });
+  }
+
+  public deleteDrawing(drawingId: string): void {
+    this.drawings.delete(drawingId);
+  }
+
+  public getDrawings(): DrawingEntity[] {
+    return Array.from(this.drawings.values());
+  }
+
+  public getPhysicalWallSegments(): WallSegmentDto[] {
+    const walls: WallSegmentDto[] = [];
+    for (const drawing of this.drawings.values()) {
+      walls.push(...convertDrawingToWallSegments(drawing));
+    }
+    return walls;
+  }
+
+  public pushUndo(entry: UndoEntry): void {
+    this.gmOverride.pushUndoEntry(entry);
+  }
+
+  public triggerUndo(): UndoEntry | null {
+    const entry = this.gmOverride.triggerUndo();
+    if (entry && this.fogOfWar) {
+      this.fogOfWar.rollbackSnapshot(entry.snapshotId);
+    }
+    return entry;
+  }
+
+  public applyActionUndone(snapshotId: number | string, restoredTokens?: ClientTokenView[]): void {
+    if (this.fogOfWar) {
+      this.fogOfWar.rollbackSnapshot(snapshotId);
+    }
+    if (restoredTokens) {
+      for (const tok of restoredTokens) {
+        this.tokens.set(tok.id, { ...tok, topLeft: { ...tok.topLeft } });
+        this.combatTracker.syncToken(tok);
+      }
+    }
   }
 }
