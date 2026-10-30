@@ -1,13 +1,16 @@
+use crate::assets::store::{AssetStore, AssetStoreError, PRESIGNED_URL_DEFAULT_TTL};
 use crate::room::{ConnectedClient, RoomLeaseManager};
 use crate::sync::decode_client_envelope;
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
-use axum::response::{IntoResponse, Json};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use trame_engine::commands::CampaignRole;
 use uuid::Uuid;
@@ -18,23 +21,94 @@ pub struct WsAuthQuery {
     pub role: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PresignQuery {
+    pub user_id: Uuid,
+}
+
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
     pub status: &'static str,
     pub active_rooms: usize,
 }
 
-pub fn build_router(lease_manager: Arc<RoomLeaseManager>) -> Router {
+#[derive(Debug, Serialize)]
+pub struct PresignedUrlResponse {
+    pub url: String,
+    pub expires_in_secs: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ErrorResponse {
+    pub error: String,
+}
+
+/// Trait checking whether a user is an active member of a campaign.
+pub trait CampaignMembershipValidator: Send + Sync {
+    fn is_member(&self, campaign_id: Uuid, user_id: Uuid) -> bool;
+}
+
+#[derive(Default, Clone)]
+pub struct InMemoryMembershipValidator {
+    memberships: Arc<RwLock<HashSet<(Uuid, Uuid)>>>,
+}
+
+impl InMemoryMembershipValidator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_member(&self, campaign_id: Uuid, user_id: Uuid) {
+        if let Ok(mut guard) = self.memberships.write() {
+            guard.insert((campaign_id, user_id));
+        }
+    }
+}
+
+impl CampaignMembershipValidator for InMemoryMembershipValidator {
+    fn is_member(&self, campaign_id: Uuid, user_id: Uuid) -> bool {
+        self.memberships
+            .read()
+            .map(|g| g.contains(&(campaign_id, user_id)))
+            .unwrap_or(false)
+    }
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    pub lease_manager: Arc<RoomLeaseManager>,
+    pub asset_store: Arc<dyn AssetStore>,
+    pub membership: Arc<dyn CampaignMembershipValidator>,
+    pub instance_id: Uuid,
+}
+
+pub fn build_router(
+    lease_manager: Arc<RoomLeaseManager>,
+    asset_store: Arc<dyn AssetStore>,
+    membership: Arc<dyn CampaignMembershipValidator>,
+    instance_id: Uuid,
+) -> Router {
+    let state = AppState {
+        lease_manager,
+        asset_store,
+        membership,
+        instance_id,
+    };
+
     Router::new()
         .route("/healthz", get(healthz_handler))
         .route("/ws/campaigns/{campaign_id}", get(ws_campaign_handler))
-        .with_state(lease_manager)
+        .route(
+            "/api/v1/campaigns/{campaign_id}/assets/{hash}/presign",
+            get(presign_asset_handler),
+        )
+        .with_state(state)
 }
 
-async fn healthz_handler(State(mgr): State<Arc<RoomLeaseManager>>) -> Json<HealthResponse> {
+async fn healthz_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
-        active_rooms: mgr.active_room_count().await,
+        active_rooms: state.lease_manager.active_room_count().await,
     })
 }
 
@@ -42,14 +116,72 @@ async fn ws_campaign_handler(
     ws: WebSocketUpgrade,
     Path(campaign_id): Path<Uuid>,
     Query(query): Query<WsAuthQuery>,
-    State(mgr): State<Arc<RoomLeaseManager>>,
+    State(state): State<AppState>,
 ) -> impl IntoResponse {
     let role = match query.role.as_deref() {
         Some("gm") | Some("GM") => CampaignRole::Gm,
         Some("spectator") | Some("Spectator") => CampaignRole::Spectator,
         _ => CampaignRole::Player,
     };
-    ws.on_upgrade(move |socket| handle_ws_connection(socket, mgr, campaign_id, query.user_id, role))
+    ws.on_upgrade(move |socket| {
+        handle_ws_connection(
+            socket,
+            state.lease_manager,
+            campaign_id,
+            query.user_id,
+            role,
+        )
+    })
+}
+
+async fn presign_asset_handler(
+    Path((campaign_id, hash)): Path<(Uuid, String)>,
+    Query(query): Query<PresignQuery>,
+    State(state): State<AppState>,
+) -> Response {
+    if !state.membership.is_member(campaign_id, query.user_id) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "user is not an active member of this campaign".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let key = format!(
+        "instances/{}/campaigns/{}/assets/{}.webp",
+        state.instance_id, campaign_id, hash
+    );
+
+    match state
+        .asset_store
+        .mint_presigned_get_url(&key, PRESIGNED_URL_DEFAULT_TTL)
+        .await
+    {
+        Ok(url) => (
+            StatusCode::OK,
+            Json(PresignedUrlResponse {
+                url,
+                expires_in_secs: PRESIGNED_URL_DEFAULT_TTL.as_secs(),
+            }),
+        )
+            .into_response(),
+        Err(AssetStoreError::NotFound(_)) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("asset with hash '{hash}' not found"),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn handle_ws_connection(
