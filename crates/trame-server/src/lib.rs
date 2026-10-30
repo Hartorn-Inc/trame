@@ -13,6 +13,7 @@
 //! PURPOSE:
 //! --------
 //! Orchestrates the authoritative multiplayer server runtime for `trame`:
+//! streaming PKWARE portable campaign archive export/import (`archive`),
 //! content-addressed WebP asset storage (`assets`), Universal VTT map importing
 //! (`importers`), cryptographically seeded ChaCha20 dice resolution (`dice`),
 //! Axum HTTP/WebSocket transport (`http`), isolated per-campaign Tokio actor
@@ -46,6 +47,7 @@
 //!     └── 4. `sync::project_state_for_recipient` strips hidden state per recipient socket.
 //! ============================================================================
 
+pub mod archive;
 pub mod assets;
 pub mod dice;
 pub mod http;
@@ -486,17 +488,18 @@ mod tests {
             match vis {
                 RollVisibility::Public => {
                     assert_eq!(player_view.total, Some(outcome.total));
-                    assert!(bystander_view.is_some());
+                    let bystander = bystander_view.expect("Public roll visible to bystander");
+                    assert_eq!(bystander.total, Some(outcome.total));
                 }
                 RollVisibility::GmOnly => {
                     assert_eq!(player_view.total, Some(outcome.total));
-                    assert!(bystander_view.is_none());
+                    assert!(bystander_view.is_none(), "GmOnly hidden from other players");
                 }
                 RollVisibility::BlindGm => {
                     assert!(player_view.blind_masked);
                     assert_eq!(player_view.total, None);
                     assert!(player_view.terms.is_empty());
-                    assert!(bystander_view.is_none());
+                    assert!(bystander_view.is_none(), "BlindGm hidden from bystanders");
                 }
             }
         }

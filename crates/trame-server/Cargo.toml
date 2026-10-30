@@ -7,8 +7,10 @@ license.workspace = true
 [dependencies]
 trame-engine = { path = "../trame-engine" }
 axum.workspace = true
+async_zip = { version = "0.0.17", features = ["tokio", "deflate"] }
 base64 = "0.22"
 bytes = "1.12"
+futures-lite = "2"
 futures-util.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 rand.workspace = true
