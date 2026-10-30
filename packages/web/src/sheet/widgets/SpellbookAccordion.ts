@@ -70,6 +70,26 @@ export function SpellbookAccordion(
   const spellSaveDc = Number(context.boundValues.spellSaveDc ?? 10);
   const spellAttackBonus = Number(context.boundValues.spellAttackBonus ?? 0);
 
+  const resolveSlotKey = (slotsRecord: Record<string, unknown>, slotLevel: number | string): string => {
+    if (typeof slotLevel === "string" && slotsRecord[slotLevel] !== undefined) {
+      return slotLevel;
+    }
+    const cleanLvl = typeof slotLevel === "number" ? slotLevel : String(slotLevel).replace(/^(level_?|slot_?)/i, "");
+    const candidates = [
+      `level${cleanLvl}`,
+      `level_${cleanLvl}`,
+      `slot_${cleanLvl}`,
+      `slot${cleanLvl}`,
+      String(cleanLvl),
+    ];
+    for (const cand of candidates) {
+      if (slotsRecord[cand] !== undefined) {
+        return cand;
+      }
+    }
+    return `level${cleanLvl}`;
+  };
+
   const handleCast = (spellId: string) => {
     const spell = spells.find((s) => s.id === spellId) ?? spells[0];
     if (!spell) return;
@@ -99,10 +119,8 @@ export function SpellbookAccordion(
     }
 
     if (autoDeductSlots && spell.level > 0) {
-      const slotKeyCandidate = `slot_${spell.level}`;
-      const fallbackKey = String(spell.level);
-      const chosenKey = rawSlots[slotKeyCandidate] !== undefined ? slotKeyCandidate : fallbackKey;
-      const currentVal = slots[chosenKey]?.current ?? slots[fallbackKey]?.current ?? 1;
+      const chosenKey = resolveSlotKey(rawSlots, spell.level);
+      const currentVal = slots[chosenKey]?.current ?? 1;
       const updatedCount = Math.max(0, currentVal - 1);
       context.dispatchCommand?.(
         TrameCommand.UpdateActorSheet({
@@ -117,13 +135,13 @@ export function SpellbookAccordion(
   };
 
   const toggleSlotPip = (slotLevel: number | string) => {
-    const key = String(slotLevel);
-    const slot = slots[key] ?? slots[`slot_${key}`];
+    const chosenKey = resolveSlotKey(slots, slotLevel);
+    const slot = slots[chosenKey];
     const currentVal = slot ? slot.current : 0;
     const newVal = Math.max(0, currentVal - 1);
     context.dispatchCommand?.(
       TrameCommand.UpdateActorSheet({
-        path: `slots.${key}.current`,
+        path: `slots.${chosenKey}.current`,
         slotLevel,
         current: newVal,
         value: newVal,

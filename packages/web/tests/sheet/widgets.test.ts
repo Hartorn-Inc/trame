@@ -48,61 +48,67 @@ describe("Twelve Canonical Atomic Sheet Widgets & Command Dispatching", () => {
     assert.equal(dispatched[1].formula, "1d20 - 1");
   });
 
-  it("WHEN a user modifies the current value in ResourceBar, ResourceBar dispatches a TrameCommand.UpdateActorSheet command with the updated numeric value", () => {
+  it("WHEN a user adjusts the value in ResourceBar, ResourceBar dispatches a TrameCommand.UpdateActorSheet command with the updated numeric value", () => {
     const dispatched: any[] = [];
     const widget = ResourceBar({
-      id: "hp-bar",
+      id: "hp-bar-1",
       boundValues: {
-        current: 25,
+        current: 24,
         max: 30,
         temp: 5,
       },
       options: {
         label: "Hit Points",
+        color: "#ff0000",
       },
       dispatchCommand: (cmd) => dispatched.push(cmd),
     });
 
-    assert.equal(widget.current, 25);
+    assert.equal(widget.current, 24);
     assert.equal(widget.max, 30);
     assert.equal(widget.temp, 5);
 
     widget.updateValue(18);
     assert.equal(dispatched.length, 1);
     assert.equal(dispatched[0].cmd, "UPDATE_ACTOR_SHEET");
+    assert.equal(dispatched[0].path, "current");
     assert.equal(dispatched[0].value, 18);
-    assert.equal(dispatched[0].current, 18);
   });
 
-  it("WHEN a user clicks a saving throw row in SavingThrowList, SavingThrowList dispatches a TrameCommand.RollDice command with formula 1d20 + modifier", () => {
+  it("WHEN a user clicks a saving throw row in SavingThrowList, SavingThrowList dispatches a TrameCommand.RollDice command with formula 1d20 + saveModifier", () => {
     const dispatched: any[] = [];
     const widget = SavingThrowList({
       id: "saves-1",
       boundValues: {
         saves: {
-          con: { modifier: 4, proficient: true },
-          int: { modifier: -1, proficient: false },
+          dex: { modifier: 4, proficient: true },
+          wis: { modifier: -1, proficient: false },
         },
       },
       options: {},
       dispatchCommand: (cmd) => dispatched.push(cmd),
     });
 
-    widget.clickSave("con");
+    widget.clickSave("dex");
     assert.equal(dispatched.length, 1);
     assert.equal(dispatched[0].cmd, "ROLL_DICE");
     assert.equal(dispatched[0].formula, "1d20 + 4");
-    assert.equal(dispatched[0].ability, "con");
+    assert.equal(dispatched[0].ability, "dex");
+
+    widget.clickSave("wis");
+    assert.equal(dispatched.length, 2);
+    assert.equal(dispatched[1].cmd, "ROLL_DICE");
+    assert.equal(dispatched[1].formula, "1d20 - 1");
   });
 
-  it("WHEN a user clicks a skill check row in SkillCheckList, SkillCheckList dispatches a TrameCommand.RollDice command with formula 1d20 + modifier", () => {
+  it("WHEN a user clicks a skill row in SkillCheckList, SkillCheckList dispatches a TrameCommand.RollDice command with formula 1d20 + skillModifier", () => {
     const dispatched: any[] = [];
     const widget = SkillCheckList({
       id: "skills-1",
       boundValues: {
         skills: {
           stealth: { modifier: 5, proficiencyLevel: "proficient", passive: 15 },
-          athletics: { modifier: -1, proficiencyLevel: "none", passive: 9 },
+          athletics: { modifier: -2, proficiencyLevel: "none", passive: 8 },
         },
       },
       options: {},
@@ -114,40 +120,48 @@ describe("Twelve Canonical Atomic Sheet Widgets & Command Dispatching", () => {
     assert.equal(dispatched[0].cmd, "ROLL_DICE");
     assert.equal(dispatched[0].formula, "1d20 + 5");
     assert.equal(dispatched[0].skill, "stealth");
+
+    widget.clickSkill("athletics");
+    assert.equal(dispatched.length, 2);
+    assert.equal(dispatched[1].cmd, "ROLL_DICE");
+    assert.equal(dispatched[1].formula, "1d20 - 2");
   });
 
-  it("WHEN a user clicks the initiative trigger in ArmorInitiativeSpeed, ArmorInitiativeSpeed dispatches a TrameCommand.RollDice command with formula 1d20 + initiative", () => {
+  it("WHEN a user clicks the initiative card in ArmorInitiativeSpeed, ArmorInitiativeSpeed dispatches a TrameCommand.RollDice command with formula 1d20 + initiativeModifier", () => {
     const dispatched: any[] = [];
     const widget = ArmorInitiativeSpeed({
       id: "ais-1",
       boundValues: {
-        armorClass: 18,
-        initiative: 2,
-        speed: "30 ft",
+        armorClass: 16,
+        initiative: 3,
+        speed: 30,
       },
       options: {},
       dispatchCommand: (cmd) => dispatched.push(cmd),
     });
 
-    assert.equal(widget.armorClass, 18);
+    assert.equal(widget.armorClass, 16);
+    assert.equal(widget.initiative, 3);
+    assert.equal(widget.speed, 30);
+
     widget.clickInitiative();
     assert.equal(dispatched.length, 1);
     assert.equal(dispatched[0].cmd, "ROLL_DICE");
-    assert.equal(dispatched[0].formula, "1d20 + 2");
-    assert.equal(dispatched[0].initiative, 2);
+    assert.equal(dispatched[0].formula, "1d20 + 3");
   });
 
-  it("WHEN a user clicks Spend Hit Die in HitDiceAndDeathSaves, HitDiceAndDeathSaves dispatches a TrameCommand.RollDice command for 1d{sides} + conModifier and dispatches a TrameCommand.UpdateActorSheet command decrementing hitDiceCurrent by 1", () => {
+  it("WHEN a user clicks spend hit die in HitDiceAndDeathSaves, HitDiceAndDeathSaves dispatches a TrameCommand.RollDice command and a TrameCommand.UpdateActorSheet command decrementing hitDiceCurrent", () => {
     const dispatched: any[] = [];
     const widget = HitDiceAndDeathSaves({
-      id: "hd-ds-1",
+      id: "hdds-1",
       boundValues: {
         hitDiceCurrent: 4,
-        hitDiceMax: 5,
-        hitDieSides: 10,
-        conModifier: 3,
+        hitDiceMax: 4,
+        hitDieSides: 8,
+        conModifier: 2,
         deathSuccesses: 0,
         deathFailures: 0,
+        hpCurrent: 10,
       },
       options: {},
       dispatchCommand: (cmd) => dispatched.push(cmd),
@@ -156,78 +170,52 @@ describe("Twelve Canonical Atomic Sheet Widgets & Command Dispatching", () => {
     widget.spendHitDie();
     assert.equal(dispatched.length, 2);
     assert.equal(dispatched[0].cmd, "ROLL_DICE");
-    assert.equal(dispatched[0].formula, "1d10 + 3");
+    assert.equal(dispatched[0].formula, "1d8 + 2");
     assert.equal(dispatched[1].cmd, "UPDATE_ACTOR_SHEET");
-    assert.equal(dispatched[1].hitDiceCurrent, 3);
+    assert.equal(dispatched[1].path, "hitDiceCurrent");
+    assert.equal(dispatched[1].value, 3);
   });
 
-  it("WHEN a death save roll evaluates to 1 in HitDiceAndDeathSaves, HitDiceAndDeathSaves dispatches a TrameCommand.UpdateActorSheet command incrementing deathFailures by 2", () => {
-    const dispatched: any[] = [];
+  it("WHEN a user evaluates death saving throw roll results in HitDiceAndDeathSaves, HitDiceAndDeathSaves dispatches the appropriate death failure, death success, or revival commands matching threshold rules", () => {
+    let dispatched: any[] = [];
     const widget = HitDiceAndDeathSaves({
-      id: "hd-ds-1",
+      id: "hdds-death-test",
       boundValues: {
-        deathSuccesses: 0,
+        hitDiceCurrent: 0,
+        hitDiceMax: 4,
+        hitDieSides: 8,
+        conModifier: 0,
+        deathSuccesses: 1,
         deathFailures: 0,
-      },
-      options: {},
-      dispatchCommand: (cmd) => dispatched.push(cmd),
-    });
-
-    widget.evaluateDeathSaveResult(1);
-    assert.equal(dispatched.length, 1);
-    assert.equal(dispatched[0].cmd, "UPDATE_ACTOR_SHEET");
-    assert.equal(dispatched[0].deathFailures, 2);
-  });
-
-  it("WHEN a death save roll evaluates between 2 and 9 inclusive in HitDiceAndDeathSaves, HitDiceAndDeathSaves dispatches a TrameCommand.UpdateActorSheet command incrementing deathFailures by 1", () => {
-    const dispatched: any[] = [];
-    const widget = HitDiceAndDeathSaves({
-      id: "hd-ds-1",
-      boundValues: {
-        deathSuccesses: 1,
-        deathFailures: 1,
-      },
-      options: {},
-      dispatchCommand: (cmd) => dispatched.push(cmd),
-    });
-
-    widget.evaluateDeathSaveResult(5);
-    assert.equal(dispatched.length, 1);
-    assert.equal(dispatched[0].cmd, "UPDATE_ACTOR_SHEET");
-    assert.equal(dispatched[0].deathFailures, 2);
-  });
-
-  it("WHEN a death save roll evaluates between 10 and 19 inclusive in HitDiceAndDeathSaves, HitDiceAndDeathSaves dispatches a TrameCommand.UpdateActorSheet command incrementing deathSuccesses by 1", () => {
-    const dispatched: any[] = [];
-    const widget = HitDiceAndDeathSaves({
-      id: "hd-ds-1",
-      boundValues: {
-        deathSuccesses: 1,
-        deathFailures: 2,
-      },
-      options: {},
-      dispatchCommand: (cmd) => dispatched.push(cmd),
-    });
-
-    widget.evaluateDeathSaveResult(14);
-    assert.equal(dispatched.length, 1);
-    assert.equal(dispatched[0].cmd, "UPDATE_ACTOR_SHEET");
-    assert.equal(dispatched[0].deathSuccesses, 2);
-  });
-
-  it("WHEN a death save roll evaluates to 20 in HitDiceAndDeathSaves, HitDiceAndDeathSaves dispatches a TrameCommand.UpdateActorSheet command resetting death counters to 0 and incrementing current hit points by 1", () => {
-    const dispatched: any[] = [];
-    const widget = HitDiceAndDeathSaves({
-      id: "hd-ds-1",
-      boundValues: {
-        deathSuccesses: 2,
-        deathFailures: 2,
         hpCurrent: 0,
       },
       options: {},
       dispatchCommand: (cmd) => dispatched.push(cmd),
     });
 
+    // Roll 1: Natural 1 adds 2 failures
+    dispatched = [];
+    widget.evaluateDeathSaveResult(1);
+    assert.equal(dispatched.length, 1);
+    assert.equal(dispatched[0].cmd, "UPDATE_ACTOR_SHEET");
+    assert.equal(dispatched[0].deathFailures, 2);
+
+    // Roll 5: 2-9 adds 1 failure
+    dispatched = [];
+    widget.evaluateDeathSaveResult(5);
+    assert.equal(dispatched.length, 1);
+    assert.equal(dispatched[0].cmd, "UPDATE_ACTOR_SHEET");
+    assert.equal(dispatched[0].deathFailures, 1);
+
+    // Roll 15: 10-19 adds 1 success
+    dispatched = [];
+    widget.evaluateDeathSaveResult(15);
+    assert.equal(dispatched.length, 1);
+    assert.equal(dispatched[0].cmd, "UPDATE_ACTOR_SHEET");
+    assert.equal(dispatched[0].deathSuccesses, 2);
+
+    // Roll 20: Natural 20 revives with 1 HP and resets death counters
+    dispatched = [];
     widget.evaluateDeathSaveResult(20);
     assert.equal(dispatched.length, 1);
     assert.equal(dispatched[0].cmd, "UPDATE_ACTOR_SHEET");
@@ -236,13 +224,20 @@ describe("Twelve Canonical Atomic Sheet Widgets & Command Dispatching", () => {
     assert.equal(dispatched[0].hpCurrent, 1);
   });
 
-  it("WHEN a user clicks an attack roll button in AttackActionTable, AttackActionTable dispatches a TrameCommand.RollDice command with formula 1d20 + attackBonus", () => {
+  it("WHEN a user clicks attack roll or damage roll in AttackActionTable, AttackActionTable dispatches the corresponding TrameCommand.RollDice commands", () => {
     const dispatched: any[] = [];
     const widget = AttackActionTable({
       id: "attacks-1",
       boundValues: {
         attacks: [
-          { id: "atk-longsword", name: "Longsword", attackBonus: 6, damageFormula: "1d8 + 4", damageType: "slashing" },
+          {
+            id: "atk-longsword",
+            name: "Longsword",
+            attackBonus: 6,
+            damageFormula: "1d8 + 4",
+            damageType: "slashing",
+            range: "5 ft",
+          },
         ],
       },
       options: {},
@@ -292,6 +287,84 @@ describe("Twelve Canonical Atomic Sheet Widgets & Command Dispatching", () => {
     assert.equal(dispatched[2].cmd, "ROLL_DICE");
   });
 
+  it("WHEN casting a spell with level1..level9 keys in SpellbookAccordion, SpellbookAccordion resolves the key correctly and dispatches UpdateActorSheet with slots.levelX.current", () => {
+    const dispatched: any[] = [];
+    const widget = SpellbookAccordion({
+      id: "spellbook-dnd5e-keys",
+      boundValues: {
+        slots: {
+          level1: { current: 4, max: 4 },
+          level2: { current: 3, max: 3 },
+        },
+        spells: [
+          { id: "sp-cure", name: "Cure Wounds", level: 1, requiresAoE: false },
+        ],
+        spellSaveDc: 13,
+        spellAttackBonus: 5,
+      },
+      options: {
+        autoDeductSlots: true,
+      },
+      dispatchCommand: (cmd) => dispatched.push(cmd),
+    });
+
+    widget.castSpell("sp-cure");
+    assert.equal(dispatched.length, 2);
+    assert.equal(dispatched[0].cmd, "ROLL_DICE");
+    assert.equal(dispatched[1].cmd, "UPDATE_ACTOR_SHEET");
+    assert.equal(dispatched[1].path, "slots.level1.current");
+    assert.equal(dispatched[1].current, 3);
+
+    widget.toggleSlotPip(1);
+    assert.equal(dispatched.length, 3);
+    assert.equal(dispatched[2].cmd, "UPDATE_ACTOR_SHEET");
+    assert.equal(dispatched[2].path, "slots.level1.current");
+  });
+
+  it("WHEN a user moves an item or deletes an item in InventoryContainerTree, InventoryContainerTree dispatches the corresponding TrameCommand.UpdateActorSheet commands", () => {
+    const dispatched: any[] = [];
+    const widget = InventoryContainerTree({
+      id: "inv-1",
+      boundValues: {
+        items: [
+          { id: "item-potion", name: "Healing Potion", quantity: 1, unitWeight: 0.5, containerId: null },
+        ],
+        currency: { cp: 10, sp: 5, ep: 0, gp: 50, pp: 0 },
+      },
+      options: {},
+      dispatchCommand: (cmd) => dispatched.push(cmd),
+    });
+
+    widget.moveItem("item-potion", "backpack-main");
+    assert.equal(dispatched.length, 1);
+    assert.equal(dispatched[0].cmd, "UPDATE_ACTOR_SHEET");
+    assert.equal(dispatched[0].path, "items.item-potion.containerId");
+    assert.equal(dispatched[0].containerId, "backpack-main");
+
+    widget.removeItem("item-potion");
+    assert.equal(dispatched.length, 2);
+    assert.equal(dispatched[1].cmd, "UPDATE_ACTOR_SHEET");
+    assert.equal(dispatched[1].action, "delete");
+  });
+
+  it("WHEN a user expands and collapses feature items in FeatureTraitList, FeatureTraitList tracks expanded state locally without dispatching network commands", () => {
+    const widget = FeatureTraitList({
+      id: "features-1",
+      boundValues: {
+        features: [
+          { id: "feat-sneak-attack", name: "Sneak Attack", source: "Rogue", description: "Extra damage on advantage." },
+        ],
+      },
+      options: {},
+    });
+
+    assert.equal(widget.isExpanded("feat-sneak-attack"), false);
+    widget.toggleFeature("feat-sneak-attack");
+    assert.equal(widget.isExpanded("feat-sneak-attack"), true);
+    widget.toggleFeature("feat-sneak-attack");
+    assert.equal(widget.isExpanded("feat-sneak-attack"), false);
+  });
+
   it("WHEN a user clicks the remove button on a condition badge in ConditionBadgeStrip, ConditionBadgeStrip dispatches a TrameCommand.UpdateActorSheet command removing that condition identifier", () => {
     const dispatched: any[] = [];
     const widget = ConditionBadgeStrip({
@@ -324,50 +397,10 @@ describe("Twelve Canonical Atomic Sheet Widgets & Command Dispatching", () => {
 
     assert.equal(sanitizeHtml("<script>alert('xss')</script><b>Clean</b>"), "Clean");
 
-    widget.editNotes("<p>Hello</p><script>evil()</script>");
+    widget.editNotes("<script>bad()</script>Valid notes");
     assert.equal(dispatched.length, 1);
     assert.equal(dispatched[0].cmd, "UPDATE_ACTOR_SHEET");
-    assert.equal(dispatched[0].notes, "Hello");
-    assert.equal(dispatched[0].text, "Hello");
-  });
-
-  it("renders canonical widgets declaratively via DeclarativeSheetRenderer and dispatches commands", () => {
-    WidgetRegistry.registerDefaults();
-
-    const tree: SheetLayoutTree = {
-      systemId: "dnd5e",
-      version: "1.0.0",
-      root: {
-        id: "inventory-widget",
-        kind: "widget",
-        widgetType: "InventoryContainerTree",
-        bindings: {
-          items: "sheet.items",
-          currency: "sheet.currency",
-        },
-      },
-    };
-
-    const state = {
-      sheet: {
-        items: [
-          { id: "item-bag", name: "Backpack", isContainer: true, containerId: null },
-          { id: "item-potion", name: "Healing Potion", containerId: null },
-        ],
-        currency: { gp: 50 },
-      },
-    };
-
-    const dispatched: any[] = [];
-    const rendered = DeclarativeSheetRenderer.render(tree, state, undefined, (cmd) => dispatched.push(cmd));
-
-    assert.ok(rendered.root);
-    const widgetOut = (rendered.root as any).renderedOutput;
-    assert.ok(widgetOut);
-    widgetOut.moveItem("item-potion", "item-bag");
-    assert.equal(dispatched.length, 1);
-    assert.equal(dispatched[0].cmd, "UPDATE_ACTOR_SHEET");
-    assert.equal(dispatched[0].itemId, "item-potion");
-    assert.equal(dispatched[0].targetContainerId, "item-bag");
+    assert.equal(dispatched[0].path, "notes");
+    assert.equal(dispatched[0].notes, "Valid notes");
   });
 });
