@@ -12,7 +12,9 @@ pub use manifest::{ArchiveEntryDescriptor, CampaignManifest, CampaignMetadata, M
 mod tests {
     use super::*;
     use crate::storage::LocalFsStore;
-    use crate::storage::blob::{BlobStore, BlobStoreError, Sha256Hasher, slice_to_stream};
+    use crate::storage::blob::{
+        AssetDescriptor, BlobStore, BlobStoreError, BlobStream, Sha256Hasher, slice_to_stream,
+    };
     use futures_util::StreamExt;
     use serde_json::json;
     use std::io::Cursor;
@@ -41,6 +43,40 @@ mod tests {
 
         fn list_asset_ids(&self) -> Vec<Uuid> {
             self.asset_ids.clone()
+        }
+    }
+
+    #[derive(Clone)]
+    struct FailingBlobStore;
+
+    impl BlobStore for FailingBlobStore {
+        async fn put_stream(
+            &self,
+            _id: &str,
+            _stream: BlobStream,
+        ) -> Result<AssetDescriptor, BlobStoreError> {
+            unimplemented!()
+        }
+
+        async fn get_descriptor(&self, id: &str) -> Result<AssetDescriptor, BlobStoreError> {
+            Ok(AssetDescriptor {
+                id: id.to_string(),
+                byte_size: 10,
+                sha256_hex: "dummy".to_string(),
+                mime_type: "image/webp".to_string(),
+            })
+        }
+
+        async fn open_read_stream(&self, _id: &str) -> Result<BlobStream, BlobStoreError> {
+            Err(BlobStoreError::NotFound("injected failure".to_string()))
+        }
+
+        async fn list_descriptors(&self) -> Result<Vec<AssetDescriptor>, BlobStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn delete(&self, _id: &str) -> Result<(), BlobStoreError> {
+            Ok(())
         }
     }
 
@@ -281,135 +317,78 @@ mod tests {
     }
 
     #[test]
-    fn test_note_archive_path_sanitization_zip_slip() {
+    fn test_note_archive_path_zip_slip_sanitization() {
         let id = Uuid::new_v4();
         let author_id = Uuid::new_v4();
 
         let note_traversal = NoteRecord {
             id,
-            title: "Secret Infiltration".to_string(),
-            folder: Some("../../etc".to_string()),
+            title: "Factions Dossier".to_string(),
+            folder: Some("../../factions".to_string()),
             author_id,
             created_at: "2025-02-01T10:00:00Z".to_string(),
             updated_at: "2025-02-05T14:20:00Z".to_string(),
-            content_markdown: "Secret".to_string(),
+            content_markdown: "Secret notes".to_string(),
         };
         assert_eq!(
             note_traversal.archive_path(),
-            "notes/etc/secret-infiltration.md"
+            "notes/factions/factions-dossier.md"
         );
 
-        let note_backslashes = NoteRecord {
+        let note_windows = NoteRecord {
             id,
-            title: "Windows Plan".to_string(),
-            folder: Some("..\\..\\windows\\system32".to_string()),
+            title: "System Config".to_string(),
+            folder: Some("..\\..\\system".to_string()),
             author_id,
             created_at: "2025-02-01T10:00:00Z".to_string(),
             updated_at: "2025-02-05T14:20:00Z".to_string(),
-            content_markdown: "Plan".to_string(),
+            content_markdown: "Secret notes".to_string(),
         };
-        assert_eq!(
-            note_backslashes.archive_path(),
-            "notes/windows/system32/windows-plan.md"
-        );
+        assert_eq!(note_windows.archive_path(), "notes/system/system-config.md");
 
-        let note_dots = NoteRecord {
+        let note_all_dots = NoteRecord {
             id,
-            title: "Empty Folder".to_string(),
-            folder: Some("   /./../   ".to_string()),
+            title: "Dot Note".to_string(),
+            folder: Some("../../../.".to_string()),
             author_id,
             created_at: "2025-02-01T10:00:00Z".to_string(),
             updated_at: "2025-02-05T14:20:00Z".to_string(),
-            content_markdown: "Dots".to_string(),
+            content_markdown: "Secret notes".to_string(),
         };
-        assert_eq!(note_dots.archive_path(), "notes/empty-folder.md");
-    }
-
-    #[derive(Clone)]
-    struct FailingAssetBlobStore {
-        descriptor: crate::storage::blob::AssetDescriptor,
-    }
-
-    impl BlobStore for FailingAssetBlobStore {
-        async fn put_stream(
-            &self,
-            _id: &str,
-            _stream: crate::storage::blob::BlobStream,
-        ) -> Result<crate::storage::blob::AssetDescriptor, BlobStoreError> {
-            unimplemented!()
-        }
-
-        async fn get_descriptor(
-            &self,
-            _id: &str,
-        ) -> Result<crate::storage::blob::AssetDescriptor, BlobStoreError> {
-            Ok(self.descriptor.clone())
-        }
-
-        async fn open_read_stream(
-            &self,
-            _id: &str,
-        ) -> Result<crate::storage::blob::BlobStream, BlobStoreError> {
-            Err(BlobStoreError::NotFound(
-                "corrupted-asset-during-streaming".to_string(),
-            ))
-        }
-
-        async fn list_descriptors(
-            &self,
-        ) -> Result<Vec<crate::storage::blob::AssetDescriptor>, BlobStoreError> {
-            Ok(vec![self.descriptor.clone()])
-        }
-
-        async fn delete(&self, _id: &str) -> Result<(), BlobStoreError> {
-            Ok(())
-        }
+        assert_eq!(note_all_dots.archive_path(), "notes/dot-note.md");
     }
 
     #[tokio::test]
-    async fn test_archive_export_propagates_background_writer_error() {
-        let asset_id = Uuid::new_v4();
-        let store = FailingAssetBlobStore {
-            descriptor: crate::storage::blob::AssetDescriptor {
-                id: asset_id.to_string(),
-                byte_size: 1024,
-                sha256_hex: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                    .to_string(),
-                mime_type: "image/webp".to_string(),
-            },
-        };
-
-        let campaign_id = Uuid::new_v4();
+    async fn test_export_stream_propagates_write_archive_error() {
         let source = MockExportSource {
             campaign: CampaignMetadata {
-                id: campaign_id,
-                name: "Error Propagation Test".to_string(),
+                id: Uuid::new_v4(),
+                name: "Failing Export".to_string(),
                 system: "dnd5e".to_string(),
                 description: None,
-                created_at: "2026-10-30T00:00:00Z".to_string(),
+                created_at: "2025-01-01T00:00:00Z".to_string(),
             },
             entities: Vec::new(),
             notes: Vec::new(),
-            asset_ids: vec![asset_id],
+            asset_ids: vec![Uuid::new_v4()],
         };
 
-        let exporter = ArchiveExporter::new(source, store);
-        let mut export_stream = exporter.export_stream().await.expect("start export stream");
+        let exporter = ArchiveExporter::new(source, FailingBlobStore);
+        let mut stream = exporter
+            .export_stream()
+            .await
+            .expect("export stream starts");
 
-        let mut error_received = None;
-        while let Some(chunk_res) = export_stream.next().await {
-            if let Err(err) = chunk_res {
-                error_received = Some(err);
+        let mut caught_err = false;
+        while let Some(chunk_res) = stream.next().await {
+            if let Err(ArchiveExportError::Storage(BlobStoreError::NotFound(_))) = chunk_res {
+                caught_err = true;
                 break;
             }
         }
-
         assert!(
-            matches!(
-                error_received,
-                Some(ArchiveExportError::Storage(BlobStoreError::NotFound(_)))
-            ),
-            "Expected Storage(NotFound) error from background writer, got {error_received:?}"
+            caught_err,
+            "Error in write_archive must propagate through export_stream"
         );
     }
 

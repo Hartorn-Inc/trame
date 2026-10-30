@@ -57,15 +57,18 @@ impl NoteRecord {
         };
         match &self.folder {
             Some(folder) => {
-                let clean_segments: Vec<&str> = folder
-                    .split(['/', '\\'])
-                    .map(str::trim)
-                    .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
-                    .collect();
-                if clean_segments.is_empty() {
+                let clean_folder = folder
+                    .replace('\\', "/")
+                    .split('/')
+                    .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+                    .map(slugify)
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                if clean_folder.is_empty() {
                     format!("notes/{filename}")
                 } else {
-                    format!("notes/{}/{filename}", clean_segments.join("/"))
+                    format!("notes/{clean_folder}/{filename}")
                 }
             }
             None => format!("notes/{filename}"),
