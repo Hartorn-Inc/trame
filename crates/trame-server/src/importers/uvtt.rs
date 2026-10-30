@@ -140,6 +140,9 @@ fn detect_magic_bytes(bytes: &[u8]) -> Result<DetectedImageFormat, UvttImportErr
 
 pub fn parse_hex_color(hex_str: &str) -> [f32; 3] {
     let trimmed = hex_str.trim().trim_start_matches('#');
+    if !trimmed.is_ascii() {
+        return [1.0, 1.0, 1.0];
+    }
     match trimmed.len() {
         6 => {
             let r = u8::from_str_radix(&trimmed[0..2], 16).unwrap_or(255);

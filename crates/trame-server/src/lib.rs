@@ -235,6 +235,7 @@ mod tests {
             ("00ff00", [0.0, 1.0, 0.0]),
             ("#ffff8800", [1.0, 136.0 / 255.0, 0.0]),
             ("#fff", [1.0, 1.0, 1.0]),
+            ("#ééé", [1.0, 1.0, 1.0]),
         ];
         for (hex, expected) in cases {
             let parsed = parse_hex_color(hex);
