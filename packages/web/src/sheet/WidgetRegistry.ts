@@ -1,4 +1,5 @@
 import type { CommandDispatcher } from "./types.ts";
+import { registerAllCanonicalWidgets } from "./widgets/index.ts";
 
 export interface WidgetRenderContext<TOptions = Record<string, unknown>> {
   id: string;
@@ -53,6 +54,14 @@ export class WidgetRegistry {
 
   public static getRegisteredTypes(): string[] {
     return WidgetRegistry.defaultInstance.getRegisteredTypes();
+  }
+
+  public static registerDefaults(): void {
+    WidgetRegistry.defaultInstance.registerDefaults();
+  }
+
+  public registerDefaults(): void {
+    registerAllCanonicalWidgets(this);
   }
 
   public register(widgetType: string, implementation: unknown): void {
