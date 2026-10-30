@@ -1,4 +1,4 @@
-# ADR-0035: Hybrid Authentication Architecture and Frictionless Magic Links
+# ADR-0043: Hybrid Authentication Architecture and Frictionless Magic Links
 
 ## Status
 Accepted

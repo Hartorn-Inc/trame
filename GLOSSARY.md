@@ -49,11 +49,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **Definition**: Attenuation of sound high frequencies calculated via raycasting through walls with `blocks_sound: true`.
 
-- **Allowed Context**: Spatial audio processing and WebAudio filter graphs.
+- **Allowed Context**: Combat turn management, HUD badges, and Game Master refunds.
 
-- **_Avoid_**: SoundMuffling, AudioBlocking, AcousticShadow.
+- **_Avoid_**: TurnResource, ActionSlot, TokenAllowance.
 
-### ActionEconomyType
+### AmbientPreset
 
 - **Definition**: Categorization of an actor tactical resource pool (`Action`, `BonusAction`, `Reaction`, or `Movement`).
 
@@ -177,13 +177,13 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **Definition**: Game Master history drawer displaying recent table mutations and triggering single-click rollbacks.
 
-- **Allowed Context**: Spatial audio processing and WebAudio filter graphs.
+- **Allowed Context**: Lighting shader uniforms, SceneGraph render passes, and GM override controls.
 
-- **_Avoid_**: SoundMuffling, AudioBlocking, AcousticShadow.
+- **_Avoid_**: TimeOfDay, LightSetting, MoodPreset.
 
-### ActionEconomyType
+### CombatTracker
 - **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
-- **Allowed**: `AbilityModifier`, `ability modifier`
+- **Allowed**: `AbilityScore`, `ability score`
 - **Avoid**: `stat mod`, `ability bonus`
 
 ### AbilityScore
@@ -298,7 +298,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### TurnTrigger
 - **Definition**: Attenuation of sound high frequencies calculated via raycasting through walls with `blocks_sound: true`.
-- **Allowed**: `AbilityModifier`, `ability modifier`
+- **Allowed**: `ActiveEffect`, `active effect`
 - **Avoid**: `stat mod`, `ability bonus`
 
 ### AbilityScore
