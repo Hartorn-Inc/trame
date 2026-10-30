@@ -193,9 +193,12 @@ export class CombatTrackerManager {
         token.reactionAvailable = true;
         break;
       case "MOVEMENT":
-        token.speedRemainingFt = Math.min(
-          token.speedMaxFt,
-          token.speedRemainingFt + (amountFt ?? token.speedMaxFt),
+        token.speedRemainingFt = Math.max(
+          0,
+          Math.min(
+            token.speedMaxFt,
+            token.speedRemainingFt + Math.max(0, amountFt ?? token.speedMaxFt),
+          ),
         );
         break;
     }

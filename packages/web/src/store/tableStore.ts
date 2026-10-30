@@ -107,7 +107,7 @@ export class TableClientStore {
         topLeft: { ...tok.topLeft },
         tempHp: tok.tempHp ?? 0,
         elevationFt: tok.elevationFt ?? 0,
-        speedRemainingFt: tok.speedRemainingFt ?? 30,
+        speedRemainingFt: tok.speedRemainingFt ?? tok.speedMaxFt ?? 30,
         speedMaxFt: tok.speedMaxFt ?? 30,
         actionAvailable: tok.actionAvailable ?? true,
         bonusActionAvailable: tok.bonusActionAvailable ?? true,
@@ -241,6 +241,9 @@ export class TableClientStore {
     const token = this.tokens.get(tokenId);
     if (!token) return false;
     this.gmOverride.teleportToken(token, targetX, targetY, targetElevationFt);
+    if (targetElevationFt !== undefined) {
+      this.combatTracker.syncToken({ id: tokenId, elevationFt: targetElevationFt });
+    }
     return true;
   }
 

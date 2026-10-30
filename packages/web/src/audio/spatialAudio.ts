@@ -78,7 +78,7 @@ export function countSoundOccludingWalls(
   let count = 0;
 
   for (const wall of walls) {
-    if (wall.blocksSound === false) {
+    if (!wall.blocksSound) {
       continue;
     }
     const hit = intersectSegments(p0, p1, wall.a, wall.b);

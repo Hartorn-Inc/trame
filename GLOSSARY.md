@@ -147,7 +147,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### TableMode
 
-- **Definition**: Global operational operational mode of the table distinguishing free Exploration from turn-by-turn combat.
+- **Definition**: Global operational mode of the table distinguishing free Exploration from turn-by-turn combat.
 
 - **Allowed Context**: Table state synchronization, top bar controls, and movement validation.
 

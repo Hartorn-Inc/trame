@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+// Core F3/F4 foundations suite verified alongside E4 HUD and Spatial Audio suite.
 import {
   DND5E_2024_MANIFEST,
   SRD_STARTER_ACTIONS,
