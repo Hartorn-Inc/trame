@@ -70,6 +70,11 @@ jobs:
           (cd /tmp && sha256sum --check --ignore-missing rtk-checksums.txt)
           sudo tar -xzf "/tmp/${RTK_ARCHIVE}" -C /usr/local/bin rtk
           sudo chmod 0755 /usr/local/bin/rtk
+          SYSROOT="$(rustc --print sysroot)"
+          sudo rm -rf /opt/rust-toolchain
+          sudo cp -a "$SYSROOT" /opt/rust-toolchain
+          sudo chmod -R a+rX /opt/rust-toolchain
+          echo "/opt/rust-toolchain/bin" >> "$GITHUB_PATH"
       - name: Run pre-bundled EPURE issue orchestrator
         id: orchestrate
         env:
