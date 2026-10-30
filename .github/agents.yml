@@ -7,7 +7,7 @@ models:
   review: google/gemini-3.8-flash
 merge_policy: strict
 task_auto_merge_enabled: false
-max_code_fix_attempts: 3
+max_code_fix_attempts: 6
 max_transient_api_retries: 4
 transient_retry_backoff_seconds: [5, 15, 45, 120]
 llm_request_timeout_seconds: 900
