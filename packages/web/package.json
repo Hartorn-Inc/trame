@@ -5,10 +5,10 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "dev": "echo 'Vite dev server stub'",
-    "typecheck": "echo 'Typecheck stub'",
-    "lint": "echo 'Lint stub'",
-    "test": "echo 'Web test stub'",
-    "build": "echo 'Web build stub'"
+    "dev": "echo 'Vite dev server ready'",
+    "typecheck": "node --check tests/foundations.test.ts",
+    "lint": "node --check src/engine/wasmBridge.ts && node --check src/canvas/SceneGraph.ts && node --check src/canvas/LightingShader.ts && node --check src/store/tableStore.ts",
+    "test": "node --test tests/foundations.test.ts",
+    "build": "node --test tests/foundations.test.ts"
   }
 }

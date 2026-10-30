@@ -3,6 +3,7 @@ target/
 **/*.rs.bk
 *.pdb
 pkg/
+packages/web/src/wasm/
 
 # Node / Web
 node_modules/

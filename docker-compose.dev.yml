@@ -29,7 +29,7 @@ services:
       - trame_dev
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     logging: *logging
     restart: unless-stopped
     command: server /data --console-address ":9001"

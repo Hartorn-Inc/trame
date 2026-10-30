@@ -1,5 +1,5 @@
 # TRAME Production Multi-Stage Single Binary Image (Cloud Run / e2-micro)
-FROM rust:1.86-bookworm AS rust-builder
+FROM rust:1-bookworm AS rust-builder
 WORKDIR /build
 COPY Cargo.toml ./
 COPY crates ./crates
