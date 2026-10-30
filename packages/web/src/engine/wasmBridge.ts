@@ -1,99 +1,83 @@
-/**
- * ============================================================================
- * SPATIAL RAYCASTING & AOE DISCRETIZATION ENGINE BRIDGE (wasmBridge.ts)
- * ============================================================================
- *
- * PURPOSE:
- * --------
- * Provides the client-side spatial geometry bridge for 2D visibility polygon
- * raycasting (`computeVisibilityPolygon`) and real-time spherical Area-of-Effect
- * grid discretization (`previewSphereAoeCells`) at 60 FPS (`16.6 ms` frame budget),
- * maintaining bit-compatible behavior between the browser WASM runtime and
- * deterministic headless/SSR test environments.
- *
- * INVARIANTS & SAFETY BOUNDARIES:
- * -------------------------------
- *   1. `2.5D Vertical Wall Filtering`:
- *      - `computeVisibilityPolygon` only clips vision rays against walls where
- *        `blocksVision === true` AND the observer's eye elevation (`observerEyeFt`,
- *        in `ft`) lies within `[bottomElevationFt, topElevationFt]`, allowing
- *        observers to see over low cover or under high arches.
- *   2. `Corner-Jitter Ray Fan`:
- *      - Combines a 36-step uniform radial sweep with `±1e-4 rad` (`eps`) rays
- *        around every in-range wall endpoint so visibility polygons cleanly graze
- *        wall corners without missing shadow umbra transitions.
- *   3. `Division-by-Zero & Collinear Segment Guards`:
- *      - `previewSphereAoeCells` clamps `feetPerCell` via `Math.max(1, feetPerCell)`
- *        before converting `radiusFt` (`ft`) to pixels (`px`), and `intersectSegments`
- *        rejects parallel/collinear segments when `|denom| < 1e-10`.
- *
- * EXECUTION LIFECYCLE:
- * --------------------
- *   `computeVisibilityPolygon(walls, origin, observerEyeFt, maxRangePx)`
- *     ├── 1. Filter `walls` by `blocksVision` and vertical span `[bottomElevationFt, topElevationFt]`.
- *     ├── 2. Seed 36 base radial angles (`[-π, π)`) + `±1e-4 rad` endpoint triplets.
- *     ├── 3. Sort all candidate ray angles in ascending order.
- *     └── 4. Cast each ray to `maxRangePx` and record the closest wall intersection (`min t`).
- * ============================================================================
- */
-
-/**
- * 2D Cartesian coordinate in canvas pixel space (`px`) or table space.
- */
 export interface Point2D {
-  /** Horizontal X coordinate in pixels (`px`). */
   x: number;
-  /** Vertical Y coordinate in pixels (`px`). */
   y: number;
 }
 
-/**
- * Authoritative 2.5D wall segment descriptor transferred from the map state.
- */
 export interface WallSegmentDto {
-  /** Unique identifier of the wall segment on the active map. */
   id: string;
-  /** First endpoint of the wall segment in canvas pixels (`px`). */
   a: Point2D;
-  /** Second endpoint of the wall segment in canvas pixels (`px`). */
   b: Point2D;
-  /** Whether this wall blocks line-of-sight and AoE propagation. */
   blocksVision: boolean;
-  /** Lower vertical elevation bound of the wall in feet (`ft`). */
+  blocksMovement?: boolean;
+  blocksSound?: boolean;
   bottomElevationFt: number;
-  /** Upper vertical elevation bound of the wall in feet (`ft`). */
   topElevationFt: number;
 }
 
-/**
- * Tactical grid cell coverage rule for Area-of-Effect (AoE) templates:
- * - `"CENTER_POINT"`: Includes a cell iff its center point (`+0.5, +0.5`) lies within radius and has LoS.
- * - `"FIFTY_PERCENT"`: Samples a `4x4` sub-grid (16 points) and includes the cell iff `>= 8` points (`>= 50%`) hit.
- * - `"ANY_INTERSECTION"`: Includes a cell if its center or any of its 4 corners lies within radius and has LoS.
- * - `"TOKEN_EUCLIDEAN"`: Uses center-point Euclidean distance parity with token origin measurement.
- */
+export interface DrawingEntity {
+  id: string;
+  points: [number, number][];
+  color: string;
+  lineWidth: number;
+  isClosed: boolean;
+  hasPhysicalWalls: boolean;
+}
+
 export type DiscretizationMode =
   | "CENTER_POINT"
   | "FIFTY_PERCENT"
   | "ANY_INTERSECTION"
   | "TOKEN_EUCLIDEAN";
 
-/**
- * Zero-indexed 2D tactical grid cell coordinate (`col`, `row`).
- */
 export interface GridCell {
-  /** Horizontal column index on the tactical grid. */
   col: number;
-  /** Vertical row index on the tactical grid. */
   row: number;
 }
 
 /**
- * Computes a 2D radial visibility polygon around `origin` up to `maxRangePx` (in `px`),
- * clipping rays against blocking walls whose vertical span (`[bottomElevationFt, topElevationFt]`)
- * intersects `observerEyeFt` (in `ft`).
- * Uses the compiled `trame-engine` WASM module when initialized in browser, with
- * an identical deterministic raycaster for headless / SSR / test execution.
+ * Converts a vector drawing with `hasPhysicalWalls = true` into physical wall segments
+ * blocking movement, vision, and sound (`docs/specs/e4-interactive-table-hud-combat-trac.md`).
+ */
+export function convertDrawingToWallSegments(
+  drawing: DrawingEntity,
+  bottomElevationFt = -1000,
+  topElevationFt = 1000,
+): WallSegmentDto[] {
+  if (!drawing.hasPhysicalWalls || drawing.points.length < 2) {
+    return [];
+  }
+  const walls: WallSegmentDto[] = [];
+  for (let i = 0; i < drawing.points.length - 1; i++) {
+    walls.push({
+      id: `${drawing.id}-segment-${i}`,
+      a: { x: drawing.points[i][0], y: drawing.points[i][1] },
+      b: { x: drawing.points[i + 1][0], y: drawing.points[i + 1][1] },
+      blocksVision: true,
+      blocksMovement: true,
+      blocksSound: true,
+      bottomElevationFt,
+      topElevationFt,
+    });
+  }
+  if (drawing.isClosed && drawing.points.length >= 3) {
+    const lastIdx = drawing.points.length - 1;
+    walls.push({
+      id: `${drawing.id}-segment-${lastIdx}`,
+      a: { x: drawing.points[lastIdx][0], y: drawing.points[lastIdx][1] },
+      b: { x: drawing.points[0][0], y: drawing.points[0][1] },
+      blocksVision: true,
+      blocksMovement: true,
+      blocksSound: true,
+      bottomElevationFt,
+      topElevationFt,
+    });
+  }
+  return walls;
+}
+
+/**
+ * Computes a 2D radial visibility polygon around `origin` up to `maxRangePx`,
+ * clipping rays against blocking walls whose vertical span intersects `observerEyeFt`.
  */
 export function computeVisibilityPolygon(
   walls: WallSegmentDto[],
@@ -150,9 +134,8 @@ export function computeVisibilityPolygon(
 }
 
 /**
- * Previews discretized grid cells affected by a spherical AoE of radius `radiusFt` (`ft`)
- * at 60 FPS on the client, converting `radiusFt` to pixels via `(radiusFt / max(1, feetPerCell)) * cellSizePx`
- * and respecting wall-clipping (`stopsAtWalls`) and the campaign's `DiscretizationMode`.
+ * Previews discretized grid cells affected by a spherical AoE at 60 FPS on the client,
+ * respecting wall-clipping (`stopsAtWalls`) and the campaign's `DiscretizationMode`.
  */
 export function previewSphereAoeCells(
   origin: Point2D,
@@ -230,13 +213,7 @@ export function previewSphereAoeCells(
   return cells;
 }
 
-/**
- * Computes the parametric intersection `(t, u)` between segment `p0 -> p1` and
- * segment `q0 -> q1` using 2D cross-product determinants, returning the normalized
- * ray parameter `t` in `[0, 1]` and intersection `Point2D` when both `t` and `u`
- * fall within `[-1e-9, 1 + 1e-9]`.
- */
-function intersectSegments(
+export function intersectSegments(
   p0: Point2D,
   p1: Point2D,
   q0: Point2D,
