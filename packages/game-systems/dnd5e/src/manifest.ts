@@ -1,10 +1,46 @@
 /**
- * D&D 5e (SRD 5.1 CC-BY-4.0) Declarative GameSystem Manifest for TRAME.
+ * ============================================================================
+ * D&D 5E DECLARATIVE GAME SYSTEM MANIFEST & DERIVED STATS (manifest.ts)
+ * ============================================================================
+ *
+ * PURPOSE:
+ * --------
+ * Declares the D&D 5e (SRD 5.1 CC-BY-4.0) `GameSystemManifest`—including the
+ * canonical 18-skill registry and topological formula DAG—and implements the
+ * deterministic derived-stat evaluator (`computeDnd5eSheetDerived`) for both
+ * `Dnd5eActorData` and `Dnd5eActorSheet` representations.
  *
  * Open Game Content Attribution:
  * This work includes material from the System Reference Document 5.1 ("SRD 5.1")
  * by Wizards of the Coast LLC, available under the Creative Commons Attribution 4.0
  * International License (CC-BY-4.0).
+ *
+ * INVARIANTS & SAFETY BOUNDARIES:
+ * -------------------------------
+ *   1. `Acyclic Derived Formula Graph`:
+ *      - `DND5E_SRD51_MANIFEST.derivedDAG` orders nodes topologically from base
+ *        ability scores and level (`str`..`cha`, `level`) to first-order
+ *        modifiers (`*_mod`, `proficiency_bonus`) and second-order combat metrics
+ *        (`initiative_bonus`, `spell_save_dc_*`), preventing circular evaluation.
+ *   2. `Level Clamping Guard`:
+ *      - `computeDnd5eSheetDerived` clamps actor level to integer bounds `[1, 20]`
+ *        via `Math.max(1, Math.min(20, Math.trunc(level)))` before computing
+ *        proficiency bonus (`floor((level - 1) / 4) + 2`), preventing out-of-range
+ *        levels from corrupting saving throws, skills, or spell DCs.
+ *   3. `Dual-Representation Parity`:
+ *      - Supports both nested `Dnd5eActorData` (with encumbrance thresholds in `lb`)
+ *        and flat `Dnd5eActorSheet` (with unarmored Barbarian/Monk defenses and
+ *        2024-style exhaustion `-2 * level` d20 penalties).
+ *
+ * EXECUTION LIFECYCLE:
+ * --------------------
+ *   `computeDnd5eSheetDerived(actor)`
+ *     ├── 1. Discriminate `Dnd5eActorData` (`"attributes" in actor`) vs `Dnd5eActorSheet`.
+ *     ├── 2. Clamp level to `1..=20` and compute `proficiencyBonus` (`+2` to `+6`).
+ *     ├── 3. Compute six ability modifiers via `floor((score - 10) / 2)`.
+ *     ├── 4. Project saving throws, 18 skill totals, and passive scores (`10 + skill`).
+ *     └── 5. Evaluate Armor Class, Spell Save DC, Spell Attack Bonus, and encumbrance.
+ * ============================================================================
  */
 
 import type {
@@ -18,31 +54,64 @@ import type {
   Dnd5eDerivedStats,
 } from "./pipeline.ts";
 
+/**
+ * Symbolic proficiency tier string used on `Dnd5eActorSheet`:
+ * - `"none"`: `0x` proficiency bonus
+ * - `"half"`: `0.5x` proficiency bonus (rounded down, e.g., Jack of All Trades)
+ * - `"proficient"`: `1x` proficiency bonus
+ * - `"expertise"`: `2x` proficiency bonus
+ */
 export type ProficiencyRankString = "none" | "half" | "proficient" | "expertise";
 
+/**
+ * Metadata binding a canonical `SkillId` to its UI label and governing `AbilityId`.
+ */
 export interface SkillMetadata {
+  /** Machine identifier of the skill (e.g., `"perception"`). */
   id: SkillId;
+  /** Human-readable English display label (e.g., `"Perception"`). */
   label: string;
+  /** Default governing ability score used for checks with this skill. */
   ability: AbilityId;
 }
 
+/**
+ * Single node in the declarative derived-attribute Directed Acyclic Graph (DAG).
+ */
 export interface DerivedFormulaNodeSpec {
+  /** Name of the derived attribute produced by this node (e.g., `"str_mod"`). */
   targetAttr: string;
+  /** Upstream attribute or derived node identifiers required before evaluating `expr`. */
   deps: string[];
+  /** Pure mathematical expression evaluated once all `deps` are resolved. */
   expr: string;
 }
 
+/**
+ * Declarative registration manifest describing a tabletop RPG ruleset plugin.
+ */
 export interface GameSystemManifest {
+  /** Unique machine slug for the game system (e.g., `"dnd5e"`). */
   id: string;
+  /** Human-readable system title. */
   name: string;
+  /** Semantic version string (`MAJOR.MINOR.PATCH`) of the manifest definition. */
   version: string;
+  /** Short SPDX / SRD license identifier. */
   srdLicense: string;
+  /** Required verbatim legal attribution notice for Open Game / CC-BY content. */
   attribution?: string;
+  /** Ordered list of primary ability identifiers. */
   abilities: AbilityId[];
+  /** Complete skill catalog for the ruleset. */
   skills: SkillMetadata[];
+  /** Topologically ordered derived-stat formula nodes. */
   derivedDAG: DerivedFormulaNodeSpec[];
 }
 
+/**
+ * Canonical 18 skills from the D&D 5e SRD 5.1 paired with their governing abilities.
+ */
 export const DND5E_SKILLS: SkillMetadata[] = [
   { id: "acrobatics", label: "Acrobatics", ability: "dex" },
   { id: "animal_handling", label: "Animal Handling", ability: "wis" },
@@ -64,6 +133,9 @@ export const DND5E_SKILLS: SkillMetadata[] = [
   { id: "survival", label: "Survival", ability: "wis" },
 ];
 
+/**
+ * Authoritative D&D 5e (SRD 5.1 CC-BY-4.0) system manifest and derived-attribute DAG.
+ */
 export const DND5E_SRD51_MANIFEST: GameSystemManifest = {
   id: "dnd5e",
   name: "Dungeons & Dragons 5th Edition (SRD 5.1)",
@@ -108,8 +180,20 @@ export const DND5E_SRD51_MANIFEST: GameSystemManifest = {
   ],
 };
 
+/**
+ * Alias of `DND5E_SRD51_MANIFEST` maintained for 2024 ruleset compatibility consumers.
+ */
 export const DND5E_2024_MANIFEST = DND5E_SRD51_MANIFEST;
 
+/**
+ * Deterministically computes all derived D&D 5e statistics—including proficiency
+ * bonus, ability modifiers, saving throws, skill modifiers, passive senses,
+ * Armor Class, spellcasting DC/attack bonus, and carrying capacity (in `lb`)—from
+ * either a `Dnd5eActorData` record or a `Dnd5eActorSheet`.
+ *
+ * When given a `Dnd5eActorSheet`, applies an exhaustion penalty of `exhaustionLevel * 2`
+ * to saving throws, skill modifiers, initiative, Spell Save DC, and Spell Attack Bonus.
+ */
 export function computeDnd5eSheetDerived(
   actor: Dnd5eActorData | Dnd5eActorSheet
 ): Dnd5eDerivedStats {
@@ -259,6 +343,11 @@ export function computeDnd5eSheetDerived(
   }
 }
 
+/**
+ * Constructs a clean baseline level-1 `Dnd5eActorData` instance with all ability
+ * scores set to `10` (`+0` modifier), `10/10` HP, `1d8` Hit Die, unarmored AC `10`,
+ * and `"NONE"` mitigation across all 13 damage types.
+ */
 export function createDefaultActorData(
   id = "actor-1",
   name = "Default Character",

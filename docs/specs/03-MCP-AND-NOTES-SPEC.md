@@ -1,22 +1,22 @@
-# TRAME — Phase 3 : Serveur MCP Natif, Système de Notes Wiki & Skills Externes
+# TRAME — Phase 3: Native MCP Server, Wiki Notes System & External Skills
 
-Ce document spécifie l'architecture du **Serveur MCP Natif** de **TRAME**, le **Système de Notes & Lore (style Wiki / Obsidian)**, la résolution de conflits d'édition temps-réel, et le principe de **Parité Totale UI $\leftrightarrow$ MCP**.
+This document specifies the architecture of the **Native MCP Server** in **TRAME**, the **Notes & Lore System (Wiki style)**, real-time collaborative editing conflict resolution, and the principle of **100% UI $\leftrightarrow$ MCP Parity**.
 
 ---
 
-## 1. Principe Architectural : Parité 100% entre l'UI et le Serveur MCP
+## 1. Architectural Principle: 100% Parity Between UI and MCP Server
 
-Dans TRAME, **toute action réalisable par un humain dans l'interface web (MJ ou Joueur) est réalisable par un agent via le serveur MCP**, avec exactement les mêmes règles de validation (`trame-engine`) et le même contrôle d'accès (RBAC).
+In TRAME, **every action a human can perform in the web interface (DM or Player) can also be performed by an agent via the MCP server**, enforcing the exact same validation rules (`trame-engine`) and role-based access control (RBAC).
 
-L'interface Web et le serveur MCP émettent tous les deux les mêmes **Commandes de Domaine Typées (`TrameCommand`)** vers le serveur Rust.
+Both the Web UI and the MCP server emit the exact same **Typed Domain Commands (`TrameCommand`)** to the Rust server.
 
 ```mermaid
 graph TB
-    UI["Interface Web (React + PixiJS)\nActions Humaines (Clic, Drag, Édition)"]
-    MCP["Client MCP (Cursor, Claude, Scripts, Skills)\nAppels d'Outils MCP (JSON-RPC)"]
-    Auth["Garde RBAC Unifié\n(Session Cookie OU Personal Access Token scopé)"]
-    Bus["Bus de Commandes (`TrameCommand`)\n100% des actions du jeu"]
-    Engine["TableRoomActor + trame-engine (Rust)\nExécution + Diffusion WebSocket temps-réel"]
+    UI["Web Interface (React + PixiJS)\nHuman Actions (Click, Drag, Edit)"]
+    MCP["MCP Client (Agents, Scripts, Skills)\nMCP Tool Calls (JSON-RPC)"]
+    Auth["Unified RBAC Guard\n(Session Cookie OR Scoped Personal Access Token)"]
+    Bus["Command Bus (`TrameCommand`)\n100% of game actions"]
+    Engine["TableRoomActor + trame-engine (Rust)\nExecution + Real-Time WebSocket Broadcast"]
 
     UI --> Auth
     MCP --> Auth
@@ -26,86 +26,86 @@ graph TB
 
 ---
 
-## 2. Mode "Dry-Run / Staging Proposal" & Batching Atomique MCP (Q7)
+## 2. "Dry-Run / Staging Proposal" Mode & Atomic MCP Batching (Q7)
 
-Lorsqu'un agent IA exécute des opérations lourdes ou créatives via MCP (ex: *"Génère une embuscade avec 6 monstres et change les murs de la salle"* ou *"Réécris les notes de la session"*), le MJ peut choisir entre deux modes d'exécution :
+When an AI agent executes heavy or creative operations via MCP (e.g., *"Generate an ambush with 6 monsters and modify the room walls"* or *"Rewrite the session notes"*), the DM can choose between two execution modes:
 
-1. **Exécution Directe (`commit: true` par défaut) + Undo 1-Clic** :
-   * L'outil MCP `mcp.execute_batch` regroupe plusieurs commandes (`spawn_tokens`, `set_lights`, `set_walls`) en une **seule transaction d'historique (`BatchUndoEntry`)**.
-   * Une bannière discrète apparaît chez le MJ : `🤖 Agent MCP : "Embuscade Gobeline créée (8 actions)" [Annuler le lot]`. Un seul clic sur *Annuler* défait l'intégralité du batch MCP !
-2. **Mode Prévisualisation / Approbation (`dry_run: true` ou `mode: "propose"`)** :
-   * L'agent envoie un lot de modifications en mode `propose`.
-   * Sur la Table du MJ, les nouveaux tokens, murs ou lumières proposés par l'IA s'affichent en **surbrillance fantôme bleutée ( invisibles pour les joueurs)** avec un bouton **`[✓ Appliquer sur la Table]`** ou **`[✕ Rejeter]`**.
-
----
-
-## 3. Système de Notes & Lore : Wiki Structuré, Liens Croisés & Handouts
-
-### 3.1 Les 3 Espaces de Visibilité (`Visibility Scopes`)
-
-1. **`PRIVATE` (Carnet Personnel)** : Strictement privé à son auteur.
-2. **`PARTY` (Wiki & Journal de Groupe)** : Carnet collaboratif partagé par toute la table (*Journal des sessions*, *Quêtes actives*, *Indices découverts*, *PNJ connus*).
-3. **`DM_ONLY` (Bible de Campagne & Secrets MJ)** :
-   * Arborescence réservée au MJ, supportant dans n'importe quelle note `PARTY` des blocs secrets `:::dm` et des blocs révélables `:::handout[title="..." revealed=false]`.
-   * **Filtrage Serveur Strict** : Tant que `revealed=false`, le serveur Rust purge du Markdown tous les blocs `:::dm` et `:::handout` avant de les transmettre aux joueurs.
-
-### 3.2 Édition Collaborative Temps-Réel & Synchronisation Sans Conflit Obsidian / MCP (Q8)
-
-Pour éviter qu'un joueur éditant le *Journal de Groupe* n'écrase les modifications d'un autre joueur, ou qu'une synchronisation MCP (Obsidian / Notion) n'écrase une note modifiée en séance :
-
-1. **Édition Temps-Réel dans l'UI (CRDT Yjs / `yrs` en Rust)** :
-   * Les notes ouvertes simultanément par plusieurs membres utilisent le crate Rust **`yrs` (port officiel de Yjs en Rust)** côté serveur et Yjs dans l'éditeur Markdown client : on voit les curseurs des autres joueurs en direct et aucune frappe n'est jamais perdue.
-2. **Synchronisation Externe Optimiste (`ETag` + `3-Way Merge` Markdown)** :
-   * Chaque note possède un numéro de révision monotone (`revision`) et un hash `content_sha256`.
-   * Lorsqu'un outil MCP appelle `notes.sync_batch` avec `base_revision`, `trame-server` effectue :
-     * Si la note n'a pas changé côté TRAME : mise à jour directe (*fast-forward*).
-     * Si la note a été modifiée des deux côtés sur des paragraphes différents : **fusion automatique à 3 voies (`diffy::merge` en Rust)** en préservant les blocs `:::dm` !
-     * Si le même paragraphe a été modifié des deux côtés : enregistre une version de conflit dans l'historique de la note sans perdre aucune donnée et alerte le MJ.
-
-### 3.3 Journal Structuré d'Événements de Session (`Session Event Stream` — Q17)
-
-En plus du chat textuel, chaque session active enregistre un **flux d'événements typés (`session_events`)** :
-* Chaque événement horodaté contient : `event_type` (`combat_started`, `attack_rolled`, `creature_defeated`, `door_opened`, `handout_revealed`, `loot_acquired`, `chat_in_character`), les acteurs impliqués et le lieu/carte.
-* **Ressource MCP dédiée (`campaign://{id}/sessions/{num}/timeline`)** : Permet à un skill IA (`/session-recap` ou `/obsidian-journal-sync`) de lire en une fraction de seconde toute la chronologie objective de la soirée pour rédiger automatiquement la chronique narrative de la session et mettre à jour l'état des PNJ dans le Wiki.
+1. **Direct Execution (`commit: true` by default) + 1-Click Undo**:
+   * The `mcp.execute_batch` MCP tool groups multiple commands (`spawn_tokens`, `set_lights`, `set_walls`) into a **single history transaction (`BatchUndoEntry`)**.
+   * A subtle banner appears on the DM's screen: `🤖 MCP Agent: "Goblin Ambush created (8 actions)" [Undo Batch]`. A single click on *Undo* reverts the entire MCP batch.
+2. **Preview / Approval Mode (`dry_run: true` or `mode: "propose"`)**:
+   * The agent submits a batch of changes in `propose` mode.
+   * On the DM's Table, the new tokens, walls, or lights proposed by the AI appear as a **bluish ghost overlay (invisible to players)** with **`[✓ Apply to Table]`** and **`[✕ Reject]`** buttons.
 
 ---
 
-## 4. Catalogue Exhaustif des Capacités MCP (100% des Actions de TRAME)
+## 3. Notes & Lore System: Structured Wiki, Cross-Links & Handouts
 
-### 4.1 Outils de Table, Mouvement, Combat & AoE (`table.*` & `combat.*`)
+### 3.1 The 3 Visibility Scopes (`Visibility Scopes`)
 
-| Outil MCP (`Tool`) | Paramètres principaux | Rôle autorisé | Effet en direct sur la Table |
+1. **`PRIVATE` (Personal Notebook)**: Strictly private to its author.
+2. **`PARTY` (Shared Party Wiki & Journal)**: Collaborative notebook shared across the entire table (*Session Log*, *Active Quests*, *Discovered Clues*, *Known NPCs*).
+3. **`DM_ONLY` (Campaign Bible & DM Secrets)**:
+   * Directory tree restricted to the DM, supporting secret `:::dm` blocks and revealable `:::handout[title="..." revealed=false]` blocks inside any `PARTY` note.
+   * **Strict Server-Side Filtering**: Whenever `revealed=false`, the Rust server strips all `:::dm` and `:::handout` blocks from the Markdown payload before transmitting it to players.
+
+### 3.2 Real-Time Collaborative Editing & Conflict-Free External / MCP Synchronization (Q8)
+
+To prevent a player editing the *Party Journal* from overwriting another player's edits, or an external MCP synchronization from overwriting a note modified during a live session:
+
+1. **Real-Time UI Editing (Yjs CRDT / `yrs` in Rust)**:
+   * Notes opened simultaneously by multiple members use the **`yrs` Rust crate (official Rust port of Yjs)** on the server and Yjs in the client Markdown editor: live cursors of other players are visible in real time and no keystroke is ever lost.
+2. **Optimistic External Synchronization (`ETag` + Markdown `3-Way Merge`)**:
+   * Every note carries a monotonic revision number (`revision`) and a `content_sha256` hash.
+   * When an MCP tool calls `notes.sync_batch` with `base_revision`, `trame-server` performs:
+     * If the note has not changed in TRAME: direct update (*fast-forward*).
+     * If the note was modified on both sides in different paragraphs: **automatic 3-way merge (`diffy::merge` in Rust)** while preserving `:::dm` blocks.
+     * If the same paragraph was modified on both sides: saves a conflict version in the note's history without losing any data and alerts the DM.
+
+### 3.3 Structured Session Event Log (`Session Event Stream` — Q17)
+
+In addition to text chat, every active session records a **typed event stream (`session_events`)**:
+* Each timestamped event contains: `event_type` (`combat_started`, `attack_rolled`, `creature_defeated`, `door_opened`, `handout_revealed`, `loot_acquired`, `chat_in_character`), the involved actors, and the location/map.
+* **Dedicated MCP Resource (`campaign://{id}/sessions/{num}/timeline`)**: Allows an AI skill (`/session-recap` or `/journal-sync`) to read the entire objective timeline of the evening in a fraction of a second to automatically draft the narrative session chronicle and update NPC states in the Wiki.
+
+---
+
+## 4. Comprehensive Catalog of MCP Capabilities (100% of TRAME Actions)
+
+### 4.1 Table, Movement, Combat & AoE Tools (`table.*` & `combat.*`)
+
+| MCP Tool (`Tool`) | Primary Parameters | Authorized Role | Live Effect on the Table |
 | :--- | :--- | :--- | :--- |
-| `table.set_mode` | `mode: "exploration" \| "combat"`, `paused: bool` | MJ | Bascule entre le mode Exploration et le mode Tour-par-Tour, ou met la table en pause. |
-| `table.set_lighting_preset` | `preset: "day" \| "dusk" \| "moonlight" \| "dark"` | MJ | Change instantanément le cycle Jour/Nuit et l'éclairage global de la carte. |
-| `table.move_token` | `token_id`, `path: [{x, y, z?}]`, `ignore_walls?: bool` | MJ ou Propriétaire | Déplace le token le long du chemin (vérifie collisions, altitude, vitesse et met à jour la vision). |
-| `table.undo_last_action` | `action_id?` | MJ | Annule le dernier mouvement/action (ou batch MCP), recrédite la vitesse et restaure le brouillard. |
-| `table.interact_door` | `wall_id`, `state: "open" \| "closed" \| "locked" \| "secret"` | MJ / Joueur ($\le 1$ case) | Ouvre, ferme, verrouille ou cache une porte et recalcule les lignes de vue. |
-| `table.place_aoe` | `shape`, `origin`, `dimensions`, `discretization_rule?`, `persistent: bool`, `effects` | MJ ou Joueur | Pose un gabarit de sort (découpé par les murs), retourne les cibles touchées et applique le terrain/lumière si persistant. |
-| `table.resolve_aoe_save` | `aoe_id`, `ability: "DEX"`, `dc: 15`, `damage_formula: "8d6"`, `damage_type: "fire"` | MJ ou Lanceur | Lance les jets de sauvegarde des cibles et applique les dégâts (avec calcul des résistances/immunités). |
-| `combat.start_or_end` | `active: bool`, `participants?: [token_id]` | MJ | Lance ou termine le suivi d'initiative. |
-| `combat.roll_initiative` | `token_ids: [...]` | MJ ou Joueur | Calcule et lance l'initiative selon la règle du système. |
-| `combat.update_turn_economy` | `token_id`, `movement_left?`, `action?`, `bonus_action?`, `reaction?` | MJ ou Joueur actif | Consomme ou redonne une Action, Action Bonus, Réaction ou du mouvement. |
-| `combat.next_turn` | — | MJ ou Joueur actif | Passe au combattant suivant, décrémente la durée des effets/conditions et réinitialise le budget du tour. |
+| `table.set_mode` | `mode: "exploration" \| "combat"`, `paused: bool` | DM | Switches between Exploration mode and Turn-Based mode, or pauses the table. |
+| `table.set_lighting_preset` | `preset: "day" \| "dusk" \| "moonlight" \| "dark"` | DM | Instantly changes the Day/Night cycle and global illumination of the map. |
+| `table.move_token` | `token_id`, `path: [{x, y, z?}]`, `ignore_walls?: bool` | DM or Owner | Moves the token along the path (validates collisions, altitude, and speed, and updates vision). |
+| `table.undo_last_action` | `action_id?` | DM | Undoes the last move/action (or MCP batch), refunds movement speed, and restores fog of war. |
+| `table.interact_door` | `wall_id`, `state: "open" \| "closed" \| "locked" \| "secret"` | DM / Player ($\le 1$ cell) | Opens, closes, locks, or hides a door and recalculates lines of sight. |
+| `table.place_aoe` | `shape`, `origin`, `dimensions`, `discretization_rule?`, `persistent: bool`, `effects` | DM or Player | Places a spell template (clipped by walls), returns hit targets, and applies terrain/light if persistent. |
+| `table.resolve_aoe_save` | `aoe_id`, `ability: "DEX"`, `dc: 15`, `damage_formula: "8d6"`, `damage_type: "fire"` | DM or Caster | Rolls saving throws for targets and applies damage (calculating resistances/immunities). |
+| `combat.start_or_end` | `active: bool`, `participants?: [token_id]` | DM | Starts or ends initiative tracking. |
+| `combat.roll_initiative` | `token_ids: [...]` | DM or Player | Computes and rolls initiative according to the system rules. |
+| `combat.update_turn_economy` | `token_id`, `movement_left?`, `action?`, `bonus_action?`, `reaction?` | DM or Active Player | Spends or refunds an Action, Bonus Action, Reaction, or movement. |
+| `combat.next_turn` | — | DM or Active Player | Advances to the next combatant, decrements effect/condition durations, and resets the turn budget. |
 
-### 4.2 Outils d'Architecture de Carte, Murs, Lumières, Audio & Brouillard (`maps.*`)
+### 4.2 Map Architecture, Walls, Lights, Audio & Fog Tools (`maps.*`)
 
-| Outil MCP (`Tool`) | Description | Rôle |
+| MCP Tool (`Tool`) | Description | Role |
 | :--- | :--- | :--- |
-| `maps.create` / `maps.configure_grid` | Crée une carte, règle la grille (carrée/hex, taille px, échelle `5 ft`), et l'active à la table. | MJ |
-| `maps.import_uvtt` / `maps.export_uvtt` | Importe ou exporte un fichier standard `.uvtt` / `.dd2vtt` avec son image, ses murs, ses portes et ses sources lumineuses. | MJ |
-| `maps.set_walls` | Ajoute, modifie ou supprime par lot des segments (`solid`, `window`, `terrain`, `door`, `curtain`), leur hauteur `top_z`, des polygones `indoor`, des toits (`overhead`) et des téléporteurs/escaliers (`teleporters`). | MJ |
-| `maps.set_lights` / `maps.set_audio_sources` | Place et configure les sources de lumière dynamique et les sources audio spatialisées sur la carte. | MJ |
-| `maps.edit_fog` | Révèle ou masque des zones du brouillard manuel, ou réinitialise la mémoire d'exploration. | MJ |
-| `maps.spawn_tokens` | Place un ou plusieurs tokens sur la carte à partir d'un acteur ou du bestiaire SRD. | MJ |
+| `maps.create` / `maps.configure_grid` | Creates a map, configures the grid (square/hex, px size, `5 ft` scale), and activates it at the table. | DM |
+| `maps.import_uvtt` / `maps.export_uvtt` | Imports or exports a standard `.uvtt` / `.dd2vtt` file along with its image, walls, doors, and light sources. | DM |
+| `maps.set_walls` | Batch-adds, updates, or deletes segments (`solid`, `window`, `terrain`, `door`, `curtain`), their `top_z` height, `indoor` polygons, roofs (`overhead`), and teleporters/stairs (`teleporters`). | DM |
+| `maps.set_lights` / `maps.set_audio_sources` | Places and configures dynamic light sources and spatialized audio emitters on the map. | DM |
+| `maps.edit_fog` | Reveals or hides manual fog regions, or resets exploration memory. | DM |
+| `maps.spawn_tokens` | Spawns one or more tokens onto the map from an actor or the SRD bestiary. | DM |
 
-### 4.3 Outils de Personnages, Compagnons, Conteneurs & Compendium (`actors.*` & `compendium.*`)
+### 4.3 Character, Companion, Container & Compendium Tools (`actors.*` & `compendium.*`)
 
-| Outil MCP (`Tool`) | Description | Rôle |
+| MCP Tool (`Tool`) | Description | Role |
 | :--- | :--- | :--- |
-| `systems.list` / `systems.register_pack` | Liste les systèmes ou installe/met à jour un `GameSystemPack` déclaratif (YAML/JSON) à chaud. | Admin / MJ |
-| `compendium.search` / `compendium.upsert_entry` | Recherche dans le SRD ou crée/modifie un monstre, sort, don ou objet Homebrew dans la campagne ou l'instance. | MJ / Joueur (lecture) |
-| `actors.create` / `actors.update_sheet` | Crée ou met à jour un PJ, un PNJ, un Familier/Invocation (`companion`) ou un Coffre de butin (`container`). | MJ / Joueur (son PJ) |
-| `actors.transform_shape` | Applique ou retire une transformation temporaire (*Forme Sauvage / Wild Shape*, *Polymorphie*) à partir d'une créature du bestiaire. | MJ / Joueur (son PJ) |
-| `actors.manage_inventory` | Ajoute, équipe, harmonise (`attune`), identifie ou transfère un objet entre un personnage et un coffre de groupe. | MJ / Joueur (son PJ) |
-| `actors.roll_action` | Exécute un jet de caractéristique, compétence, sauvegarde, attaque d'arme ou sort depuis la fiche. | MJ / Joueur (son PJ) |
+| `systems.list` / `systems.register_pack` | Lists systems or hot-installs/updates a declarative `GameSystemPack` (YAML/JSON). | Admin / DM |
+| `compendium.search` / `compendium.upsert_entry` | Searches the SRD or creates/updates a Homebrew monster, spell, feat, or item in the campaign or instance. | DM / Player (read) |
+| `actors.create` / `actors.update_sheet` | Creates or updates a PC, NPC, Familiar/Summon (`companion`), or Loot Chest (`container`). | DM / Player (own PC) |
+| `actors.transform_shape` | Applies or removes a temporary transformation (*Wild Shape*, *Polymorph*) based on a bestiary creature. | DM / Player (own PC) |
+| `actors.manage_inventory` | Adds, equips, attunes (`attune`), identifies, or transfers an item between a character and a party chest. | DM / Player (own PC) |
+| `actors.roll_action` | Executes an ability check, skill check, saving throw, weapon attack, or spell roll from the sheet. | DM / Player (own PC) |

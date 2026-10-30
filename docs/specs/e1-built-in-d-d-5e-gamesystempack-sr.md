@@ -1,21 +1,21 @@
-# Spécification Technique & Fonctionnelle : Built-in D&D 5e GameSystemPack (SRD 5.1)
+# Technical & Functional Specification: Built-in D&D 5e GameSystemPack (SRD 5.1)
 
-## 1. Contexte & Objectifs
+## 1. Context & Objectives
 
-Cette spécification définit l'implémentation complète du pack système D&D 5e (`packages/game-systems/dnd5e`) pour TRAME V1. Le pack s'appuie sur le moteur générique `crates/trame-engine` et standardise l'ensemble des règles de référence du System Reference Document 5.1 (SRD 5.1) sous licence Creative Commons CC-BY-4.0.
+This specification defines the complete implementation of the built-in D&D 5e system pack (`packages/game-systems/dnd5e`) for TRAME V1. The pack builds upon the generic `crates/trame-engine` core and standardizes the reference rules of the System Reference Document 5.1 (SRD 5.1) under the Creative Commons CC-BY-4.0 license.
 
-Le module fournit :
-1. Le manifeste déclaratif `packages/game-systems/dnd5e/system.json` décrivant les caractéristiques, compétences et formules du graphe acyclique `derivedDAG`.
-2. Les schémas TypeScript stricts dans `packages/game-systems/dnd5e/src/manifest.ts` et `types.ts` pour `Dnd5eActorData`, `AbilityId`, `SkillId`, `ProficiencyRank` et `ResourcePool`.
-3. Le pipeline de dégâts déterministe dans `packages/game-systems/dnd5e/src/pipeline.ts` gérant les instances de dégâts multi-types, l'absorption prioritaire par les PV temporaires, la mort instantanée, les échecs automatiques de jets de sauvegarde contre la mort à 0 PV et la génération de l'invitation au jet de concentration (`ConcentrationCheckPrompt`).
-4. Les fonctions de repos court (`applyShortRest`) et repos long (`applyLongRest`) restaurant les dés de vie, emplacements de sorts et réserves de ressources configurées sur `SHORT_REST` ou `LONG_REST`.
-5. La décrémentation des durées de conditions selon les déclencheurs de tour (`ROUNDS`, `TURNS_START`, `TURNS_END`) corrélée à l'acteur actif du tour.
-6. Les tables et fonctions pures de progression des niveaux 1 à 20 dans `packages/game-systems/dnd5e/src/progression.ts` pour le bonus de maîtrise, les emplacements de sorts (lanceurs complets, demi-lanceurs et magie de pacte) et l'augmentation de niveau (`applyLevelUp`).
-7. Le résolveur hiérarchique immuable `CompendiumResolver` dans `packages/game-systems/dnd5e/src/compendium.ts` appliquant la cascade `CAMPAIGN_HOMEBREW` > `INSTANCE_LIBRARY` > `SYSTEM_SRD` avec notice légale CC-BY-4.0.
+The module provides:
+1. The declarative manifest `packages/game-systems/dnd5e/system.json` describing abilities, skills, and `derivedDAG` acyclic graph formulas.
+2. Strict TypeScript schemas in `packages/game-systems/dnd5e/src/manifest.ts` and `types.ts` for `Dnd5eActorData`, `AbilityId`, `SkillId`, `ProficiencyRank`, and `ResourcePool`.
+3. The deterministic damage pipeline in `packages/game-systems/dnd5e/src/pipeline.ts` handling multi-type damage instances, priority absorption by temporary HP, instant death, automatic death saving throw failures at 0 HP, and generation of the concentration check prompt (`ConcentrationCheckPrompt`).
+4. Short rest (`applyShortRest`) and long rest (`applyLongRest`) functions restoring hit dice, spell slots, and resource pools configured with `SHORT_REST` or `LONG_REST`.
+5. Condition duration decrementation according to turn triggers (`ROUNDS`, `TURNS_START`, `TURNS_END`) correlated with the active turn actor.
+6. Pure progression tables and functions for levels 1 through 20 in `packages/game-systems/dnd5e/src/progression.ts` for proficiency bonus, spell slots (full casters, half casters, and pact magic), and leveling up (`applyLevelUp`).
+7. The immutable hierarchical resolver `CompendiumResolver` in `packages/game-systems/dnd5e/src/compendium.ts` enforcing the `CAMPAIGN_HOMEBREW` > `INSTANCE_LIBRARY` > `SYSTEM_SRD` cascade with CC-BY-4.0 legal attribution.
 
 ---
 
-## 2. Architecture & Organisation des Fichiers
+## 2. Architecture & File Organization
 
 ```text
 packages/game-systems/dnd5e/
@@ -30,16 +30,16 @@ packages/game-systems/dnd5e/
     └── compendium.ts
 ```
 
-L'ensemble des tests automatisés est exécuté via le test runner natif de Node 24 (`node --test`) configuré dans `packages/web` :
+All automated tests are executed via the native Node 24 test runner (`node --test`) configured in `packages/web`:
 - `packages/web/tests/dnd5e.test.ts`
 
 ---
 
-## 3. Schémas de Données & Manifeste Déclaratif (`system.json` & `manifest.ts`)
+## 3. Data Schemas & Declarative Manifest (`system.json` & `manifest.ts`)
 
-### 3.1 Types Fondamentaux (`types.ts` & `manifest.ts`)
+### 3.1 Core Types (`types.ts` & `manifest.ts`)
 
-Le module `manifest.ts` déclare les types stricts suivants :
+The `manifest.ts` module declares the following strict types:
 
 ```typescript
 export type AbilityId = 'str' | 'dex' | 'con' | 'int' | 'wis' | 'cha';
@@ -156,9 +156,9 @@ export interface Dnd5eActorData {
 }
 ```
 
-### 3.2 Manifeste Système Déclaratif (`system.json`)
+### 3.2 Declarative System Manifest (`system.json`)
 
-Le fichier `system.json` fournit la configuration lisible par le moteur `trame-engine` pour la validation et l'évaluation du graphe `derivedDAG` :
+The `system.json` file provides the configuration read by `trame-engine` for validation and `derivedDAG` evaluation:
 
 ```json
 {
@@ -210,20 +210,20 @@ Le fichier `system.json` fournit la configuration lisible par le moteur `trame-e
 }
 ```
 
-### 3.3 Fonction de Calcul Dérivé (`computeDnd5eSheetDerived`)
+### 3.3 Derived Calculation Function (`computeDnd5eSheetDerived`)
 
-Le module `manifest.ts` expose la fonction synchrone pure `computeDnd5eSheetDerived(actor: Dnd5eActorData)` qui calcule les valeurs dérivées en miroir du graphe `derivedDAG` pour les tests sans runtime WASM :
-1. Elle calcule le modificateur de chaque caractéristique : `Math.floor((score - 10) / 2)`.
-2. Elle calcule le bonus de maîtrise : `Math.floor((level - 1) / 4) + 2`.
-3. Elle calcule la perception passive : `10 + wisMod + (perceptionRank * profBonus)`.
-4. Elle calcule la classe d'armure (CA) selon le type d'armure (`none` -> 10 + DEX mod, `light` -> baseAC + DEX mod, `medium` -> baseAC + min(DEX mod, 2), `heavy` -> baseAC) augmentée du bonus de bouclier.
-5. Elle calcule le DD de sauvegarde des sorts : `8 + profBonus + abilityMod` (si `spellcastingAbility` est définie).
+The `manifest.ts` module exposes the pure synchronous function `computeDnd5eSheetDerived(actor: Dnd5eActorData)` that computes derived values mirroring the `derivedDAG` graph for tests running without the WASM runtime:
+1. Computes each ability modifier: `Math.floor((score - 10) / 2)`.
+2. Computes the proficiency bonus: `Math.floor((level - 1) / 4) + 2`.
+3. Computes passive perception: `10 + wisMod + (perceptionRank * profBonus)`.
+4. Computes Armor Class (AC) based on armor type (`none` -> 10 + DEX mod, `light` -> baseAC + DEX mod, `medium` -> baseAC + min(DEX mod, 2), `heavy` -> baseAC) plus any shield bonus.
+5. Computes spell save DC: `8 + profBonus + abilityMod` (when `spellcastingAbility` is defined).
 
 ---
 
-## 4. Pipeline de Dégâts, Mort & Concentration (`pipeline.ts`)
+## 4. Damage, Death & Concentration Pipeline (`pipeline.ts`)
 
-### 4.1 Interface et Contrat de Sortie
+### 4.1 Interface and Output Contract
 
 ```typescript
 export interface DamageInstance {
@@ -251,56 +251,56 @@ export interface DamageResolutionResult {
 }
 ```
 
-### 4.2 Algorithme Déterministe de `resolveDamagePipeline`
+### 4.2 Deterministic Algorithm for `resolveDamagePipeline`
 
-La fonction `resolveDamagePipeline(actor: Dnd5eActorData, damageInstances: DamageInstance[], options: DamagePipelineOptions = {}): DamageResolutionResult` applique l'algorithme suivant :
+The `resolveDamagePipeline(actor: Dnd5eActorData, damageInstances: DamageInstance[], options: DamagePipelineOptions = {}): DamageResolutionResult` function applies the following algorithm:
 
-1. Cloner en profondeur l'objet `actor` pour préserver l'immuabilité de l'argument initial.
-2. Pour chaque `instance` de `damageInstances` :
-   - Récupérer `mitigation = clone.damageMitigations[instance.type] || 'NONE'`.
-   - IF `mitigation === 'IMMUNE'`, THEN les dégâts de cette instance valent 0.
-   - ELSE IF `mitigation === 'RESISTANT'`, THEN les dégâts de cette instance valent `Math.floor(instance.amount * 0.5)`.
-   - ELSE IF `mitigation === 'VULNERABLE'`, THEN les dégâts de cette instance valent `instance.amount * 2`.
-   - ELSE, THEN les dégâts de cette instance valent `instance.amount`.
-   - Ajouter les dégâts obtenus à `totalMitigatedDamage`.
-3. IF `totalMitigatedDamage === 0`, THEN retourner immédiatement le résultat avec l'acteur non modifié, sans prompt de concentration ni altération des PV.
-4. Traitement selon l'état des PV courants de l'acteur :
-   - **Cas A : L'acteur est déjà à 0 PV (`clone.attributes.hp.current === 0`)** :
-     - IF `totalMitigatedDamage >= clone.attributes.hp.max`, THEN :
-       - Le composant `pipeline` active `clone.isDead = true`.
-       - Le composant `pipeline` fixe `clone.attributes.deathSaves.failures = 3`.
-       - Le composant `pipeline` renvoie `instantDeath = true`.
-     - ELSE :
-       - Le composant `pipeline` calcule le nombre d'échecs ajoutés : `addedFailures = options.isCritical ? 2 : 1`.
-       - Le composant `pipeline` incrémente `clone.attributes.deathSaves.failures = Math.min(3, clone.attributes.deathSaves.failures + addedFailures)`.
-       - IF `clone.attributes.deathSaves.failures >= 3`, THEN le composant `pipeline` active `clone.isDead = true`.
-     - Le composant `pipeline` renvoie `damageAppliedToTempHp = 0` et `damageAppliedToCurrentHp = 0`.
-   - **Cas B : L'acteur possède plus de 0 PV (`clone.attributes.hp.current > 0`)** :
-     - Le composant `pipeline` initialise `unabsorbedDamage = totalMitigatedDamage`.
-     - IF `clone.attributes.hp.temp > 0`, THEN :
+1. Deep-clone the `actor` object to preserve immutability of the input argument.
+2. For each `instance` in `damageInstances`:
+   - Retrieve `mitigation = clone.damageMitigations[instance.type] || 'NONE'`.
+   - IF `mitigation === 'IMMUNE'`, THEN the damage for this instance is 0.
+   - ELSE IF `mitigation === 'RESISTANT'`, THEN the damage for this instance is `Math.floor(instance.amount * 0.5)`.
+   - ELSE IF `mitigation === 'VULNERABLE'`, THEN the damage for this instance is `instance.amount * 2`.
+   - ELSE, THEN the damage for this instance is `instance.amount`.
+   - Add the resulting damage to `totalMitigatedDamage`.
+3. IF `totalMitigatedDamage === 0`, THEN immediately return the result with the unmodified actor, no concentration prompt, and no HP alteration.
+4. Process according to the actor's current HP state:
+   - **Case A: The actor is already at 0 HP (`clone.attributes.hp.current === 0`)**:
+     - IF `totalMitigatedDamage >= clone.attributes.hp.max`, THEN:
+       - The `pipeline` component sets `clone.isDead = true`.
+       - The `pipeline` component sets `clone.attributes.deathSaves.failures = 3`.
+       - The `pipeline` component returns `instantDeath = true`.
+     - ELSE:
+       - The `pipeline` component computes the number of added failures: `addedFailures = options.isCritical ? 2 : 1`.
+       - The `pipeline` component increments `clone.attributes.deathSaves.failures = Math.min(3, clone.attributes.deathSaves.failures + addedFailures)`.
+       - IF `clone.attributes.deathSaves.failures >= 3`, THEN the `pipeline` component sets `clone.isDead = true`.
+     - The `pipeline` component returns `damageAppliedToTempHp = 0` and `damageAppliedToCurrentHp = 0`.
+   - **Case B: The actor has more than 0 HP (`clone.attributes.hp.current > 0`)**:
+     - The `pipeline` component initializes `unabsorbedDamage = totalMitigatedDamage`.
+     - IF `clone.attributes.hp.temp > 0`, THEN:
        - `damageAppliedToTempHp = Math.min(clone.attributes.hp.temp, unabsorbedDamage)`.
        - `clone.attributes.hp.temp -= damageAppliedToTempHp`.
        - `unabsorbedDamage -= damageAppliedToTempHp`.
      - ELSE, `damageAppliedToTempHp = 0`.
-     - IF `unabsorbedDamage > 0`, THEN :
+     - IF `unabsorbedDamage > 0`, THEN:
        - `damageAppliedToCurrentHp = Math.min(clone.attributes.hp.current, unabsorbedDamage)`.
        - `clone.attributes.hp.current -= damageAppliedToCurrentHp`.
        - `excessDamage = unabsorbedDamage - damageAppliedToCurrentHp`.
-     - ELSE, `damageAppliedToCurrentHp = 0` et `excessDamage = 0`.
-     - IF `clone.attributes.hp.current === 0`, THEN :
-       - IF `excessDamage >= clone.attributes.hp.max`, THEN :
-         - Le composant `pipeline` active `clone.isDead = true`.
-         - Le composant `pipeline` fixe `clone.attributes.deathSaves.failures = 3`.
-         - Le composant `pipeline` renvoie `instantDeath = true`.
-       - ELSE :
-         - Le composant `pipeline` vérifie si la condition `unconscious` existe déjà dans `clone.conditions` ; si absente, il ajoute `{ id: 'unconscious', name: 'Inconscient', durationRounds: 999, trigger: 'ROUNDS' }`.
-5. Traitement de la concentration :
-   - IF `clone.concentratingOnSpellId` est défini ET `clone.isDead !== true` ET `clone.attributes.hp.current > 0` ET `totalMitigatedDamage > 0`, THEN :
-     - Le composant `pipeline` calcule `concentrationDC = Math.max(10, Math.floor(totalMitigatedDamage / 2))`.
-     - Le composant `pipeline` renvoie `concentrationPrompt = { spellId: clone.concentratingOnSpellId, dc: concentrationDC }`.
-   - IF `clone.attributes.hp.current === 0` ET `clone.concentratingOnSpellId` est défini, THEN le composant `pipeline` réinitialise `clone.concentratingOnSpellId = undefined` car l'inconscience ou la mort brise immédiatement la concentration.
+     - ELSE, `damageAppliedToCurrentHp = 0` and `excessDamage = 0`.
+     - IF `clone.attributes.hp.current === 0`, THEN:
+       - IF `excessDamage >= clone.attributes.hp.max`, THEN:
+         - The `pipeline` component sets `clone.isDead = true`.
+         - The `pipeline` component sets `clone.attributes.deathSaves.failures = 3`.
+         - The `pipeline` component returns `instantDeath = true`.
+       - ELSE:
+         - The `pipeline` component checks whether the `unconscious` condition already exists in `clone.conditions`; if absent, it appends `{ id: 'unconscious', name: 'Unconscious', durationRounds: 999, trigger: 'ROUNDS' }`.
+5. Process concentration:
+   - IF `clone.concentratingOnSpellId` is defined AND `clone.isDead !== true` AND `clone.attributes.hp.current > 0` AND `totalMitigatedDamage > 0`, THEN:
+     - The `pipeline` component computes `concentrationDC = Math.max(10, Math.floor(totalMitigatedDamage / 2))`.
+     - The `pipeline` component returns `concentrationPrompt = { spellId: clone.concentratingOnSpellId, dc: concentrationDC }`.
+   - IF `clone.attributes.hp.current === 0` AND `clone.concentratingOnSpellId` is defined, THEN the `pipeline` component resets `clone.concentratingOnSpellId = undefined` because unconsciousness or death immediately breaks concentration.
 
-### 4.3 Algorithme Déterministe de `rollDeathSavingThrow`
+### 4.3 Deterministic Algorithm for `rollDeathSavingThrow`
 
 ```typescript
 export function rollDeathSavingThrow(
@@ -309,38 +309,38 @@ export function rollDeathSavingThrow(
 ): { actor: Dnd5eActorData; outcome: 'success' | 'failure' | 'revived' | 'dead' | 'stabilized' }
 ```
 
-1. Cloner en profondeur l'objet `actor`.
-2. IF `d20Roll === 1`, THEN :
+1. Deep-clone the `actor` object.
+2. IF `d20Roll === 1`, THEN:
    - `clone.attributes.deathSaves.failures += 2`.
-   - IF `clone.attributes.deathSaves.failures >= 3`, THEN `clone.isDead = true`, outcome = `'dead'` ; ELSE outcome = `'failure'`.
-3. ELSE IF `d20Roll === 20`, THEN :
+   - IF `clone.attributes.deathSaves.failures >= 3`, THEN `clone.isDead = true`, outcome = `'dead'`; ELSE outcome = `'failure'`.
+3. ELSE IF `d20Roll === 20`, THEN:
    - `clone.attributes.hp.current = 1`.
    - `clone.attributes.deathSaves.successes = 0`.
    - `clone.attributes.deathSaves.failures = 0`.
-   - Supprimer la condition `'unconscious'` si présente.
+   - Remove the `'unconscious'` condition if present.
    - outcome = `'revived'`.
-4. ELSE IF `d20Roll >= 10`, THEN :
+4. ELSE IF `d20Roll >= 10`, THEN:
    - `clone.attributes.deathSaves.successes += 1`.
-   - IF `clone.attributes.deathSaves.successes >= 3`, THEN :
+   - IF `clone.attributes.deathSaves.successes >= 3`, THEN:
      - `clone.attributes.deathSaves.successes = 0`.
      - `clone.attributes.deathSaves.failures = 0`.
      - outcome = `'stabilized'`.
    - ELSE outcome = `'success'`.
-5. ELSE (`d20Roll < 10`) :
+5. ELSE (`d20Roll < 10`):
    - `clone.attributes.deathSaves.failures += 1`.
-   - IF `clone.attributes.deathSaves.failures >= 3`, THEN `clone.isDead = true`, outcome = `'dead'` ; ELSE outcome = `'failure'`.
+   - IF `clone.attributes.deathSaves.failures >= 3`, THEN `clone.isDead = true`, outcome = `'dead'`; ELSE outcome = `'failure'`.
 
 ---
 
-## 5. Progression & Montée de Niveau (`progression.ts`)
+## 5. Progression & Leveling Up (`progression.ts`)
 
-### 5.1 Tables Déclaratives d'Emplacements de Sorts (Niveaux 1 à 20)
+### 5.1 Declarative Spell Slot Tables (Levels 1 to 20)
 
-Le module `progression.ts` contient les matrices statiques exhaustives sans ellipsis :
+The `progression.ts` module contains exhaustive static matrices with no ellipsis:
 
-- **Lanceur Complet (Full Caster : Barde, Clerc, Druide, Ensorceleur, Magicien)** :
+- **Full Caster (Bard, Cleric, Druid, Sorcerer, Wizard)**:
 
-| Niveau | 1er | 2e | 3e | 4e | 5e | 6e | 7e | 8e | 9e |
+| Level | 1st | 2nd | 3rd | 4th | 5th | 6th | 7th | 8th | 9th |
 |:---|:---|:---|:---|:---|:---|:---|:---|:---|:---|
 | 1 | 2 | - | - | - | - | - | - | - | - |
 | 2 | 3 | - | - | - | - | - | - | - | - |
@@ -363,9 +363,9 @@ Le module `progression.ts` contient les matrices statiques exhaustives sans elli
 | 19 | 4 | 3 | 3 | 3 | 3 | 2 | 1 | 1 | 1 |
 | 20 | 4 | 3 | 3 | 3 | 3 | 2 | 2 | 1 | 1 |
 
-- **Demi-Lanceur (Half Caster : Paladin, Rôdeur)** :
+- **Half Caster (Paladin, Ranger)**:
 
-| Niveau | 1er | 2e | 3e | 4e | 5e |
+| Level | 1st | 2nd | 3rd | 4th | 5th |
 |:---|:---|:---|:---|:---|:---|
 | 1 | - | - | - | - | - |
 | 2 | 2 | - | - | - | - |
@@ -388,24 +388,24 @@ Le module `progression.ts` contient les matrices statiques exhaustives sans elli
 | 19 | 4 | 3 | 3 | 3 | 2 |
 | 20 | 4 | 3 | 3 | 3 | 2 |
 
-- **Magie de Pacte (Pact Magic : Démoniste)** :
+- **Pact Magic (Warlock)**:
 
-| Niveau | Nombre d'emplacements | Niveau de l'emplacement |
+| Level | Slot Count | Slot Level |
 |:---|:---|:---|
-| 1 | 1 | 1er |
-| 2 | 2 | 1er |
-| 3 | 2 | 2e |
-| 4 | 2 | 2e |
-| 5 | 2 | 3e |
-| 6 | 2 | 3e |
-| 7 | 2 | 4e |
-| 8 | 2 | 4e |
-| 9 | 2 | 5e |
-| 10 | 2 | 5e |
-| 11-16 | 3 | 5e |
-| 17-20 | 4 | 5e |
+| 1 | 1 | 1st |
+| 2 | 2 | 1st |
+| 3 | 2 | 2nd |
+| 4 | 2 | 2nd |
+| 5 | 2 | 3rd |
+| 6 | 2 | 3rd |
+| 7 | 2 | 4th |
+| 8 | 2 | 4th |
+| 9 | 2 | 5th |
+| 10 | 2 | 5th |
+| 11-16 | 3 | 5th |
+| 17-20 | 4 | 5th |
 
-### 5.2 Helper de Montée de Niveau (`applyLevelUp`)
+### 5.2 Level-Up Helper (`applyLevelUp`)
 
 ```typescript
 export interface LevelUpOptions {
@@ -424,23 +424,23 @@ export function applyLevelUp(
 ): Dnd5eActorData
 ```
 
-Algorithme pour `applyLevelUp` :
-1. IF `actor.attributes.level >= 20`, THEN lever une erreur `Error('Cannot level up past level 20')`.
-2. Cloner en profondeur l'objet `actor`.
-3. Incrémenter `clone.attributes.level += 1`.
-4. Incrémenter `clone.attributes.hitDiceMax += 1` et `clone.attributes.hitDiceCurrent += 1`.
-5. Calculer le modificateur de constitution : `conMod = Math.floor((clone.abilities.con.score - 10) / 2)`.
-6. Déterminer le gain de PV :
+Algorithm for `applyLevelUp`:
+1. IF `actor.attributes.level >= 20`, THEN throw `Error('Cannot level up past level 20')`.
+2. Deep-clone the `actor` object.
+3. Increment `clone.attributes.level += 1`.
+4. Increment `clone.attributes.hitDiceMax += 1` and `clone.attributes.hitDiceCurrent += 1`.
+5. Compute the Constitution modifier: `conMod = Math.floor((clone.abilities.con.score - 10) / 2)`.
+6. Determine HP gain:
    - IF `options.hpIncreaseMode === 'fixed'`, THEN `hpGain = Math.max(1, Math.floor(clone.attributes.hitDieSize / 2) + 1 + conMod)`.
    - ELSE (`'roll'`), THEN `hpGain = Math.max(1, (options.rolledHp || 1) + conMod)`.
-7. Incrémenter `clone.attributes.hp.max += hpGain` et `clone.attributes.hp.current += hpGain`.
-8. IF `options.casterType` est défini et différent de `'none'`, THEN mettre à jour `clone.spellSlots` en synchronisant les nouvelles valeurs maximales depuis la matrice correspondante.
+7. Increment `clone.attributes.hp.max += hpGain` and `clone.attributes.hp.current += hpGain`.
+8. IF `options.casterType` is defined and not `'none'`, THEN update `clone.spellSlots` by synchronizing the new maximum values from the corresponding progression matrix.
 
 ---
 
-## 6. Pipeline des Repos & Expiration des Conditions (`pipeline.ts`)
+## 6. Rest Pipeline & Condition Expiration (`pipeline.ts`)
 
-### 6.1 Repos Court (`applyShortRest`)
+### 6.1 Short Rest (`applyShortRest`)
 
 ```typescript
 export interface ShortRestOptions {
@@ -454,36 +454,36 @@ export function applyShortRest(
 ): Dnd5eActorData
 ```
 
-Algorithme pour `applyShortRest` :
-1. IF `options.hitDiceSpent < 0 || options.hitDiceSpent > actor.attributes.hitDiceCurrent`, THEN lever une erreur `Error('Invalid hit dice count spent')`.
-2. IF `options.diceRolls.length !== options.hitDiceSpent`, THEN lever une erreur `Error('Dice rolls count must match hit dice spent')`.
-3. Cloner en profondeur l'objet `actor`.
-4. Calculer le modificateur de constitution : `conMod = Math.floor((clone.abilities.con.score - 10) / 2)`.
-5. Pour chaque jet `r` de `options.diceRolls` :
+Algorithm for `applyShortRest`:
+1. IF `options.hitDiceSpent < 0 || options.hitDiceSpent > actor.attributes.hitDiceCurrent`, THEN throw `Error('Invalid hit dice count spent')`.
+2. IF `options.diceRolls.length !== options.hitDiceSpent`, THEN throw `Error('Dice rolls count must match hit dice spent')`.
+3. Deep-clone the `actor` object.
+4. Compute the Constitution modifier: `conMod = Math.floor((clone.abilities.con.score - 10) / 2)`.
+5. For each roll `r` in `options.diceRolls`:
    - `recovered = Math.max(1, r + conMod)`.
    - `clone.attributes.hp.current = Math.min(clone.attributes.hp.max, clone.attributes.hp.current + recovered)`.
-6. Décrémenter `clone.attributes.hitDiceCurrent -= options.hitDiceSpent`.
-7. IF `clone.resources` est défini, THEN pour chaque ressource `res` de `clone.resources`, IF `res.resetOn === 'SHORT_REST'`, THEN fixer `res.current = res.max`.
-8. IF `clone.spellSlots?.pact` est présent, THEN fixer `clone.spellSlots.pact.current = clone.spellSlots.pact.max`.
+6. Decrement `clone.attributes.hitDiceCurrent -= options.hitDiceSpent`.
+7. IF `clone.resources` is defined, THEN for each resource `res` in `clone.resources`, IF `res.resetOn === 'SHORT_REST'`, THEN set `res.current = res.max`.
+8. IF `clone.spellSlots?.pact` is present, THEN set `clone.spellSlots.pact.current = clone.spellSlots.pact.max`.
 
-### 6.2 Repos Long (`applyLongRest`)
+### 6.2 Long Rest (`applyLongRest`)
 
 ```typescript
 export function applyLongRest(actor: Dnd5eActorData): Dnd5eActorData
 ```
 
-Algorithme pour `applyLongRest` :
-1. Cloner en profondeur l'objet `actor`.
-2. Restaurer tous les points de vie courants : `clone.attributes.hp.current = clone.attributes.hp.max`.
-3. Réinitialiser les points de vie temporaires : `clone.attributes.hp.temp = 0`.
-4. Calculer la récupération des dés de vie : `recoveredDice = Math.max(1, Math.floor(clone.attributes.hitDiceMax / 2))`.
-5. Mettre à jour les dés de vie : `clone.attributes.hitDiceCurrent = Math.min(clone.attributes.hitDiceMax, clone.attributes.hitDiceCurrent + recoveredDice)`.
-6. IF `clone.attributes.exhaustion > 0`, THEN décrémenter `clone.attributes.exhaustion -= 1`.
-7. Réinitialiser l'état des jets de sauvegarde contre la mort : `clone.attributes.deathSaves.successes = 0`, `clone.attributes.deathSaves.failures = 0`.
-8. IF `clone.spellSlots` est défini, THEN pour chaque niveau d'emplacement présent, fixer `slot.current = slot.max`.
-9. IF `clone.resources` est défini, THEN pour chaque ressource `res` de `clone.resources`, fixer `res.current = res.max` (indépendamment de la fréquence `SHORT_REST` ou `LONG_REST`).
+Algorithm for `applyLongRest`:
+1. Deep-clone the `actor` object.
+2. Restore all current hit points: `clone.attributes.hp.current = clone.attributes.hp.max`.
+3. Reset temporary hit points: `clone.attributes.hp.temp = 0`.
+4. Compute hit dice recovery: `recoveredDice = Math.max(1, Math.floor(clone.attributes.hitDiceMax / 2))`.
+5. Update hit dice: `clone.attributes.hitDiceCurrent = Math.min(clone.attributes.hitDiceMax, clone.attributes.hitDiceCurrent + recoveredDice)`.
+6. IF `clone.attributes.exhaustion > 0`, THEN decrement `clone.attributes.exhaustion -= 1`.
+7. Reset death saving throws state: `clone.attributes.deathSaves.successes = 0`, `clone.attributes.deathSaves.failures = 0`.
+8. IF `clone.spellSlots` is defined, THEN for each present spell slot tier, set `slot.current = slot.max`.
+9. IF `clone.resources` is defined, THEN for each resource `res` in `clone.resources`, set `res.current = res.max` (regardless of whether `resetOn` is `SHORT_REST` or `LONG_REST`).
 
-### 6.3 Décrémentation des Conditions Actives (`decrementConditionDurations`)
+### 6.3 Active Condition Decrementation (`decrementConditionDurations`)
 
 ```typescript
 export function decrementConditionDurations(
@@ -493,27 +493,27 @@ export function decrementConditionDurations(
 ): ActiveConditionState[]
 ```
 
-Algorithme strict sans ambiguïté :
-1. Initialiser une nouvelle liste vide `survivingConditions: ActiveConditionState[]`.
-2. Pour chaque `cond` de `conditions` :
-   - IF `trigger === 'TURNS_START' || trigger === 'TURNS_END'`, THEN :
-     - IF `cond.appliedTurnActorId !== undefined && cond.appliedTurnActorId === currentTurnActorId && cond.trigger === trigger`, THEN :
+Strict unambiguous algorithm:
+1. Initialize a new empty list `survivingConditions: ActiveConditionState[]`.
+2. For each `cond` in `conditions`:
+   - IF `trigger === 'TURNS_START' || trigger === 'TURNS_END'`, THEN:
+     - IF `cond.appliedTurnActorId !== undefined && cond.appliedTurnActorId === currentTurnActorId && cond.trigger === trigger`, THEN:
        - `remaining = cond.durationRounds - 1`.
-     - ELSE :
-       - `remaining = cond.durationRounds` (la condition ne décrémente pas si l'acteur du tour ne correspond pas ou si `appliedTurnActorId` est absent).
-   - ELSE IF `trigger === 'ROUNDS'`, THEN :
-     - IF `cond.trigger === 'ROUNDS'`, THEN :
+     - ELSE:
+       - `remaining = cond.durationRounds` (the condition does not decrement if the active turn actor does not match or if `appliedTurnActorId` is absent).
+   - ELSE IF `trigger === 'ROUNDS'`, THEN:
+     - IF `cond.trigger === 'ROUNDS'`, THEN:
        - `remaining = cond.durationRounds - 1`.
-     - ELSE :
+     - ELSE:
        - `remaining = cond.durationRounds`.
-   - IF `remaining > 0`, THEN ajouter `{ ...cond, durationRounds: remaining }` dans `survivingConditions`.
-3. Retourner `survivingConditions`.
+   - IF `remaining > 0`, THEN append `{ ...cond, durationRounds: remaining }` to `survivingConditions`.
+3. Return `survivingConditions`.
 
 ---
 
-## 7. Compendium Hiérarchique à 3 Niveaux & Attribution CC-BY-4.0 (`compendium.ts`)
+## 7. 3-Tier Hierarchical Compendium & CC-BY-4.0 Attribution (`compendium.ts`)
 
-### 7.1 Schémas et Signature de `CompendiumResolver`
+### 7.1 Schemas and Signature of `CompendiumResolver`
 
 ```typescript
 export type CompendiumTier = 'SYSTEM_SRD' | 'INSTANCE_LIBRARY' | 'CAMPAIGN_HOMEBREW';
@@ -550,48 +550,48 @@ export class CompendiumResolver {
 }
 ```
 
-### 7.2 Résolution et Déduplication Prioritaire
+### 7.2 Priority Resolution and Deduplication
 
-1. `get(idOrSlug: string)` :
-   - Vérifier d'abord la clé dans `campaignHomebrew` (recherche par `id` ou `slug`). Si trouvée, retourner l'entrée.
-   - Vérifier ensuite dans `instanceLibrary`. Si trouvée, retourner l'entrée.
-   - Vérifier enfin dans `systemSrd`. Si trouvée, retourner l'entrée.
-   - Si aucune correspondance, retourner `undefined`.
-2. `list(query?: CompendiumQuery)` :
-   - Construire une table d'arbitrage `Map<string, CompendiumEntry>` où la clé est le `slug`.
-   - Insérer toutes les entrées de `systemSrd`.
-   - Insérer ensuite les entrées de `instanceLibrary` (écrasant par slug toute entrée `systemSrd` existante).
-   - Insérer enfin les entrées de `campaignHomebrew` (écrasant par slug toute entrée précédente).
-   - Obtenir la liste de toutes les valeurs dédupliquées.
-   - IF `query?.entityType` est défini, THEN filtrer les entrées sur `entry.entityType === query.entityType`.
-   - IF `query?.searchTerm` est défini et non vide, THEN filtrer les entrées via une recherche de sous-chaîne insensible à la casse : `entry.name.toLowerCase().includes(term.toLowerCase()) || entry.slug.toLowerCase().includes(term.toLowerCase())`.
-   - Retourner la liste filtrée triée par nom.
-3. `getAttribution()` :
-   - Retourner la mention légale obligatoire verbatim :
+1. `get(idOrSlug: string)`:
+   - First check the key in `campaignHomebrew` (lookup by `id` or `slug`). If found, return the entry.
+   - Next check in `instanceLibrary`. If found, return the entry.
+   - Finally check in `systemSrd`. If found, return the entry.
+   - If no match is found, return `undefined`.
+2. `list(query?: CompendiumQuery)`:
+   - Build an arbitration map `Map<string, CompendiumEntry>` keyed by `slug`.
+   - Insert all entries from `systemSrd`.
+   - Next insert entries from `instanceLibrary` (overwriting by slug any existing `systemSrd` entry).
+   - Finally insert entries from `campaignHomebrew` (overwriting by slug any previous entry).
+   - Obtain the list of all deduplicated values.
+   - IF `query?.entityType` is defined, THEN filter entries by `entry.entityType === query.entityType`.
+   - IF `query?.searchTerm` is defined and non-empty, THEN filter entries via case-insensitive substring matching: `entry.name.toLowerCase().includes(term.toLowerCase()) || entry.slug.toLowerCase().includes(term.toLowerCase())`.
+   - Return the filtered list sorted by name.
+3. `getAttribution()`:
+   - Return the mandatory legal notice verbatim:
      `"This work includes material taken from the System Reference Document 5.1 (\"SRD 5.1\") by Wizards of the Coast LLC and available at https://dnd.wizards.com/resources/systems-reference-document. The SRD 5.1 is licensed under the Creative Commons Attribution 4.0 International License available at https://creativecommons.org/licenses/by/4.0/legalcode."`
 
 ---
 
-## 8. Matrice des Tests d'Acceptation (`packages/web/tests/dnd5e.test.ts`)
+## 8. Acceptance Test Matrix (`packages/web/tests/dnd5e.test.ts`)
 
-La suite de tests unitaires sous `node --test` doit valider les scénarios suivants :
+The unit test suite under `node --test` must validate the following scenarios:
 
-| ID Test | Composant | Scénario | Résultat Attendu |
+| Test ID | Component | Scenario | Expected Result |
 |:---|:---|:---|:---|
-| T-DND-01 | `manifest.ts` | Évaluation des caractéristiques et dérivés (Niveau 1, Sagesse 16, Maîtrise Perception) | mod +3, bonus maîtrise +2, perception passive = 15 |
-| T-DND-02 | `system.json` | Validation structurelle du manifeste système contre les types du moteur | Toutes les clés requises présentes, aucune formule circulaire |
-| T-DND-03 | `pipeline.ts` | Dégâts multiples simultanés (tranchant 10 sur résistance, radiant 6 sur neutre) | Dégâts totaux effectifs = floor(10*0.5) + 6 = 11 |
-| T-DND-04 | `pipeline.ts` | Absorption Temp HP prioritaire (Temp HP 5, Dégâts 8) | Temp HP = 0, Current HP réduit de 3 |
-| T-DND-05 | `pipeline.ts` | Dégâts à 0 PV non critiques | Ajout de 1 échec de jet de mort sans réduction de PV |
-| T-DND-06 | `pipeline.ts` | Dégâts à 0 PV avec coup critique (`isCritical: true`) | Ajout de 2 échecs de jet de mort immédiats |
-| T-DND-07 | `pipeline.ts` | Mort instantanée (PV actuels 2, Dégâts 24, PV max 10, reliquat 22 >= 10) | `instantDeath: true`, `isDead: true`, `failures: 3` |
-| T-DND-08 | `pipeline.ts` | Prompt de concentration sur dégâts reçus (Dégâts effectifs 14, sort actif) | `concentrationPrompt.dc = max(10, floor(14/2)) = 10` |
-| T-DND-09 | `pipeline.ts` | Prompt de concentration sur dégâts élevés (Dégâts effectifs 26, sort actif) | `concentrationPrompt.dc = max(10, floor(26/2)) = 13` |
-| T-DND-10 | `pipeline.ts` | Jet de sauvegarde contre la mort : 1 naturel | `failures` incrémenté de 2 |
-| T-DND-11 | `pipeline.ts` | Jet de sauvegarde contre la mort : 20 naturel | `hp.current = 1`, `successes = 0`, `failures = 0`, retrait de `unconscious` |
-| T-DND-12 | `pipeline.ts` | Repos court avec dépense de dés de vie et ressource `SHORT_REST` | PV augmentés (min 1 par dé), `hitDiceCurrent` décrémenté, ressource réinitialisée |
-| T-DND-13 | `pipeline.ts` | Repos long | PV au max, Temp HP = 0, récupération de floor(maxHD/2), exhaustion -1, slots et ressources rechargés |
-| T-DND-14 | `pipeline.ts` | Décrémentation conditions `TURNS_START` | Décrémente si `appliedTurnActorId === currentTurnActorId`, reste inchangé sinon |
-| T-DND-15 | `progression.ts` | Montée de niveau du niveau 1 au niveau 20 | Bonus de maîtrise exact (+2 à +6) et progression rigoureuse des emplacements |
-| T-DND-16 | `compendium.ts` | Cascade 3 niveaux et surcharge de sort par campagne | Version `CAMPAIGN_HOMEBREW` renvoyée en priorité sur `SYSTEM_SRD` |
-| T-DND-17 | `compendium.ts` | Notice d'attribution CC-BY-4.0 | Contient la mention légale intégrale de Wizards of the Coast LLC |
+| T-DND-01 | `manifest.ts` | Ability score and derived value evaluation (Level 1, Wisdom 16, Perception proficiency) | mod +3, proficiency bonus +2, passive perception = 15 |
+| T-DND-02 | `system.json` | Structural validation of the system manifest against engine types | All required keys present, zero circular formulas |
+| T-DND-03 | `pipeline.ts` | Simultaneous multi-type damage (10 slashing vs. resistance, 6 radiant vs. neutral) | Total effective damage = floor(10*0.5) + 6 = 11 |
+| T-DND-04 | `pipeline.ts` | Priority Temp HP absorption (Temp HP 5, Damage 8) | Temp HP = 0, Current HP reduced by 3 |
+| T-DND-05 | `pipeline.ts` | Non-critical damage at 0 HP | Adds 1 death save failure with no HP reduction |
+| T-DND-06 | `pipeline.ts` | Critical hit damage at 0 HP (`isCritical: true`) | Immediately adds 2 death save failures |
+| T-DND-07 | `pipeline.ts` | Instant death (Current HP 2, Damage 24, Max HP 10, excess 22 >= 10) | `instantDeath: true`, `isDead: true`, `failures: 3` |
+| T-DND-08 | `pipeline.ts` | Concentration prompt on moderate damage taken (Effective damage 14, active spell) | `concentrationPrompt.dc = max(10, floor(14/2)) = 10` |
+| T-DND-09 | `pipeline.ts` | Concentration prompt on high damage taken (Effective damage 26, active spell) | `concentrationPrompt.dc = max(10, floor(26/2)) = 13` |
+| T-DND-10 | `pipeline.ts` | Death saving throw: natural 1 | `failures` incremented by 2 |
+| T-DND-11 | `pipeline.ts` | Death saving throw: natural 20 | `hp.current = 1`, `successes = 0`, `failures = 0`, removes `unconscious` |
+| T-DND-12 | `pipeline.ts` | Short rest spending hit dice and resetting `SHORT_REST` resource | HP increased (min 1 per die), `hitDiceCurrent` decremented, resource reset |
+| T-DND-13 | `pipeline.ts` | Long rest | HP restored to max, Temp HP = 0, recovers floor(maxHD/2), exhaustion -1, spell slots and resources recharged |
+| T-DND-14 | `pipeline.ts` | `TURNS_START` condition decrementation | Decrements if `appliedTurnActorId === currentTurnActorId`, remains unchanged otherwise |
+| T-DND-15 | `progression.ts` | Leveling up from level 1 to level 20 | Exact proficiency bonus (+2 to +6) and strict spell slot progression |
+| T-DND-16 | `compendium.ts` | 3-tier cascade and per-campaign spell override | `CAMPAIGN_HOMEBREW` entry returned with priority over `SYSTEM_SRD` |
+| T-DND-17 | `compendium.ts` | CC-BY-4.0 attribution notice | Contains the full legal attribution notice from Wizards of the Coast LLC |
