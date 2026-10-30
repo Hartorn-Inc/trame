@@ -171,7 +171,58 @@ impl FilteredNoteDocument {
     }
 }
 
-pub fn parse_handout_revealed_attr(header: &str) -> bool {
+fn tokenize_directive_attrs(input: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut in_quote: Option<char> = None;
+    let mut token_start: Option<usize> = None;
+    let mut escaped = false;
+
+    for (idx, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        if ch == '\\' {
+            escaped = true;
+            if token_start.is_none() {
+                token_start = Some(idx);
+            }
+            continue;
+        }
+
+        match in_quote {
+            Some(q) => {
+                if ch == q {
+                    in_quote = None;
+                }
+            }
+            None => {
+                if ch == '"' || ch == '\'' {
+                    in_quote = Some(ch);
+                    if token_start.is_none() {
+                        token_start = Some(idx);
+                    }
+                } else if ch.is_whitespace() {
+                    if let Some(start) = token_start {
+                        tokens.push(&input[start..idx]);
+                        token_start = None;
+                    }
+                } else if token_start.is_none() {
+                    token_start = Some(idx);
+                }
+            }
+        }
+    }
+
+    if let Some(start) = token_start {
+        tokens.push(&input[start..]);
+    }
+
+    tokens
+}
+
+pub(crate) fn parse_handout_revealed_attr(header: &str) -> bool {
     let Some(start_brace) = header.find('{') else {
         return false;
     };
@@ -182,77 +233,16 @@ pub fn parse_handout_revealed_attr(header: &str) -> bool {
         return false;
     }
     let attrs_str = &header[start_brace + 1..end_brace];
-    let chars: Vec<char> = attrs_str.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-    let mut is_revealed = false;
-
-    while i < len {
-        while i < len && chars[i].is_whitespace() {
-            i += 1;
-        }
-        if i >= len {
-            break;
-        }
-
-        let key_start = i;
-        while i < len && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-') {
-            i += 1;
-        }
-        if key_start == i {
-            i += 1;
-            continue;
-        }
-        let key: String = chars[key_start..i].iter().collect();
-
-        while i < len && chars[i].is_whitespace() {
-            i += 1;
-        }
-
-        if i >= len || chars[i] != '=' {
-            continue;
-        }
-        i += 1;
-
-        while i < len && chars[i].is_whitespace() {
-            i += 1;
-        }
-        if i >= len {
-            break;
-        }
-
-        let val: String = if chars[i] == '"' || chars[i] == '\'' {
-            let quote = chars[i];
-            i += 1;
-            let mut val_str = String::new();
-            while i < len && chars[i] != quote {
-                if chars[i] == '\\'
-                    && i + 1 < len
-                    && (chars[i + 1] == quote || chars[i + 1] == '\\')
-                {
-                    i += 1;
-                }
-                val_str.push(chars[i]);
-                i += 1;
+    for part in tokenize_directive_attrs(attrs_str) {
+        if let Some((k, v)) = part.split_once('=') {
+            let key = k.trim().trim_matches('"').trim_matches('\'');
+            let val = v.trim().trim_matches('"').trim_matches('\'');
+            if key == "revealed" {
+                return val.eq_ignore_ascii_case("true");
             }
-            if i < len && chars[i] == quote {
-                i += 1;
-            }
-            val_str
-        } else {
-            let val_start = i;
-            while i < len && !chars[i].is_whitespace() {
-                i += 1;
-            }
-            chars[val_start..i].iter().collect()
-        };
-
-        if key == "revealed" {
-            is_revealed = val.eq_ignore_ascii_case("true");
         }
     }
-
-    is_revealed
+    false
 }
 
 fn now_ms() -> u64 {

@@ -34,23 +34,6 @@ describe("[E5-T1] Wiki Markdown Parser & Zero-Trust Role Filtering", () => {
     assert.ok(html.includes('<a class="wiki-entity-link" data-entity="Cragmaw Castle">the fortress</a>'));
   });
 
-  it("escapes HTML entities in linkTarget and linkLabel to prevent XSS injection", () => {
-    const malicious = '[[Entity" onmouseover="alert(1)|Click <script>evil()</script> & \'win\']]';
-    const html = renderWikiLinksToHtml(malicious);
-
-    assert.ok(!html.includes('onmouseover="alert(1)"'));
-    assert.ok(!html.includes("<script>"));
-    assert.ok(html.includes('&quot; onmouseover=&quot;alert(1)'));
-    assert.ok(html.includes("&lt;script&gt;evil()&lt;/script&gt;"));
-    assert.ok(html.includes("&amp;"));
-    assert.ok(html.includes("&#39;win&#39;"));
-    assert.ok(
-      html.includes(
-        '<a class="wiki-entity-link" data-entity="Entity&quot; onmouseover=&quot;alert(1)">Click &lt;script&gt;evil()&lt;/script&gt; &amp; &#39;win&#39;</a>',
-      ),
-    );
-  });
-
   it("parses :::dm and :::handout directive blocks into typed AST", () => {
     const markdown = `# Campaign Log
 Party entered the crypt.

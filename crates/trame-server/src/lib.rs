@@ -86,8 +86,12 @@ The chest contains 500 GP and a Cursed Ring of Burden.
 Coordinates: 45N 12W. Do not give to players yet!
 :::
 
-:::handout{id="h-secret-tricky" title="Rumor about revealed=true" revealed="false"}
-Confidential information that must never leak!
+:::handout{id="h-trap" title="Notice: revealed=true is a trap" revealed="false"}
+Top secret GM content that must never be revealed.
+:::
+
+:::handout{id="h-single-quote" title='Secret single quote: revealed=true trap' revealed='false'}
+Another secret that must stay hidden.
 :::
 
 :::handout{id="h-public" title="Notice Board Post" revealed="true"}
@@ -103,8 +107,11 @@ Party moves forward."#;
         assert!(!filtered.contains("h-secret"));
         assert!(!filtered.contains("Encrypted Map"));
         assert!(!filtered.contains("45N 12W"));
-        assert!(!filtered.contains("h-secret-tricky"));
-        assert!(!filtered.contains("Confidential information that must never leak!"));
+        assert!(!filtered.contains("h-trap"));
+        assert!(!filtered.contains("Notice: revealed=true is a trap"));
+        assert!(!filtered.contains("Top secret GM content"));
+        assert!(!filtered.contains("h-single-quote"));
+        assert!(!filtered.contains("Another secret that must stay hidden"));
 
         assert!(filtered.contains("# Adventure Notes"));
         assert!(filtered.contains("[[Valeros]] discovers a locked chest"));
@@ -133,21 +140,33 @@ Hidden Text
     }
 
     #[test]
-    fn test_parse_handout_revealed_attr_respects_quoted_attributes() {
-        assert!(!parse_handout_revealed_attr(
-            r#":::handout{id="h-secret" title="Rumor about revealed=true" revealed="false"}"#
+    fn test_parse_handout_revealed_attr_quote_awareness() {
+        assert!(parse_handout_revealed_attr(
+            r#":::handout{id="h1" title="Parchment" revealed="true"}"#
         ));
         assert!(!parse_handout_revealed_attr(
-            r#":::handout{id="h-secret" title="Note: revealed=true" revealed="false"}"#
+            r#":::handout{id="h1" title="Parchment" revealed="false"}"#
         ));
         assert!(!parse_handout_revealed_attr(
-            r#":::handout{id="h-secret" title="Note: revealed=true"}"#
+            r#":::handout{id="h-trap" title="Notice: revealed=true is a trap" revealed="false"}"#
         ));
         assert!(parse_handout_revealed_attr(
-            r#":::handout{id="h-public" title="Notice Board Post" revealed="true"}"#
+            r#":::handout{id="h-trap" title="Notice: revealed=false is safe" revealed="true"}"#
+        ));
+        assert!(!parse_handout_revealed_attr(
+            r#":::handout{id="h-trap" title='Notice: revealed=true is a trap' revealed='false'}"#
         ));
         assert!(parse_handout_revealed_attr(
-            r#":::handout{id="h-public" revealed="true" title="Rumor about revealed=false"}"#
+            r#":::handout{id="h-trap" title='Notice: revealed=false is safe' revealed='true'}"#
+        ));
+        assert!(!parse_handout_revealed_attr(
+            r#":::handout{id="h-trap" title="Notice: revealed=true is a trap"}"#
+        ));
+        assert!(!parse_handout_revealed_attr(
+            r#":::handout{revealed="false" title="Trap: revealed=true"}"#
+        ));
+        assert!(parse_handout_revealed_attr(
+            r#":::handout{revealed="true" title="Trap: revealed=false"}"#
         ));
     }
 
