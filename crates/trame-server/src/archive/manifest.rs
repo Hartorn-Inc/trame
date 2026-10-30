@@ -1,4 +1,28 @@
-//! Manifest types and cryptographic entry descriptors for .trame campaign archives.
+//! ============================================================================
+//! CAMPAIGN ARCHIVE MANIFEST & ENTRY DESCRIPTORS (manifest.rs)
+//! ============================================================================
+//!
+//! PURPOSE:
+//! --------
+//! Defines the canonical data structures for `manifest.json` inside `.trame`
+//! portable campaign archives (`CampaignManifest`, `CampaignMetadata`,
+//! `ManifestStats`, and `ArchiveEntryDescriptor`).
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//! -------------------------------
+//!   1. `Schema Version Pinning`:
+//!      - `MANIFEST_VERSION` is pinned to `1` (`manifest_version: 1`) so
+//!        importers reject incompatible future archive versions before
+//!        mutating database state.
+//!   2. `Per-Entry Cryptographic Integrity`:
+//!      - Every `ArchiveEntryDescriptor` records both exact `byte_size` and
+//!        lowercase hexadecimal `sha256` digest for pre-commit verification.
+//!
+//! EXECUTION LIFECYCLE:
+//! --------------------
+//!   `CampaignManifest::new(campaign, exported_at, stats, entries)`
+//!     └── Serialized as pretty JSON at index `0` (`manifest.json`) of `.trame` ZIP.
+//! ============================================================================
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

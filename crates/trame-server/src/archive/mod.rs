@@ -1,4 +1,29 @@
-//! Campaign archive exporter and importer (.trame) engine.
+//! ============================================================================
+//! PORTABLE `.TRAME` CAMPAIGN ARCHIVE MODULE ROOT (archive/mod.rs)
+//! ============================================================================
+//!
+//! PURPOSE:
+//! --------
+//! Exposes the portable `.trame` campaign archive subsystem, re-exporting
+//! the two-pass streaming exporter (`ArchiveExporter`, `CampaignExportSource`,
+//! `ExportEntity`, `NoteRecord`) and manifest schema (`CampaignManifest`,
+//! `CampaignMetadata`, `ManifestStats`, `ArchiveEntryDescriptor`).
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//! -------------------------------
+//!   1. `Manifest-First Streaming Guarantee`:
+//!      - All exported `.trame` archives place `manifest.json` at ZIP entry `0`
+//!        and verify SHA-256 digests and uncompressed byte sizes across all
+//!        database, note, and WebP asset entries.
+//!   2. `Bounded Memory Footprint (< 16 MiB)`:
+//!      - Binary assets are streamed in 64 KiB chunks directly from `BlobStore`
+//!        without buffering full campaign media in RAM.
+//!
+//! EXECUTION LIFECYCLE:
+//! --------------------
+//!   `ArchiveExporter::new(source, blob_store).export_stream().await`
+//!     └── Produces an async stream of `Result<Bytes, ArchiveExportError>`.
+//! ============================================================================
 
 pub mod exporter;
 pub mod manifest;
@@ -343,5 +368,48 @@ mod tests {
         );
 
         let _ = tokio::fs::remove_dir_all(&temp_dir_path).await;
+    }
+
+    #[test]
+    fn test_note_archive_path_prevents_zip_slip_traversal() {
+        let id = Uuid::parse_str("7b354366-0ec1-456e-8260-2ff0d4e9c71f").unwrap();
+        let author_id = Uuid::new_v4();
+        let cases = [
+            (
+                Some("../../etc/passwd".to_string()),
+                "Secret Note",
+                "notes/etc/passwd/secret-note.md",
+            ),
+            (
+                Some("..\\..\\system\\factions".to_string()),
+                "Harpers Plan!",
+                "notes/system/factions/harpers-plan.md",
+            ),
+            (
+                Some("///./../".to_string()),
+                "Root Fallback",
+                "notes/root-fallback.md",
+            ),
+            (
+                None,
+                "!!!",
+                "notes/7b354366-0ec1-456e-8260-2ff0d4e9c71f.md",
+            ),
+        ];
+
+        for (folder, title, expected_path) in cases {
+            let note = NoteRecord {
+                id,
+                title: title.to_string(),
+                folder,
+                author_id,
+                created_at: "2026-10-30T00:00:00Z".to_string(),
+                updated_at: "2026-10-30T00:00:00Z".to_string(),
+                content_markdown: "Body".to_string(),
+            };
+            let path = note.archive_path();
+            assert_eq!(path, expected_path);
+            assert!(!path.contains(".."), "Archive path must never contain '..'");
+        }
     }
 }
