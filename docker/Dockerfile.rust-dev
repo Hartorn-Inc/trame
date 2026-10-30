@@ -1,5 +1,5 @@
 # TRAME Local Development Container (Rust + wasm-pack + sqlx-cli)
-FROM rust:1.86-bookworm
+FROM rust:1-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
