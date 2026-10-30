@@ -286,8 +286,7 @@ mod tests {
         const SIXTEEN_MIB: usize = 16 * 1024 * 1024;
         const ASSET_BYTES: usize = 20 * 1024 * 1024;
 
-        let temp_dir_path =
-            std::env::temp_dir().join(format!("trame_mem_test_{}", Uuid::new_v4()));
+        let temp_dir_path = std::env::temp_dir().join(format!("trame_mem_test_{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir_path)
             .await
             .expect("create temp dir");
