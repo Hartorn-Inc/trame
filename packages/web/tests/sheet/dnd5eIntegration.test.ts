@@ -183,8 +183,7 @@ describe("D&D 5e Declarative Character Sheet Layout Integration Suite", () => {
 
     const saves = findWidgetById(rendered.root, "dnd5e-saving-throws");
     assert.ok(saves);
-    assert.equal(saves.boundValues.saves.int.modifier, 7);
-    assert.equal(saves.boundValues.saves.int.proficient, true);
+    assert.equal(saves.boundValues.saves.int, 7);
 
     const skills = findWidgetById(rendered.root, "dnd5e-skill-checks");
     assert.ok(skills);

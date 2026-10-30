@@ -373,6 +373,29 @@ describe("CharacterBuilderWizard and BuilderDraftStore Suite", () => {
     assert.equal(BuilderDraftStore.hasDraft(), false);
   });
 
+  it("WHEN draft abilityGenerationMethod is undefined or manual with scores exceeding 27 points, CharacterBuilderWizard rejects step progression.", () => {
+    const wizard = new CharacterBuilderWizard();
+    wizard.setAncestry("human");
+    wizard.nextStep();
+    wizard.setClass("fighter");
+    wizard.nextStep();
+    assert.equal(wizard.currentStep, "abilityScores");
+
+    wizard.updateDraft({
+      abilityGenerationMethod: undefined,
+      abilityScores: { str: 15, dex: 15, con: 15, int: 15, wis: 10, cha: 8 },
+    });
+    assert.equal(wizard.nextStep(), false);
+    assert.equal(wizard.currentStep, "abilityScores");
+
+    wizard.updateDraft({
+      abilityGenerationMethod: "manual" as any,
+      abilityScores: { str: 18, dex: 16, con: 14, int: 10, wis: 10, cha: 10 },
+    });
+    assert.equal(wizard.nextStep(), false);
+    assert.equal(wizard.currentStep, "abilityScores");
+  });
+
   it("rejects confirm() before review step without dispatching commands", () => {
     const dispatched: unknown[] = [];
     const wizard = new CharacterBuilderWizard((cmd) => dispatched.push(cmd));
