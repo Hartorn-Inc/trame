@@ -65,11 +65,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **Definition**: Environmental lighting and atmospheric configuration (`Daylight`, `Dusk`, `NightMoonlight`, `PitchDarkness`).
 
-- **Allowed Context**: Lighting shader uniforms, SceneGraph render passes, and GM override controls.
+- **Allowed Context**: Spatial audio processing and WebAudio filter graphs.
 
-- **_Avoid_**: TimeOfDay, LightSetting, MoodPreset.
+- **_Avoid_**: SoundMuffling, AudioBlocking, AcousticShadow.
 
-### CombatTracker
+### ActionEconomyType
 
 - **Definition**: HUD component displaying the combat turn order carousel, initiative values, and action economy badges.
 
@@ -177,11 +177,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **Definition**: Game Master history drawer displaying recent table mutations and triggering single-click rollbacks.
 
-- **Allowed Context**: Lighting shader uniforms, SceneGraph render passes, and GM override controls.
+- **Allowed Context**: Combat turn management, HUD badges, and Game Master refunds.
 
-- **_Avoid_**: TimeOfDay, LightSetting, MoodPreset.
+- **_Avoid_**: TurnResource, ActionSlot, TokenAllowance.
 
-### CombatTracker
+### AmbientPreset
 - **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
 - **Allowed**: `AbilityScore`, `ability score`
 - **Avoid**: `stat mod`, `ability bonus`
@@ -193,7 +193,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ActiveEffect
 - **Definition**: Declarative mutation applied to a numeric or string actor property following the strict 5-phase order (`BASE_FORMULA` -> `ADD` -> `OVERRIDE_CONDITIONAL` -> `MULTIPLY` -> `FINAL_CLAMP`).
-- **Allowed**: `ActiveEffect`, `active effect`
+- **Allowed**: `AbilityModifier`, `ability modifier`
 - **Avoid**: `buff`, `debuff`, `stat modifier`, `status effect`
 
 ### Actor
@@ -298,7 +298,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### TurnTrigger
 - **Definition**: Attenuation of sound high frequencies calculated via raycasting through walls with `blocks_sound: true`.
-- **Allowed**: `ActiveEffect`, `active effect`
+- **Allowed**: `AbilityScore`, `ability score`
 - **Avoid**: `stat mod`, `ability bonus`
 
 ### AbilityScore
