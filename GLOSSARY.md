@@ -49,11 +49,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **Definition**: Attenuation of sound high frequencies calculated via raycasting through walls with `blocks_sound: true`.
 
-- **Allowed Context**: Spatial audio processing and WebAudio filter graphs.
+- **Allowed Context**: Combat turn management, HUD badges, and Game Master refunds.
 
-- **_Avoid_**: SoundMuffling, AudioBlocking, AcousticShadow.
+- **_Avoid_**: TurnResource, ActionSlot, TokenAllowance.
 
-### ActionEconomyType
+### AmbientPreset
 
 - **Definition**: Categorization of an actor tactical resource pool (`Action`, `BonusAction`, `Reaction`, or `Movement`).
 
@@ -177,13 +177,13 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **Definition**: Game Master history drawer displaying recent table mutations and triggering single-click rollbacks.
 
-- **Allowed Context**: Spatial audio processing and WebAudio filter graphs.
+- **Allowed Context**: Lighting shader uniforms, SceneGraph render passes, and GM override controls.
 
-- **_Avoid_**: SoundMuffling, AudioBlocking, AcousticShadow.
+- **_Avoid_**: TimeOfDay, LightSetting, MoodPreset.
 
-### ActionEconomyType
+### CombatTracker
 - **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
-- **Allowed**: `AbilityModifier`, `ability modifier`
+- **Allowed**: `AbilityScore`, `ability score`
 - **Avoid**: `stat mod`, `ability bonus`
 
 ### AbilityScore
@@ -297,8 +297,8 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Avoid**: `HP shield`, `bonus HP`
 
 ### TurnTrigger
-- **Definition**: Interface utilisateur tactile allégée dédiée aux terminaux mobiles et tablettes dont la largeur d'affichage est strictement inférieure à 768 pixels, désactivant le moteur de rendu WebGL pour préserver l'autonomie et les performances.
-- **Allowed**: `AbilityModifier`, `ability modifier`
-- **Avoid**: Mobile view, Lite app, Responsive fallback, Phone skin.
+- **Definition**: Structure de données répliquée sans conflit (Yjs côté client, `yrs` côté serveur) garantissant la convergence mathématique d'un document texte partagé entre plusieurs pairs sans verrou distribué.
+- **Allowed**: `ActiveEffect`, `active effect`
+- **Avoid**: Real-time sync engine, Operational Transform, Delta merge.
 
-### CRDT (Conflict-free Replicated Data Type)
+### Directive Block (Bloc Directive)
