@@ -1,28 +1,82 @@
-//! 2.5D Spatial BVH, Wall Permeability, 3D Elevation Horizon Culling,
-//! Visibility Polygon, and Multi-Point Token Footprint Line-of-Sight.
+//! ============================================================================
+//! 2.5D SPATIAL BVH, WALL PERMEABILITY & VISIBILITY RAYCASTER (geometry.rs)
+//! ============================================================================
+//!
+//! PURPOSE:
+//! --------
+//! Implements the spatial geometry kernel for the tabletop: a 2.5D Bounding
+//! Volume Hierarchy (`Bvh2D`), directional and multi-modal wall permeability
+//! (`WallKind`), linear 3D elevation horizon culling, radial visibility polygon
+//! synthesis, and multi-point token footprint line-of-sight (`can_token_see_target`).
+//! Without this module, large maps with hundreds of wall segments would degrade
+//! line-of-sight queries to \(O(N)\) per ray and leak occluded tokens across
+//! walls or elevation ledges.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//! -------------------------------
+//!   1. `Terrain Wall Two-Hit Rule`:
+//!      - `WallKind::Terrain` allows an observer to see *into* and across the
+//!        first terrain boundary intersected along a ray (`terrain_hits == 1`),
+//!        but blocks line-of-sight and light upon hitting a second terrain
+//!        boundary (`terrain_hits >= 2`). This enables boulders, tree canopies,
+//!        and elevated pillars to remain visible from outside while occluding
+//!        entities hidden behind them.
+//!   2. `2.5D Elevation Horizon Interpolation`:
+//!      - Every ray between `origin` (at `observer_eye_ft`) and `target` (at
+//!        `target_eye_ft`) linearly interpolates height \(z(t) = z_0 + t(z_1 - z_0)\)
+//!        at the parametric intersection \(t \in (0, 1)\). A wall only occludes
+//!        the ray when `bottom_elevation_ft <= z(t) <= top_elevation_ft`.
+//!   3. `Multi-Point Token Footprint Sampling`:
+//!      - Tokens larger than `1x1` are sampled across 4 quadrant centers (`2x2`
+//!        Large) or a 9-point `3x3` lattice (`3x3+` Huge/Gargantuan) so large
+//!        creatures partially exposed around a wall corner can see and be seen.
+//!   4. `Division-by-Zero & Collinear Guards`:
+//!      - `Point2D::distance_3d` clamps `px_per_ft` to `>= 1e-6` and
+//!        `segment_intersection` rejects collinear/parallel segments where
+//!        `|denom| < 1e-10`.
+//!
+//! EXECUTION LIFECYCLE:
+//! --------------------
+//!   `can_token_see_target(bvh, observer, target, ...)`
+//!     ├── 1. Verify visibility channel bitmask (`CHANNEL_MATERIAL`, `CHANNEL_ETHEREAL`, `CHANNEL_GM_HIDDEN`).
+//!     ├── 2. Enforce invisibility gating unless `see_invisibility`, `truesight`, or `blindsight` applies.
+//!     ├── 3. Generate footprint sample lattice (`token_sample_points`) for observer and target.
+//!     └── 4. For each `(obs_pt, tgt_pt)` pair within 3D sense range:
+//!          └── Query `bvh.has_line_of_sight(...)` with 2.5D elevation interpolation and two-hit terrain rule.
+//! ============================================================================
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Bitmask channel (`0b001`) representing the standard Material Plane.
 pub const CHANNEL_MATERIAL: u8 = 0b001;
+/// Bitmask channel (`0b010`) representing the Border Ethereal Plane (visible via Truesight or Etherealness).
 pub const CHANNEL_ETHEREAL: u8 = 0b010;
+/// Bitmask channel (`0b100`) reserved exclusively for Game Master hidden entities; stripped from non-GM wire payloads.
 pub const CHANNEL_GM_HIDDEN: u8 = 0b100;
 
+/// A 2D coordinate on the tabletop canvas measured in pixels (`px`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Point2D {
+    /// Horizontal canvas coordinate in pixels (`px`), increasing rightward.
     pub x: f64,
+    /// Vertical canvas coordinate in pixels (`px`), increasing downward.
     pub y: f64,
 }
 
 impl Point2D {
+    /// Constructs a new `Point2D` at `(x, y)` in canvas pixels (`px`).
     pub const fn new(x: f64, y: f64) -> Self {
         Self { x, y }
     }
 
+    /// Computes the 2D Euclidean distance in pixels (`px`) between `self` and `other`.
     pub fn distance_to(self, other: Self) -> f64 {
         ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
     }
 
+    /// Computes the true 3D Euclidean distance in feet (`ft`) between `(self, z1_ft)`
+    /// and `(other, z2_ft)`, converting horizontal pixel delta via `px_per_ft` (clamped to `>= 1e-6`).
     pub fn distance_3d(self, z1_ft: f64, other: Self, z2_ft: f64, px_per_ft: f64) -> f64 {
         let horiz_ft = self.distance_to(other) / px_per_ft.max(1e-6);
         let vert_ft = (z1_ft - z2_ft).abs();
@@ -30,15 +84,21 @@ impl Point2D {
     }
 }
 
+/// Axis-Aligned Bounding Box (AABB) in 2D canvas pixel coordinates (`px`) used by `Bvh2D` nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BoundingBox2D {
+    /// Minimum X coordinate in pixels (`px`).
     pub min_x: f64,
+    /// Minimum Y coordinate in pixels (`px`).
     pub min_y: f64,
+    /// Maximum X coordinate in pixels (`px`).
     pub max_x: f64,
+    /// Maximum Y coordinate in pixels (`px`).
     pub max_y: f64,
 }
 
 impl BoundingBox2D {
+    /// Computes the tightest axis-aligned bounding box enclosing segment `a..b` in pixels (`px`).
     pub fn from_segment(a: Point2D, b: Point2D) -> Self {
         Self {
             min_x: a.x.min(b.x),
@@ -48,6 +108,7 @@ impl BoundingBox2D {
         }
     }
 
+    /// Returns the smallest `BoundingBox2D` enclosing both `self` and `other`.
     pub fn union(self, other: Self) -> Self {
         Self {
             min_x: self.min_x.min(other.min_x),
@@ -57,6 +118,8 @@ impl BoundingBox2D {
         }
     }
 
+    /// Fast broad-phase check testing whether the AABB of segment `p0..p1` overlaps `self`
+    /// within a `1e-9` floating-point epsilon margin.
     pub fn intersects_segment(&self, p0: Point2D, p1: Point2D) -> bool {
         let seg_box = Self::from_segment(p0, p1);
         self.min_x <= seg_box.max_x + 1e-9
@@ -66,46 +129,74 @@ impl BoundingBox2D {
     }
 }
 
+/// Architectural classification of a `WallSegment`, governing how vision, light,
+/// movement, and player wire masking behave.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum WallKind {
+    /// Standard opaque masonry/dungeon wall that immediately blocks vision, light, and movement.
     Normal,
+    /// Transparent window or grate that blocks physical movement while allowing vision and light through.
     Window,
-    /// Two-hit rule: observer can see into/across the first Terrain wall hit,
-    /// but any second Terrain wall along the same ray blocks vision/light.
+    /// Two-hit rule terrain boundary: an observer can see into/across the first `Terrain` wall hit,
+    /// but any second `Terrain` wall along the same ray blocks vision and light.
     Terrain,
-    /// Blocks only when ray direction has a positive dot product with `normal`.
+    /// Directional curtain or cliff ledge that blocks vision only when the ray direction has a
+    /// positive dot product (`dot > 0.0`) with the unit normal `(normal_x, normal_y)`.
     OneWay {
+        /// Horizontal X component of the blocking normal vector (unitless).
         normal_x: f64,
+        /// Vertical Y component of the blocking normal vector (unitless).
         normal_y: f64,
     },
+    /// Interactive door that blocks movement, vision, and light when closed (`is_open == false`),
+    /// and rejects player toggle commands when `is_locked == true`.
     Door {
+        /// Whether the door is currently swung open (`true` = permeable).
         is_open: bool,
+        /// Whether the door is locked (`true` = only the GM can toggle).
         is_locked: bool,
     },
+    /// Hidden passage controllable only by the GM; masked as `WallKind::Normal` on non-GM wire snapshots when closed.
     SecretDoor {
+        /// Whether the secret door has been opened (`true` = permeable and revealed).
         is_open: bool,
     },
+    /// Illusory wall that never blocks physical movement (`effective_blocks_movement == false`),
+    /// and is visually pierced by observers with Truesight when `pierced_by_truesight == true`.
     Illusion {
+        /// Whether an observer with `truesight_range_ft > 0.0` sees straight through the illusion.
         pierced_by_truesight: bool,
     },
 }
 
+/// Authoritative 2.5D wall segment primitive with vertical elevation bounds and channel flags.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WallSegment {
+    /// Unique identifier for the wall or door segment.
     pub id: Uuid,
+    /// First endpoint of the wall segment in canvas pixels (`px`).
     pub a: Point2D,
+    /// Second endpoint of the wall segment in canvas pixels (`px`).
     pub b: Point2D,
+    /// Behavioral classification (`Normal`, `Window`, `Terrain`, `OneWay`, `Door`, `SecretDoor`, `Illusion`).
     pub kind: WallKind,
+    /// Base flag indicating whether physical token movement is blocked by this segment.
     pub blocks_movement: bool,
+    /// Base flag indicating whether line-of-sight rays are blocked by this segment.
     pub blocks_vision: bool,
+    /// Base flag indicating whether dynamic lighting and AoE propagation are blocked by this segment.
     pub blocks_light: bool,
+    /// Base flag indicating whether spatial audio emitters are muffled (`blocks_sound`) across this segment.
     pub blocks_sound: bool,
+    /// Lower vertical bound of the wall in feet (`ft`) relative to table zero (default `-1000.0`).
     pub bottom_elevation_ft: f64,
+    /// Upper vertical bound of the wall in feet (`ft`) relative to table zero (default `1000.0`).
     pub top_elevation_ft: f64,
 }
 
 impl WallSegment {
+    /// Constructs a full-height (`-1000.0..=1000.0` ft) opaque `WallKind::Normal` segment between `a` and `b`.
     pub fn normal_wall(id: Uuid, a: Point2D, b: Point2D) -> Self {
         Self {
             id,
@@ -121,6 +212,13 @@ impl WallSegment {
         }
     }
 
+    /// Evaluates whether this wall blocks a vision ray travelling along `ray_dir` for an observer
+    /// with `has_truesight`.
+    ///
+    /// Returns `(blocks_immediately, is_terrain_two_hit)`:
+    /// - `(true, false)` if the ray is stopped at this wall.
+    /// - `(false, true)` if the wall counts toward the 2-hit `WallKind::Terrain` quota.
+    /// - `(false, false)` if the ray passes through unimpeded.
     pub fn effective_blocks_vision(&self, has_truesight: bool, ray_dir: Point2D) -> (bool, bool) {
         if !self.blocks_vision {
             return (false, false);
@@ -140,6 +238,8 @@ impl WallSegment {
         }
     }
 
+    /// Evaluates whether this wall blocks physical token movement, returning `false` when the
+    /// mover is on the Ethereal plane (`is_ethereal == true`), the door is open, or the wall is an `Illusion`.
     pub fn effective_blocks_movement(&self, is_ethereal: bool) -> bool {
         if is_ethereal || !self.blocks_movement {
             return false;
@@ -152,15 +252,24 @@ impl WallSegment {
     }
 }
 
+/// Sensory capabilities and planar perception bitmask attached to a token (`01-TABLE-SPEC.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SenseProfile {
+    /// Maximum bright/dim vision radius in feet (`ft`, default `120.0`).
     pub normal_range_ft: f64,
+    /// Maximum darkvision radius in feet (`ft`, default `60.0`).
     pub darkvision_range_ft: f64,
+    /// Maximum blindsight radius in feet (`ft`, perceives invisible targets without relying on sight).
     pub blindsight_range_ft: f64,
+    /// Maximum tremorsense radius in feet (`ft`).
     pub tremorsense_range_ft: f64,
+    /// Maximum truesight radius in feet (`ft`, pierces illusions, invisibility, and perceives `CHANNEL_ETHEREAL`).
     pub truesight_range_ft: f64,
+    /// Whether the token possesses Devil's Sight (sees normally in magical and nonmagical darkness).
     pub devils_sight: bool,
+    /// Whether the token can see invisible creatures and objects as if they were visible.
     pub see_invisibility: bool,
+    /// Bitmask of visibility channels (`CHANNEL_MATERIAL`, `CHANNEL_ETHEREAL`, `CHANNEL_GM_HIDDEN`) perceived.
     pub perceives_channels: u8,
 }
 
@@ -200,7 +309,8 @@ impl BvhNode {
     }
 }
 
-/// 2.5D Bounding Volume Hierarchy for fast raycasting and collision checks.
+/// 2.5D Bounding Volume Hierarchy (`Bvh2D`) for \(O(\log N)\) raycasting, visibility polygon synthesis,
+/// and movement collision checks.
 #[derive(Debug, Clone, Default)]
 pub struct Bvh2D {
     walls: Vec<WallSegment>,
@@ -216,12 +326,15 @@ struct RayHit {
 }
 
 impl Bvh2D {
+    /// Builds a balanced top-down median-split `Bvh2D` tree alternating X and Y centroid axes
+    /// over the provided `walls` slice.
     pub fn build(walls: Vec<WallSegment>) -> Self {
         let indices: Vec<usize> = (0..walls.len()).collect();
         let root = Self::build_node(&walls, &indices, 0);
         Self { walls, root }
     }
 
+    /// Returns a read-only slice of all `WallSegment` primitives indexed by this `Bvh2D`.
     pub fn walls(&self) -> &[WallSegment] {
         &self.walls
     }
@@ -266,8 +379,11 @@ impl Bvh2D {
         })
     }
 
-    /// Checks whether a 2.5D line-of-sight segment from `origin` (at `observer_eye_ft`)
-    /// to `target` (at `target_eye_ft`) is unobstructed by walls.
+    /// Checks whether a 2.5D line-of-sight segment from `origin` (at `observer_eye_ft` in feet)
+    /// to `target` (at `target_eye_ft` in feet) is unobstructed by walls.
+    ///
+    /// Sorts all intersecting walls by parametric distance `t` and enforces both 3D linear
+    /// elevation horizon culling and the two-hit `WallKind::Terrain` rule.
     pub fn has_line_of_sight(
         &self,
         origin: Point2D,
@@ -378,7 +494,10 @@ impl Bvh2D {
         }
     }
 
-    /// Checks whether a token movement segment from `from` to `to` at `elevation_ft` collides with any movement-blocking wall.
+    /// Checks whether a token movement segment from `from` to `to` (in pixels) at vertical height
+    /// `elevation_ft` (in feet) collides with any movement-blocking wall.
+    ///
+    /// Returns the closest collision `Point2D` along `from..to` if blocked, or `None` if clear.
     pub fn check_movement_collision(
         &self,
         from: Point2D,
@@ -404,8 +523,9 @@ impl Bvh2D {
         closest.map(|(_, pt)| pt)
     }
 
-    /// Casts a ray from `origin` in direction `angle_rad` up to `max_range_px`
-    /// and returns the termination point (respecting the two-hit rule on `Terrain` walls).
+    /// Casts a horizontal vision ray from `origin` (at `observer_eye_ft` in feet) in direction
+    /// `angle_rad` (in radians) up to `max_range_px` (in pixels) and returns the termination `Point2D`,
+    /// respecting the two-hit rule on `WallKind::Terrain` walls.
     pub fn cast_vision_ray(
         &self,
         origin: Point2D,
@@ -454,7 +574,11 @@ impl Bvh2D {
         target
     }
 
-    /// Computes a 2D radial visibility polygon around `origin` up to `max_range_px`.
+    /// Computes a closed 2D radial visibility polygon around `origin` (in pixels) at height
+    /// `observer_eye_ft` (in feet) up to radius `max_range_px` (in pixels).
+    ///
+    /// Combines a 36-spoke baseline circle (`10°` angular steps) with `±1e-4` radian grazing
+    /// rays aimed at every wall endpoint within range, deduplicating angles within `1e-6` rad.
     pub fn compute_visibility_polygon(
         &self,
         origin: Point2D,
@@ -490,10 +614,10 @@ impl Bvh2D {
     }
 }
 
-/// Returns the footprint sample points for a token according to `01-TABLE-SPEC.md`:
-/// - `1x1` (Medium/Small): 1 center point.
-/// - `2x2` (Large): 4 quadrant centers.
-/// - `3x3+` (Huge/Gargantuan): 9 perimeter + center points (3x3 lattice).
+/// Returns the footprint sample points in canvas pixels (`px`) for a token according to `01-TABLE-SPEC.md`:
+/// - `1x1` (Medium/Small): 1 center point `(0.5, 0.5)`.
+/// - `2x2` (Large): 4 quadrant centers `(0.25, 0.25)`, `(0.75, 0.25)`, `(0.25, 0.75)`, `(0.75, 0.75)`.
+/// - `3x3+` (Huge/Gargantuan): 9 perimeter + center points (`{0.2, 0.5, 0.8} x {0.2, 0.5, 0.8}` lattice).
 pub fn token_sample_points(
     top_left: Point2D,
     grid_w: u8,
@@ -526,7 +650,11 @@ pub fn token_sample_points(
     }
 }
 
-/// Multi-point footprint visibility check between an observer token and a target token.
+/// Evaluates multi-point footprint visibility between an observer token and a target token.
+///
+/// Enforces planar visibility channel bitmasks (`target_channel`), invisibility gating,
+/// 3D sensory range limits (`observer_senses`), and 2.5D BVH wall occlusion across all pairs
+/// of footprint sample points.
 #[allow(clippy::too_many_arguments)]
 pub fn can_token_see_target(
     bvh: &Bvh2D,
@@ -589,8 +717,10 @@ pub fn can_token_see_target(
     false
 }
 
-/// Computes segment-segment intersection between `p0..p1` and `q0..q1`.
-/// Returns `Some((t, intersection_point))` where `t` in `[0, 1]` is along `p0..p1`.
+/// Computes the 2D parametric segment-segment intersection between `p0..p1` and `q0..q1`.
+///
+/// Returns `Some((t, intersection_point))` where `t` in `[0.0, 1.0]` is the normalized distance
+/// along `p0..p1`, or `None` if the segments are parallel/collinear (`|denom| < 1e-10`) or disjoint.
 pub fn segment_intersection(
     p0: Point2D,
     p1: Point2D,

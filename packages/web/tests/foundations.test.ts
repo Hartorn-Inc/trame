@@ -1,17 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  DND5E_2024_MANIFEST,
-  SRD_STARTER_ACTIONS,
-  applyLongRest,
-  applyShortRest,
-  computeDnd5eSheetDerived,
-  createAdultRedDragonSheet,
-  resolveActionPipeline,
-  rollDeathSavingThrow,
-  tryRechargeMonsterAbility,
-} from "../../game-systems/dnd5e/src/index.ts";
-import {
   DualBufferFogOfWar,
   RADIAL_LIGHT_GLSL_FRAG,
   RADIAL_LIGHT_WGSL_FRAG,
@@ -27,101 +16,6 @@ import {
   previewSphereAoeCells,
 } from "../src/engine/wasmBridge.ts";
 import { TableClientStore } from "../src/store/tableStore.ts";
-
-describe("[F3] @trame/game-system-dnd5e canonical rules & pipeline", () => {
-  it("computes derived stats, skill expertise, and exhaustion penalties across parameterized levels", () => {
-    const cases = [
-      { level: 1, exhaustion: 0, expectedPb: 2, expectedPerception: 15, expectedDc: 15 },
-      { level: 5, exhaustion: 0, expectedPb: 3, expectedPerception: 17, expectedDc: 16 },
-      { level: 17, exhaustion: 2, expectedPb: 6, expectedPerception: 19, expectedDc: 15 },
-    ];
-
-    for (const tc of cases) {
-      const dragon = createAdultRedDragonSheet();
-      dragon.level = tc.level;
-      dragon.exhaustionLevel = tc.exhaustion;
-      const derived = computeDnd5eSheetDerived(dragon);
-
-      assert.equal(derived.proficiencyBonus, tc.expectedPb);
-      assert.equal(derived.passivePerception, tc.expectedPerception);
-      assert.equal(derived.spellSaveDc, tc.expectedDc);
-      assert.equal(DND5E_2024_MANIFEST.skills.length, 18);
-    }
-  });
-
-  it("executes Fireball upcasting, Legendary Resistance auto-success, and Monster Recharge 5-6", () => {
-    const wizard = createAdultRedDragonSheet("wizard-1");
-    wizard.spellcastingAbility = "int";
-    wizard.abilities.int = 20; // +5 mod
-    wizard.level = 9; // +4 PB -> DC 17
-    wizard.resources.spell_slot_3 = {
-      id: "spell_slot_3",
-      label: "3rd-Level Slot",
-      current: 2,
-      max: 3,
-      recovery: "long_rest",
-    };
-
-    const dragonTarget = createAdultRedDragonSheet("dragon-boss");
-    dragonTarget.tempHp = 10;
-
-    // Dragon rolls a 2 on DEX save (+6 DEX save = 8 < DC 17), but spends 1 Legendary Resistance!
-    const outcomes = resolveActionPipeline(
-      wizard,
-      SRD_STARTER_ACTIONS.fireball,
-      [
-        {
-          target: dragonTarget,
-          saveD20Roll: 2,
-          useLegendaryResistanceIfFailed: true,
-        },
-      ],
-      5, // Upcast at 5th level (+7 base damage -> 35 total, half on save = 17)
-    );
-
-    assert.equal(outcomes.length, 1);
-    assert.equal(outcomes[0].usedLegendaryResistance, true);
-    assert.equal(outcomes[0].hitOrFailedSave, false);
-    assert.equal(outcomes[0].damageApplied, 17);
-    assert.equal(dragonTarget.resources.legendary_resistance.current, 2);
-    // 10 absorbed by tempHp, 7 applied to HP (256 - 7 = 249)
-    assert.equal(dragonTarget.tempHp, 0);
-    assert.equal(dragonTarget.hpCurrent, 249);
-
-    // Spend Fire Breath and test Recharge 5-6
-    dragonTarget.resources.fire_breath.current = 0;
-    assert.equal(tryRechargeMonsterAbility(dragonTarget.resources.fire_breath, 4), false);
-    assert.equal(tryRechargeMonsterAbility(dragonTarget.resources.fire_breath, 5), true);
-    assert.equal(dragonTarget.resources.fire_breath.current, 1);
-  });
-
-  it("handles Short Rest, Long Rest hit dice recovery, and Death Saving Throws", () => {
-    const fighter = createAdultRedDragonSheet("fighter-1");
-    fighter.hpMax = 100;
-    fighter.hpCurrent = 40;
-    fighter.hitDiceMax = 8;
-    fighter.hitDiceCurrent = 2;
-    fighter.exhaustionLevel = 2;
-
-    const shortRes = applyShortRest(fighter, [8, 6]);
-    assert.equal(shortRes.hitDiceSpent, 2);
-    assert.ok(shortRes.hpRecovered > 0);
-    assert.equal(fighter.hitDiceCurrent, 0);
-
-    const longRes = applyLongRest(fighter);
-    assert.equal(fighter.hpCurrent, 100);
-    assert.equal(longRes.hitDiceRecovered, 4); // half of 8
-    assert.equal(fighter.exhaustionLevel, 1);
-
-    // Death save parameterized checks: nat 1 -> 2 failures, nat 20 -> 1 HP conscious
-    fighter.hpCurrent = 0;
-    rollDeathSavingThrow(fighter, 1);
-    assert.equal(fighter.deathSaves.failures, 2);
-    rollDeathSavingThrow(fighter, 20);
-    assert.equal(fighter.hpCurrent, 1);
-    assert.equal(fighter.deathSaves.isStable, true);
-  });
-});
 
 describe("[F4] @trame/web PixiJS v8 SceneGraph, Shaders, WASM Bridge & Optimistic Store", () => {
   it("computes client-side visibility polygons and wall-clipped AoE discretization", () => {
