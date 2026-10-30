@@ -1,42 +1,30 @@
-# TRAME — Ubiquitous Domain Glossary (`GLOSSARY.md`)
+# GLOSSARY: Declarative Sheet UI, Character Builder & Compendium Drag-Drop
 
-All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli`), TypeScript/React packages (`packages/web`, `packages/game-systems/dnd5e`), SQL schemas, WebSocket payloads, and MCP tools MUST use these exact domain terms.
-
----
-
-## 1. Core Architectural Primitives
-
-- **`TrameCommand`**: The single canonical CQRS command enum representing every possible mutation on a campaign or table (e.g., `MoveToken`, `ToggleDoor`, `ProjectAoE`, `ApplyDamage`, `RevealHandout`). Dispatched identically from the WebSocket client, REST API, or MCP tools.
-- **`TrameEvent`**: An immutable domain event emitted after a `TrameCommand` passes RBAC and spatial/rule validation, broadcast to connected clients (filtered per player visibility) and appended to the session timeline.
-- **`UndoEntry`**: A compensating state delta generated alongside every `TrameCommand` execution, pushed onto the per-map 50-action ring buffer so the GM can revert mistakes in 1 click (`Cmd+Z`).
-- **`TableRoomActor`**: The single-owner Tokio actor in `trame-server` holding the authoritative live state of an active campaign in RAM (`Arc<RwLock<CampaignRoomState>>`).
-- **`Idle-Lease`**: The 15-minute inactivity timer tracking exclusively human/MCP mutations (`TrameCommand`, dice rolls, note edits) while ignoring WebSocket Ping/Pong keep-alives, allowing Cloud Run instances to cleanly snapshot and scale to `0`.
-
----
-
-## 2. Spatial & Table Primitives (`01-TABLE-SPEC.md`)
-
-- **`Exploration Mode` vs. `Turn-by-Turn Mode`**: The two table movement regimes. Exploration uses continuous server-interpolated movement (120ms tick) with instant GM freeze (`Spacebar`) and automatic trap/LoS stops; Turn-by-Turn enforces initiative order, movement budgets (`speed_remaining`), and reaction pauses.
-- **`BVH` (Bounding Volume Hierarchy)**: The 2D/2.5D spatial acceleration structure in `trame-engine` used for sub-millisecond raycasting, wall collision, and AoE clipping.
-- **`WallSegment`**: A barrier on the map defined by its geometry and independent permeability flags (`blocks_movement`, `blocks_vision`, `blocks_light`, `blocks_sound`), height (`bottom_elevation_ft`, `top_elevation_ft`), and `WallKind` (`Normal`, `Window`, `Terrain`, `OneWay`, `SecretDoor`, `Door`, `Illusion`).
-- **`VisibilityChannel`**: Bitmask (`MATERIAL = 0b001`, `ETHEREAL = 0b010`, `GM_HIDDEN = 0b100`) governing which tokens and lights a viewer can perceive, combined with overhead `RoofPolygon` auto-occluders.
-- **`SenseProfile`**: A token's sensory capabilities (`normal_range`, `darkvision_range`, `blindsight_range`, `tremorsense_range`, `truesight_range`, `devils_sight`, `see_invisibility`) evaluated against `WallSegment` and `LightSource` rules.
-- **`FogLayer`**: The 3-tier fog of war system: Layer 0 (`Unexplored` opaque black), Layer 1 (`Explored Memory` desaturated static terrain snapshot stored per-player in R2/Postgres, hiding live enemy tokens), and Layer 2 (`GM Manual Fog` override).
-- **`AoETemplate`**: A geometric projection (`Sphere`, `Cone`, `Cube`, `Line`, `Cylinder`) clipped against `BVH` walls (`stops_at_walls`) and discretized onto the grid (`CENTER_POINT`, `FIFTY_PERCENT`, `ANY_INTERSECTION`, `TOKEN_EUCLIDEAN`), either Instantaneous or Persistent (`Zone` linked to caster concentration).
-
----
-
-## 3. Game Engine & Rules Primitives (`02-GAME-ENGINE-AND-DND5E.md`)
-
-- **`GameSystemPack`**: A declarative manifest (`system.json` + JSON Schemas + `derivedDAG` + `sheetLayout` + compendium packs) defining a tabletop RPG system without hardcoding game rules in the server binary.
-- **`derivedDAG`**: The topological directed acyclic graph of pure mathematical expressions (`trame-engine`) computing derived actor attributes (e.g., ability modifiers, AC, spell save DC) in deterministic order.
-- **`ActiveEffect`**: A buff, condition, feat, or equipped item modifier evaluated through the strict 5-phase pipeline: `BASE` -> `ADD` -> `MULTIPLY` -> `OVERRIDE` -> `CLAMP`, obeying same-source non-stacking rules.
-- **`VisibilityTier`**: Field-level RBAC on actor sheets (`PUBLIC`, `OWNER_AND_GM`, `GM_ONLY`). Server snapshots strip unauthorized fields before serialization.
-
----
-
-## 4. MCP, Notes & Storage (`03-MCP-AND-NOTES-SPEC.md`, `04-RUNTIME-AND-DEDICATED-HOSTING.md`)
-
-- **`MCP Staging Mode`**: When `mcp_staging_mode = true`, destructive or bulk MCP tool calls queue as translucent purple ghost previews on the GM's canvas requiring `[ Commit All ]` or `[ Reject ]`.
-- **`NoteVisibility`**: 3-tier note access (`PRIVATE` author-only, `PARTY` shared wiki, `DM_ONLY` GM lore with inline `:::dm` and revealable `:::handout` blocks).
-- **`.trame` Archive**: A portable ZIP bundle (`manifest.json`, `database.jsonl`, `notes/`, `assets/`) allowing 1-click full campaign migration between local Docker, `e2-micro`, and Cloud Run + Neon + R2.
+| Term | Category | Definition | Allowed Context | Prohibited Synonyms (_Avoid_) |
+| :--- | :--- | :--- | :--- | :--- |
+| `ActiveEffect` | Engine Entity | Data structure that modifies an Actor property across five deterministic calculation phases. | System rules, engine pipeline. | buff, debuff, status bonus, modifier rule |
+| `ArmorInitiativeSpeed` | Atomic Widget | Widget that renders armor class, initiative modifier, and movement speeds. | Character sheet layout. | AC widget, defense box, mobility block |
+| `AttackActionTable` | Atomic Widget | Widget that displays weapon attacks, unarmed strikes, and combat action triggers. | Action layout, combat view. | attack list, weapons panel, strike grid |
+| `AtomicWidget` | UI Architecture | Self-contained, system-agnostic UI component that renders domain data and dispatches commands. | Declarative sheet layouts. | subcomponent, leaf widget, UI control |
+| `BuilderDraftStore` | State Management | In-memory store that holds transient character wizard form state until commit. | Character creation wizard. | form cache, session storage, draft state |
+| `CharacterBuilderWizard` | Component | Multi-step guided wizard that steps through Ancestry, Class, Ability Scores, and Equipment. | Character creation flow. | creation stepper, character creator, guided onboarding |
+| `CompendiumDragDropManager` | UI Subsystem | Service that handles HTML5 drag-and-drop transfers of compendium entries and inventory items. | Sheet drag-and-drop. | drop listener, drag handler, DndService |
+| `ConditionBadgeStrip` | Atomic Widget | Widget that displays active status conditions and toggles condition removal commands. | Status section, character header. | condition pills, status bar, debuff strip |
+| `ContainerWeightCalculator` | Utility | Deterministic algorithm that computes total container weight including tare and multiplier rules. | Inventory calculations. | encumbrance engine, bag weigher |
+| `DataBindingPath` | Data Schema | Dot-separated string that resolves to a property in the Actor state or derived stats record. | Widget data bindings. | property path, key path, binding selector |
+| `DeclarativeSheetRenderer` | Core Component | Recursive component that resolves a `SheetLayoutTree` into container nodes and widgets. | Sheet rendering pipeline. | dynamic sheet, template renderer, layout engine |
+| `FeatureTraitList` | Atomic Widget | Widget that displays passive traits, racial abilities, and class features grouped by source. | Feature view, trait sheet. | trait list, feats container, perk box |
+| `GameSystemPack` | Manifest | JSON manifest that defines system attributes, layouts, and creation rules. | Game system package. | system definition, ruleset bundle, rules config |
+| `HitDiceAndDeathSaves` | Atomic Widget | Widget that renders hit dice counts, recovery triggers, and death save success/failure pips. | Health panel, sheet vital box. | death tracker, recovery widget, HD panel |
+| `InventoryContainerTree` | Atomic Widget | Widget that renders nested inventory items, containers, quantities, and encumbrance stats. | Inventory tab, equipment tree. | bag viewer, gear grid, item list |
+| `LayoutNodeKind` | Type Enum | Discriminator string for layout nodes: `section`, `column`, `row`, `tabs`, or `widget`. | Sheet layout AST. | container type, layout tag, branch kind |
+| `NotesMarkdownPane` | Atomic Widget | Widget that renders rich text or Markdown actor biography and personal notes. | Bio tab, notes section. | bio editor, text area, notes markdown |
+| `ResourceBar` | Atomic Widget | Widget that renders a bounded numeric resource with current, maximum, and temporary values. | Health block, mana bar, resource gauge. | progress bar, stat meter, tracker bar |
+| `SavingThrowList` | Atomic Widget | Widget that displays saving throw modifiers and dispatches d20 saving throw roll commands. | Ability overview, defense panel. | saves block, saving throws grid |
+| `SheetLayoutTree` | Data Schema | Hierarchical JSON tree describing the container hierarchy and widget nodes of a sheet. | Declarative layout definitions. | sheet AST, layout schema, UI blueprint |
+| `SheetNode` | Data Schema | Single node within a `SheetLayoutTree`, either a container or an atomic widget reference. | Layout tree definitions. | layout element, UI tree node |
+| `SkillCheckList` | Atomic Widget | Widget that displays skill modifiers, proficiency indicators, and passive check values. | Skills panel, proficiencies list. | skill table, check list, skills grid |
+| `SpellbookAccordion` | Atomic Widget | Widget that renders spells grouped by level, spell slot pips, spell DC, and attack bonus. | Spellbook tab, magic pane. | spells manager, magic list, grimoire accordion |
+| `StatBlock6` | Atomic Widget | Widget that renders the six primary ability scores and modifiers in a standardized grid. | Abilities panel, top sheet bar. | attributes widget, core stats, ability grid |
+| `TrameCommand` | Domain Command | Discrete command payload dispatched to modify engine state or trigger rolls. | Network protocol, engine interface. | action packet, state event, mutation message |
+| `WidgetRegistry` | Registry | Immutable dictionary mapping widget type names to their component implementations. | Sheet renderer initialization. | component map, widget factory, registry table |
