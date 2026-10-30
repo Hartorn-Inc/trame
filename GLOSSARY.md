@@ -177,11 +177,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **Definition**: Game Master history drawer displaying recent table mutations and triggering single-click rollbacks.
 
-- **Allowed Context**: Game Master HUD, table history drawer, and transaction rollback interfaces.
+- **Allowed Context**: Spatial audio processing and WebAudio filter graphs.
 
-- **_Avoid_**: HistoryDrawer, RollbackPanel, UndoList.
+- **_Avoid_**: SoundMuffling, AudioBlocking, AcousticShadow.
 
-### AbilityModifier
+### ActionEconomyType
 - **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
 - **Allowed**: `AbilityModifier`, `ability modifier`
 - **Avoid**: `stat mod`, `ability bonus`
