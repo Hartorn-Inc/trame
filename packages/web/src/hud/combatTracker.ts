@@ -291,6 +291,21 @@ export class CombatTrackerManager {
     }
   }
 
+  public syncToken(token: Partial<CombatTokenState> & { id: string }): void {
+    const existing = this.state.tokens.find((t) => t.id === token.id);
+    if (!existing) {
+      return;
+    }
+    if (token.name !== undefined) existing.name = token.name;
+    if (token.initiative !== undefined) existing.initiative = token.initiative;
+    if (token.elevationFt !== undefined) existing.elevationFt = token.elevationFt;
+    if (token.actionAvailable !== undefined) existing.actionAvailable = token.actionAvailable;
+    if (token.bonusActionAvailable !== undefined) existing.bonusActionAvailable = token.bonusActionAvailable;
+    if (token.reactionAvailable !== undefined) existing.reactionAvailable = token.reactionAvailable;
+    if (token.speedRemainingFt !== undefined) existing.speedRemainingFt = token.speedRemainingFt;
+    if (token.speedMaxFt !== undefined) existing.speedMaxFt = token.speedMaxFt;
+  }
+
   private refreshActiveTokenEconomy(token: CombatTokenState): void {
     token.actionAvailable = true;
     token.bonusActionAvailable = true;

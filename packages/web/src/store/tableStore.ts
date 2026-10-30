@@ -319,6 +319,7 @@ export class TableClientStore {
     if (restoredTokens) {
       for (const tok of restoredTokens) {
         this.tokens.set(tok.id, { ...tok, topLeft: { ...tok.topLeft } });
+        this.combatTracker.syncToken(tok);
       }
     }
   }

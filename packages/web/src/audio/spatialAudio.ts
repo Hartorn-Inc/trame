@@ -78,7 +78,7 @@ export function countSoundOccludingWalls(
   let count = 0;
 
   for (const wall of walls) {
-    if (!wall.blocksSound) {
+    if (wall.blocksSound === false) {
       continue;
     }
     const hit = intersectSegments(p0, p1, wall.a, wall.b);
@@ -129,30 +129,29 @@ export class SpatialAudioManager {
   }
 
   public updateOcclusionAndAttenuation(walls: WallSegmentDto[]): void {
-    let raycastBudget = MAX_CONCURRENT_RAYCASTS;
+    const emitterList = Array.from(this.emitters.entries()).map(([id, state]) => {
+      const dist = compute3DDistance(state.emitter, this.listener);
+      const gain = computeDistanceAttenuation(dist, state.emitter.refDistanceFt, state.emitter.rolloff);
+      return { id, state, dist, gain };
+    });
+
+    emitterList.sort((a, b) => a.dist - b.dist);
+
     let raycastCount = 0;
+    for (let i = 0; i < emitterList.length; i++) {
+      const item = emitterList[i];
+      let cutoff = item.state.cutoffFrequency;
 
-    const sortedEntries = Array.from(this.emitters.entries())
-      .map(([id, state]) => {
-        const dist = compute3DDistance(state.emitter, this.listener);
-        const gain = computeDistanceAttenuation(dist, state.emitter.refDistanceFt, state.emitter.rolloff);
-        return { id, state, dist, gain };
-      })
-      .sort((a, b) => a.dist - b.dist);
-
-    for (const { id, state, dist, gain } of sortedEntries) {
-      let cutoff = state.cutoffFrequency;
-      if (raycastBudget > 0) {
-        const nWalls = countSoundOccludingWalls(state.emitter, this.listener, walls);
+      if (i < MAX_CONCURRENT_RAYCASTS) {
+        const nWalls = countSoundOccludingWalls(item.state.emitter, this.listener, walls);
         cutoff = computeOcclusionLowPassCutoff(nWalls);
-        raycastBudget--;
         raycastCount++;
       }
 
-      this.emitters.set(id, {
-        ...state,
-        distance: dist,
-        gain,
+      this.emitters.set(item.id, {
+        ...item.state,
+        distance: item.dist,
+        gain: item.gain,
         cutoffFrequency: cutoff,
       });
     }
