@@ -57,7 +57,7 @@ mod tests {
     use crate::dice::{RollVisibility, SeededDiceRoller, project_roll_for_recipient};
     use crate::notes::{
         FilteredNoteDocument, InMemoryPartyJournalStorage, PartyJournalStorage,
-        RevealHandoutCommand, UserRole, reveal_handout,
+        RevealHandoutCommand, UserRole, parse_handout_revealed_attr, reveal_handout,
     };
     use crate::room::{ConnectedClient, RoomLeaseManager};
     use crate::sync::{
@@ -86,6 +86,10 @@ The chest contains 500 GP and a Cursed Ring of Burden.
 Coordinates: 45N 12W. Do not give to players yet!
 :::
 
+:::handout{id="h-secret-tricky" title="Rumor about revealed=true" revealed="false"}
+Confidential information that must never leak!
+:::
+
 :::handout{id="h-public" title="Notice Board Post" revealed="true"}
 Bounty: 50 GP for Goblin leaders.
 :::
@@ -99,6 +103,8 @@ Party moves forward."#;
         assert!(!filtered.contains("h-secret"));
         assert!(!filtered.contains("Encrypted Map"));
         assert!(!filtered.contains("45N 12W"));
+        assert!(!filtered.contains("h-secret-tricky"));
+        assert!(!filtered.contains("Confidential information that must never leak!"));
 
         assert!(filtered.contains("# Adventure Notes"));
         assert!(filtered.contains("[[Valeros]] discovers a locked chest"));
@@ -124,6 +130,25 @@ Hidden Text
 
         let filtered = FilteredNoteDocument::filter_for_role(input, UserRole::GameMaster);
         assert_eq!(filtered, input);
+    }
+
+    #[test]
+    fn test_parse_handout_revealed_attr_respects_quoted_attributes() {
+        assert!(!parse_handout_revealed_attr(
+            r#":::handout{id="h-secret" title="Rumor about revealed=true" revealed="false"}"#
+        ));
+        assert!(!parse_handout_revealed_attr(
+            r#":::handout{id="h-secret" title="Note: revealed=true" revealed="false"}"#
+        ));
+        assert!(!parse_handout_revealed_attr(
+            r#":::handout{id="h-secret" title="Note: revealed=true"}"#
+        ));
+        assert!(parse_handout_revealed_attr(
+            r#":::handout{id="h-public" title="Notice Board Post" revealed="true"}"#
+        ));
+        assert!(parse_handout_revealed_attr(
+            r#":::handout{id="h-public" revealed="true" title="Rumor about revealed=false"}"#
+        ));
     }
 
     #[test]

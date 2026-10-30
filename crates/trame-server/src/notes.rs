@@ -171,7 +171,7 @@ impl FilteredNoteDocument {
     }
 }
 
-fn parse_handout_revealed_attr(header: &str) -> bool {
+pub fn parse_handout_revealed_attr(header: &str) -> bool {
     let Some(start_brace) = header.find('{') else {
         return false;
     };
@@ -182,16 +182,77 @@ fn parse_handout_revealed_attr(header: &str) -> bool {
         return false;
     }
     let attrs_str = &header[start_brace + 1..end_brace];
-    for part in attrs_str.split_whitespace() {
-        if let Some((k, v)) = part.split_once('=') {
-            let key = k.trim();
-            let val = v.trim().trim_matches('"').trim_matches('\'');
-            if key == "revealed" {
-                return val.eq_ignore_ascii_case("true");
+    let chars: Vec<char> = attrs_str.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut is_revealed = false;
+
+    while i < len {
+        while i < len && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= len {
+            break;
+        }
+
+        let key_start = i;
+        while i < len && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-') {
+            i += 1;
+        }
+        if key_start == i {
+            i += 1;
+            continue;
+        }
+        let key: String = chars[key_start..i].iter().collect();
+
+        while i < len && chars[i].is_whitespace() {
+            i += 1;
+        }
+
+        if i >= len || chars[i] != '=' {
+            continue;
+        }
+        i += 1;
+
+        while i < len && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= len {
+            break;
+        }
+
+        let val: String = if chars[i] == '"' || chars[i] == '\'' {
+            let quote = chars[i];
+            i += 1;
+            let mut val_str = String::new();
+            while i < len && chars[i] != quote {
+                if chars[i] == '\\'
+                    && i + 1 < len
+                    && (chars[i + 1] == quote || chars[i + 1] == '\\')
+                {
+                    i += 1;
+                }
+                val_str.push(chars[i]);
+                i += 1;
             }
+            if i < len && chars[i] == quote {
+                i += 1;
+            }
+            val_str
+        } else {
+            let val_start = i;
+            while i < len && !chars[i].is_whitespace() {
+                i += 1;
+            }
+            chars[val_start..i].iter().collect()
+        };
+
+        if key == "revealed" {
+            is_revealed = val.eq_ignore_ascii_case("true");
         }
     }
-    false
+
+    is_revealed
 }
 
 fn now_ms() -> u64 {

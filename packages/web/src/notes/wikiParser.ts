@@ -203,12 +203,25 @@ export function filterWikiMarkdownForRole(rawMarkdown: string, isGameMaster: boo
 }
 
 /**
+ * Escapes HTML entity characters (&, <, >, ", ') to prevent XSS injection.
+ */
+export function escapeHtml(input: string): string {
+  return input
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
  * Replaces `[[Entity]]` wikilinks with styled anchors/spans for preview rendering.
+ * Escapes HTML entities in linkTarget and linkLabel to prevent XSS injection.
  */
 export function renderWikiLinksToHtml(text: string): string {
   return text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match, target, label) => {
-    const linkTarget = (target as string).trim();
-    const linkLabel = label ? (label as string).trim() : linkTarget;
+    const linkTarget = escapeHtml((target as string).trim());
+    const linkLabel = escapeHtml(label ? (label as string).trim() : (target as string).trim());
     return `<a class="wiki-entity-link" data-entity="${linkTarget}">${linkLabel}</a>`;
   });
 }

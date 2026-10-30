@@ -161,8 +161,6 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Avoid**: `HP shield`, `bonus HP`
 
 ### TurnTrigger
-- **Definition**: Interface utilisateur tactile allégée dédiée aux terminaux mobiles et tablettes dont la largeur d'affichage est strictement inférieure à 768 pixels, désactivant le moteur de rendu WebGL pour préserver l'autonomie et les performances.
+- **Definition**: Turn-cycle timing trigger governing condition evaluation and duration expiration during turn transitions (`ROUNDS`, `TURNS_START`, `TURNS_END`).
 - **Allowed**: `TurnTrigger`, `turn trigger`
-- **Avoid**: Mobile view, Lite app, Responsive fallback, Phone skin.
-
-### CRDT (Conflict-free Replicated Data Type)
+- **Avoid**: `turn timing`, `tick trigger`, `round hook`
