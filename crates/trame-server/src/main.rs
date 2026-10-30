@@ -1,3 +1,33 @@
+//! ============================================================================
+//! TRAME DEDICATED SERVER BINARY ENTRYPOINT (main.rs)
+//! ============================================================================
+//!
+//! PURPOSE:
+//! --------
+//! Bootstraps the standalone `trame-server` Tokio async runtime, initializes the
+//! Write-Ahead Log (`InMemoryWalStorage`) and `RoomLeaseManager` with a
+//! 25-command write-behind snapshot interval and 15-minute (`900,000` ms)
+//! `Idle-Lease` hibernation threshold, and binds the Axum HTTP/WebSocket listener.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//! -------------------------------
+//!   1. `Configurable Port Fallback`:
+//!      - Reads `TRAME_PORT` from the process environment and falls back cleanly
+//!        to TCP port `4000` on missing or unparseable values.
+//!   2. `Bounded Idle-Lease Memory Footprint`:
+//!      - Configures `RoomLeaseManager` with `snapshot_interval = 25` commands
+//!        and `idle_timeout_ms = 900_000` ms (15 minutes) so inactive campaign
+//!        rooms flush their state and release RAM.
+//!
+//! EXECUTION LIFECYCLE:
+//! --------------------
+//!   `main()`
+//!     ├── 1. Initialize `InMemoryWalStorage` & `RoomLeaseManager(wal, 25, 900_000)`.
+//!     ├── 2. Construct Axum `Router` via `build_router(lease_manager)`.
+//!     ├── 3. Resolve `TRAME_PORT` (default `4000`) & bind `TcpListener` on `0.0.0.0`.
+//!     └── 4. Serve HTTP health checks and WebSocket campaign streams via `axum::serve`.
+//! ============================================================================
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use trame_server::http::build_router;

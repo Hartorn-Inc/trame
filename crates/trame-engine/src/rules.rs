@@ -1,51 +1,120 @@
-//! Generic `GameSystemPack` Formula Evaluator (`derivedDAG`),
-//! 5-Phase `ActiveEffect` Stacking Pipeline (`BASE -> ADD -> MULTIPLY -> OVERRIDE -> CLAMP`),
-//! and Damage/Resistance Calculator (`02-GAME-ENGINE-AND-DND5E.md`).
+//! ============================================================================
+//! DERIVED DAG FORMULA EVALUATOR & 5-PHASE ACTIVE EFFECTS (rules.rs)
+//! ============================================================================
+//!
+//! PURPOSE:
+//! --------
+//! Provides the system-agnostic rules evaluation engine for character and
+//! monster attributes: Kahn's topological sort over `derivedDAG` formulas, a
+//! safe recursive-descent arithmetic expression evaluator (`eval_formula_expr`),
+//! the deterministic 5-phase `ActiveEffect` modifier pipeline
+//! (`BASE -> ADD -> MULTIPLY -> OVERRIDE -> CLAMP`), and the D&D 5e damage,
+//! Temporary HP, Instant Death, and Concentration DC calculator
+//! (`resolve_damage_application`).
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//! -------------------------------
+//!   1. `Cycle Detection in derivedDAG`:
+//!      - `topological_sort_formulas` verifies that every formula dependency
+//!        resolves to a Directed Acyclic Graph (DAG). Any cyclic dependency
+//!        fails closed with `RulesEngineError::CyclicDependency` before
+//!        evaluation begins.
+//!   2. `Same-Source Non-Stacking Rule`:
+//!      - Duplicate enabled `ActiveEffect` instances sharing the same canonical
+//!        `source_name` (e.g., two `"Spell:ShieldOfFaith"` buffs) are
+//!        deduplicated prior to phase resolution so identical spells cannot
+//!        stack (`02-GAME-ENGINE-AND-DND5E.md` §3).
+//!   3. `Strict 5-Phase Modifier Ordering`:
+//!      - Every attribute resolves in fixed order:
+//!        `Phase 1 (Base: max)` -> `Phase 2 (Add: sum)` -> `Phase 3 (Multiply: product)`
+//!        -> `Phase 4 (Override: max)` -> `Phase 5 (ClampMin / ClampMax)`.
+//!   4. `Sandboxed Expression Parser (No eval/JIT)`:
+//!      - `eval_formula_expr` uses a zero-unsafe recursive-descent parser with
+//!        explicit division-by-zero protection (`|denom| < 1e-12`).
+//!
+//! EXECUTION LIFECYCLE:
+//! --------------------
+//!   `evaluate_actor_attributes(base_attributes, derived_formulas, active_effects)`
+//!     ├── 1. Deduplicate enabled `ActiveEffect` entries by `source_name`.
+//!     ├── 2. Topologically sort `derived_formulas` via Kahn's algorithm.
+//!     ├── 3. Apply `apply_5_phase_pipeline` to all base attribute keys.
+//!     ├── 4. Evaluate each derived formula in topological order & apply 5-phase modifiers.
+//!     └── 5. Materialize any orphan modifier targets starting from `0.0`.
+//! ============================================================================
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use thiserror::Error;
 use uuid::Uuid;
 
+/// Errors returned when evaluating an actor's `derivedDAG` formulas or modifier pipeline.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RulesEngineError {
+    /// A cycle was detected in the `derivedDAG` formula graph involving the named attribute key.
     #[error("cyclic dependency detected in derivedDAG involving '{0}'")]
     CyclicDependency(String),
+    /// A formula expression failed lexical tokenization or recursive-descent parsing.
     #[error("formula parse error in '{target}': {reason}")]
-    FormulaParseError { target: String, reason: String },
+    FormulaParseError {
+        /// Attribute key whose formula failed to parse.
+        target: String,
+        /// Human-readable syntax or arithmetic error description.
+        reason: String,
+    },
 }
 
+/// Canonical execution phase within the 5-phase attribute modifier pipeline (`02-GAME-ENGINE-AND-DND5E.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ModifierPhase {
+    /// Phase 1: Raises the initial base value if `modifier.value > base` (e.g., *Barkskin* or *Mage Armor* base AC).
     Base = 1,
+    /// Phase 2: Adds a signed flat bonus or penalty to the running sum (e.g., *Shield of Faith* `+2`).
     Add = 2,
+    /// Phase 3: Multiplies the `(base + add_sum)` intermediate total by `modifier.value` (e.g., *Haste* `x2` speed).
     Multiply = 3,
+    /// Phase 4: Replaces the computed value outright, keeping the highest override when multiple collide (e.g., *Gauntlets of Ogre Power* `= 19`).
     Override = 4,
+    /// Phase 5a: Enforces a lower bound `value = value.max(clamp_min)` after overrides.
     ClampMin = 5,
+    /// Phase 5b: Enforces an upper bound `value = value.min(clamp_max)` (e.g., ability score cap `20`).
     ClampMax = 6,
 }
 
+/// Single attribute modification entry belonging to an `ActiveEffect`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttributeModifier {
+    /// Dot-separated attribute path targeted by this modifier (e.g., `"ac.base"`, `"abilities.str.score"`).
     pub target: String,
+    /// Pipeline phase during which `value` is applied.
     pub phase: ModifierPhase,
+    /// Numeric operand applied at `phase`.
     pub value: f64,
 }
 
+/// Buff, debuff, condition, or equipment effect attached to a token or actor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActiveEffect {
+    /// Unique identifier for this active effect instance.
     pub id: Uuid,
     /// Canonical source name (e.g., `"Spell:Bless"`, `"Feat:ShieldMaster"`).
     /// Duplicate active effects with the same `source_name` do not stack (`02-GAME-ENGINE-AND-DND5E.md` §3).
     pub source_name: String,
+    /// Whether the effect is currently active (`false` = suppressed/unequipped).
     pub enabled: bool,
+    /// Optional remaining combat duration in rounds (`None` = indefinite/permanent).
     pub duration_rounds_remaining: Option<u32>,
+    /// Optional token ID of the caster maintaining concentration on this effect.
     pub concentration_caster_id: Option<Uuid>,
+    /// Ordered list of attribute modifiers granted by this effect.
     pub modifiers: Vec<AttributeModifier>,
 }
 
 /// Evaluates topological `derivedDAG` formulas and applies the 5-phase `ActiveEffect` modifier pipeline.
+///
+/// Deduplicates enabled effects by `source_name`, applies modifiers to `base_attributes`,
+/// evaluates `derived_formulas` in deterministic topological order, and returns the complete
+/// resolved attribute map. Fails closed with `RulesEngineError` on cycles or syntax errors.
 pub fn evaluate_actor_attributes(
     base_attributes: &BTreeMap<String, f64>,
     derived_formulas: &BTreeMap<String, String>,
@@ -101,8 +170,8 @@ pub fn evaluate_actor_attributes(
     Ok(env)
 }
 
-/// Applies the strict 5-phase pipeline:
-/// `Phase 1 (BASE)` -> `Phase 2 (ADD)` -> `Phase 3 (MULTIPLY)` -> `Phase 4 (OVERRIDE)` -> `Phase 5 (CLAMP)`
+/// Applies the strict 5-phase modifier pipeline to `target_key` starting from `initial_base`:
+/// `Phase 1 (BASE)` -> `Phase 2 (ADD)` -> `Phase 3 (MULTIPLY)` -> `Phase 4 (OVERRIDE)` -> `Phase 5 (CLAMP)`.
 pub fn apply_5_phase_pipeline(
     target_key: &str,
     initial_base: f64,
@@ -240,7 +309,10 @@ fn is_builtin_fn_or_number(token: &str) -> bool {
 }
 
 /// Safe recursive-descent arithmetic evaluator supporting `+`, `-`, `*`, `/`, parentheses,
-/// variables (`abilities.str.score`), and functions (`floor`, `ceil`, `round`, `min`, `max`, `abs`).
+/// variables (`abilities.str.score`), and built-in functions (`floor`, `ceil`, `round`, `min`, `max`, `abs`).
+///
+/// Missing variables in `env` default to `0.0`. Rejects division by zero (`|denom| < 1e-12`)
+/// and malformed tokens with an `Err(String)`.
 pub fn eval_formula_expr(expr: &str, env: &BTreeMap<String, f64>) -> Result<f64, String> {
     let tokens = tokenize_expr(expr)?;
     let mut pos = 0usize;
@@ -462,31 +534,46 @@ fn eval_builtin_fn(name: &str, args: &[f64]) -> Result<f64, String> {
     }
 }
 
+/// Target affinity toward a specific damage type (`02-GAME-ENGINE-AND-DND5E.md` §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum DamageAffinity {
+    /// Unmodified damage (`final_damage = raw`).
     Normal,
+    /// Halves incoming damage rounded down (`final_damage = raw / 2`).
     Resistant,
+    /// Doubles incoming damage (`final_damage = raw * 2`).
     Vulnerable,
+    /// Reduces incoming damage to `0`.
     Immune,
 }
 
+/// Complete outcome of applying damage to a token, including Temporary HP depletion,
+/// Instant Death detection, and Concentration saving throw DC calculation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DamageResolution {
+    /// Post-mitigation damage points (`>= 0`) after applying `DamageAffinity`.
     pub final_damage: i32,
+    /// Amount of `final_damage` absorbed by the target's Temporary HP (`>= 0`).
     pub temp_hp_absorbed: i32,
+    /// Actual Hit Points subtracted from the target's `current_hp` (`>= 0`).
     pub hp_lost: i32,
+    /// Resulting Hit Points after damage (`0..=max_hp`).
     pub new_hp: i32,
+    /// Resulting Temporary Hit Points after absorption (`>= 0`).
     pub new_temp_hp: i32,
+    /// `true` when `new_hp == 0` and remaining overflow damage `>= max_hp` (5e Massive Damage rule).
     pub instant_death: bool,
+    /// `true` when `new_hp == 0` and `instant_death == false`.
     pub unconscious: bool,
-    /// If the target is concentrating on a spell and took damage (`hp_lost + temp_hp_absorbed > 0`),
-    /// equals `Some(max(10, floor(final_damage / 2)))`.
+    /// If the target is concentrating on a spell, survived (`new_hp > 0`), and took damage
+    /// (`final_damage > 0`), equals `Some(max(10, floor(final_damage / 2)))`.
     pub concentration_check_dc: Option<i32>,
 }
 
 /// Resolves D&D 5e / generic damage mitigation (`IMMUNE -> RESISTANT -> VULNERABLE`),
-/// Temporary HP absorption, Instant Death, and Concentration DC (`02-GAME-ENGINE-AND-DND5E.md` §4).
+/// Temporary HP absorption, Massive Damage Instant Death, and Concentration Constitution save DC
+/// (`02-GAME-ENGINE-AND-DND5E.md` §4).
 pub fn resolve_damage_application(
     raw_damage: i32,
     affinity: DamageAffinity,

@@ -1,41 +1,41 @@
 # TRAME — Tabletop Rules, Actors, Maps & Encounters
 
-> **Architecture Clean-Slate & Hébergement Dédié (ex-CozyVTT v2)**  
-> Licence cible : **Apache-2.0** | Dépôt cible : `Hartorn-Inc/trame`
+> **Clean-Slate Architecture & Dedicated Hosting**  
+> Target License: **Apache-2.0** | Target Repository: `Hartorn-Inc/trame`
 
-Ce dossier regroupe l'intégralité des spécifications architecturales et fonctionnelles de **TRAME**, issues de l'analyse critique de CozyVTT v1 et affinées lors des sessions de conception détaillée et de stress-test (`/grill-with-specs` — 25 décisions d'architecture validées).
+This directory contains the complete architectural and functional specifications for **TRAME**, refined through detailed design and stress-testing sessions (`/grill-with-specs` — 25 validated architectural decisions).
 
 ---
 
-## Index des Documents de Spécification (`V2/`)
+## Specification Document Index (`V2/`)
 
-| Fichier | Périmètre couvert |
+| File | Scope Covered |
 | :--- | :--- |
-| [**`01-TABLE-SPEC.md`**](./01-TABLE-SPEC.md) | **La Table Virtuelle (Cœur GPU PixiJS v8 + Géométrie WASM)** : Modes Exploration vs Combat Tour-par-Tour, Empreintes multi-cases ($0.5 \times 0.5$ à $4 \times 4$) & Squeezing, Élévation 3D (axe Z & vol), Interruptions & Réactions d'Opportunité, Murs/Portes/Fenêtres/Toits, Cycle Jour/Nuit & Intérieur/Extérieur, Téléporteurs & Multi-cartes simultanées, Capteurs de Vision (`Darkvision`, `See Invisibility`, `Truesight`, `Ethereal`), 3 couches de Brouillard, Gabarits AoE avec 4 règles de discrétisation et Zones Persistantes, Dessins à main levée & Audio spatialisé, Outils de Correction/Undo MJ. |
-| [**`02-GAME-ENGINE-AND-DND5E.md`**](./02-GAME-ENGINE-AND-DND5E.md) | **Moteur de Système de Jeu Générique (`GameSystemPack`) & Pack Built-in D&D 5e** : Schéma déclaratif YAML/JSON (`character`, `npc`, `companion/summon` avec *Wild Shape*, `container/group_stash`), Graphe DAG de formules dérivées, Pipeline déterministe en 5 phases des `ActiveModifiers` (Objets, Dons, Capacités, Conditions), Gestion des durées par tour & Concentration automatique, Types de dégâts/résistances/immunités & 3 modes de transparence de combat (Réglage de campagne), Couche Homebrew & Compendium SRD, Bibliothèque de ~15 Widgets JDR & Assistant de Création/Level-Up. |
-| [**`03-MCP-AND-NOTES-SPEC.md`**](./03-MCP-AND-NOTES-SPEC.md) | **Serveur MCP Natif, Système de Notes Wiki & Skills Externes** : Parité 100% UI $\leftrightarrow$ MCP via le bus `TrameCommand`, Mode *Dry-Run / Staging Proposal* et Batching Atomique annulable en 1 clic, Wiki Markdown à 3 niveaux (`PRIVATE`, `PARTY`, `DM_ONLY`) avec blocs secrets `:::dm` et révélation `:::handout`, Édition collaborative temps-réel CRDT (`yrs` / Yjs) + fusion 3-voies (`diffy`) pour synchronisation bidirectionnelle Obsidian / Notion, Journal structuré d'événements de session (`Session Event Stream`). |
-| [**`04-RUNTIME-AND-DEDICATED-HOSTING.md`**](./04-RUNTIME-AND-DEDICATED-HOSTING.md) | **Architecture Temps-Réel (Command Handler, Acteurs RAM) & Hébergement Dédié** : Pattern `CommandHandler` + `ReversiblePatch` (Undo/Redo MJ), Acteur `TableRoomActor` en RAM avec double persistance (*Write-Behind 1s* + *Immediate Commit WAL*), Générateur de dés cryptographique côté serveur (`ChaCha20Rng`), Sécurité des images R2/S3 par URLs pré-signées et conversion WebP en pur Rust (`image-rs`), Archive portable `.trame`, Modèle d'hébergement dédié à la demande (Cloud Run + Neon Postgres + Cloudflare R2 à 0 € grâce à l'`Idle-Lease`, ou VM `e2-micro`), Mode Compagnon Mobile/Tablette & Accessibilité. |
+| [**`01-TABLE-SPEC.md`**](./01-TABLE-SPEC.md) | **The Virtual Table (PixiJS v8 GPU Core + WASM Geometry)**: Exploration vs. Turn-Based Combat Modes, Multi-Tile Footprints ($0.5 \times 0.5$ to $4 \times 4$) & Squeezing, 3D Elevation (Z-axis & Flight), Interrupts & Opportunity Reactions, Walls/Doors/Windows/Roofs, Day/Night Cycle & Indoor/Outdoor Zoning, Teleporters & Simultaneous Multi-Map Support, Vision Sensors (`Darkvision`, `See Invisibility`, `Truesight`, `Ethereal`), 3 Fog of War Layers, AoE Templates with 4 Discretization Rules and Persistent Zones, Freehand Drawings & Spatialized Audio, DM Override & Undo/Redo Tools. |
+| [**`02-GAME-ENGINE-AND-DND5E.md`**](./02-GAME-ENGINE-AND-DND5E.md) | **Generic Game System Engine (`GameSystemPack`) & Built-in D&D 5e Pack**: Declarative YAML/JSON Schema (`character`, `npc`, `companion/summon` with *Wild Shape*, `container/group_stash`), Derived Formula DAG, Deterministic 5-Phase `ActiveModifiers` Pipeline (Items, Feats, Features, Conditions), Turn-Based Duration Management & Automatic Concentration, Damage Types/Resistances/Immunities & 3 Combat Transparency Modes (Campaign Setting), Homebrew Overlay & SRD Compendium, Library of ~15 TTRPG Widgets & Character Builder/Level-Up Wizard. |
+| [**`03-MCP-AND-NOTES-SPEC.md`**](./03-MCP-AND-NOTES-SPEC.md) | **Native MCP Server, Wiki Notes System & External Skills**: 100% UI $\leftrightarrow$ MCP Parity via the `TrameCommand` Bus, *Dry-Run / Staging Proposal* Mode and 1-Click Undoable Atomic Batching, 3-Tier Markdown Wiki (`PRIVATE`, `PARTY`, `DM_ONLY`) with Secret `:::dm` Blocks and Revealable `:::handout` Blocks, Real-Time Collaborative CRDT Editing (`yrs` / Yjs) + 3-Way Merge (`diffy`) for Bidirectional Synchronization, Structured Session Event Log (`Session Event Stream`). |
+| [**`04-RUNTIME-AND-DEDICATED-HOSTING.md`**](./04-RUNTIME-AND-DEDICATED-HOSTING.md) | **Real-Time Architecture (Command Handler, In-Memory Actors) & Dedicated Hosting**: `CommandHandler` Pattern + `ReversiblePatch` (DM Undo/Redo), In-Memory `TableRoomActor` with Dual Persistence (*1s Write-Behind* + *Immediate Commit WAL*), Server-Side Cryptographic Dice Generator (`ChaCha20Rng`), R2/S3 Image Security via Presigned URLs and Pure-Rust WebP Conversion (`image-rs`), Portable `.trame` Archive, On-Demand Dedicated Hosting Model (Cloud Run + Neon Postgres + Cloudflare R2 at $0 idle cost via `Idle-Lease`, or `e2-micro` VM), Mobile/Tablet Companion Mode & Accessibility. |
 
 ---
 
-## Synthèse de la Stack Technologique Retenue
+## Selected Technology Stack Summary
 
 ```mermaid
 graph TB
-    subgraph Client["Navigateur Client (Desktop & Mode Compagnon Tablette/Mobile)"]
-        React["React 19 + TypeScript + Zustand\n(Feuilles Widget-Driven, Wiki Yjs, Chat, HUD)"]
-        Pixi["PixiJS v8 (WebGL2 / WebGPU)\n(Shaders Grille, Lumière Dynamique, Brouillard, AoE)"]
-        Wasm["trame-engine (WASM ~120 Ko)\n(Raycasting BVH, Formules DAG, Collisions, Discrétisation AoE)"]
+    subgraph Client["Client Browser (Desktop & Tablet/Mobile Companion Mode)"]
+        React["React 19 + TypeScript + Zustand\n(Widget-Driven Sheets, Yjs Wiki, Chat, HUD)"]
+        Pixi["PixiJS v8 (WebGL2 / WebGPU)\n(Grid Shaders, Dynamic Lighting, Fog of War, AoE)"]
+        Wasm["trame-engine (WASM ~120 KB)\n(BVH Raycasting, Formula DAG, Collisions, AoE Discretization)"]
         React <--> Wasm
         Pixi <--> Wasm
     end
 
-    subgraph Server["Micro-Instance Dédiée — Binaire Unique Rust (`trame-server` ~25 Mo RAM)"]
+    subgraph Server["Dedicated Micro-Instance — Single Rust Binary (`trame-server` ~25 MB RAM)"]
         Axum["Axum HTTP/2 + WebSockets (MessagePack) + rust-embed (SPA)"]
-        MCP["Serveur MCP Natif (/api/v1/mcp SSE & HTTP)\nAuto-généré depuis `TrameCommand`"]
-        Actor["TableRoomActor (Tokio RAM)\nÉtat Temps-Réel + Pile Undo MJ + Filtrage Visibilité"]
-        EngineSrv["trame-engine (Natif)\nValidation, CSPRNG Dice, ActiveModifiers"]
-        Img["image-rs (Pur Rust)\nValidation Magic-Bytes + Conversion WebP"]
+        MCP["Native MCP Server (/api/v1/mcp SSE & HTTP)\nAuto-generated from `TrameCommand`"]
+        Actor["TableRoomActor (Tokio RAM)\nReal-Time State + DM Undo Stack + Visibility Filtering"]
+        EngineSrv["trame-engine (Native)\nValidation, CSPRNG Dice, ActiveModifiers"]
+        Img["image-rs (Pure Rust)\nMagic-Byte Validation + WebP Conversion"]
 
         Axum --> Actor
         MCP --> Actor
@@ -43,35 +43,35 @@ graph TB
         Axum --> Img
     end
 
-    subgraph Infra["Persistance Serverless & Stockage (0 € au repos)"]
-        Neon["Neon Serverless Postgres\n1 DB dédiée par instance (Pooler :6543)\nWrite-Behind 1s + Immediate WAL"]
-        R2["Cloudflare R2 / S3 (ou Disque Local)\nAssets WebP privés + Presigned URLs (TTL 15m)"]
+    subgraph Infra["Serverless Persistence & Storage ($0 at rest)"]
+        Neon["Neon Serverless Postgres\n1 Dedicated DB per Instance (Pooler :6543)\n1s Write-Behind + Immediate WAL"]
+        R2["Cloudflare R2 / S3 (or Local Disk)\nPrivate WebP Assets + Presigned URLs (15m TTL)"]
     end
 
     Client -- "WebSocket / HTTPS" --> Axum
     Actor -- "SQLx Async" --> Neon
     Img -- "PutObject / SignUrl" --> R2
-    Client -- "Chargement CDN Signé" --> R2
+    Client -- "Signed CDN Fetch" --> R2
 ```
 
 ---
 
-## Gouvernance EPURE Prévue pour `Hartorn-Inc/trame` (Q24)
+## Planned EPURE Governance for `Hartorn-Inc/trame` (Q24)
 
-Lors de l'initialisation du dépôt `Hartorn-Inc/trame` avec `/setup-repo`, le roster de **12 agents reviewers spécialisés** (`.cursor/agents/*.md`) sera configuré pour couvrir l'ensemble de l'architecture Rust + WASM + PixiJS + MCP :
+When initializing the `Hartorn-Inc/trame` repository with `/setup-repo`, the roster of **12 specialized reviewer agents** (`.cursor/agents/*.md`) will be configured to cover the full Rust + WASM + PixiJS + MCP architecture:
 
-### 5 Spécialistes de Domaine & Stack (`paths`-scoped)
-1. **`engine-wasm-reviewer`** (`crates/trame-engine/**`) : Déterminisme Rust/WASM, absence de panics/allocations inutiles à 60 FPS, exactitude du BVH spatial, du raycasting 2D/3D et du pipeline de règles en 5 phases.
-2. **`table-gpu-reviewer`** (`packages/web/src/table/**`) : Shaders PixiJS v8 (WebGL2/WebGPU), gestion de la mémoire GPU (FBO brouillard/lumière), fluidité 60 FPS, règles AoE et synchronisation des animations.
-3. **`domain-server-reviewer`** (`crates/trame-server/**`) : Pattern `CommandHandler`, `TableRoomActor`, garantie zéro-perte WAL/Write-Behind, sécurité MCP (`Scoped PAT`), conversion `image-rs` et `Idle-Lease` WebSocket.
-4. **`game-systems-reviewer`** (`packages/game-systems/**`, `crates/trame-engine/src/systems/**`) : Conformité du schéma `GameSystemPack`, exactitude des règles D&D 5e (SRD 5.1 CC-BY-4.0), widgets de feuilles et empilement des dons/effets.
-5. **`infra-reviewer`** (`deploy/**`, `.github/**`, `Cargo.toml`, `Dockerfile`) : Image Docker `distroless`, configuration Cloud Run / `e2-micro`, Neon Postgres, Cloudflare R2 et sécurité CI/CD.
+### 5 Domain & Stack Specialists (`paths`-scoped)
+1. **`engine-wasm-reviewer`** (`crates/trame-engine/**`): Rust/WASM determinism, zero panics or unnecessary allocations at 60 FPS, accuracy of spatial BVH, 2D/3D raycasting, and the 5-phase rules pipeline.
+2. **`table-gpu-reviewer`** (`packages/web/src/table/**`): PixiJS v8 shaders (WebGL2/WebGPU), GPU memory management (fog/light FBOs), 60 FPS smoothness, AoE discretization rules, and animation synchronization.
+3. **`domain-server-reviewer`** (`crates/trame-server/**`): `CommandHandler` pattern, `TableRoomActor`, zero-loss WAL/Write-Behind guarantees, MCP security (`Scoped PAT`), `image-rs` conversion, and WebSocket `Idle-Lease`.
+4. **`game-systems-reviewer`** (`packages/game-systems/**`, `crates/trame-engine/src/systems/**`): `GameSystemPack` schema compliance, D&D 5e rules accuracy (SRD 5.1 CC-BY-4.0), sheet widgets, and feat/effect stacking.
+5. **`infra-reviewer`** (`deploy/**`, `.github/**`, `Cargo.toml`, `Dockerfile`): `distroless` Docker image, Cloud Run / `e2-micro` configuration, Neon Postgres, Cloudflare R2, and CI/CD security.
 
-### 7 Reviewers Transversaux Always-On
-6. **`architecture-reviewer`** : Respect de la parité 100% UI $\leftrightarrow$ MCP (`TrameCommand`) et absence de duplication entre client et serveur.
-7. **`security-reviewer`** : Filtrage réseau Zero-Trust par token (anti-triche vision, canaux `INVISIBLE`/`ETHEREAL`/`HIDDEN_BY_DM`), purge serveur des blocs `:::dm`, CSPRNG dés, et URLs pré-signées R2.
-8. **`spec-parity-reviewer`** : Conformité 1-pour-1 avec les 4 spécifications de référence (`01` à `04`).
-9. **`standards-reviewer`** : Qualité idiomatique Rust (`clippy --all-targets -- -D warnings`) et TypeScript strict (zéro `any`), tests paramétrés.
-10. **`frontend-reviewer`** : Architecture React 19, séparation Zustand / TanStack Query / Yjs CRDT, et Mode Compagnon Mobile.
-11. **`accessibility-reviewer`** : WCAG 2.2 AA, navigation clavier, contrastes des thèmes (`-ink`) et mode daltonien sur la Table.
-12. **`design-reviewer` & `user-advocate`** : Expérience des 4 personas (*MJ*, *Joueur*, *Spectateur*, *Opérateur d'Instance*) en modes Exploration et Tour-par-Tour.
+### 7 Always-On Cross-Cutting Reviewers
+6. **`architecture-reviewer`**: Enforces 100% UI $\leftrightarrow$ MCP parity (`TrameCommand`) and zero duplication between client and server.
+7. **`security-reviewer`**: Per-token Zero-Trust network filtering (vision anti-cheat, `INVISIBLE`/`ETHEREAL`/`HIDDEN_BY_DM` channels), server-side `:::dm` block stripping, CSPRNG dice, and R2 presigned URLs.
+8. **`spec-parity-reviewer`**: 1-to-1 compliance with the 4 reference specifications (`01` through `04`).
+9. **`standards-reviewer`**: Idiomatic Rust quality (`clippy --all-targets -- -D warnings`), strict TypeScript (zero `any`), and parameterized tests.
+10. **`frontend-reviewer`**: React 19 architecture, Zustand / TanStack Query / Yjs CRDT state separation, and Mobile Companion Mode.
+11. **`accessibility-reviewer`**: WCAG 2.2 AA compliance, keyboard navigation, theme contrast (`-ink`), and colorblind mode on the Table.
+12. **`design-reviewer` & `user-advocate`**: User experience across the 4 canonical personas (*DM*, *Player*, *Spectator*, *Instance Operator*) in both Exploration and Turn-Based modes.
