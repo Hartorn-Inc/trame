@@ -1,4 +1,4 @@
-# ADR 0034 : Journal d'Événements de Session Append-Only et Ressource MCP
+# ADR 0041 : Journal d'Événements de Session Append-Only et Ressource MCP
 
 ## Status
 Accepted
