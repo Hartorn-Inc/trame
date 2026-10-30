@@ -177,11 +177,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **Definition**: Game Master history drawer displaying recent table mutations and triggering single-click rollbacks.
 
-- **Allowed Context**: Game Master HUD, table history drawer, and transaction rollback interfaces.
+- **Allowed Context**: Spatial audio processing and WebAudio filter graphs.
 
-- **_Avoid_**: HistoryDrawer, RollbackPanel, UndoList.
+- **_Avoid_**: SoundMuffling, AudioBlocking, AcousticShadow.
 
-### AbilityModifier
+### ActionEconomyType
 - **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
 - **Allowed**: `AbilityModifier`, `ability modifier`
 - **Avoid**: `stat mod`, `ability bonus`
@@ -297,6 +297,8 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Avoid**: `HP shield`, `bonus HP`
 
 ### TurnTrigger
-- **Definition**: Combat turn lifecycle hook (such as START_OF_TURN or END_OF_TURN) evaluated during initiative progression to process condition durations, ongoing saving throws, and resource resets.
-- **Allowed**: `TurnTrigger`, `turn trigger`
-- **Avoid**: `initiative phase`, `round tick`
+- **Definition**: Interface utilisateur tactile allégée dédiée aux terminaux mobiles et tablettes dont la largeur d'affichage est strictement inférieure à 768 pixels, désactivant le moteur de rendu WebGL pour préserver l'autonomie et les performances.
+- **Allowed**: `AbilityModifier`, `ability modifier`
+- **Avoid**: Mobile view, Lite app, Responsive fallback, Phone skin.
+
+### CRDT (Conflict-free Replicated Data Type)

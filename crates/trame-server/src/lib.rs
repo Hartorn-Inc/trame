@@ -50,8 +50,10 @@ pub mod assets;
 pub mod dice;
 pub mod http;
 pub mod importers;
+pub mod notes;
 pub mod room;
 pub mod sync;
+pub mod timeline;
 pub mod wal;
 
 #[cfg(test)]
@@ -63,9 +65,16 @@ mod tests {
         MAX_PAYLOAD_SIZE_BYTES, UvttDocument, UvttImportError, UvttLight, UvttPoint, UvttPortal,
         UvttResolution, import_uvtt_map, parse_hex_color,
     };
+    use crate::notes::{
+        FilteredNoteDocument, InMemoryPartyJournalStorage, PartyJournalStorage,
+        RevealHandoutCommand, UserRole, parse_handout_revealed_attr, reveal_handout,
+    };
     use crate::room::{ConnectedClient, RoomLeaseManager};
     use crate::sync::{
         ClientEnvelope, ServerEnvelope, encode_server_envelope, project_state_for_recipient,
+    };
+    use crate::timeline::{
+        AppendEventInput, InMemoryTimelineStorage, TimelineStorage, format_mcp_timeline,
     };
     use crate::wal::{InMemoryWalStorage, TableStateSnapshot, WalStorage, recover_table_state};
     use axum::body::Body;
@@ -450,6 +459,212 @@ mod tests {
             .unwrap();
         let res_thumb = app.oneshot(req_thumb).await.unwrap();
         assert_eq!(res_thumb.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn test_filter_for_role_purges_dm_and_unrevealed_handouts() {
+        let input = r#"# Adventure Notes
+[[Valeros]] discovers a locked chest in [[Cragmaw Castle]].
+
+:::dm
+The chest contains 500 GP and a Cursed Ring of Burden.
+::: 
+
+:::handout{id="h-secret" title="Encrypted Map" revealed="false"}
+Coordinates: 45N 12W. Do not give to players yet!
+:::
+
+:::handout{id="h-trap" title="Notice: revealed=true is a trap" revealed="false"}
+Top secret GM content that must never be revealed.
+:::
+
+:::handout{id="h-single-quote" title='Secret single quote: revealed=true trap' revealed='false'}
+Another secret that must stay hidden.
+:::
+
+:::handout{id="h-public" title="Notice Board Post" revealed="true"}
+Bounty: 50 GP for Goblin leaders.
+:::
+
+Party moves forward."#;
+
+        let filtered = FilteredNoteDocument::filter_for_role(input, UserRole::Player);
+
+        assert!(!filtered.contains(":::dm"));
+        assert!(!filtered.contains("Cursed Ring of Burden"));
+        assert!(!filtered.contains("h-secret"));
+        assert!(!filtered.contains("Encrypted Map"));
+        assert!(!filtered.contains("45N 12W"));
+        assert!(!filtered.contains("h-trap"));
+        assert!(!filtered.contains("Notice: revealed=true is a trap"));
+        assert!(!filtered.contains("Top secret GM content"));
+        assert!(!filtered.contains("h-single-quote"));
+        assert!(!filtered.contains("Another secret that must stay hidden"));
+
+        assert!(filtered.contains("# Adventure Notes"));
+        assert!(filtered.contains("[[Valeros]] discovers a locked chest"));
+        assert!(
+            filtered.contains(
+                ":::handout{id=\"h-public\" title=\"Notice Board Post\" revealed=\"true\"}"
+            )
+        );
+        assert!(filtered.contains("Bounty: 50 GP for Goblin leaders."));
+        assert!(filtered.contains("Party moves forward."));
+    }
+
+    #[test]
+    fn test_filter_for_role_preserves_everything_for_gamemaster() {
+        let input = r#"# Adventure Notes
+:::dm
+Super Secret GM Note
+:::
+:::handout{id="h-1" title="Secret" revealed="false"}
+Hidden Text
+:::
+"#;
+
+        let filtered = FilteredNoteDocument::filter_for_role(input, UserRole::GameMaster);
+        assert_eq!(filtered, input);
+    }
+
+    #[test]
+    fn test_parse_handout_revealed_attr_quote_awareness() {
+        assert!(parse_handout_revealed_attr(
+            r#":::handout{id="h1" title="Parchment" revealed="true"}"#
+        ));
+        assert!(!parse_handout_revealed_attr(
+            r#":::handout{id="h1" title="Parchment" revealed="false"}"#
+        ));
+        assert!(!parse_handout_revealed_attr(
+            r#":::handout{id="h-trap" title="Notice: revealed=true is a trap" revealed="false"}"#
+        ));
+        assert!(parse_handout_revealed_attr(
+            r#":::handout{id="h-trap" title="Notice: revealed=false is safe" revealed="true"}"#
+        ));
+        assert!(!parse_handout_revealed_attr(
+            r#":::handout{id="h-trap" title='Notice: revealed=true is a trap' revealed='false'}"#
+        ));
+        assert!(parse_handout_revealed_attr(
+            r#":::handout{id="h-trap" title='Notice: revealed=false is safe' revealed='true'}"#
+        ));
+        assert!(!parse_handout_revealed_attr(
+            r#":::handout{id="h-trap" title="Notice: revealed=true is a trap"}"#
+        ));
+        assert!(!parse_handout_revealed_attr(
+            r#":::handout{revealed="false" title="Trap: revealed=true"}"#
+        ));
+        assert!(parse_handout_revealed_attr(
+            r#":::handout{revealed="true" title="Trap: revealed=false"}"#
+        ));
+    }
+
+    #[test]
+    fn test_reveal_handout_inserts_journal_and_session_event() {
+        let journal = Arc::new(InMemoryPartyJournalStorage::new());
+        let timeline = Arc::new(InMemoryTimelineStorage::new());
+
+        let cmd = RevealHandoutCommand {
+            action: "notes.reveal_handout".to_string(),
+            campaign_id: "camp-alpha".to_string(),
+            session_num: 1,
+            handout_id: "h-456".to_string(),
+            title: "Lettre interceptée".to_string(),
+            content: "Rendez-vous à minuit au vieux moulin.".to_string(),
+        };
+
+        let broadcast = reveal_handout(
+            UserRole::GameMaster,
+            "user-gm-1",
+            cmd.clone(),
+            journal.as_ref(),
+            timeline.as_ref(),
+        )
+        .expect("reveal handout succeeds for GM");
+
+        assert_eq!(broadcast.event, "handout.revealed");
+        assert_eq!(broadcast.handout_id, "h-456");
+        assert_eq!(broadcast.revealed_by, "user-gm-1");
+
+        let stored_entry = journal
+            .get_entry("h-456")
+            .expect("journal query succeeds")
+            .expect("entry exists in party journal");
+        assert_eq!(stored_entry.title, "Lettre interceptée");
+        assert_eq!(
+            stored_entry.content,
+            "Rendez-vous à minuit au vieux moulin."
+        );
+        assert_eq!(stored_entry.revealed_by, "user-gm-1");
+
+        let timeline_resp = timeline
+            .get_timeline("camp-alpha", 1, 0, 10)
+            .expect("timeline query succeeds");
+        assert_eq!(timeline_resp.events.len(), 1);
+        let ev = &timeline_resp.events[0];
+        assert_eq!(ev.seq_id, 1);
+        assert_eq!(ev.event_type, "HandoutRevealed");
+        assert_eq!(ev.actor_id.as_deref(), Some("user-gm-1"));
+        assert_eq!(ev.payload["handout_id"], "h-456");
+        assert_eq!(ev.payload["title"], "Lettre interceptée");
+
+        // Non-GM rejection
+        let unauthorized_res = reveal_handout(
+            UserRole::Player,
+            "player-1",
+            cmd,
+            journal.as_ref(),
+            timeline.as_ref(),
+        );
+        assert!(unauthorized_res.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn test_session_timeline_sequential_ordering_under_concurrency() {
+        let timeline = Arc::new(InMemoryTimelineStorage::new());
+        let campaign_id = "camp-concurrent";
+        let session_num = 1;
+        let mut handles = Vec::new();
+
+        for i in 0..50 {
+            let tl = timeline.clone();
+            let h = tokio::spawn(async move {
+                tl.append_event(
+                    campaign_id,
+                    session_num,
+                    AppendEventInput {
+                        event_type: "DiceRolled".to_string(),
+                        actor_id: Some(format!("actor-{i}")),
+                        payload: serde_json::json!({ "thread": i, "roll": 20 }),
+                        timestamp: None,
+                    },
+                )
+                .expect("append succeeds");
+            });
+            handles.push(h);
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let resp = timeline
+            .get_timeline(campaign_id, session_num, 0, 100)
+            .expect("query timeline");
+
+        assert_eq!(resp.events.len(), 50);
+        for (expected_idx, event) in resp.events.iter().enumerate() {
+            let expected_seq = (expected_idx as u64) + 1;
+            assert_eq!(
+                event.seq_id, expected_seq,
+                "seq_id must be strictly sequential and contiguous"
+            );
+        }
+
+        let (uri, md) = format_mcp_timeline(campaign_id, session_num, &resp.events);
+        assert_eq!(uri, "campaign://camp-concurrent/sessions/1/timeline");
+        assert!(md.contains("# Session Timeline: Campaign camp-concurrent, Session 1"));
+        assert!(md.contains("[seq 1] [DiceRolled]"));
+        assert!(md.contains("[seq 50] [DiceRolled]"));
     }
 
     #[test]
