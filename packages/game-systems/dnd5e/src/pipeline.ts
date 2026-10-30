@@ -1,9 +1,20 @@
+import type {
+  AbilityId,
+  ActiveConditionState,
+  DamageType,
+  Dnd5eActorData,
+  ProficiencyRank,
+  SkillId,
+  TurnTrigger,
+} from "./types.ts";
 import {
-  type AbilityId,
+  computeDnd5eSheetDerived,
   DND5E_SKILLS,
-  type ProficiencyRank,
-  type SkillId,
+  type ProficiencyRankString,
 } from "./manifest.ts";
+import { decrementConditionDurations } from "./progression.ts";
+
+export { computeDnd5eSheetDerived, decrementConditionDurations };
 
 export type ArmorCalculationKind =
   | "unarmored"
@@ -36,7 +47,7 @@ export interface Dnd5eActorSheet {
   spellcastingAbility: AbilityId;
   abilities: Record<AbilityId, number>;
   saveProficiencies: Partial<Record<AbilityId, boolean>>;
-  skillProficiencies: Partial<Record<SkillId, ProficiencyRank>>;
+  skillProficiencies: Partial<Record<SkillId, ProficiencyRankString | ProficiencyRank>>;
   armorKind: ArmorCalculationKind;
   armorBaseAc: number;
   hasShield: boolean;
@@ -63,7 +74,14 @@ export interface Dnd5eDerivedStats {
   armorClass: number;
   initiativeBonus: number;
   spellSaveDc: number;
+  spellSaveDC?: number;
   spellAttackBonus: number;
+  spellAttackModifier?: number;
+  encumbrance?: {
+    carryingCapacity: number;
+    heavilyEncumbered: number;
+    encumbered: number;
+  };
 }
 
 export function abilityModifier(score: number): number {
@@ -75,86 +93,389 @@ export function proficiencyBonusForLevel(level: number): number {
   return Math.floor((clamped - 1) / 4) + 2;
 }
 
-export function proficiencyMultiplier(rank: ProficiencyRank | undefined): number {
-  switch (rank) {
-    case "expertise":
-      return 2;
-    case "proficient":
-      return 1;
-    case "half":
-      return 0.5;
-    default:
-      return 0;
+export function proficiencyMultiplier(
+  rank: ProficiencyRankString | ProficiencyRank | undefined
+): number {
+  if (rank === "expertise" || rank === 2) return 2;
+  if (rank === "proficient" || rank === 1) return 1;
+  if (rank === "half") return 0.5;
+  return 0;
+}
+
+export interface DamageInstance {
+  amount: number;
+  type: DamageType;
+}
+
+export interface DamagePipelineOptions {
+  isCritical?: boolean;
+}
+
+export interface ConcentrationPrompt {
+  spellId: string;
+  dc: number;
+}
+
+export interface DamageResolutionResult {
+  actor: Dnd5eActorData;
+  totalMitigatedDamage: number;
+  damageAppliedToTempHp: number;
+  damageAppliedToCurrentHp: number;
+  instantDeath: boolean;
+  deathSavesModified: boolean;
+  concentrationPrompt?: ConcentrationPrompt;
+  concentrationCheckPrompt?: ConcentrationPrompt;
+}
+
+export function resolveDamagePipeline(
+  actor: Dnd5eActorData,
+  damageInstances: DamageInstance[],
+  options: DamagePipelineOptions = {}
+): DamageResolutionResult {
+  const clone: Dnd5eActorData = JSON.parse(JSON.stringify(actor));
+
+  let totalMitigatedDamage = 0;
+  for (const instance of damageInstances) {
+    const mitigation = clone.damageMitigations?.[instance.type] ?? "NONE";
+    let instanceAmount = Math.max(0, instance.amount);
+    if (mitigation === "IMMUNE") {
+      instanceAmount = 0;
+    } else if (mitigation === "RESISTANT") {
+      instanceAmount = Math.floor(instanceAmount * 0.5);
+    } else if (mitigation === "VULNERABLE") {
+      instanceAmount = instanceAmount * 2;
+    }
+    totalMitigatedDamage += instanceAmount;
+  }
+
+  if (totalMitigatedDamage === 0) {
+    return {
+      actor: clone,
+      totalMitigatedDamage: 0,
+      damageAppliedToTempHp: 0,
+      damageAppliedToCurrentHp: 0,
+      instantDeath: false,
+      deathSavesModified: false,
+    };
+  }
+
+  let damageAppliedToTempHp = 0;
+  let damageAppliedToCurrentHp = 0;
+  let instantDeath = false;
+  let deathSavesModified = false;
+
+  if (clone.attributes.hp.current === 0) {
+    if (totalMitigatedDamage >= clone.attributes.hp.max) {
+      clone.isDead = true;
+      clone.attributes.deathSaves.failures = 3;
+      instantDeath = true;
+      deathSavesModified = true;
+    } else {
+      const addedFailures = options.isCritical ? 2 : 1;
+      clone.attributes.deathSaves.failures = Math.min(
+        3,
+        clone.attributes.deathSaves.failures + addedFailures
+      );
+      if (clone.attributes.deathSaves.failures >= 3) {
+        clone.isDead = true;
+      }
+      deathSavesModified = true;
+    }
+  } else {
+    let unabsorbedDamage = totalMitigatedDamage;
+    if (clone.attributes.hp.temp > 0) {
+      damageAppliedToTempHp = Math.min(clone.attributes.hp.temp, unabsorbedDamage);
+      clone.attributes.hp.temp -= damageAppliedToTempHp;
+      unabsorbedDamage -= damageAppliedToTempHp;
+    }
+
+    let excessDamage = 0;
+    if (unabsorbedDamage > 0) {
+      damageAppliedToCurrentHp = Math.min(clone.attributes.hp.current, unabsorbedDamage);
+      clone.attributes.hp.current -= damageAppliedToCurrentHp;
+      excessDamage = unabsorbedDamage - damageAppliedToCurrentHp;
+    }
+
+    if (clone.attributes.hp.current === 0) {
+      if (excessDamage >= clone.attributes.hp.max) {
+        clone.isDead = true;
+        clone.attributes.deathSaves.failures = 3;
+        instantDeath = true;
+        deathSavesModified = true;
+      } else {
+        const hasUnconscious = clone.conditions.some((c) => c.id === "unconscious");
+        if (!hasUnconscious) {
+          clone.conditions.push({
+            id: "unconscious",
+            name: "Inconscient",
+            durationRounds: 999,
+            trigger: "ROUNDS",
+          });
+        }
+      }
+    }
+  }
+
+  let concentrationPrompt: ConcentrationPrompt | undefined;
+  if (
+    clone.concentratingOnSpellId &&
+    !clone.isDead &&
+    clone.attributes.hp.current > 0 &&
+    totalMitigatedDamage > 0
+  ) {
+    const concentrationDC = Math.max(10, Math.floor(totalMitigatedDamage / 2));
+    concentrationPrompt = {
+      spellId: clone.concentratingOnSpellId,
+      dc: concentrationDC,
+    };
+  }
+
+  if (clone.attributes.hp.current === 0 && clone.concentratingOnSpellId) {
+    clone.concentratingOnSpellId = undefined;
+  }
+
+  return {
+    actor: clone,
+    totalMitigatedDamage,
+    damageAppliedToTempHp,
+    damageAppliedToCurrentHp,
+    instantDeath,
+    deathSavesModified,
+    concentrationPrompt,
+    concentrationCheckPrompt: concentrationPrompt,
+  };
+}
+
+export function rollDeathSavingThrow(
+  actor: Dnd5eActorData,
+  d20Roll: number
+): { actor: Dnd5eActorData; outcome: "success" | "failure" | "revived" | "dead" | "stabilized" };
+export function rollDeathSavingThrow(
+  sheet: Dnd5eActorSheet,
+  naturalD20: number
+): DeathSaveState;
+export function rollDeathSavingThrow(
+  actorOrSheet: Dnd5eActorData | Dnd5eActorSheet,
+  d20Roll: number
+): 
+  | { actor: Dnd5eActorData; outcome: "success" | "failure" | "revived" | "dead" | "stabilized" }
+  | DeathSaveState {
+  if ("attributes" in actorOrSheet) {
+    const clone: Dnd5eActorData = JSON.parse(JSON.stringify(actorOrSheet));
+    let outcome: "success" | "failure" | "revived" | "dead" | "stabilized";
+
+    if (d20Roll === 1) {
+      clone.attributes.deathSaves.failures += 2;
+      if (clone.attributes.deathSaves.failures >= 3) {
+        clone.isDead = true;
+        outcome = "dead";
+      } else {
+        outcome = "failure";
+      }
+    } else if (d20Roll === 20) {
+      clone.attributes.hp.current = 1;
+      clone.attributes.deathSaves.successes = 0;
+      clone.attributes.deathSaves.failures = 0;
+      clone.conditions = clone.conditions.filter((c) => c.id !== "unconscious");
+      outcome = "revived";
+    } else if (d20Roll >= 10) {
+      clone.attributes.deathSaves.successes += 1;
+      if (clone.attributes.deathSaves.successes >= 3) {
+        clone.attributes.deathSaves.successes = 0;
+        clone.attributes.deathSaves.failures = 0;
+        outcome = "stabilized";
+      } else {
+        outcome = "success";
+      }
+    } else {
+      clone.attributes.deathSaves.failures += 1;
+      if (clone.attributes.deathSaves.failures >= 3) {
+        clone.isDead = true;
+        outcome = "dead";
+      } else {
+        outcome = "failure";
+      }
+    }
+    return { actor: clone, outcome };
+  } else {
+    const sheet = actorOrSheet;
+    if (d20Roll === 20) {
+      sheet.hpCurrent = 1;
+      sheet.deathSaves = { successes: 0, failures: 0, isStable: true, isDead: false };
+      return sheet.deathSaves;
+    }
+    if (d20Roll === 1) {
+      sheet.deathSaves.failures = Math.min(3, sheet.deathSaves.failures + 2);
+    } else if (d20Roll >= 10) {
+      sheet.deathSaves.successes = Math.min(3, sheet.deathSaves.successes + 1);
+    } else {
+      sheet.deathSaves.failures = Math.min(3, sheet.deathSaves.failures + 1);
+    }
+
+    if (sheet.deathSaves.failures >= 3) {
+      sheet.deathSaves.isDead = true;
+    } else if (sheet.deathSaves.successes >= 3) {
+      sheet.deathSaves.isStable = true;
+    }
+
+    return sheet.deathSaves;
   }
 }
 
-export function computeDnd5eSheetDerived(sheet: Dnd5eActorSheet): Dnd5eDerivedStats {
-  const pb = proficiencyBonusForLevel(sheet.level);
-  const abilityMods: Record<AbilityId, number> = {
-    str: abilityModifier(sheet.abilities.str),
-    dex: abilityModifier(sheet.abilities.dex),
-    con: abilityModifier(sheet.abilities.con),
-    int: abilityModifier(sheet.abilities.int),
-    wis: abilityModifier(sheet.abilities.wis),
-    cha: abilityModifier(sheet.abilities.cha),
-  };
+export interface ShortRestOptions {
+  hitDiceSpent: number;
+  diceRolls: number[];
+}
 
-  // D&D 5e 2024 Exhaustion penalty: -2 per exhaustion level to all d20 tests & spell save DC
-  const exhaustionPenalty = sheet.exhaustionLevel * 2;
+export function applyShortRest(
+  actor: Dnd5eActorData,
+  options: ShortRestOptions
+): Dnd5eActorData;
+export function applyShortRest(
+  sheet: Dnd5eActorSheet,
+  hitDiceRolls: number[]
+): { hpRecovered: number; hitDiceSpent: number };
+export function applyShortRest(
+  actorOrSheet: Dnd5eActorData | Dnd5eActorSheet,
+  optionsOrRolls: ShortRestOptions | number[]
+): Dnd5eActorData | { hpRecovered: number; hitDiceSpent: number } {
+  if ("attributes" in actorOrSheet) {
+    const actor = actorOrSheet;
+    const options = Array.isArray(optionsOrRolls)
+      ? { hitDiceSpent: optionsOrRolls.length, diceRolls: optionsOrRolls }
+      : optionsOrRolls;
 
-  const savingThrows = {} as Record<AbilityId, number>;
-  for (const ab of ["str", "dex", "con", "int", "wis", "cha"] as AbilityId[]) {
-    const prof = sheet.saveProficiencies[ab] ? pb : 0;
-    savingThrows[ab] = abilityMods[ab] + prof - exhaustionPenalty;
+    if (
+      options.hitDiceSpent < 0 ||
+      options.hitDiceSpent > actor.attributes.hitDiceCurrent
+    ) {
+      throw new Error("Invalid hit dice count spent");
+    }
+    if (options.diceRolls.length !== options.hitDiceSpent) {
+      throw new Error("Dice rolls count must match hit dice spent");
+    }
+
+    const clone: Dnd5eActorData = JSON.parse(JSON.stringify(actor));
+    const conMod = Math.floor((clone.abilities.con.score - 10) / 2);
+
+    for (const r of options.diceRolls) {
+      const recovered = Math.max(1, r + conMod);
+      clone.attributes.hp.current = Math.min(
+        clone.attributes.hp.max,
+        clone.attributes.hp.current + recovered
+      );
+    }
+
+    clone.attributes.hitDiceCurrent -= options.hitDiceSpent;
+
+    if (clone.resources) {
+      for (const res of Object.values(clone.resources)) {
+        if (res.resetOn === "SHORT_REST") {
+          res.current = res.max;
+        }
+      }
+    }
+
+    if (clone.spellSlots?.pact) {
+      clone.spellSlots.pact.current = clone.spellSlots.pact.max;
+    }
+
+    return clone;
+  } else {
+    const sheet = actorOrSheet;
+    const hitDiceRolls = Array.isArray(optionsOrRolls)
+      ? optionsOrRolls
+      : optionsOrRolls.diceRolls;
+    const conMod = Math.floor((sheet.abilities.con - 10) / 2);
+    let hpRecovered = 0;
+    let hitDiceSpent = 0;
+
+    for (const roll of hitDiceRolls) {
+      if (sheet.hitDiceCurrent <= 0 || sheet.hpCurrent >= sheet.hpMax) {
+        break;
+      }
+      sheet.hitDiceCurrent -= 1;
+      hitDiceSpent += 1;
+      const heal = Math.max(1, roll + conMod);
+      const before = sheet.hpCurrent;
+      sheet.hpCurrent = Math.min(sheet.hpMax, sheet.hpCurrent + heal);
+      hpRecovered += sheet.hpCurrent - before;
+    }
+
+    for (const res of Object.values(sheet.resources)) {
+      if (res.recovery === "short_rest") {
+        res.current = res.max;
+      }
+    }
+
+    return { hpRecovered, hitDiceSpent };
   }
+}
 
-  const skills = {} as Record<SkillId, number>;
-  for (const skill of DND5E_SKILLS) {
-    const mult = proficiencyMultiplier(sheet.skillProficiencies[skill.id]);
-    const bonus = Math.floor(pb * mult);
-    skills[skill.id] = abilityMods[skill.ability] + bonus - exhaustionPenalty;
+export function applyLongRest(actor: Dnd5eActorData): Dnd5eActorData;
+export function applyLongRest(
+  sheet: Dnd5eActorSheet
+): { hpRecovered: number; hitDiceRecovered: number };
+export function applyLongRest(
+  actorOrSheet: Dnd5eActorData | Dnd5eActorSheet
+): Dnd5eActorData | { hpRecovered: number; hitDiceRecovered: number } {
+  if ("attributes" in actorOrSheet) {
+    const clone: Dnd5eActorData = JSON.parse(JSON.stringify(actorOrSheet));
+    clone.attributes.hp.current = clone.attributes.hp.max;
+    clone.attributes.hp.temp = 0;
+
+    const recoveredDice = Math.max(1, Math.floor(clone.attributes.hitDiceMax / 2));
+    clone.attributes.hitDiceCurrent = Math.min(
+      clone.attributes.hitDiceMax,
+      clone.attributes.hitDiceCurrent + recoveredDice
+    );
+
+    if (clone.attributes.exhaustion > 0) {
+      clone.attributes.exhaustion -= 1;
+    }
+
+    clone.attributes.deathSaves.successes = 0;
+    clone.attributes.deathSaves.failures = 0;
+
+    if (clone.spellSlots) {
+      for (const slot of Object.values(clone.spellSlots)) {
+        if (slot) {
+          slot.current = slot.max;
+        }
+      }
+    }
+
+    if (clone.resources) {
+      for (const res of Object.values(clone.resources)) {
+        res.current = res.max;
+      }
+    }
+
+    return clone;
+  } else {
+    const sheet = actorOrSheet;
+    const hpRecovered = sheet.hpMax - sheet.hpCurrent;
+    sheet.hpCurrent = sheet.hpMax;
+    sheet.tempHp = 0;
+
+    const regainHd = Math.max(1, Math.floor(sheet.hitDiceMax / 2));
+    const beforeHd = sheet.hitDiceCurrent;
+    sheet.hitDiceCurrent = Math.min(sheet.hitDiceMax, sheet.hitDiceCurrent + regainHd);
+    const hitDiceRecovered = sheet.hitDiceCurrent - beforeHd;
+
+    if (sheet.exhaustionLevel > 0) {
+      sheet.exhaustionLevel -= 1;
+    }
+
+    for (const res of Object.values(sheet.resources)) {
+      if (res.recovery === "short_rest" || res.recovery === "long_rest") {
+        res.current = res.max;
+      }
+    }
+
+    sheet.deathSaves = { successes: 0, failures: 0, isStable: false, isDead: false };
+    return { hpRecovered, hitDiceRecovered };
   }
-
-  let armorClass = 10 + abilityMods.dex;
-  switch (sheet.armorKind) {
-    case "unarmored":
-      armorClass = 10 + abilityMods.dex;
-      break;
-    case "light":
-      armorClass = sheet.armorBaseAc + abilityMods.dex;
-      break;
-    case "medium":
-      armorClass = sheet.armorBaseAc + Math.min(2, abilityMods.dex);
-      break;
-    case "heavy":
-      armorClass = sheet.armorBaseAc;
-      break;
-    case "unarmored_barbarian":
-      armorClass = 10 + abilityMods.dex + abilityMods.con;
-      break;
-    case "unarmored_monk":
-      armorClass = 10 + abilityMods.dex + abilityMods.wis;
-      break;
-  }
-  if (sheet.hasShield) {
-    armorClass += 2;
-  }
-
-  const castMod = abilityMods[sheet.spellcastingAbility];
-
-  return {
-    proficiencyBonus: pb,
-    abilityMods,
-    savingThrows,
-    skills,
-    passivePerception: 10 + skills.perception,
-    passiveInvestigation: 10 + skills.investigation,
-    passiveInsight: 10 + skills.insight,
-    armorClass,
-    initiativeBonus: abilityMods.dex - exhaustionPenalty,
-    spellSaveDc: 8 + pb + castMod - exhaustionPenalty,
-    spellAttackBonus: pb + castMod - exhaustionPenalty,
-  };
 }
 
 export interface ActionUpcastRule {
@@ -190,15 +511,11 @@ export interface TargetResolutionOutcome {
   appliedCondition?: string;
 }
 
-/**
- * Executes the multi-step D&D 5e Action Resolution Pipeline:
- * `SpendResource -> AttackRoll / SavingThrow (with Legendary Resistance) -> DamageRoll (with Upcasting) -> ApplyCondition`
- */
 export function resolveActionPipeline(
   actor: Dnd5eActorSheet,
   action: ActionDefinition,
   targets: TargetResolutionInput[],
-  castSlotLevel?: number,
+  castSlotLevel?: number
 ): TargetResolutionOutcome[] {
   if (action.resourceCostId) {
     const res = actor.resources[action.resourceCostId];
@@ -255,7 +572,6 @@ export function resolveActionPipeline(
       damageApplied = Math.floor(totalBaseDamage / 2);
     }
 
-    // Apply Temp HP absorption then HP reduction
     const absorbed = Math.min(item.target.tempHp, damageApplied);
     item.target.tempHp -= absorbed;
     const remainder = damageApplied - absorbed;
@@ -282,106 +598,9 @@ export function resolveActionPipeline(
   return outcomes;
 }
 
-/**
- * Short Rest: spends Hit Dice (adding CON modifier per die, minimum 1 HP gained per die)
- * and restores all `short_rest` resources.
- */
-export function applyShortRest(
-  sheet: Dnd5eActorSheet,
-  hitDiceRolls: number[],
-): { hpRecovered: number; hitDiceSpent: number } {
-  const conMod = abilityModifier(sheet.abilities.con);
-  let hpRecovered = 0;
-  let hitDiceSpent = 0;
-
-  for (const roll of hitDiceRolls) {
-    if (sheet.hitDiceCurrent <= 0 || sheet.hpCurrent >= sheet.hpMax) {
-      break;
-    }
-    sheet.hitDiceCurrent -= 1;
-    hitDiceSpent += 1;
-    const heal = Math.max(1, roll + conMod);
-    const before = sheet.hpCurrent;
-    sheet.hpCurrent = Math.min(sheet.hpMax, sheet.hpCurrent + heal);
-    hpRecovered += sheet.hpCurrent - before;
-  }
-
-  for (const res of Object.values(sheet.resources)) {
-    if (res.recovery === "short_rest") {
-      res.current = res.max;
-    }
-  }
-
-  return { hpRecovered, hitDiceSpent };
-}
-
-/**
- * Long Rest: restores full HP, regains `max(1, floor(hitDiceMax / 2))` Hit Dice,
- * resets all `short_rest` and `long_rest` resources, and reduces exhaustion by 1.
- */
-export function applyLongRest(sheet: Dnd5eActorSheet): {
-  hpRecovered: number;
-  hitDiceRecovered: number;
-} {
-  const hpRecovered = sheet.hpMax - sheet.hpCurrent;
-  sheet.hpCurrent = sheet.hpMax;
-  sheet.tempHp = 0;
-
-  const regainHd = Math.max(1, Math.floor(sheet.hitDiceMax / 2));
-  const beforeHd = sheet.hitDiceCurrent;
-  sheet.hitDiceCurrent = Math.min(sheet.hitDiceMax, sheet.hitDiceCurrent + regainHd);
-  const hitDiceRecovered = sheet.hitDiceCurrent - beforeHd;
-
-  if (sheet.exhaustionLevel > 0) {
-    sheet.exhaustionLevel -= 1;
-  }
-
-  for (const res of Object.values(sheet.resources)) {
-    if (res.recovery === "short_rest" || res.recovery === "long_rest") {
-      res.current = res.max;
-    }
-  }
-
-  sheet.deathSaves = { successes: 0, failures: 0, isStable: false, isDead: false };
-  return { hpRecovered, hitDiceRecovered };
-}
-
-/**
- * Evaluates a Death Saving Throw according to D&D 5e SRD 5.2 rules.
- */
-export function rollDeathSavingThrow(
-  sheet: Dnd5eActorSheet,
-  naturalD20: number,
-): DeathSaveState {
-  if (naturalD20 === 20) {
-    sheet.hpCurrent = 1;
-    sheet.deathSaves = { successes: 0, failures: 0, isStable: true, isDead: false };
-    return sheet.deathSaves;
-  }
-
-  if (naturalD20 === 1) {
-    sheet.deathSaves.failures = Math.min(3, sheet.deathSaves.failures + 2);
-  } else if (naturalD20 >= 10) {
-    sheet.deathSaves.successes = Math.min(3, sheet.deathSaves.successes + 1);
-  } else {
-    sheet.deathSaves.failures = Math.min(3, sheet.deathSaves.failures + 1);
-  }
-
-  if (sheet.deathSaves.failures >= 3) {
-    sheet.deathSaves.isDead = true;
-  } else if (sheet.deathSaves.successes >= 3) {
-    sheet.deathSaves.isStable = true;
-  }
-
-  return sheet.deathSaves;
-}
-
-/**
- * Evaluates a Monster Recharge roll (e.g. Dragon Fire Breath `Recharge 5-6`) at the start of turn.
- */
 export function tryRechargeMonsterAbility(
   resource: ResourceTracker,
-  d6Roll: number,
+  d6Roll: number
 ): boolean {
   if (
     resource.recovery === "recharge" &&
