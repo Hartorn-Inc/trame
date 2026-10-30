@@ -1,0 +1,28 @@
+---
+description: Enforce English-only across all source code, comments, identifiers, tests, specs, ADRs, glossary, and commit messages
+alwaysApply: true
+---
+
+# Language Policy: English Only in Code & Comments
+
+Never mix French and English in the repository.
+
+- **English Only (Mandatory)**: All source code, identifiers, inline comments, docstrings (`///`, `/** */`), test descriptions, error messages, commit messages, PR titles/bodies, `GLOSSARY.md`, `AGENTS.md`, ADRs (`docs/adr/`), and technical specifications (`docs/specs/`) MUST be written strictly in English.
+- **No Bilingual Mixing**: Do not mix French and English in the same file, comment, or glossary entry (e.g., avoid `Allowed: AbilityScore, score de caractéristique`).
+- **End-User Documentation Exception**: French is reserved exclusively for dedicated end-user documentation or localization files when explicitly requested later.
+
+## Examples
+
+```rust
+// BAD (French or mixed French/English comment)
+// Calcule le modificateur de caractéristique (ability modifier)
+pub fn ability_modifier(score: i32) -> i32 {
+    (score - 10).div_euclid(2)
+}
+
+// GOOD (English only)
+/// Computes the standard D&D 5e ability modifier: `floor((score - 10) / 2)`.
+pub fn ability_modifier(score: i32) -> i32 {
+    (score - 10).div_euclid(2)
+}
+```

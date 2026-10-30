@@ -29,3 +29,9 @@ Canonical roles: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-hum
 ### Domain docs
 
 Single-context: root `GLOSSARY.md`, `ARCHITECTURE.md`, `docs/specs/`, and `docs/adr/`. See `docs/agents/domain.md`.
+
+## Language Policy (English Only)
+
+- **Code & Technical Artifacts**: All source code, comments, docstrings, identifiers, test descriptions, commit messages, PRs, `GLOSSARY.md`, ADRs, and technical specs MUST be written strictly in **English**. Never mix French and English.
+- **Future Documentation**: French is reserved strictly for dedicated end-user documentation later.
+
