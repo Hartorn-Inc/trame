@@ -169,13 +169,16 @@ pub fn parse_hex_color(hex_str: &str) -> [f32; 3] {
 
 pub fn parse_uvtt_geometry(doc: &UvttDocument) -> (Vec<WallSegment>, Vec<ImportedLightSource>) {
     let ppg = doc.resolution.pixels_per_grid.max(1.0);
+    let origin_x = doc.resolution.map_origin.x;
+    let origin_y = doc.resolution.map_origin.y;
+    let to_point = |pt: &UvttPoint| Point2D::new((pt.x - origin_x) * ppg, (pt.y - origin_y) * ppg);
     let mut walls = Vec::new();
 
     // 1. Line of Sight (solid walls)
     for polyline in &doc.line_of_sight {
         for window in polyline.windows(2) {
-            let a = Point2D::new(window[0].x * ppg, window[0].y * ppg);
-            let b = Point2D::new(window[1].x * ppg, window[1].y * ppg);
+            let a = to_point(&window[0]);
+            let b = to_point(&window[1]);
             walls.push(WallSegment {
                 id: Uuid::new_v4(),
                 a,
@@ -194,8 +197,8 @@ pub fn parse_uvtt_geometry(doc: &UvttDocument) -> (Vec<WallSegment>, Vec<Importe
     // 2. Objects Line of Sight (low obstacles / terrain)
     for polyline in &doc.objects_line_of_sight {
         for window in polyline.windows(2) {
-            let a = Point2D::new(window[0].x * ppg, window[0].y * ppg);
-            let b = Point2D::new(window[1].x * ppg, window[1].y * ppg);
+            let a = to_point(&window[0]);
+            let b = to_point(&window[1]);
             walls.push(WallSegment {
                 id: Uuid::new_v4(),
                 a,
@@ -214,8 +217,8 @@ pub fn parse_uvtt_geometry(doc: &UvttDocument) -> (Vec<WallSegment>, Vec<Importe
     // 3. Portals (doors)
     for portal in &doc.portals {
         if portal.bounds.len() >= 2 {
-            let a = Point2D::new(portal.bounds[0].x * ppg, portal.bounds[0].y * ppg);
-            let b = Point2D::new(portal.bounds[1].x * ppg, portal.bounds[1].y * ppg);
+            let a = to_point(&portal.bounds[0]);
+            let b = to_point(&portal.bounds[1]);
             let is_open = !portal.closed;
             walls.push(WallSegment {
                 id: Uuid::new_v4(),
@@ -238,7 +241,7 @@ pub fn parse_uvtt_geometry(doc: &UvttDocument) -> (Vec<WallSegment>, Vec<Importe
     // 4. Lights
     let mut lights = Vec::new();
     for light in &doc.lights {
-        let position = Point2D::new(light.position.x * ppg, light.position.y * ppg);
+        let position = to_point(&light.position);
         let bright_radius_px = (light.range / 2.0) * ppg;
         let dim_radius_px = light.range * ppg;
         let color_rgb = parse_hex_color(&light.color);
