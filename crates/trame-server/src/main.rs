@@ -30,16 +30,21 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use trame_server::http::build_router;
+use trame_server::assets::store::InMemoryAssetStore;
+use trame_server::http::{InMemoryMembershipValidator, build_router};
 use trame_server::room::RoomLeaseManager;
 use trame_server::wal::InMemoryWalStorage;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() {
     let wal = Arc::new(InMemoryWalStorage::new());
-    // Snapshot every 25 commands, Idle-Lease hibernation after 15 minutes (900_000 ms)
     let lease_manager = Arc::new(RoomLeaseManager::new(wal, 25, 900_000));
-    let app = build_router(lease_manager);
+    let asset_store = Arc::new(InMemoryAssetStore::new());
+    let membership = Arc::new(InMemoryMembershipValidator::new());
+    let instance_id = Uuid::new_v4();
+
+    let app = build_router(lease_manager, asset_store, membership, instance_id);
 
     let port: u16 = std::env::var("TRAME_PORT")
         .ok()

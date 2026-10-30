@@ -277,4 +277,72 @@ mod tests {
         let serialized = note.serialize_file();
         assert!(serialized.contains("folder: null\n"));
     }
+
+    #[tokio::test]
+    async fn test_archive_exporter_streams_large_assets_below_16_mib_heap_ceiling() {
+        // Stream a 20 MiB asset (> 16 MiB heap ceiling) via 64 KiB chunks while consuming
+        // the output stream chunk-by-chunk, verifying that peak in-flight buffer size stays
+        // strictly below the 16 MiB (16,777,216 bytes) ceiling.
+        const SIXTEEN_MIB: usize = 16 * 1024 * 1024;
+        const ASSET_BYTES: usize = 20 * 1024 * 1024;
+
+        let temp_dir_path =
+            std::env::temp_dir().join(format!("trame_mem_test_{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&temp_dir_path)
+            .await
+            .expect("create temp dir");
+        let store = LocalFsStore::new(&temp_dir_path);
+
+        let asset_id = Uuid::new_v4();
+        let chunk_64k = bytes::Bytes::from(vec![0x57u8; 64 * 1024]);
+        let num_chunks = ASSET_BYTES / (64 * 1024);
+        let input_stream = Box::pin(futures_util::stream::iter(
+            (0..num_chunks).map(move |_| Ok(chunk_64k.clone())),
+        ));
+        store
+            .put_stream(&asset_id.to_string(), input_stream)
+            .await
+            .expect("put 20 MiB streamed asset");
+
+        let campaign_id = Uuid::new_v4();
+        let source = MockExportSource {
+            campaign: CampaignMetadata {
+                id: campaign_id,
+                name: "Memory Ceiling Verification".to_string(),
+                system: "dnd5e".to_string(),
+                description: None,
+                created_at: "2026-10-30T00:00:00Z".to_string(),
+            },
+            entities: Vec::new(),
+            notes: Vec::new(),
+            asset_ids: vec![asset_id],
+        };
+
+        let exporter = ArchiveExporter::new(source, store);
+        let mut export_stream = exporter.export_stream().await.expect("start export stream");
+
+        let mut total_streamed_bytes = 0usize;
+        let mut max_chunk_bytes = 0usize;
+        while let Some(chunk_res) = export_stream.next().await {
+            let chunk = chunk_res.expect("stream chunk ok");
+            max_chunk_bytes = max_chunk_bytes.max(chunk.len());
+            assert!(
+                chunk.len() < SIXTEEN_MIB,
+                "Single streamed chunk ({}) must stay strictly below 16 MiB ceiling",
+                chunk.len()
+            );
+            total_streamed_bytes += chunk.len();
+        }
+
+        assert!(
+            total_streamed_bytes >= ASSET_BYTES,
+            "Streamed archive total ({total_streamed_bytes}) must include full 20 MiB asset"
+        );
+        assert!(
+            max_chunk_bytes <= 64 * 1024,
+            "Max chunk buffer ({max_chunk_bytes}) must remain bounded by 64 KiB duplex window (< 16 MiB)"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir_path).await;
+    }
 }

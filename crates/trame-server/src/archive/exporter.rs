@@ -211,13 +211,19 @@ impl<S: CampaignExportSource, B: BlobStore> ArchiveExporter<S, B> {
             total_uncompressed_bytes,
         };
 
-        let manifest =
-            CampaignManifest::new(campaign, "2025-05-18T14:32:00Z".to_string(), stats, entries);
+        let exported_at = format_utc_rfc3339(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
+        let manifest = CampaignManifest::new(campaign, exported_at, stats, entries);
 
         Ok((manifest, total_uncompressed_bytes))
     }
 
-    /// Streams the complete .trame ZIP archive into an asynchronous byte stream.
+    /// Streams the complete `.trame` ZIP archive into an asynchronous byte stream,
+    /// propagating any background writer error to the consumer stream.
     pub async fn export_stream(
         self,
     ) -> Result<
@@ -226,23 +232,27 @@ impl<S: CampaignExportSource, B: BlobStore> ArchiveExporter<S, B> {
     > {
         let (manifest, _) = self.compile_manifest().await?;
         let (reader, writer) = tokio::io::duplex(CHUNK_SIZE * 2);
+        let (err_tx, err_rx) = tokio::sync::oneshot::channel::<ArchiveExportError>();
 
         tokio::spawn(async move {
             if let Err(err) =
                 Self::write_archive(self.source, self.blob_store, manifest, writer).await
             {
-                eprintln!("archive export writer task failed: {err}");
+                let _ = err_tx.send(err);
             }
         });
 
-        let stream = stream::unfold(Some(reader), |state| async move {
-            let mut reader = state?;
+        let stream = stream::unfold(Some((reader, err_rx)), |state| async move {
+            let (mut reader, mut err_rx) = state?;
             let mut buffer = vec![0u8; CHUNK_SIZE];
             match reader.read(&mut buffer).await {
-                Ok(0) => None,
+                Ok(0) => match err_rx.try_recv() {
+                    Ok(err) => Some((Err(err), None)),
+                    Err(_) => None,
+                },
                 Ok(bytes_read) => {
                     buffer.truncate(bytes_read);
-                    Some((Ok(Bytes::from(buffer)), Some(reader)))
+                    Some((Ok(Bytes::from(buffer)), Some((reader, err_rx))))
                 }
                 Err(err) => Some((Err(ArchiveExportError::Io(err)), None)),
             }
@@ -306,4 +316,27 @@ impl<S: CampaignExportSource, B: BlobStore> ArchiveExporter<S, B> {
         zip_writer.close().await?;
         Ok(())
     }
+}
+
+/// Formats a UNIX epoch timestamp in seconds as an ISO-8601 / RFC 3339 UTC string (`YYYY-MM-DDTHH:MM:SSZ`)
+/// using Howard Hinnant's civil-from-days algorithm without external date crates.
+fn format_utc_rfc3339(epoch_secs: u64) -> String {
+    let days = (epoch_secs / 86_400) as i64;
+    let secs_of_day = epoch_secs % 86_400;
+    let hour = secs_of_day / 3_600;
+    let minute = (secs_of_day % 3_600) / 60;
+    let second = secs_of_day % 60;
+
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+
+    format!("{year:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
