@@ -61,18 +61,19 @@ describe("[E4] 3D Spatial Audio & Wall Occlusion Low-Pass Cutoff", () => {
     }
   });
 
-  it("Test 6.1.4: caps concurrent acoustic raycasts at 16 emitters", () => {
+  it("Test 6.1.4: caps concurrent acoustic raycasts at 16 nearest emitters", () => {
     const manager = new SpatialAudioManager();
     manager.updateListener({ x: 0, y: 0, elevationFt: 0 });
 
-    for (let i = 0; i < 20; i++) {
+    // Insert in reverse distance order (farthest first) to verify proximity sorting
+    for (let i = 19; i >= 0; i--) {
       manager.upsertEmitter({
         id: `emitter-${i}`,
         url: `sound-${i}.mp3`,
         x: 10 * (i + 1),
-        y: 10 * (i + 1),
+        y: 0,
         elevationFt: 0,
-        maxDistanceFt: 200,
+        maxDistanceFt: 300,
         refDistanceFt: 10,
         rolloff: 1.0,
         loopPlayback: true,
@@ -93,12 +94,30 @@ describe("[E4] 3D Spatial Audio & Wall Occlusion Low-Pass Cutoff", () => {
       topElevationFt: 100,
     };
 
-    manager.updateOcclusionAndAttenuation([testWall]);
+    const nonBlockingWall = {
+      id: "wall-vision-only",
+      a: { x: 2, y: -50 },
+      b: { x: 2, y: 50 },
+      blocksVision: true,
+      bottomElevationFt: -100,
+      topElevationFt: 100,
+    };
+
+    assert.equal(
+      countSoundOccludingWalls({ x: 20, y: 0, elevationFt: 0 }, { x: 0, y: 0, elevationFt: 0 }, [
+        testWall,
+        nonBlockingWall,
+      ]),
+      1,
+    );
+
+    manager.updateOcclusionAndAttenuation([testWall, nonBlockingWall]);
     assert.equal(manager.getLastCycleRaycastCount(), 16);
 
-    const emitter19 = manager.getEmitterState("emitter-19");
-    assert.ok(emitter19 !== undefined);
-    assert.ok(emitter19.cutoffFrequency > 0);
+    const nearest = manager.getEmitterState("emitter-0");
+    const farthest = manager.getEmitterState("emitter-19");
+    assert.equal(nearest?.cutoffFrequency, 4444.44);
+    assert.equal(farthest?.cutoffFrequency, 20000);
   });
 });
 
@@ -114,9 +133,11 @@ describe("[E4] 3D Elevation Ruler Non-Blocking Calculations", () => {
       "FIVE_FIVE_FIVE",
     );
     assert.equal(dist, 40.0);
+    assert.equal(measureRulerWaypointsFt([], 1, 1, "FIVE_FIVE_FIVE"), 0);
+    assert.equal(measureRulerWaypointsFt([{ x: 0, y: 0, elevationFt: 0 }], 1, 1, "FIVE_FIVE_FIVE"), 0);
   });
 
-  it("Test 6.2.2: measures 5-10-5 metric with 3D hypotenuse", () => {
+  it("Test 6.2.2: measures 5-10-5 metric with 3D hypotenuse and multi-segment alternation", () => {
     const dist = measureRulerWaypointsFt(
       [
         { x: 0, y: 0, elevationFt: 0 },
@@ -127,9 +148,22 @@ describe("[E4] 3D Elevation Ruler Non-Blocking Calculations", () => {
       "5-10-5",
     );
     assert.equal(dist, 25.0);
+
+    // Two sequential 1-cell diagonal segments should alternate 5ft + 10ft = 15ft total
+    const multiSeg = measureRulerWaypointsFt(
+      [
+        { x: 0, y: 0, elevationFt: 0 },
+        { x: 5, y: 5, elevationFt: 0 },
+        { x: 10, y: 10, elevationFt: 0 },
+      ],
+      1,
+      1,
+      "5-10-5",
+    );
+    assert.equal(multiSeg, 15.0);
   });
 
-  it("Test 6.2.3: measures 3D Euclidean metric", () => {
+  it("Test 6.2.3: measures 3D Euclidean metric and squeezing multiplier", () => {
     const dist = measureRulerWaypointsFt(
       [
         { x: 0, y: 0, elevationFt: 0 },
@@ -140,6 +174,18 @@ describe("[E4] 3D Elevation Ruler Non-Blocking Calculations", () => {
       "EUCLIDEAN",
     );
     assert.equal(dist, 26.0);
+
+    const squeezed = measureRulerWaypointsFt(
+      [
+        { x: 0, y: 0, elevationFt: 0 },
+        { x: 6, y: 8, elevationFt: 24 },
+      ],
+      1,
+      1,
+      "EUCLIDEAN",
+      true,
+    );
+    assert.equal(squeezed, 52.0);
   });
 });
 

@@ -78,7 +78,7 @@ export function countSoundOccludingWalls(
   let count = 0;
 
   for (const wall of walls) {
-    if (wall.blocksSound === false) {
+    if (!wall.blocksSound) {
       continue;
     }
     const hit = intersectSegments(p0, p1, wall.a, wall.b);
@@ -132,10 +132,15 @@ export class SpatialAudioManager {
     let raycastBudget = MAX_CONCURRENT_RAYCASTS;
     let raycastCount = 0;
 
-    for (const [id, state] of this.emitters.entries()) {
-      const dist = compute3DDistance(state.emitter, this.listener);
-      const gain = computeDistanceAttenuation(dist, state.emitter.refDistanceFt, state.emitter.rolloff);
+    const sortedEntries = Array.from(this.emitters.entries())
+      .map(([id, state]) => {
+        const dist = compute3DDistance(state.emitter, this.listener);
+        const gain = computeDistanceAttenuation(dist, state.emitter.refDistanceFt, state.emitter.rolloff);
+        return { id, state, dist, gain };
+      })
+      .sort((a, b) => a.dist - b.dist);
 
+    for (const { id, state, dist, gain } of sortedEntries) {
       let cutoff = state.cutoffFrequency;
       if (raycastBudget > 0) {
         const nWalls = countSoundOccludingWalls(state.emitter, this.listener, walls);

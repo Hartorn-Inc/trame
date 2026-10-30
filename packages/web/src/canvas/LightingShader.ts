@@ -14,24 +14,25 @@ uniform vec2 uLightOrigin;
 uniform float uBrightRadiusPx;
 uniform float uDimRadiusPx;
 uniform vec3 uLightColor;
-uniform float uIntensity;
-uniform float uIsDarkvisionMonochrome;
+uniform float uSignedIntensity;
 
 void main() {
   float dist = distance(vWorldPos, uLightOrigin);
   if (dist > uDimRadiusPx) {
     discard;
   }
+  float intensity = abs(uSignedIntensity);
+  float isMonochrome = uSignedIntensity < 0.0 ? 1.0 : 0.0;
   float brightFactor = 1.0 - smoothstep(uBrightRadiusPx * 0.85, uBrightRadiusPx, dist);
   float dimFactor = 1.0 - smoothstep(uBrightRadiusPx, uDimRadiusPx, dist);
-  float falloff = max(brightFactor, dimFactor * 0.5) * uIntensity;
-  vec3 color = mix(uLightColor, vec3(dot(uLightColor, vec3(0.299, 0.587, 0.114))), uIsDarkvisionMonochrome);
+  float falloff = max(brightFactor, dimFactor * 0.5) * intensity;
+  vec3 color = mix(uLightColor, vec3(dot(uLightColor, vec3(0.299, 0.587, 0.114))), isMonochrome);
   fragColor = vec4(color * falloff, falloff);
 }
 `;
 
 /**
- * WebGPU WGSL fragment shader equivalent for PixiJS v8 WebGPU renderer.
+ * WebGPU WGSL fragment shader equivalent for PixiJS v8 WebGPU renderer (32-byte / 8-float std140 UBO).
  */
 export const RADIAL_LIGHT_WGSL_FRAG = `
 struct LightUniforms {
@@ -39,8 +40,7 @@ struct LightUniforms {
   brightRadiusPx: f32,
   dimRadiusPx: f32,
   lightColor: vec3<f32>,
-  intensity: f32,
-  isDarkvisionMonochrome: f32,
+  signedIntensity: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: LightUniforms;
@@ -51,11 +51,13 @@ fn main(@location(0) vWorldPos: vec2<f32>) -> @location(0) vec4<f32> {
   if (dist > u.dimRadiusPx) {
     discard;
   }
+  let intensity = abs(u.signedIntensity);
+  let isMonochrome = select(0.0, 1.0, u.signedIntensity < 0.0);
   let brightFactor = 1.0 - smoothstep(u.brightRadiusPx * 0.85, u.brightRadiusPx, dist);
   let dimFactor = 1.0 - smoothstep(u.brightRadiusPx, u.dimRadiusPx, dist);
-  let falloff = max(brightFactor, dimFactor * 0.5) * u.intensity;
+  let falloff = max(brightFactor, dimFactor * 0.5) * intensity;
   let luma = dot(u.lightColor, vec3<f32>(0.299, 0.587, 0.114));
-  let color = mix(u.lightColor, vec3<f32>(luma), u.isDarkvisionMonochrome);
+  let color = mix(u.lightColor, vec3<f32>(luma), isMonochrome);
   return vec4<f32>(color * falloff, falloff);
 }
 `;

@@ -41,6 +41,8 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **`NoteVisibility`**: 3-tier note access (`PRIVATE` author-only, `PARTY` shared wiki, `DM_ONLY` GM lore with inline `:::dm` and revealable `:::handout` blocks).
 - **`.trame` Archive**: A portable ZIP bundle (`manifest.json`, `database.jsonl`, `notes/`, `assets/`) allowing 1-click full campaign migration between local Docker, `e2-micro`, and Cloud Run + Neon + R2.
 
+### AcousticOcclusion
+
 - **Definition**: Attenuation of sound high frequencies calculated via raycasting through walls with `blocks_sound: true`.
 
 - **Allowed Context**: Spatial audio processing and WebAudio filter graphs.
