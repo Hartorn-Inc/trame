@@ -190,6 +190,32 @@ describe("CompendiumDragDropManager and ContainerWeightCalculator Suite", () => 
       const totalWeight = calculateTotalInventoryWeight(items);
       assert.equal(totalWeight, 4.5);
     });
+
+    it("calculateContainerWeight accepts null container identifier without throwing TypeError and returns uncontained items weight", () => {
+      const items: InventoryContainerItem[] = [
+        {
+          id: "loose-staff",
+          unitWeight: 4.0,
+          quantity: 1,
+          containerId: null,
+        },
+        {
+          id: "loose-gem",
+          unitWeight: 0.5,
+          quantity: 2,
+          containerId: null,
+        },
+        {
+          id: "contained-gem",
+          unitWeight: 0.5,
+          quantity: 10,
+          containerId: "chest-1",
+        },
+      ];
+
+      const weight = calculateContainerWeight(null, items);
+      assert.equal(weight, 5.0);
+    });
   });
 
   describe("Container Move Validation & Cycle Rejection", () => {

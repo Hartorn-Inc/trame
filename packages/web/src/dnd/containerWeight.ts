@@ -21,18 +21,27 @@ function sanitizeNumber(value: unknown, defaultValue: number): number {
  * Direct child items are evaluated and the sum is rounded to two decimal places.
  */
 export function calculateContainerWeight(
-  containerOrId: InventoryContainerItem | string,
+  containerOrId: InventoryContainerItem | string | null | undefined,
   items?: InventoryContainerItem[],
   options?: ContainerWeightOptions,
   visited: Set<string> = new Set<string>(),
 ): number {
-  const containerId =
-    typeof containerOrId === "string" ? containerOrId : containerOrId.id;
-
-  if (!containerId || visited.has(containerId)) {
+  if (containerOrId === undefined) {
     return 0;
   }
-  visited.add(containerId);
+  const containerId =
+    typeof containerOrId === "string"
+      ? containerOrId
+      : containerOrId
+      ? containerOrId.id
+      : null;
+
+  if (containerId !== null) {
+    if (!containerId || visited.has(containerId)) {
+      return 0;
+    }
+    visited.add(containerId);
+  }
 
   const containerObj =
     typeof containerOrId === "object" && containerOrId !== null
@@ -42,11 +51,18 @@ export function calculateContainerWeight(
   let children: InventoryContainerItem[] = [];
 
   if (Array.isArray(items)) {
-    children = items.filter(
-      (it) =>
+    children = items.filter((it) => {
+      if (containerId === null) {
+        return (
+          (it.containerId === null || it.containerId === undefined) &&
+          (it.parentId === null || it.parentId === undefined)
+        );
+      }
+      return (
         (it.containerId === containerId || it.parentId === containerId) &&
-        it.id !== containerId,
-    );
+        it.id !== containerId
+      );
+    });
   }
   if (children.length === 0 && containerObj) {
     if (Array.isArray(containerObj.children)) {

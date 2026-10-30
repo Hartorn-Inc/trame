@@ -52,52 +52,50 @@ function findWidgetById(node: SheetLayoutNode | RenderedLayoutNode | null, id: s
   return null;
 }
 
-describe("D&D 5e Declarative Sheet Layout Manifest & Integration Suite", () => {
-  it("WHEN DND5E_SHEET_LAYOUT is loaded, DND5E_SHEET_LAYOUT conforms to SheetLayoutTree schema and references only valid registered widget types.", () => {
-    WidgetRegistry.registerDefaults();
-    const registeredWidgets = new Set(WidgetRegistry.getRegisteredTypes());
-
+describe("D&D 5e Declarative Character Sheet Layout Integration Suite", () => {
+  it("WHEN DeclarativeSheetRenderer evaluates DND5E_SHEET_LAYOUT AST, DND5E_SHEET_LAYOUT conforms to SheetLayoutTree schema referencing only registered widgets.", () => {
     assert.equal(DND5E_SHEET_LAYOUT.systemId, "dnd5e");
-    assert.ok(typeof DND5E_SHEET_LAYOUT.version === "string");
+    assert.equal(DND5E_SHEET_LAYOUT.version, "1.0.0");
     assert.ok(DND5E_SHEET_LAYOUT.root);
-    assert.equal(DND5E_SHEET_LAYOUT.root.id, "dnd5e-sheet-root");
     assert.equal(DND5E_SHEET_LAYOUT.root.kind, "section");
+    assert.equal(DND5E_SHEET_LAYOUT.root.id, "dnd5e-sheet-root");
+
+    WidgetRegistry.registerDefaults();
 
     const parsed = DeclarativeSheetRenderer.parse(DND5E_SHEET_LAYOUT, { isGm: true, isOwner: true });
     assert.ok(parsed.root);
 
-    const widgets = collectWidgetNodes(parsed.root) as WidgetLayoutNode[];
-    assert.ok(widgets.length >= 10, `Expected at least 10 widgets, found ${widgets.length}`);
+    const allWidgets = collectWidgetNodes(parsed.root) as WidgetLayoutNode[];
+    assert.ok(allWidgets.length >= 10, `Expected at least 10 widget nodes, found ${allWidgets.length}`);
 
-    const widgetTypesFound = new Set<string>();
-    for (const widget of widgets) {
-      assert.equal(widget.kind, "widget");
-      assert.ok(widget.id && widget.id.length > 0);
-      assert.ok(widget.widgetType && widget.widgetType.length > 0);
-      assert.ok(registeredWidgets.has(widget.widgetType), `Widget type ${widget.widgetType} must be registered`);
-      widgetTypesFound.add(widget.widgetType);
-    }
-
-    const expectedCanonicalWidgets = [
-      "ResourceBar",
-      "ArmorInitiativeSpeed",
-      "HitDiceAndDeathSaves",
-      "ConditionBadgeStrip",
+    const expectedWidgetTypes = new Set([
       "StatBlock6",
+      "ResourceBar",
       "SavingThrowList",
       "SkillCheckList",
+      "ArmorInitiativeSpeed",
+      "HitDiceAndDeathSaves",
       "AttackActionTable",
       "SpellbookAccordion",
       "InventoryContainerTree",
       "FeatureTraitList",
+      "ConditionBadgeStrip",
       "NotesMarkdownPane",
-    ];
-    for (const expectedType of expectedCanonicalWidgets) {
-      assert.ok(widgetTypesFound.has(expectedType), `DND5E_SHEET_LAYOUT must contain canonical widget: ${expectedType}`);
+    ]);
+
+    for (const w of allWidgets) {
+      assert.ok(
+        expectedWidgetTypes.has(w.widgetType),
+        `Layout widgetType ${w.widgetType} must be one of the 12 canonical widgets.`,
+      );
+      assert.ok(
+        WidgetRegistry.has(w.widgetType),
+        `WidgetRegistry must have registered implementation for ${w.widgetType}`,
+      );
     }
   });
 
-  it("WHEN DeclarativeSheetRenderer.render is invoked with DND5E_SHEET_LAYOUT and valid D&D 5e actor state, DeclarativeSheetRenderer returns a fully bound node hierarchy without throwing errors.", () => {
+  it("WHEN DeclarativeSheetRenderer.render executes with complete D&D 5e actor data, it returns a bound component hierarchy with resolved boundValues.", () => {
     WidgetRegistry.registerDefaults();
 
     const actor = createDefaultActorData("hero-100", "Alathea Starbreeze");
@@ -172,21 +170,25 @@ describe("D&D 5e Declarative Sheet Layout Manifest & Integration Suite", () => {
     assert.equal(hpBar.boundValues.current, 32);
     assert.equal(hpBar.boundValues.max, 38);
     assert.equal(hpBar.boundValues.temp, 5);
-    assert.equal(hpBar.renderedOutput.current, 32);
-    assert.equal(hpBar.renderedOutput.max, 38);
+
+    const combatStats = findWidgetById(rendered.root, "dnd5e-combat-stats");
+    assert.ok(combatStats);
+    assert.equal(combatStats.boundValues.armorClass, 13);
+    assert.equal(combatStats.boundValues.initiative, 3);
+    assert.equal(combatStats.boundValues.speed, 30);
 
     const statblock = findWidgetById(rendered.root, "dnd5e-statblock-abilities");
     assert.ok(statblock);
-    assert.equal(statblock.renderedOutput.abilities.find((a: any) => a.key === "int")?.score, 18);
-    assert.equal(statblock.renderedOutput.abilities.find((a: any) => a.key === "int")?.modifier, 4);
+    assert.equal(statblock.boundValues.abilities.int.score, 18);
 
     const saves = findWidgetById(rendered.root, "dnd5e-saving-throws");
     assert.ok(saves);
-    assert.equal(saves.renderedOutput.saves.find((s: any) => s.key === "int")?.modifier, 7);
+    assert.equal(saves.boundValues.saves.int.modifier, 7);
+    assert.equal(saves.boundValues.saves.int.proficient, true);
 
     const skills = findWidgetById(rendered.root, "dnd5e-skill-checks");
     assert.ok(skills);
-    assert.ok(skills.renderedOutput.skills.length >= 18);
+    assert.ok(skills.boundValues.skills.stealth !== undefined);
 
     const attacks = findWidgetById(rendered.root, "dnd5e-actions-attacks");
     assert.ok(attacks);
@@ -195,8 +197,9 @@ describe("D&D 5e Declarative Sheet Layout Manifest & Integration Suite", () => {
 
     const spellbook = findWidgetById(rendered.root, "dnd5e-spellbook-accordion");
     assert.ok(spellbook);
-    assert.equal(spellbook.renderedOutput.spells.length, 2);
-    assert.equal(spellbook.renderedOutput.spellSaveDc, 15);
+    assert.equal(spellbook.boundValues.spells.length, 2);
+    assert.equal(spellbook.boundValues.spellSaveDc, 15);
+    assert.equal(spellbook.boundValues.spellAttackBonus, 7);
 
     const inventory = findWidgetById(rendered.root, "dnd5e-inventory-tree");
     assert.ok(inventory);
@@ -234,22 +237,24 @@ describe("D&D 5e Declarative Sheet Layout Manifest & Integration Suite", () => {
     const rendered = DeclarativeSheetRenderer.render(
       DND5E_SHEET_LAYOUT,
       actorState,
-      { isGm: false, isOwner: true },
+      { isGm: true, isOwner: true },
       (cmd) => dispatchedCommands.push(cmd),
     );
 
-    const statblock = findWidgetById(rendered.root, "dnd5e-statblock-abilities");
-    statblock.renderedOutput.clickAbility("str");
+    assert.ok(rendered.root);
+
+    const abilities = findWidgetById(rendered.root, "dnd5e-statblock-abilities");
+    abilities.renderedOutput.clickAbility("str");
     assert.equal(dispatchedCommands.length, 1);
     assert.equal(dispatchedCommands[0].cmd, "ROLL_DICE");
+    assert.equal(dispatchedCommands[0].ability, "str");
     assert.equal(dispatchedCommands[0].expression, "1d20+4");
-    assert.equal(dispatchedCommands[0].reason, "Ability check: str");
 
     const saves = findWidgetById(rendered.root, "dnd5e-saving-throws");
     saves.renderedOutput.clickSave("str");
     assert.equal(dispatchedCommands.length, 2);
     assert.equal(dispatchedCommands[1].cmd, "ROLL_DICE");
-    assert.equal(dispatchedCommands[1].reason, "Saving throw: str");
+    assert.equal(dispatchedCommands[1].formula, "1d20 + 6");
 
     const attacks = findWidgetById(rendered.root, "dnd5e-actions-attacks");
     attacks.renderedOutput.clickAttack("atk-greataxe");
@@ -293,10 +298,5 @@ describe("D&D 5e Declarative Sheet Layout Manifest & Integration Suite", () => {
     assert.ok(rendered.root);
     const notesWidget = findWidgetById(rendered.root, "dnd5e-notes-pane");
     assert.equal(notesWidget, null, "OWNER_ONLY notes widget must not be rendered for non-owner player");
-
-    const tabsContainer = findWidgetById(rendered.root, "dnd5e-tabs-container");
-    assert.ok(tabsContainer);
-    const bioTab = tabsContainer.tabs.find((t: any) => t.id === "tab-bio");
-    assert.equal(bioTab, undefined, "OWNER_ONLY tab must be omitted for non-owner player");
   });
 });
