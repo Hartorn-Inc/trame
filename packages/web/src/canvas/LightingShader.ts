@@ -89,7 +89,7 @@ export function packLightUniformBuffer(input: LightSourceUniformInput): Float32A
 export type FogVisibilityState = "UNEXPLORED" | "EXPLORED_MEMORY" | "VISIBLE";
 
 /**
- * Dual-buffer Fog of War cell tracker:
+ * Dual-buffer Fog of War cell tracker with snapshot rollback support:
  * - `UNEXPLORED`: opaque alpha `1.0`
  * - `EXPLORED_MEMORY`: dimmed terrain memory alpha `0.65` (tokens hidden)
  * - `VISIBLE`: live line-of-sight alpha `0.0`
@@ -97,6 +97,7 @@ export type FogVisibilityState = "UNEXPLORED" | "EXPLORED_MEMORY" | "VISIBLE";
 export class DualBufferFogOfWar {
   private readonly exploredKeys = new Set<string>();
   private readonly activeVisibleKeys = new Set<string>();
+  private readonly snapshots = new Map<number | string, { explored: Set<string>; visible: Set<string> }>();
 
   public updateVisibleCells(visibleCells: GridCell[]): void {
     this.activeVisibleKeys.clear();
@@ -110,6 +111,30 @@ export class DualBufferFogOfWar {
   public resetFog(): void {
     this.exploredKeys.clear();
     this.activeVisibleKeys.clear();
+    this.snapshots.clear();
+  }
+
+  public captureSnapshot(snapshotId: number | string): void {
+    this.snapshots.set(snapshotId, {
+      explored: new Set(this.exploredKeys),
+      visible: new Set(this.activeVisibleKeys),
+    });
+  }
+
+  public rollbackSnapshot(snapshotId: number | string): boolean {
+    const snap = this.snapshots.get(snapshotId);
+    if (!snap) {
+      return false;
+    }
+    this.exploredKeys.clear();
+    for (const key of snap.explored) {
+      this.exploredKeys.add(key);
+    }
+    this.activeVisibleKeys.clear();
+    for (const key of snap.visible) {
+      this.activeVisibleKeys.add(key);
+    }
+    return true;
   }
 
   public getCellState(col: number, row: number): FogVisibilityState {

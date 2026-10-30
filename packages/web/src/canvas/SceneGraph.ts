@@ -63,25 +63,89 @@ export class ViewportCamera {
   }
 }
 
+export type RulerMetric =
+  | "FIVE_FIVE_FIVE"
+  | "FIVE_TEN_FIVE"
+  | "EUCLIDEAN"
+  | "FiveFiveFive"
+  | "FiveTenFive"
+  | "Euclidean"
+  | "5-5-5"
+  | "5-10-5";
+
+export interface Waypoint3D {
+  x: number;
+  y: number;
+  z?: number;
+  elevationFt?: number;
+}
+
 /**
- * Computes multi-segment waypoint distance in feet across the tactical canvas.
+ * Computes multi-segment waypoint distance in feet across the tactical canvas,
+ * supporting 5-5-5 (Chebyshev 3D), 5-10-5 (D&D 5e alternation + 3D hypotenuse),
+ * and Euclidean 3D metrics (`docs/specs/e4-interactive-table-hud-combat-trac.md`).
  */
 export function measureRulerWaypointsFt(
-  waypoints: Point2D[],
-  cellSizePx: number,
-  feetPerCell: number,
+  waypoints: Waypoint3D[],
+  cellSizePx: number | RulerMetric = 1,
+  feetPerCell = 1,
+  metricOrSqueezing: RulerMetric | boolean = "EUCLIDEAN",
   isSqueezing = false,
 ): number {
   if (waypoints.length < 2) {
     return 0;
   }
-  const pxPerFt = cellSizePx / Math.max(1, feetPerCell);
+
+  let effectiveCellSizePx = 1;
+  let effectiveFeetPerCell = 1;
+  let metric: RulerMetric = "EUCLIDEAN";
+  let squeezing = isSqueezing;
+
+  if (typeof cellSizePx === "string") {
+    metric = cellSizePx;
+    effectiveCellSizePx = 1;
+    effectiveFeetPerCell = 1;
+    if (typeof feetPerCell === "boolean") {
+      squeezing = feetPerCell;
+    }
+  } else {
+    effectiveCellSizePx = cellSizePx;
+    effectiveFeetPerCell = feetPerCell;
+    if (typeof metricOrSqueezing === "boolean") {
+      squeezing = metricOrSqueezing;
+      metric = "EUCLIDEAN";
+    } else if (typeof metricOrSqueezing === "string") {
+      metric = metricOrSqueezing;
+    }
+  }
+
+  const pxPerFt = effectiveCellSizePx / Math.max(1, effectiveFeetPerCell);
+  const normMetric = String(metric).toUpperCase().replace(/[-_]/g, "");
+
   let totalFt = 0;
   for (let i = 1; i < waypoints.length; i++) {
     const prev = waypoints[i - 1];
     const curr = waypoints[i];
-    const distPx = Math.hypot(curr.x - prev.x, curr.y - prev.y);
-    totalFt += distPx / pxPerFt;
+    const dxFt = Math.abs(curr.x - prev.x) / pxPerFt;
+    const dyFt = Math.abs(curr.y - prev.y) / pxPerFt;
+    const prevZ = prev.elevationFt ?? prev.z ?? 0;
+    const currZ = curr.elevationFt ?? curr.z ?? 0;
+    const dzFt = Math.abs(currZ - prevZ);
+
+    let segDistFt = 0;
+    if (normMetric === "FIVEFIVEFIVE" || normMetric === "555") {
+      segDistFt = Math.max(dxFt, dyFt, dzFt);
+    } else if (normMetric === "FIVETENFIVE" || normMetric === "5105") {
+      const dDiag = Math.min(dxFt, dyFt);
+      const dStr = Math.max(dxFt, dyFt) - dDiag;
+      const nDiag = Math.floor(dDiag / 5.0);
+      const d2D = dStr + Math.floor(nDiag / 2) * 15.0 + (nDiag % 2) * 5.0;
+      segDistFt = Math.sqrt(d2D * d2D + dzFt * dzFt);
+    } else {
+      segDistFt = Math.sqrt(dxFt * dxFt + dyFt * dyFt + dzFt * dzFt);
+    }
+    totalFt += segDistFt;
   }
-  return isSqueezing ? totalFt * 2 : totalFt;
+
+  return squeezing ? totalFt * 2 : totalFt;
 }
