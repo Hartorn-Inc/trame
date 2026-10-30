@@ -1,0 +1,18 @@
+# TRAME Local Development Container (Rust + wasm-pack + sqlx-cli)
+FROM rust:1.86-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    curl \
+    binaryen \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup target add wasm32-unknown-unknown \
+    && rustup component add rustfmt clippy
+
+# Install wasm-pack for compiling trame-engine to WebAssembly
+RUN curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+WORKDIR /workspace

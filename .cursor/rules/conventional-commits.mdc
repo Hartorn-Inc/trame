@@ -1,0 +1,27 @@
+---
+description: Conventional commit and PR titles that can land on the green PR ruleset
+alwaysApply: true
+---
+
+# Conventional commits
+
+PR titles and git commits that will squash or rebase onto `dev` or `main`
+use Conventional Commits. The CI job `PR title` and the branch ruleset
+reject anything else. Renovate is configured for the same shape
+(`chore(deps): …`).
+
+```
+type(scope)?: description
+```
+
+Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`,
+`ci`, `build`, `revert`. Optional scope is lowercase `[a-z0-9/-]+`. Optional
+`!` before `:` marks a breaking change. Description is required after `: `.
+
+Yes: `fix: isolate the Docker development stack per checkout`
+Yes: `chore(deps): pin nginx docker tag to sha256:9703642`
+No: `Pin nginx Docker tag to 9703642`
+No: `Feat: add maps` (type is lowercase)
+
+The first line is the type and the why, not a file list. A body is optional.
+Checker: `scripts/conventional-commit-title.py`.

@@ -1,0 +1,12 @@
+[package]
+name = "trame-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+trame-engine = { path = "../trame-engine" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

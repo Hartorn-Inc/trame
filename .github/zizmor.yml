@@ -1,0 +1,17 @@
+# zizmor static analysis config for GitHub Actions workflows (ADR-0017).
+# https://docs.zizmor.sh/
+rules:
+  dangerous-triggers:
+    ignore:
+      # EPURE Issue Command Gate enforces write-permission verification before any privileged execution (ADR-0004).
+      - epure-issue-command.yml
+  ref-version-mismatch:
+    ignore:
+      - epure-issue-command.yml
+      - epure-check.yml
+      - release.yml
+  stale-action-refs:
+    ignore:
+      - epure-issue-command.yml
+      - epure-check.yml
+      - release.yml

@@ -1,0 +1,20 @@
+{
+  "packages": [
+    {
+      "source": "https://github.com/mattpocock/skills.git",
+      "skills": [
+        "grill-with-docs",
+        "grilling",
+        "domain-modeling",
+        "to-spec",
+        "to-tickets",
+        "retro",
+        "writing-for-agents",
+        "tdd",
+        "code-review",
+        "pr",
+        "setup-matt-pocock-skills"
+      ]
+    }
+  ]
+}

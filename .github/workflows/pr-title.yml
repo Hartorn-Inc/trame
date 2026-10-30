@@ -1,0 +1,40 @@
+# Pull request title check.
+#
+# A separate workflow so editing a PR title re-runs this required check
+# without rebuilding Frontend, Backend, or the production images.
+# Squash-merge lands the pull request title as the commit on `dev` or
+# `main`. Direct pushes there are already blocked. This job is a required
+# check: a title that is not `type(scope)?: description` cannot merge.
+# A push has no pull request title, so the check is skipped and the job
+# still succeeds — a skipped required job would block the merge. TITLE
+# arrives through env so the title is never interpolated into the shell.
+name: PR title
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [dev, main, 'feature/**']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read the code, nothing more: no job here writes to the repository.
+permissions:
+  contents: read
+
+jobs:
+  pr-title:
+    name: "PR title"
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: python3 scripts/conventional-commit-title.py

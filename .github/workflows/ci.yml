@@ -1,0 +1,59 @@
+# Managed by Giskard-AI/epure@357c946de1019745859f66a3de580d41441a7a53 # v1.6.0
+# Continuous Integration: Zizmor workflow security audit + Rust/WASM/Node Format, Lint, Typecheck, Tests & Build.
+name: "CI"
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main, 'feature/**']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: "Quality (Format, Lint, Typecheck, Test & Build)"
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Rust Format check (cargo fmt)
+        run: cargo fmt --all -- --check
+      - name: Rust Lint check (cargo clippy)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Rust Tests (cargo test)
+        run: cargo test --workspace --all-targets
+      - name: Web Package Quality (install, lint, typecheck, test, build)
+        working-directory: packages/web
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm run lint
+          npm run typecheck
+          npm test
+          npm run build
+
+  zizmor:
+    name: "Zizmor"
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read # checkout the workflows zizmor audits
+      actions: read # zizmor reads action metadata for online audits
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        with:
+          persona: pedantic
+          advanced-security: false

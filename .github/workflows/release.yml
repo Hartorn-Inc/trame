@@ -1,0 +1,29 @@
+name: "EPURE Controlled Release (dev -> main)"
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: "Immutable SemVer tag (vMAJOR.MINOR.PATCH)"
+        required: true
+        type: string
+concurrency:
+  group: epure-release-${{ github.ref }}
+  cancel-in-progress: false
+permissions: {}
+jobs:
+  release:
+    name: "Release Promotion (dev -> main)"
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write # promote dev to main and push immutable release tag
+    steps:
+      - name: Verify Release App boundary
+        uses: Giskard-AI/epure/actions/verify-app-role@357c946de1019745859f66a3de580d41441a7a53 # v1.6.0
+        with:
+          app_role: "release"
+          operation: "promote_dev_to_main"
+          target_ref: "refs/heads/main"
+          workflow_path: ".github/workflows/release.yml"
+          environment_name: "release"

@@ -1,0 +1,94 @@
+name: "EPURE Issue Command Gate"
+on:
+  issue_comment:
+    types: [created]
+  check_suite:
+    types: [completed]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+concurrency:
+  group: epure-issue-gate-${{ github.event.issue.number || github.event.check_suite.head_sha || github.event.workflow_run.head_sha }}-${{ github.event.comment.id || github.run_id }}
+  cancel-in-progress: false
+permissions: {}
+jobs:
+  authorize-command:
+    name: "Authorize /epure Issue Command"
+    if: ${{ github.event_name == 'issue_comment' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read # read repository metadata and collaborator permission level
+      issues: write # post authorization rejection comment when unauthorized
+    outputs:
+      authorized: ${{ steps.gate.outputs.authorized }}
+      decision: ${{ steps.gate.outputs.decision }}
+      command: ${{ steps.gate.outputs.command }}
+      command_args: ${{ steps.gate.outputs.command_args }}
+    steps:
+      - name: Run pre-bundled EPURE authorization gate
+        id: gate
+        uses: Giskard-AI/epure/actions/authorize-command@357c946de1019745859f66a3de580d41441a7a53 # v1.6.0
+        with:
+          repository: ${{ github.repository }}
+          issue_number: ${{ github.event.issue.number }}
+          comment_body: ${{ github.event.comment.body }}
+          actor: ${{ github.event.comment.user.login }}
+          actor_type: ${{ github.event.comment.user.type }}
+          allow_implicit_planning_reply: "true"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  orchestrate-command:
+    name: "Orchestrate Authorized /epure Lifecycle"
+    needs: [authorize-command]
+    if: ${{ always() && (needs.authorize-command.outputs.authorized == 'true' || github.event_name == 'check_suite' || github.event_name == 'workflow_run') }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    environment: gemini
+    concurrency:
+      group: epure-issue-${{ github.event.issue.number || github.event.check_suite.head_branch || github.event.workflow_run.head_branch || github.run_id }}
+      cancel-in-progress: false
+    permissions:
+      contents: write # push task/feature branches and update refs/epure/state/*
+      issues: write # create child tickets and post state mirror comments
+      pull-requests: write # open, review, and squash-merge task PRs
+      checks: write # publish ai-review, impeccable-gate, and PR title check runs
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.12.0
+      - name: Provision Ubuntu 26.04 kernel sandbox (landrun + bubblewrap) & stateless RTK
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends landrun bubblewrap ca-certificates curl
+          mkdir -p "$HOME/.npm" "$HOME/.cache" "$HOME/.cargo"
+          # renovate: datasource=github-releases depName=rtk-ai/rtk
+          RTK_VERSION="v1.0.1"
+          RTK_ARCHIVE="rtk-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/${RTK_VERSION}/${RTK_ARCHIVE}" -o "/tmp/${RTK_ARCHIVE}"
+          curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/${RTK_VERSION}/checksums.txt" -o "/tmp/rtk-checksums.txt"
+          (cd /tmp && sha256sum --check --ignore-missing rtk-checksums.txt)
+          sudo tar -xzf "/tmp/${RTK_ARCHIVE}" -C /usr/local/bin rtk
+          sudo chmod 0755 /usr/local/bin/rtk
+      - name: Run pre-bundled EPURE issue orchestrator
+        id: orchestrate
+        env:
+          RTK_TELEMETRY_DISABLED: "1"
+          RTK_RECALL: "0"
+          RTK_TEE: "0"
+          NO_COLOR: "1"
+        uses: Giskard-AI/epure/actions/orchestrate-issue@357c946de1019745859f66a3de580d41441a7a53 # v1.6.0
+        with:
+          repository: ${{ github.repository }}
+          issue_number: ${{ github.event.issue.number || 0 }}
+          command: ${{ github.event_name == 'issue_comment' && needs.authorize-command.outputs.command || 'continue' }}
+          command_args: ${{ needs.authorize-command.outputs.command_args || '' }}
+          comment_id: ${{ github.event.comment.id || 0 }}
+          actor: ${{ github.event.comment.user.login || github.actor }}
+          trigger_head_sha: ${{ github.event.check_suite.head_sha || github.event.workflow_run.head_sha || '' }}
+          trigger_branch: ${{ github.event.check_suite.head_branch || github.event.workflow_run.head_branch || '' }}
+          async_ci_continuation: 'true'
+          agent_app_id: ${{ secrets.EPURE_AGENT_APP_ID }}
+          agent_app_private_key: ${{ secrets.EPURE_AGENT_APP_PRIVATE_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          llm_api_key: ${{ secrets.LLM_API_KEY }}

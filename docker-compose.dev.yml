@@ -1,0 +1,103 @@
+# TRAME Local Development Docker Compose Stack
+# Isolated per checkout via Makefile project hashing: `make up` / `make test` / `make lint`
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    logging: *logging
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-trame}
+      POSTGRES_USER: ${POSTGRES_USER:-trame}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trame_dev_password}
+    ports:
+      - "127.0.0.1:${TRAME_PG_PORT:-5439}:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trame} -d ${POSTGRES_DB:-trame}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - trame_dev
+
+  minio:
+    image: minio/minio:latest
+    logging: *logging
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-trame_minio}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-trame_minio_secret_key}
+    ports:
+      - "127.0.0.1:${TRAME_MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${TRAME_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_dev_data:/data
+    networks:
+      - trame_dev
+
+  rust-dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.rust-dev
+    logging: *logging
+    working_dir: /workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://trame:trame_dev_password@postgres:5432/trame}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_BUCKET: ${S3_BUCKET:-trame-assets}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-trame_minio}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-trame_minio_secret_key}
+      TRAME_PORT: ${TRAME_PORT:-8080}
+      TRAME_SESSION_SECRET: ${TRAME_SESSION_SECRET:-dev_only_secret_at_least_32_characters_long_trame}
+      RUST_LOG: ${RUST_LOG:-info,trame_server=debug,trame_engine=debug}
+    ports:
+      - "127.0.0.1:${TRAME_PORT:-8080}:8080"
+    volumes:
+      - .:/workspace
+      - cargo_registry_cache:/usr/local/cargo/registry
+      - cargo_git_cache:/usr/local/cargo/git
+      - cargo_target_cache:/workspace/target
+    command: cargo run --bin trame-server
+    networks:
+      - trame_dev
+
+  web-dev:
+    image: node:24-bookworm-slim
+    logging: *logging
+    working_dir: /workspace/packages/web
+    environment:
+      VITE_API_TARGET: http://rust-dev:8080
+    ports:
+      - "127.0.0.1:${TRAME_WEB_PORT:-5173}:5173"
+    volumes:
+      - .:/workspace
+      - web_node_modules:/workspace/packages/web/node_modules
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    networks:
+      - trame_dev
+
+volumes:
+  postgres_dev_data:
+  minio_dev_data:
+  cargo_registry_cache:
+  cargo_git_cache:
+  cargo_target_cache:
+  web_node_modules:
+
+networks:
+  trame_dev:
+    driver: bridge

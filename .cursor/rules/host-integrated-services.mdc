@@ -1,0 +1,21 @@
+---
+description: Use elevated host access for Docker, Compose, and browser-facing local services when the sandbox cannot reach them
+alwaysApply: true
+---
+
+# Host-integrated services
+
+- Treat Docker/Compose, the Docker socket, host ports, and browser-facing
+  development servers as host-integrated operations.
+- If a sandboxed command reports that `/var/run/docker.sock` is unavailable,
+  or a server reports ready but cannot be reached from the browser or host,
+  do not conclude that the service is unavailable. Retry the same operation
+  with host elevation (`required_permissions: ["all"]`) before reporting a
+  blocker.
+- Use elevation only for the host-integrated operation itself. Keep code
+  inspection, edits, tests, and ordinary commands sandboxed when possible.
+- Do not use elevation to bypass a real authentication, authorization, quota,
+  or service-health failure. Report that failure after the elevated retry.
+- Stop temporary development servers and Compose stacks when the requested
+  verification is complete, unless the user explicitly asks to leave them
+  running.

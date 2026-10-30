@@ -1,0 +1,20 @@
+# TRAME EPURE Agent Orchestration
+
+This repository is a Rust workspace (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli`) + WebAssembly + React 19 / PixiJS v8 frontend (`packages/web`) governed by EPURE (`Giskard-AI/epure`). See `AGENTS.md`, `GLOSSARY.md`, `ARCHITECTURE.md`, and `docs/specs/`.
+
+## Local Development Rule (Docker Compose + Makefile)
+
+- All build, test, lint, format, and WASM compilation commands run inside Docker via the root `Makefile` (`make up`, `make test`, `make lint`, `make wasm`, `make check`).
+- Do not assume a host-installed Rust or Node toolchain when running local verification; invoke `make <target>`.
+
+## Readonly Reviewer Roster (`.cursor/agents/*.md`)
+
+- **Domain & Stack Specialists**:
+  - `domain-backend-reviewer` (`paths: crates/trame-server, crates/trame-cli`) — Axum routes, `TableRoomActor`, SQLx queries, WAL + write-behind persistence, R2 presigned URLs, `.trame` archives, and `Idle-Lease`.
+  - `realtime-reviewer` (`paths: crates/trame-engine, crates/trame-server, packages/web`) — BVH raycasting, dynamic lighting, 3-layer Fog of War, WebSocket MessagePack deltas, Exploration/Turn-by-Turn modes, and WASM client/server parity.
+  - `game-systems-reviewer` (`paths: crates/trame-engine, packages/game-systems, packages/web`) — `GameSystemPack` schemas, `derivedDAG`, 5-phase `ActiveEffect` stacking, field-level `VisibilityTier` stripping, and D&D 5e SRD 5.1 compliance.
+  - `mcp-sync-reviewer` (`paths: crates/trame-server, crates/trame-cli`) — MCP server parity with `TrameCommand`, `MCP Staging Mode`, `.uvtt` import, `yrs` CRDT collaborative notes, and 3-way Markdown merge.
+  - `frontend-reviewer` (`paths: packages/web`) — React 19 + Zustand + PixiJS v8 canvas rendering, shaders, declarative sheet widgets, and mobile companion mode.
+  - `infra-reviewer` (`paths: docker, Dockerfile, docker-compose.dev.yml, Makefile, .github, renovate.json`) — Docker Compose dev workflow, distroless single-binary builds, Zizmor, and Renovate.
+- **Always-On Cross-Cutting & Persona Reviewers**:
+  - `architecture-reviewer`, `security-reviewer`, `spec-parity-reviewer`, `standards-reviewer`, `accessibility-reviewer`, `design-reviewer`, `user-advocate`.
