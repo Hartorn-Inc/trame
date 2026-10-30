@@ -10,7 +10,7 @@ import {
   resolveActionPipeline,
   rollDeathSavingThrow,
   tryRechargeMonsterAbility,
-} from "../src/systems/dnd5e/index.ts";
+} from "../../game-systems/dnd5e/src/index.ts";
 import {
   DualBufferFogOfWar,
   RADIAL_LIGHT_GLSL_FRAG,

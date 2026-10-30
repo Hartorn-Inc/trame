@@ -169,7 +169,7 @@ export class CombatTrackerManager {
         return true;
       case "MOVEMENT": {
         const cost = amountFt ?? 5;
-        if (token.speedRemainingFt < cost - 1e-6) return false;
+        if (cost < 0 || token.speedRemainingFt < cost - 1e-6) return false;
         token.speedRemainingFt = Math.max(0, token.speedRemainingFt - cost);
         return true;
       }
@@ -248,7 +248,7 @@ export class CombatTrackerManager {
   }
 
   public declareReaction(triggerId: number, accepted: boolean): { triggerId: number; wasInterrupted: boolean } {
-    if (!this.activeReaction || this.activeReaction.triggerId !== triggerId) {
+    if (!this.activeReaction || this.activeReaction.closed || this.activeReaction.triggerId !== triggerId) {
       return { triggerId, wasInterrupted: false };
     }
     this.activeReaction.closed = true;
@@ -265,11 +265,15 @@ export class CombatTrackerManager {
   }
 
   public toggleReactionPause(triggerId: number, currentTimeMs: number, serverTimeOffsetMs = 0): boolean {
-    if (!this.activeReaction || this.activeReaction.triggerId !== triggerId) {
+    if (!this.activeReaction || this.activeReaction.closed || this.activeReaction.triggerId !== triggerId) {
       return false;
     }
     if (!this.activeReaction.isPaused) {
-      this.activeReaction.pausedRemainingMs = this.getRemainingReactionMs(currentTimeMs, serverTimeOffsetMs);
+      const remaining = this.getRemainingReactionMs(currentTimeMs, serverTimeOffsetMs);
+      if (remaining === 0 || this.activeReaction.closed) {
+        return false;
+      }
+      this.activeReaction.pausedRemainingMs = remaining;
       this.activeReaction.isPaused = true;
     } else {
       const resumeRemaining = this.activeReaction.pausedRemainingMs ?? 0;

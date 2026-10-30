@@ -178,6 +178,7 @@ describe("[E4] Combat Tracker, Action Economy & 5-Second Reaction Window", () =>
 
     assert.equal(tracker.spendAction("tok-paladin", "ACTION"), true);
     assert.equal(tracker.spendAction("tok-paladin", "ACTION"), false);
+    assert.equal(tracker.spendAction("tok-paladin", "MOVEMENT", -10), false);
     assert.equal(tracker.spendAction("tok-paladin", "MOVEMENT", 15), true);
 
     const stateAfterSpend = tracker.getState();
@@ -213,6 +214,8 @@ describe("[E4] Combat Tracker, Action Economy & 5-Second Reaction Window", () =>
     assert.equal(tracker.getRemainingReactionMs(now + 2000, 0), 3000);
     assert.equal(tracker.getRemainingReactionMs(now + 5000, 0), 0);
     assert.equal(tracker.getActiveReaction(), null);
+    assert.equal(tracker.declareReaction(101, true).wasInterrupted, false);
+    assert.equal(tracker.toggleReactionPause(101, now + 5000, 0), false);
   });
 
   it("Test 6.3.2: resolves reaction immediately upon GM force, dismiss, or server event", () => {
@@ -238,6 +241,8 @@ describe("[E4] Combat Tracker, Action Economy & 5-Second Reaction Window", () =>
     });
     tracker.handleServerInterruptResolved(203, false);
     assert.equal(tracker.getActiveReaction(), null);
+    assert.equal(tracker.declareReaction(203, true).wasInterrupted, false);
+    assert.equal(tracker.toggleReactionPause(203, now + 1000, 0), false);
   });
 
   it("computes server time offset for client synchronization", () => {

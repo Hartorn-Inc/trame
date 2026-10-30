@@ -123,6 +123,7 @@ export function measureRulerWaypointsFt(
   const normMetric = String(metric).toUpperCase().replace(/[-_]/g, "");
 
   let totalFt = 0;
+  let cumulativeDiagSteps = 0;
   for (let i = 1; i < waypoints.length; i++) {
     const prev = waypoints[i - 1];
     const curr = waypoints[i];
@@ -139,7 +140,13 @@ export function measureRulerWaypointsFt(
       const dDiag = Math.min(dxFt, dyFt);
       const dStr = Math.max(dxFt, dyFt) - dDiag;
       const nDiag = Math.floor(dDiag / 5.0);
-      const d2D = dStr + Math.floor(nDiag / 2) * 15.0 + (nDiag % 2) * 5.0;
+      const diagRemainderFt = dDiag - nDiag * 5.0;
+      let diagCostFt = 0;
+      for (let step = 0; step < nDiag; step++) {
+        diagCostFt += (cumulativeDiagSteps + step) % 2 === 1 ? 10.0 : 5.0;
+      }
+      cumulativeDiagSteps += nDiag;
+      const d2D = dStr + diagCostFt + diagRemainderFt;
       segDistFt = Math.sqrt(d2D * d2D + dzFt * dzFt);
     } else {
       segDistFt = Math.sqrt(dxFt * dxFt + dyFt * dyFt + dzFt * dzFt);
