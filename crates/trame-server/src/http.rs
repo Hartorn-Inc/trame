@@ -1,5 +1,6 @@
 use crate::room::{ConnectedClient, RoomLeaseManager};
 use crate::sync::decode_client_envelope;
+use crate::timeline::{InMemoryTimelineStorage, SessionTimelineResponse, TimelineStorage};
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -24,31 +25,80 @@ pub struct HealthResponse {
     pub active_rooms: usize,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TimelineQuery {
+    pub after: Option<u64>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone)]
+pub struct ServerAppState {
+    pub lease_manager: Arc<RoomLeaseManager>,
+    pub timeline_storage: Arc<dyn TimelineStorage>,
+}
+
 pub fn build_router(lease_manager: Arc<RoomLeaseManager>) -> Router {
+    let timeline_storage: Arc<dyn TimelineStorage> = Arc::new(InMemoryTimelineStorage::new());
+    build_app_router(lease_manager, timeline_storage)
+}
+
+pub fn build_app_router(
+    lease_manager: Arc<RoomLeaseManager>,
+    timeline_storage: Arc<dyn TimelineStorage>,
+) -> Router {
+    let state = ServerAppState {
+        lease_manager,
+        timeline_storage,
+    };
     Router::new()
         .route("/healthz", get(healthz_handler))
         .route("/ws/campaigns/{campaign_id}", get(ws_campaign_handler))
-        .with_state(lease_manager)
+        .route(
+            "/api/campaigns/{campaign_id}/sessions/{session_num}/timeline",
+            get(timeline_handler),
+        )
+        .with_state(state)
 }
 
-async fn healthz_handler(State(mgr): State<Arc<RoomLeaseManager>>) -> Json<HealthResponse> {
+async fn healthz_handler(State(state): State<ServerAppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
-        active_rooms: mgr.active_room_count().await,
+        active_rooms: state.lease_manager.active_room_count().await,
     })
+}
+
+async fn timeline_handler(
+    Path((campaign_id, session_num)): Path<(String, u32)>,
+    Query(query): Query<TimelineQuery>,
+    State(state): State<ServerAppState>,
+) -> Json<SessionTimelineResponse> {
+    let after_seq = query.after.unwrap_or(0);
+    let limit = query.limit.unwrap_or(50);
+    let resp = state
+        .timeline_storage
+        .get_timeline(&campaign_id, session_num, after_seq, limit)
+        .unwrap_or_else(|_| SessionTimelineResponse {
+            campaign_id: campaign_id.clone(),
+            session_num,
+            session_id: format!("{campaign_id}:{session_num}"),
+            events: Vec::new(),
+            has_more: false,
+        });
+    Json(resp)
 }
 
 async fn ws_campaign_handler(
     ws: WebSocketUpgrade,
     Path(campaign_id): Path<Uuid>,
     Query(query): Query<WsAuthQuery>,
-    State(mgr): State<Arc<RoomLeaseManager>>,
+    State(state): State<ServerAppState>,
 ) -> impl IntoResponse {
     let role = match query.role.as_deref() {
         Some("gm") | Some("GM") => CampaignRole::Gm,
         Some("spectator") | Some("Spectator") => CampaignRole::Spectator,
         _ => CampaignRole::Player,
     };
+    let mgr = state.lease_manager.clone();
     ws.on_upgrade(move |socket| handle_ws_connection(socket, mgr, campaign_id, query.user_id, role))
 }
 
