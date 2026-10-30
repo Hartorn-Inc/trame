@@ -202,6 +202,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn uvtt_importer_translates_coordinates_by_map_origin() {
+        let store = InMemoryAssetStore::new();
+        let instance_id = Uuid::new_v4();
+        let campaign_id = Uuid::new_v4();
+
+        let png_bytes = create_test_png_bytes(20, 20);
+        let b64_img = BASE64.encode(&png_bytes);
+
+        let doc = UvttDocument {
+            format: 0.2,
+            resolution: UvttResolution {
+                map_origin: UvttPoint { x: 2.0, y: 1.0 },
+                map_size: UvttPoint { x: 8.0, y: 8.0 },
+                pixels_per_grid: 50.0,
+            },
+            image: b64_img,
+            line_of_sight: vec![vec![
+                UvttPoint { x: 4.0, y: 3.0 },
+                UvttPoint { x: 6.0, y: 3.0 },
+            ]],
+            objects_line_of_sight: vec![vec![
+                UvttPoint { x: 3.0, y: 2.0 },
+                UvttPoint { x: 5.0, y: 2.0 },
+            ]],
+            portals: vec![UvttPortal {
+                position: UvttPoint { x: 4.0, y: 2.0 },
+                bounds: vec![UvttPoint { x: 4.0, y: 2.0 }, UvttPoint { x: 4.5, y: 2.0 }],
+                rotation: 0.0,
+                closed: false,
+                freestanding: false,
+            }],
+            lights: vec![UvttLight {
+                position: UvttPoint { x: 5.0, y: 4.0 },
+                range: 6.0,
+                color: "#00ff00".to_string(),
+                intensity: 1.0,
+                shadows: false,
+            }],
+        };
+
+        let json_payload = serde_json::to_vec(&doc).unwrap();
+        let imported = import_uvtt_map(&json_payload, instance_id, campaign_id, &store)
+            .await
+            .expect("UVTT import with offset should succeed");
+
+        assert_eq!(imported.pixels_per_grid, 50.0);
+        assert_eq!(imported.grid_cols, 8.0);
+        assert_eq!(imported.grid_rows, 8.0);
+
+        // Solid wall: (4 - 2) * 50 = 100, (3 - 1) * 50 = 100 -> (6 - 2) * 50 = 200, (3 - 1) * 50 = 100
+        assert_eq!(imported.walls[0].a, Point2D::new(100.0, 100.0));
+        assert_eq!(imported.walls[0].b, Point2D::new(200.0, 100.0));
+
+        // Terrain: (3 - 2) * 50 = 50, (2 - 1) * 50 = 50 -> (5 - 2) * 50 = 150, (2 - 1) * 50 = 50
+        assert_eq!(imported.walls[1].a, Point2D::new(50.0, 50.0));
+        assert_eq!(imported.walls[1].b, Point2D::new(150.0, 50.0));
+
+        // Portal: (4 - 2) * 50 = 100, (2 - 1) * 50 = 50 -> (4.5 - 2) * 50 = 125, (2 - 1) * 50 = 50
+        assert_eq!(imported.walls[2].a, Point2D::new(100.0, 50.0));
+        assert_eq!(imported.walls[2].b, Point2D::new(125.0, 50.0));
+
+        // Light: (5 - 2) * 50 = 150, (4 - 1) * 50 = 150
+        assert_eq!(imported.lights[0].position, Point2D::new(150.0, 150.0));
+        assert_eq!(imported.lights[0].bright_radius_px, 150.0);
+        assert_eq!(imported.lights[0].dim_radius_px, 300.0);
+    }
+
+    #[tokio::test]
     async fn uvtt_importer_enforces_magic_bytes_payload_limits_and_dimension_guards() {
         let store = InMemoryAssetStore::new();
         let inst = Uuid::new_v4();
@@ -273,7 +341,7 @@ mod tests {
             .await
             .unwrap();
 
-        let app = build_router(lease_mgr, store, membership, instance_id);
+        let app = build_router(lease_mgr, store.clone(), membership, instance_id);
 
         // 1. Non-member user -> 403 Forbidden
         let req_forbidden = Request::builder()
@@ -309,8 +377,38 @@ mod tests {
             ))
             .body(Body::empty())
             .unwrap();
-        let res_missing = app.oneshot(req_missing).await.unwrap();
+        let res_missing = app.clone().oneshot(req_missing).await.unwrap();
         assert_eq!(res_missing.status(), StatusCode::NOT_FOUND);
+
+        // 4. Invalid or path traversal hash format -> 400 Bad Request
+        let req_traversal = Request::builder()
+            .uri(format!(
+                "/api/v1/campaigns/{campaign_id}/assets/invalid..traversal/presign?user_id={member_user_id}"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let res_traversal = app.clone().oneshot(req_traversal).await.unwrap();
+        assert_eq!(res_traversal.status(), StatusCode::BAD_REQUEST);
+
+        // 5. Valid thumbnail hash suffix -> 200 OK
+        let thumb_key =
+            format!("instances/{instance_id}/campaigns/{campaign_id}/assets/{hash}_thumb.webp");
+        store
+            .put_asset(
+                &thumb_key,
+                Bytes::from_static(b"SAMPLE_THUMB"),
+                "image/webp",
+            )
+            .await
+            .unwrap();
+        let req_thumb = Request::builder()
+            .uri(format!(
+                "/api/v1/campaigns/{campaign_id}/assets/{hash}_thumb/presign?user_id={member_user_id}"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let res_thumb = app.oneshot(req_thumb).await.unwrap();
+        assert_eq!(res_thumb.status(), StatusCode::OK);
     }
 
     #[test]

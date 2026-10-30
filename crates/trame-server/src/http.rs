@@ -134,11 +134,26 @@ async fn ws_campaign_handler(
     })
 }
 
+fn is_valid_asset_hash(hash: &str) -> bool {
+    let base = hash.strip_suffix("_thumb").unwrap_or(hash);
+    !base.is_empty() && base.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 async fn presign_asset_handler(
     Path((campaign_id, hash)): Path<(Uuid, String)>,
     Query(query): Query<PresignQuery>,
     State(state): State<AppState>,
 ) -> Response {
+    if !is_valid_asset_hash(&hash) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid asset hash format".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     if !state.membership.is_member(campaign_id, query.user_id) {
         return (
             StatusCode::FORBIDDEN,
