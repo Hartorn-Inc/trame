@@ -1,3 +1,48 @@
+//! ============================================================================
+//! CAMPAIGN ROOM ACTOR & IDLE-LEASE HIBERNATION MANAGER (room.rs)
+//! ============================================================================
+//!
+//! PURPOSE:
+//! --------
+//! Isolates each active campaign session into a dedicated single-owner Tokio
+//! actor (`TableRoomActor`) communicating via a bounded MPSC mailbox
+//! (`TableRoomHandle`), eliminating lock contention across concurrent campaigns
+//! while serializing all commands, CSPRNG dice rolls, WAL appends, and per-client
+//! 2.5D BVH visibility projections within a room. `RoomLeaseManager` coordinates
+//! on-demand WAL wake-up and `Idle-Lease` hibernation (`04-RUNTIME-AND-DEDICATED-HOSTING.md`).
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//! -------------------------------
+//!   1. `Single-Writer Actor Serialization`:
+//!      - `TableState`, `seq_id`, and `SeededDiceRoller` are owned exclusively
+//!        by `TableRoomActor` (zero shared mutable locks on table state),
+//!        preventing race conditions between simultaneous player commands.
+//!   2. `Write-Ahead Log Before Fan-Out`:
+//!      - On every valid `ClientEnvelope::SubmitCommand`, `TableRoomActor`
+//!        increments `seq_id` and persists the `WalEntry` (plus periodic
+//!        write-behind `TableStateSnapshot` every `snapshot_interval` commands)
+//!        *before* broadcasting `ServerEnvelope::CommandAccepted` to clients.
+//!   3. `Double-Checked Room Wake-Up`:
+//!      - `RoomLeaseManager::get_or_wake_room` uses a fast read-lock path
+//!        followed by a double-checked write-lock rehydration from `WalStorage`
+//!        so concurrent connection bursts never spawn duplicate actors for the
+//!        same `campaign_id`.
+//!   4. `Zero-Data-Loss Idle-Lease Hibernation`:
+//!      - `sweep_idle_rooms` evicts only rooms with `active_connections == 0`
+//!        whose idle duration (`current_time_ms - last_activity_ms`) meets or
+//!        exceeds `idle_timeout_ms`, flushing a final compacted snapshot before
+//!        terminating the actor loop.
+//!
+//! EXECUTION LIFECYCLE:
+//! --------------------
+//!   `RoomLeaseManager::get_or_wake_room(campaign_id)`
+//!     ├── 1. Check read lock for existing `TableRoomHandle`.
+//!     ├── 2. Acquire write lock, re-check, and call `TableRoomActor::spawn(...)`.
+//!     │    ├── Rehydrate `(TableState, seq_id)` via `recover_table_state`.
+//!     │    └── Spawn `actor.run()` loop on Tokio runtime.
+//!     └── 3. Return cloneable `TableRoomHandle` for client attachment and envelopes.
+//! ============================================================================
+
 use crate::dice::{SeededDiceRoller, project_roll_for_recipient};
 use crate::sync::{
     ClientEnvelope, ServerEnvelope, encode_server_envelope, filter_events_for_recipient,
@@ -12,57 +57,87 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use trame_engine::commands::{CampaignRole, CommandActor, TableState};
 use uuid::Uuid;
 
+/// Errors raised when interacting with a `TableRoomActor` or its underlying `WalStorage`.
 #[derive(Debug, Error)]
 pub enum RoomError {
+    /// The room actor's MPSC mailbox or oneshot reply channel closed unexpectedly.
     #[error("Room actor channel closed")]
     ActorClosed,
+    /// Underlying Write-Ahead Log or snapshot persistence failure.
     #[error("WAL storage error: {0}")]
     Wal(#[from] WalError),
 }
 
+/// Represents a live WebSocket client session attached to a `TableRoomActor`.
 pub struct ConnectedClient {
+    /// Unique per-connection session identifier.
     pub session_id: Uuid,
+    /// Authenticated user identifier.
     pub user_id: Uuid,
+    /// Campaign role (`Gm`, `Player`, or `Spectator`) governing RBAC and state projection.
     pub role: CampaignRole,
+    /// Outbound channel carrying MessagePack-encoded `ServerEnvelope` binary frames (`bytes`) to the socket task.
     pub tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
+/// Internal control messages processed sequentially by `TableRoomActor::run`.
 pub enum RoomActorMessage {
+    /// Registers a newly connected client and pushes an initial role-filtered `StateSnapshot`.
     ConnectClient {
+        /// Client session descriptor and outbound byte channel.
         client: ConnectedClient,
+        /// Oneshot acknowledgment signal once initial snapshot enqueue completes.
         reply: oneshot::Sender<Result<(), RoomError>>,
     },
+    /// Removes a disconnected client session from the room's broadcast table.
     DisconnectClient {
+        /// Session UUID to remove.
         session_id: Uuid,
     },
+    /// Processes an inbound `ClientEnvelope` (command, dice roll, pointer ping, or latency ping).
     HandleEnvelope {
+        /// Originating client session UUID.
         session_id: Uuid,
+        /// Deserialized client wire payload.
         envelope: ClientEnvelope,
+        /// Oneshot completion result.
         reply: oneshot::Sender<Result<(), RoomError>>,
     },
+    /// Queries live telemetry (`seq_id`, connection count, last activity timestamp) for `Idle-Lease` sweeps.
     QueryMetrics {
+        /// Oneshot channel receiving the current `RoomMetrics`.
         reply: oneshot::Sender<RoomMetrics>,
     },
+    /// Flushes a final `TableStateSnapshot` to `WalStorage` and gracefully stops the actor loop.
     Hibernate {
+        /// Oneshot channel receiving the final persisted `seq_id`.
         reply: oneshot::Sender<Result<u64, RoomError>>,
     },
 }
 
+/// Point-in-time operational telemetry for an active `TableRoomActor`.
 #[derive(Debug, Clone, Copy)]
 pub struct RoomMetrics {
+    /// Campaign UUID hosted by the room actor.
     pub campaign_id: Uuid,
+    /// Latest monotonically increasing WAL sequence number (`>= 0`).
     pub seq_id: u64,
+    /// Number of currently connected WebSocket sessions.
     pub active_connections: usize,
+    /// Unix epoch timestamp in milliseconds (`ms`) of the most recent client event or connection change.
     pub last_activity_ms: u64,
 }
 
+/// Cloneable async handle used by HTTP/WebSocket handlers and `RoomLeaseManager` to communicate with a `TableRoomActor`.
 #[derive(Clone)]
 pub struct TableRoomHandle {
+    /// Campaign UUID associated with this room handle.
     pub campaign_id: Uuid,
     tx: mpsc::Sender<RoomActorMessage>,
 }
 
 impl TableRoomHandle {
+    /// Attaches a `ConnectedClient` to the room and triggers an immediate `ServerEnvelope::StateSnapshot` push.
     pub async fn connect_client(&self, client: ConnectedClient) -> Result<(), RoomError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -75,6 +150,7 @@ impl TableRoomHandle {
         reply_rx.await.map_err(|_| RoomError::ActorClosed)?
     }
 
+    /// Notifies the room actor that `session_id` has disconnected.
     pub async fn disconnect_client(&self, session_id: Uuid) -> Result<(), RoomError> {
         self.tx
             .send(RoomActorMessage::DisconnectClient { session_id })
@@ -82,6 +158,7 @@ impl TableRoomHandle {
             .map_err(|_| RoomError::ActorClosed)
     }
 
+    /// Submits a deserialized `ClientEnvelope` from `session_id` to the room actor for authoritative execution.
     pub async fn send_envelope(
         &self,
         session_id: Uuid,
@@ -99,6 +176,7 @@ impl TableRoomHandle {
         reply_rx.await.map_err(|_| RoomError::ActorClosed)?
     }
 
+    /// Queries the room actor's current `RoomMetrics` (`seq_id`, `active_connections`, `last_activity_ms`).
     pub async fn metrics(&self) -> Result<RoomMetrics, RoomError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -108,6 +186,8 @@ impl TableRoomHandle {
         reply_rx.await.map_err(|_| RoomError::ActorClosed)
     }
 
+    /// Commands the room actor to flush a compacted `TableStateSnapshot` and terminate its task,
+    /// returning the final `seq_id`.
     pub async fn hibernate(&self) -> Result<u64, RoomError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -118,6 +198,7 @@ impl TableRoomHandle {
     }
 }
 
+/// Authoritative single-campaign actor owning `TableState`, `SeededDiceRoller`, and WAL sequencing.
 pub struct TableRoomActor {
     campaign_id: Uuid,
     state: TableState,
@@ -132,6 +213,11 @@ pub struct TableRoomActor {
 }
 
 impl TableRoomActor {
+    /// Rehydrates `campaign_id` from `wal` (`recover_table_state`), seeds the room's ChaCha20 CSPRNG,
+    /// and spawns the asynchronous actor loop with a 256-message bounded mailbox.
+    ///
+    /// `snapshot_interval` (clamped to `>= 1`) controls how many accepted commands elapse between
+    /// automatic write-behind snapshots.
     pub fn spawn(
         campaign_id: Uuid,
         wal: Arc<dyn WalStorage>,
@@ -358,6 +444,8 @@ pub struct RoomLeaseManager {
 }
 
 impl RoomLeaseManager {
+    /// Creates a new `RoomLeaseManager` backed by `wal`, taking write-behind snapshots every
+    /// `snapshot_interval` commands and hibernating zero-connection rooms after `idle_timeout_ms` (`ms`).
     pub fn new(wal: Arc<dyn WalStorage>, snapshot_interval: u64, idle_timeout_ms: u64) -> Self {
         Self {
             rooms: RwLock::new(HashMap::new()),
@@ -386,12 +474,14 @@ impl RoomLeaseManager {
         Ok(handle)
     }
 
+    /// Returns the number of campaign rooms currently awake in memory.
     pub async fn active_room_count(&self) -> usize {
         self.rooms.read().await.len()
     }
 
-    /// Sweeps all rooms and hibernates any room with 0 active connections whose idle duration
-    /// exceeds `self.idle_timeout_ms`, flushing a compacted snapshot and freeing RAM.
+    /// Sweeps all rooms and hibernates any room with `0` active connections whose idle duration
+    /// (`current_time_ms - last_activity_ms`) meets or exceeds `self.idle_timeout_ms` (in `ms`),
+    /// flushing a compacted snapshot and freeing RAM.
     pub async fn sweep_idle_rooms(&self, current_time_ms: u64) -> Vec<Uuid> {
         let candidates: Vec<(Uuid, TableRoomHandle)> = {
             let guard = self.rooms.read().await;

@@ -1,6 +1,6 @@
 # TRAME — Ubiquitous Domain Glossary (`GLOSSARY.md`)
 
-All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli`), TypeScript/React packages (`packages/web`, `packages/game-systems/dnd5e`), SQL schemas, WebSocket payloads, and MCP tools MUST use these exact domain terms.
+All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli`), TypeScript/React packages (`packages/web`, `packages/game-systems/dnd5e`), SQL schemas, WebSocket payloads, and MCP tools MUST use these exact domain terms in English.
 
 ---
 
@@ -41,236 +41,170 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **`NoteVisibility`**: 3-tier note access (`PRIVATE` author-only, `PARTY` shared wiki, `DM_ONLY` GM lore with inline `:::dm` and revealable `:::handout` blocks).
 - **`.trame` Archive**: A portable ZIP bundle (`manifest.json`, `database.jsonl`, `notes/`, `assets/`) allowing 1-click full campaign migration between local Docker, `e2-micro`, and Cloud Run + Neon + R2.
 
-- **Definition**: Valeur numérique entière dérivée du score de caractéristique d'un acteur selon la formule standard : `Math.floor((score - 10) / 2)`.
+---
 
-- **Allowed**: `AbilityModifier`, `modificateur de caractéristique`
+## 5. Controlled Technical Terms (ASD-STE100)
 
-- **Avoid**: `bonus de carac`, `stat mod`, `carac bonus`
+### AbilityModifier
+- **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
+- **Allowed**: `AbilityModifier`, `ability modifier`
+- **Avoid**: `stat mod`, `ability bonus`
 
 ### AbilityScore
-
-- **Definition**: Valeur numérique entière représentant le score de base ou effectif d'un acteur pour une caractéristique parmi `str`, `dex`, `con`, `int`, `wis`, `cha`.
-
-- **Allowed**: `AbilityScore`, `score de caractéristique`
-
-- **Avoid**: `stat`, `statistique`, `caractéristique brute`
+- **Definition**: Integer value representing an actor's base or effective score for one of `str`, `dex`, `con`, `int`, `wis`, `cha`.
+- **Allowed**: `AbilityScore`, `ability score`
+- **Avoid**: `stat`, `raw stat`
 
 ### ActiveEffect
-
-- **Definition**: Mutation déclarative appliquée à une propriété numérique ou textuelle d'un acteur selon l'ordre strict des 5 phases (`BASE_FORMULA` -> `ADD` -> `OVERRIDE_CONDITIONAL` -> `MULTIPLY` -> `FINAL_CLAMP`).
-
-- **Allowed**: `ActiveEffect`, `effet actif`
-
+- **Definition**: Declarative mutation applied to a numeric or string actor property following the strict 5-phase order (`BASE_FORMULA` -> `ADD` -> `OVERRIDE_CONDITIONAL` -> `MULTIPLY` -> `FINAL_CLAMP`).
+- **Allowed**: `ActiveEffect`, `active effect`
 - **Avoid**: `buff`, `debuff`, `stat modifier`, `status effect`
 
 ### Actor
-
-- **Definition**: Entité du monde de jeu (personnage-joueur, PNJ ou monstre) possédant un état persistant, des caractéristiques, un inventaire et des effets actifs.
-
-- **Allowed**: `Actor`, `acteur`
-
-- **Avoid**: `personnage`, `entité`, `token`
+- **Definition**: Game-world entity (player character, NPC, or monster) possessing persistent state, ability scores, inventory, and active effects.
+- **Allowed**: `Actor`, `actor`
+- **Avoid**: `character`, `entity`, `token`
 
 ### CampaignHomebrew
-
-- **Definition**: Niveau supérieur de persistance du compendium stockant les entités personnalisées et les surcharges spécifiques à une campagne de jeu, prioritaire sur `INSTANCE_LIBRARY` et `SYSTEM_SRD`.
-
-- **Allowed**: `CampaignHomebrew`, `compendium de campagne`
-
-- **Avoid**: `homebrew local`, `custom campaign data`
+- **Definition**: Top-priority compendium persistence tier storing custom entities and campaign-specific overrides, taking precedence over `INSTANCE_LIBRARY` and `SYSTEM_SRD`.
+- **Allowed**: `CampaignHomebrew`, `campaign homebrew`
+- **Avoid**: `local homebrew`, `custom campaign data`
 
 ### CompendiumResolver
-
-- **Definition**: Composant déterministe résolvant les requêtes de recherche et d'accès aux entités de jeu selon la cascade prioritaire immuable `CAMPAIGN_HOMEBREW` > `INSTANCE_LIBRARY` > `SYSTEM_SRD`.
-
-- **Allowed**: `CompendiumResolver`, `résolveur de compendium`
-
+- **Definition**: Deterministic resolver evaluating entity lookup and search queries across the immutable priority cascade `CAMPAIGN_HOMEBREW` > `INSTANCE_LIBRARY` > `SYSTEM_SRD`.
+- **Allowed**: `CompendiumResolver`, `compendium resolver`
 - **Avoid**: `compendium service`, `entity fetcher`
 
 ### CompendiumTier
-
-- **Definition**: Couche de stockage hiérarchique au sein du compendium identifiée par l'une des valeurs : `SYSTEM_SRD`, `INSTANCE_LIBRARY` ou `CAMPAIGN_HOMEBREW`.
-
-- **Allowed**: `CompendiumTier`, `niveau de compendium`
-
+- **Definition**: Hierarchical storage layer within the compendium identified by `SYSTEM_SRD`, `INSTANCE_LIBRARY`, or `CAMPAIGN_HOMEBREW`.
+- **Allowed**: `CompendiumTier`, `compendium tier`
 - **Avoid**: `compendium layer`, `compendium level`
 
 ### ConcentrationCheckPrompt
-
-- **Definition**: Intention interactive générée par le pipeline de dégâts lorsqu'un acteur subit des dégâts alors qu'il maintient un sort sous concentration, avec un Degré de Difficulté (DD) égal à `Math.max(10, Math.floor(damageTaken / 2))`.
-
-- **Allowed**: `ConcentrationCheckPrompt`, `invite de jet de concentration`
-
+- **Definition**: Interactive prompt emitted by the damage pipeline when a concentrating actor takes damage, with a Difficulty Class equal to `Math.max(10, Math.floor(damageTaken / 2))`.
+- **Allowed**: `ConcentrationCheckPrompt`, `concentration check prompt`
 - **Avoid**: `concentration check`, `concentration save prompt`, `concentration DC`
 
 ### Condition
-
-- **Definition**: État standardisé affectant un acteur (ex: `blinded`, `charmed`, `unconscious`) associé à une durée en rounds et à un déclencheur d'expiration.
-
-- **Allowed**: `Condition`, `état`
-
-- **Avoid**: `statut`, `altération d'état`, `affliction`
+- **Definition**: Standardized state affecting an actor (e.g., `blinded`, `charmed`, `unconscious`) paired with a duration in rounds and an expiration trigger.
+- **Allowed**: `Condition`, `condition`
+- **Avoid**: `status`, `affliction`
 
 ### DamageMitigation
-
-- **Definition**: Application ordonnée des modificateurs de réduction et d'amplification de dégâts selon la séquence stricte : `IMMUNE` (multiplicateur 0), puis `RESISTANT` (multiplicateur 0.5 avec arrondi inférieur), puis `VULNERABLE` (multiplicateur 2).
-
-- **Allowed**: `DamageMitigation`, `atténuation de dégâts`
-
+- **Definition**: Ordered application of damage reduction and amplification modifiers following the strict sequence: `IMMUNE` (multiplier 0), then `RESISTANT` (multiplier 0.5 rounded down), then `VULNERABLE` (multiplier 2).
+- **Allowed**: `DamageMitigation`, `damage mitigation`
 - **Avoid**: `mitigation`, `damage reduction`, `resistance pipeline`
 
 ### DamageType
-
-- **Definition**: Catégorie de dégâts normalisée du SRD 5.1 (`acid`, `bludgeoning`, `cold`, `fire`, `force`, `lightning`, `necrotic`, `piercing`, `poison`, `psychic`, `radiant`, `slashing`, `thunder`).
-
-- **Allowed**: `DamageType`, `type de dégâts`
-
-- **Avoid**: `élément`, `damage category`
+- **Definition**: Normalized SRD 5.1 damage category (`acid`, `bludgeoning`, `cold`, `fire`, `force`, `lightning`, `necrotic`, `piercing`, `poison`, `psychic`, `radiant`, `slashing`, `thunder`).
+- **Allowed**: `DamageType`, `damage type`
+- **Avoid**: `element`, `damage category`
 
 ### DeathSavingThrow
-
-- **Definition**: Jet de sauvegarde d20 sans caractéristique exécuté par un acteur inconscient à 0 PV au début de son tour, cumulant succès (seuil >= 10) et échecs (seuil < 10, double échec sur 1 naturel, reprise à 1 PV sur 20 naturel).
-
-- **Allowed**: `DeathSavingThrow`, `jet de sauvegarde contre la mort`
-
-- **Avoid**: `death save`, `jet de mort`
+- **Definition**: Untyped d20 saving throw rolled by an unconscious actor at 0 HP at the start of their turn, tracking successes (`>= 10`) and failures (`< 10`, 2 failures on natural 1, regain 1 HP on natural 20).
+- **Allowed**: `DeathSavingThrow`, `death saving throw`
+- **Avoid**: `death save`, `dying roll`
 
 ### DerivedDAG
-
-- **Definition**: Graphe orienté acyclique d'expressions mathématiques déclaratives évaluant les propriétés calculées de l'acteur sans cycle ni effet de bord.
-
-- **Allowed**: `derivedDAG`, `DAG dérivé`
-
-- **Avoid**: `formule de calcul`, `stat tree`, `dependency graph`
+- **Definition**: Directed acyclic graph of declarative mathematical expressions evaluating computed actor properties without cycles or side effects.
+- **Allowed**: `derivedDAG`, `DerivedDAG`
+- **Avoid**: `calculation formula`, `stat tree`, `dependency graph`
 
 ### GameSystemPack
-
-- **Definition**: Ensemble standardisé de manifestes déclaratifs, de schémas de données, de helpers métier et de compendiums encapsulant les règles d'un système de jeu de rôle spécifique.
-
-- **Allowed**: `GameSystemPack`, `pack système`
-
+- **Definition**: Standardized bundle of declarative manifests, data schemas, rule helpers, and compendiums encapsulating a tabletop RPG ruleset.
+- **Allowed**: `GameSystemPack`, `game system pack`
 - **Avoid**: `system plugin`, `game module`, `ruleset`
 
 ### InstantDeath
-
-- **Definition**: Règle du SRD 5.1 déclenchant la mort définitive et irréversible d'un acteur lorsque le surplus de dégâts subis après passage à 0 PV est supérieur ou égal à ses PV maximaux (`hp.max`).
-
-- **Allowed**: `InstantDeath`, `mort instantanée`
-
+- **Definition**: SRD 5.1 rule triggering immediate character death when remaining damage after reaching 0 HP equals or exceeds the actor's maximum hit points (`hp.max`).
+- **Allowed**: `InstantDeath`, `instant death`
 - **Avoid**: `massive damage death`, `overkill death`
 
 ### InstanceLibrary
-
-- **Definition**: Niveau intermédiaire de compendium stockant les données de jeu partagées entre les campagnes hébergées sur une même instance TRAME.
-
-- **Allowed**: `InstanceLibrary`, `bibliothèque d'instance`
-
+- **Definition**: Middle compendium tier storing game entities shared across all campaigns hosted on the same TRAME instance.
+- **Allowed**: `InstanceLibrary`, `instance library`
 - **Avoid**: `instance compendium`, `shared library`
 
 ### LongRest
-
-- **Definition**: Période de repos prolongée d'au moins 8 heures restaurant tous les PV, réinitialisant les PV temporaires à 0, restaurant `Math.max(1, Math.floor(hitDiceMax / 2))` dés de vie, réduisant l'épuisement d'un niveau et réinitialisant tous les emplacements de sorts et réserves de ressources.
-
-- **Allowed**: `LongRest`, `repos long`
-
+- **Definition**: Extended rest period of at least 8 hours restoring all HP, resetting temporary HP to 0, restoring `Math.max(1, Math.floor(hitDiceMax / 2))` hit dice, reducing exhaustion by 1 level, and resetting all spell slots and long-rest resource pools.
+- **Allowed**: `LongRest`, `long rest`
 - **Avoid**: `extended rest`, `full rest`
 
 ### ProficiencyBonus
-
-- **Definition**: Bonus numérique entier déterminé par le niveau global du personnage selon la formule déclarative : `Math.floor((level - 1) / 4) + 2`.
-
-- **Allowed**: `ProficiencyBonus`, `bonus de maîtrise`
-
+- **Definition**: Integer bonus determined by overall character level according to `Math.floor((level - 1) / 4) + 2`.
+- **Allowed**: `ProficiencyBonus`, `proficiency bonus`
 - **Avoid**: `prof bonus`, `mastery bonus`
 
 ### ProficiencyRank
-
-- **Definition**: Multiplicateur numérique entier valant 0 (non maîtrisé), 1 (maîtrisé) ou 2 (expertise) appliqué au bonus de maîtrise pour une compétence ou un jet de sauvegarde.
-
-- **Allowed**: `ProficiencyRank`, `rang de maîtrise`
-
+- **Definition**: Integer multiplier of `0` (unproficient), `1` (proficient), or `2` (expertise) applied to the proficiency bonus for a skill or saving throw.
+- **Allowed**: `ProficiencyRank`, `proficiency rank`
 - **Avoid**: `proficiency level`, `mastery rank`
 
 ### ResourcePool
-
-- **Definition**: Compteur numérique borné (`current`, `max`) associé à une fréquence de réinitialisation (`SHORT_REST` ou `LONG_REST`) gérant les capacités limitées d'un acteur.
-
-- **Allowed**: `ResourcePool`, `réserve de ressource`
-
+- **Definition**: Bounded numeric counter (`current`, `max`) paired with a recovery cadence (`SHORT_REST` or `LONG_REST`) tracking limited-use actor features.
+- **Allowed**: `ResourcePool`, `resource pool`
 - **Avoid**: `feature counter`, `ability charge`, `resource tracker`
 
 ### ShortRest
-
-- **Definition**: Période de repos court d'au moins 1 heure permettant la dépense interactive de dés de vie pour regagner des PV, la récupération des emplacements de magie de pacte et la réinitialisation des réserves de ressources configurées sur `SHORT_REST`.
-
-- **Allowed**: `ShortRest`, `repos court`
-
+- **Definition**: Rest period of at least 1 hour allowing interactive hit dice expenditure to regain HP, recovery of Pact Magic slots, and reset of `SHORT_REST` resource pools.
+- **Allowed**: `ShortRest`, `short rest`
 - **Avoid**: `quick rest`, `brief rest`
 
 ### SystemSRD
-
-- **Definition**: Données de référence de base du système de jeu issues du System Reference Document 5.1 sous licence CC-BY-4.0, distribuées en lecture seule et intégrées au pack système.
-
-- **Allowed**: `SystemSRD`, `SRD système`
-
+- **Definition**: Read-only baseline game reference data from the CC-BY-4.0 System Reference Document 5.1 bundled with the game system pack.
+- **Allowed**: `SystemSRD`, `system SRD`
 - **Avoid**: `core compendium`, `builtin srd`
 
 ### TempHP
-
-- **Definition**: Points de vie temporaires non cumulatifs servant de réserve d'absorption prioritaire avant déduction des dégâts sur les points de vie courants de l'acteur.
-
-- **Allowed**: `TempHP`, `PV temporaires`
-
-- **Avoid**: `temporary hit points`, `bouclier de PV`
+- **Definition**: Non-cumulative temporary hit points acting as a priority absorption buffer before damage is subtracted from current hit points.
+- **Allowed**: `TempHP`, `temporary hit points`
+- **Avoid**: `HP shield`, `bonus HP`
 
 ### TurnTrigger
+- **Definition**: Combat phase evaluation point (`ROUNDS`, `TURNS_START`, `TURNS_END`) governing when active condition durations decrement.
+- **Allowed**: `TurnTrigger`, `turn trigger`
+- **Avoid**: `initiative phase`, `round tick`
 
-- **Definition**: Point d'ancrage temporel dans le cycle d'un tour de combat (`START_OF_TURN` ou `END_OF_TURN`) déclenchant l'évaluation des jets de sauvegarde et la décrémentation des durées d'états.
-
-- **Allowed**: `TurnTrigger`, `déclencheur de tour`
-
-- **Avoid**: `phase d'initiative`, `round tick`
-
-### Companion Mode (Mode Compagnon)
-- **Definition**: Interface utilisateur tactile allégée dédiée aux terminaux mobiles et tablettes dont la largeur d'affichage est strictement inférieure à 768 pixels, désactivant le moteur de rendu WebGL pour préserver l'autonomie et les performances.
+### Companion Mode
+- **Definition**: Lightweight touch-friendly UI dedicated to mobile and tablet viewports strictly narrower than 768 pixels, disabling the WebGL rendering engine to preserve battery life and performance.
 - **Avoid**: Mobile view, Lite app, Responsive fallback, Phone skin.
 
 ### CRDT (Conflict-free Replicated Data Type)
-- **Definition**: Structure de données répliquée sans conflit (Yjs côté client, `yrs` côté serveur) garantissant la convergence mathématique d'un document texte partagé entre plusieurs pairs sans verrou distribué.
+- **Definition**: Conflict-free replicated data structure (Yjs on client, `yrs` on server) guaranteeing mathematical convergence of a shared text document across peers without distributed locks.
 - **Avoid**: Real-time sync engine, Operational Transform, Delta merge.
 
-### Directive Block (Bloc Directive)
-- **Definition**: Bloc de syntaxe Markdown délimité par des triples deux-points `:::nom{cle="valeur"}` interprété par le compilateur AST pour encapsuler des éléments interactifs ou filtrés (`:::handout`, `:::dm`).
+### Directive Block
+- **Definition**: Markdown syntax block delimited by triple colons `:::name{key="value"}` parsed by the AST compiler to encapsulate interactive or RBAC-filtered blocks (`:::handout`, `:::dm`).
 - **Avoid**: Shortcode, Custom tag, Special markup, Admonition.
 
-### Handout (Document à Révéler)
-- **Definition**: Artefact textuel ou visuel secret rédigé par le Maître de Jeu dans une note, possédant un identifiant unique, conservé secret jusqu'à son action explicite de révélation à l'ensemble des joueurs.
+### Handout
+- **Definition**: Secret textual or visual artifact authored by the Game Master inside a note, possessing a unique identifier and kept hidden until explicitly revealed to all players.
 - **Avoid**: Secret clue, Player reveal, Clue card, Public paper.
 
-### Handout Reveal Modal (Modal de Révélation)
-- **Definition**: Composant d'interface s'affichant en superposition plein écran sur tous les clients connectés lorsqu'un Maître de Jeu diffuse l'événement de révélation d'un Handout.
+### Handout Reveal Modal
+- **Definition**: Full-screen overlay component displayed on all connected clients when a Game Master broadcasts a Handout reveal event.
 - **Avoid**: Popup, Dialog window, Handout lightbox, Alert box.
 
 ### MobileCompanionLayout
-- **Definition**: Coquille d'interface racine montée lorsque la largeur d'écran est strictement inférieure à 768 pixels, intégrant une barre de navigation inférieure à quatre onglets tactiles (`Sheet`, `Dice`, `Inventory`, `Journal`).
+- **Definition**: Root UI shell mounted when viewport width is strictly less than 768 pixels, providing a bottom navigation bar with four touch tabs (`Sheet`, `Dice`, `Inventory`, `Journal`).
 - **Avoid**: MobileShell, SmallScreenLayout, TabContainer.
 
-### Party Journal (Journal de Groupe)
-- **Definition**: Document textuel ou registre centralisé de notes partagé entre tous les participants d'une campagne, archivant de manière permanente les événements et Handouts révélés.
+### Party Journal
+- **Definition**: Shared campaign notebook accessible to all campaign participants, permanently archiving revealed events and Handouts.
 - **Avoid**: Group log, Campaign diary, Shared notebook, Quest log.
 
-### Public Snapshot (Instantané Public)
-- **Definition**: Représentation textuelle Markdown assainie et purgée de tout bloc secret (`:::dm` et `:::handout{revealed="false"}`), diffusée par `trame-server` aux clients non-MJ via WebSocket.
+### Public Snapshot
+- **Definition**: Sanitized Markdown text representation stripped of all secret blocks (`:::dm` and `:::handout{revealed="false"}`), broadcast by `trame-server` to non-GM clients over WebSocket.
 - **Avoid**: Sanitized content, Public markdown, Filtered copy.
 
-### Session Timeline (Chronologie de Session)
-- **Definition**: Flux d'événements append-only ordonné de manière strictement croissante par `seq_id`, indexé par `campaign_id` et `session_num`, retraçant l'ensemble des actions vérifiables d'une séance de jeu.
+### Session Timeline
+- **Definition**: Append-only event stream strictly ordered by ascending `seq_id` and indexed by `campaign_id` and `session_num`, recording all verifiable actions of a game session.
 - **Avoid**: Game history, Event stream, Activity feed, Audit trail.
 
 ### TableCanvas
-- **Definition**: Composant applicatif lourd montant le viewport de table virtuelle, initialisant l'instance PixiJS, les nuanceurs d'éclairage dynamique et les Framebuffer Objects (FBO) WebGL.
+- **Definition**: Heavyweight application component mounting the virtual tabletop viewport, initializing the PixiJS instance, dynamic lighting shaders, and WebGL Framebuffer Objects (FBO).
 - **Avoid**: GameMap, BoardView, PixiContainer, CanvasRenderer.
 
-### Wiki Autocomplete (Complétion Wiki)
-- **Definition**: Mécanisme de suggestion textuelle déclenché par la saisie de doubles crochets `[[` permettant d'insérer des hyperliens internes vers des acteurs, lieux ou objets du compendium.
+### Wiki Autocomplete
+- **Definition**: Text suggestion mechanism triggered by typing double brackets `[[` to insert internal hyperlinks referencing actors, locations, or compendium items.
 - **Avoid**: Wiki link popup, Entity suggester, Smart mention, Quick search.

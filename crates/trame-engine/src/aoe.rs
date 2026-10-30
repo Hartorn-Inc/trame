@@ -1,42 +1,94 @@
-//! Spell & Ability Area of Effect (AoE) projection, BVH wall-clipping,
-//! and 4-mode grid discretization (`01-TABLE-SPEC.md`).
+//! ============================================================================
+//! AREA OF EFFECT (AOE) PROJECTION & GRID DISCRETIZER (aoe.rs)
+//! ============================================================================
+//!
+//! PURPOSE:
+//! --------
+//! Evaluates 2.5D spell and ability Area of Effect templates (`Sphere`,
+//! `Cylinder`, `Cone`, `Cube`, `Line`), clips their propagation against
+//! vision/effect-blocking `WallSegment` primitives via `Bvh2D`, and discretizes
+//! the resulting area into affected grid squares (`GridCell`) and auto-targeted
+//! tokens (`TokenSpatialRef`) across four configurable tabletop ruleset modes.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//! -------------------------------
+//!   1. `BVH Wall-Occlusion Clipping`:
+//!      - When `stops_at_walls == true`, every candidate point inside the raw
+//!        analytic shape must also have an unobstructed 2.5D line-of-sight ray
+//!        from `(origin, origin_elevation_ft + 2.5)` to `(pt, point_elevation_ft + 2.5)`
+//!        so explosions and breath weapons do not pass through solid walls.
+//!   2. `Four-Mode Grid Discretization`:
+//!      - Supports `CenterPoint` (1 sample), `FiftyPercent` (5x5 = 25 sub-grid
+//!        samples requiring `>= 13` hits), `AnyIntersection` (center + 4 inset
+//!        corners), and `TokenEuclidean` (gridless direct footprint evaluation).
+//!   3. `Bounded Candidate Cell Window`:
+//!      - `evaluate_targets` bounds grid iteration strictly to the AABB enclosing
+//!        `max_extent_px` around `origin` (`min_col..=max_col`, `min_row..=max_row`),
+//!        preventing unbounded loops on large maps.
+//!
+//! EXECUTION LIFECYCLE:
+//! --------------------
+//!   `AoeTemplate::evaluate_targets(tokens, cell_size_px, feet_per_cell, bvh)`
+//!     ├── 1. Compute bounding grid window `[min_col..=max_col, min_row..=max_row]` from shape extent.
+//!     ├── 2. Test each candidate `GridCell` via `affects_grid_cell(...)`:
+//!     │    └── Sample cell points according to `GridDiscretizationMode` & call `contains_point(...)`.
+//!     └── 3. Match `TokenSpatialRef` footprints against affected cells (or direct sample points in `TokenEuclidean`).
+//! ============================================================================
 
 use crate::geometry::{Bvh2D, Point2D, token_sample_points};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Geometric primitive describing the unclipped 2.5D volume of an Area of Effect.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "shape", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AoeShape {
+    /// 3D spherical volume centered at `(origin, origin_elevation_ft)`.
     Sphere {
+        /// Sphere radius in feet (`ft`, `>= 0.0`).
         radius_ft: f64,
     },
+    /// Upright cylindrical volume extending from `origin_elevation_ft` to `origin_elevation_ft + height_ft`.
     Cylinder {
+        /// Horizontal cylinder radius in feet (`ft`, `>= 0.0`).
         radius_ft: f64,
+        /// Vertical height of the cylinder in feet (`ft`, `>= 0.0`).
         height_ft: f64,
     },
+    /// Angular sector emanating from `origin` along `direction_deg`.
     Cone {
+        /// Maximum reach of the cone in feet (`ft`, `>= 0.0`).
         length_ft: f64,
+        /// Full aperture angle of the cone in degrees (`deg`, e.g. `53.13` or `60.0`).
         angle_deg: f64,
+        /// Aiming direction angle in degrees (`deg`, `0.0` = +X axis, increasing clockwise/downward).
         direction_deg: f64,
     },
+    /// Axis-aligned or rotated cubic volume centered on `origin`.
     Cube {
+        /// Edge length of the cube in feet (`ft`, `>= 0.0`).
         side_ft: f64,
+        /// Planar rotation angle in degrees (`deg`).
         rotation_deg: f64,
     },
+    /// Oriented rectangular beam starting at `origin` and extending `length_ft` along `direction_deg`.
     Line {
+        /// Total length of the line in feet (`ft`, `>= 0.0`).
         length_ft: f64,
+        /// Full width of the line perpendicular to `direction_deg` in feet (`ft`, `>= 0.0`).
         width_ft: f64,
+        /// Aiming direction angle in degrees (`deg`).
         direction_deg: f64,
     },
 }
 
+/// Ruleset selector determining how continuous geometric shapes map onto discrete grid squares (`01-TABLE-SPEC.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum GridDiscretizationMode {
     /// Standard 5e DMG: cell is affected if its center point `(cx, cy)` is inside the clipped shape.
     CenterPoint,
-    /// XGE / Tactical: cell is affected if >= 50% of its area (5x5 sub-grid = 25 samples) is inside.
+    /// XGE / Tactical: cell is affected if >= 50% of its area (5x5 sub-grid = 25 samples, `>= 13` hits) is inside.
     FiftyPercent,
     /// Generous: cell is affected if its center or any of its 4 corners is inside.
     AnyIntersection,
@@ -44,36 +96,55 @@ pub enum GridDiscretizationMode {
     TokenEuclidean,
 }
 
+/// Complete specification of a projected or persistent Area of Effect on the tabletop.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AoeTemplate {
+    /// Unique identifier for this AoE instance.
     pub id: Uuid,
+    /// Origin anchor coordinate on the canvas in pixels (`px`).
     pub origin: Point2D,
+    /// Vertical elevation of the AoE origin in feet (`ft`) relative to table zero.
     pub origin_elevation_ft: f64,
+    /// Geometric shape and dimensions of the AoE.
     pub shape: AoeShape,
+    /// When `true`, clips propagation rays against vision-blocking walls in the `Bvh2D`.
     pub stops_at_walls: bool,
+    /// Grid discretization rule used to classify affected cells and tokens.
     pub discretization: GridDiscretizationMode,
+    /// Optional token ID of the spellcaster concentrating on this persistent zone.
     pub concentration_caster_id: Option<Uuid>,
 }
 
+/// Discrete 2D grid coordinate `(col, row)` indexing a single tabletop square.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GridCell {
+    /// Zero-based horizontal column index (can be negative off-canvas).
     pub col: i32,
+    /// Zero-based vertical row index (can be negative off-canvas).
     pub row: i32,
 }
 
+/// Lightweight spatial projection of a token used during AoE target evaluation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenSpatialRef {
+    /// Unique identifier of the token.
     pub id: Uuid,
+    /// Top-left canvas coordinate of the token's bounding footprint in pixels (`px`).
     pub top_left: Point2D,
+    /// Horizontal footprint width in grid cells (`>= 1`, accounting for squeezing).
     pub grid_w: u8,
+    /// Vertical footprint height in grid cells (`>= 1`, accounting for squeezing).
     pub grid_h: u8,
+    /// Base elevation of the token's feet in feet (`ft`).
     pub elevation_ft: f64,
+    /// Vertical stature of the token in feet (`ft`).
     pub height_ft: f64,
 }
 
 impl AoeTemplate {
-    /// Checks whether a single 2D point (at `point_elevation_ft`) lies inside the unclipped geometric shape
-    /// AND (if `stops_at_walls = true`) has an unobstructed BVH path from `self.origin`.
+    /// Checks whether a single 2D point `pt` (in pixels, at `point_elevation_ft` in feet) lies
+    /// inside the unclipped geometric shape AND (if `stops_at_walls == true`) has an unobstructed
+    /// 2.5D BVH line-of-sight path from `self.origin`.
     pub fn contains_point(
         &self,
         pt: Point2D,
@@ -157,7 +228,8 @@ impl AoeTemplate {
         }
     }
 
-    /// Evaluates whether a grid cell `(col, row)` is affected under `self.discretization`.
+    /// Evaluates whether a single grid cell `(col, row)` is affected under `self.discretization`,
+    /// given `cell_size_px` (in pixels) and `feet_per_cell` (in feet).
     pub fn affects_grid_cell(
         &self,
         cell: &GridCell,
@@ -208,7 +280,8 @@ impl AoeTemplate {
         }
     }
 
-    /// Computes all affected grid cells and auto-detected target token IDs within the AoE.
+    /// Computes all affected `GridCell` coordinates and auto-detected target token IDs (`Vec<Uuid>`)
+    /// within the clipped AoE template.
     pub fn evaluate_targets(
         &self,
         tokens: &[TokenSpatialRef],
