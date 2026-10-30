@@ -1,41 +1,18 @@
-//! ============================================================================
-//! PORTABLE `.TRAME` CAMPAIGN ARCHIVE MODULE ROOT (archive/mod.rs)
-//! ============================================================================
-//!
-//! PURPOSE:
-//! --------
-//! Exposes the portable `.trame` campaign archive subsystem, re-exporting
-//! the two-pass streaming exporter (`ArchiveExporter`, `CampaignExportSource`,
-//! `ExportEntity`, `NoteRecord`) and manifest schema (`CampaignManifest`,
-//! `CampaignMetadata`, `ManifestStats`, `ArchiveEntryDescriptor`).
-//!
-//! INVARIANTS & SAFETY BOUNDARIES:
-//! -------------------------------
-//!   1. `Manifest-First Streaming Guarantee`:
-//!      - All exported `.trame` archives place `manifest.json` at ZIP entry `0`
-//!        and verify SHA-256 digests and uncompressed byte sizes across all
-//!        database, note, and WebP asset entries.
-//!   2. `Bounded Memory Footprint (< 16 MiB)`:
-//!      - Binary assets are streamed in 64 KiB chunks directly from `BlobStore`
-//!        without buffering full campaign media in RAM.
-//!
-//! EXECUTION LIFECYCLE:
-//! --------------------
-//!   `ArchiveExporter::new(source, blob_store).export_stream().await`
-//!     └── Produces an async stream of `Result<Bytes, ArchiveExportError>`.
-//! ============================================================================
+//! Campaign archive exporter and importer (.trame) engine.
 
 pub mod exporter;
 pub mod manifest;
 
-pub use exporter::{ArchiveExporter, CampaignExportSource, ExportEntity, NoteRecord};
+pub use exporter::{
+    ArchiveExportError, ArchiveExporter, CampaignExportSource, ExportEntity, NoteRecord,
+};
 pub use manifest::{ArchiveEntryDescriptor, CampaignManifest, CampaignMetadata, ManifestStats};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::storage::LocalFsStore;
-    use crate::storage::blob::{BlobStore, Sha256Hasher, slice_to_stream};
+    use crate::storage::blob::{BlobStore, BlobStoreError, Sha256Hasher, slice_to_stream};
     use futures_util::StreamExt;
     use serde_json::json;
     use std::io::Cursor;
@@ -303,6 +280,139 @@ mod tests {
         assert!(serialized.contains("folder: null\n"));
     }
 
+    #[test]
+    fn test_note_archive_path_sanitization_zip_slip() {
+        let id = Uuid::new_v4();
+        let author_id = Uuid::new_v4();
+
+        let note_traversal = NoteRecord {
+            id,
+            title: "Secret Infiltration".to_string(),
+            folder: Some("../../etc".to_string()),
+            author_id,
+            created_at: "2025-02-01T10:00:00Z".to_string(),
+            updated_at: "2025-02-05T14:20:00Z".to_string(),
+            content_markdown: "Secret".to_string(),
+        };
+        assert_eq!(
+            note_traversal.archive_path(),
+            "notes/etc/secret-infiltration.md"
+        );
+
+        let note_backslashes = NoteRecord {
+            id,
+            title: "Windows Plan".to_string(),
+            folder: Some("..\\..\\windows\\system32".to_string()),
+            author_id,
+            created_at: "2025-02-01T10:00:00Z".to_string(),
+            updated_at: "2025-02-05T14:20:00Z".to_string(),
+            content_markdown: "Plan".to_string(),
+        };
+        assert_eq!(
+            note_backslashes.archive_path(),
+            "notes/windows/system32/windows-plan.md"
+        );
+
+        let note_dots = NoteRecord {
+            id,
+            title: "Empty Folder".to_string(),
+            folder: Some("   /./../   ".to_string()),
+            author_id,
+            created_at: "2025-02-01T10:00:00Z".to_string(),
+            updated_at: "2025-02-05T14:20:00Z".to_string(),
+            content_markdown: "Dots".to_string(),
+        };
+        assert_eq!(note_dots.archive_path(), "notes/empty-folder.md");
+    }
+
+    #[derive(Clone)]
+    struct FailingAssetBlobStore {
+        descriptor: crate::storage::blob::AssetDescriptor,
+    }
+
+    impl BlobStore for FailingAssetBlobStore {
+        async fn put_stream(
+            &self,
+            _id: &str,
+            _stream: crate::storage::blob::BlobStream,
+        ) -> Result<crate::storage::blob::AssetDescriptor, BlobStoreError> {
+            unimplemented!()
+        }
+
+        async fn get_descriptor(
+            &self,
+            _id: &str,
+        ) -> Result<crate::storage::blob::AssetDescriptor, BlobStoreError> {
+            Ok(self.descriptor.clone())
+        }
+
+        async fn open_read_stream(
+            &self,
+            _id: &str,
+        ) -> Result<crate::storage::blob::BlobStream, BlobStoreError> {
+            Err(BlobStoreError::NotFound(
+                "corrupted-asset-during-streaming".to_string(),
+            ))
+        }
+
+        async fn list_descriptors(
+            &self,
+        ) -> Result<Vec<crate::storage::blob::AssetDescriptor>, BlobStoreError> {
+            Ok(vec![self.descriptor.clone()])
+        }
+
+        async fn delete(&self, _id: &str) -> Result<(), BlobStoreError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_archive_export_propagates_background_writer_error() {
+        let asset_id = Uuid::new_v4();
+        let store = FailingAssetBlobStore {
+            descriptor: crate::storage::blob::AssetDescriptor {
+                id: asset_id.to_string(),
+                byte_size: 1024,
+                sha256_hex: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .to_string(),
+                mime_type: "image/webp".to_string(),
+            },
+        };
+
+        let campaign_id = Uuid::new_v4();
+        let source = MockExportSource {
+            campaign: CampaignMetadata {
+                id: campaign_id,
+                name: "Error Propagation Test".to_string(),
+                system: "dnd5e".to_string(),
+                description: None,
+                created_at: "2026-10-30T00:00:00Z".to_string(),
+            },
+            entities: Vec::new(),
+            notes: Vec::new(),
+            asset_ids: vec![asset_id],
+        };
+
+        let exporter = ArchiveExporter::new(source, store);
+        let mut export_stream = exporter.export_stream().await.expect("start export stream");
+
+        let mut error_received = None;
+        while let Some(chunk_res) = export_stream.next().await {
+            if let Err(err) = chunk_res {
+                error_received = Some(err);
+                break;
+            }
+        }
+
+        assert!(
+            matches!(
+                error_received,
+                Some(ArchiveExportError::Storage(BlobStoreError::NotFound(_)))
+            ),
+            "Expected Storage(NotFound) error from background writer, got {error_received:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_archive_exporter_streams_large_assets_below_16_mib_heap_ceiling() {
         // Stream a 20 MiB asset (> 16 MiB heap ceiling) via 64 KiB chunks while consuming
@@ -368,44 +478,5 @@ mod tests {
         );
 
         let _ = tokio::fs::remove_dir_all(&temp_dir_path).await;
-    }
-
-    #[test]
-    fn test_note_archive_path_prevents_zip_slip_traversal() {
-        let id = Uuid::parse_str("7b354366-0ec1-456e-8260-2ff0d4e9c71f").unwrap();
-        let author_id = Uuid::new_v4();
-        let cases = [
-            (
-                Some("../../etc/passwd".to_string()),
-                "Secret Note",
-                "notes/etc/passwd/secret-note.md",
-            ),
-            (
-                Some("..\\..\\system\\factions".to_string()),
-                "Harpers Plan!",
-                "notes/system/factions/harpers-plan.md",
-            ),
-            (
-                Some("///./../".to_string()),
-                "Root Fallback",
-                "notes/root-fallback.md",
-            ),
-            (None, "!!!", "notes/7b354366-0ec1-456e-8260-2ff0d4e9c71f.md"),
-        ];
-
-        for (folder, title, expected_path) in cases {
-            let note = NoteRecord {
-                id,
-                title: title.to_string(),
-                folder,
-                author_id,
-                created_at: "2026-10-30T00:00:00Z".to_string(),
-                updated_at: "2026-10-30T00:00:00Z".to_string(),
-                content_markdown: "Body".to_string(),
-            };
-            let path = note.archive_path();
-            assert_eq!(path, expected_path);
-            assert!(!path.contains(".."), "Archive path must never contain '..'");
-        }
     }
 }

@@ -1,36 +1,4 @@
-//! ============================================================================
-//! TWO-PASS STREAMING `.TRAME` CAMPAIGN ARCHIVE EXPORTER (exporter.rs)
-//! ============================================================================
-//!
-//! PURPOSE:
-//! --------
-//! Implements the two-pass streaming PKWARE ZIP exporter (`ArchiveExporter`)
-//! that compiles `manifest.json` with SHA-256 digests and exact uncompressed
-//! byte sizes before streaming `manifest.json`, `database.jsonl`, `notes/*.md`,
-//! and `assets/*.webp` through a bounded 64 KiB duplex window.
-//!
-//! INVARIANTS & SAFETY BOUNDARIES:
-//! -------------------------------
-//!   1. `Manifest-First PKWARE Entry Ordering`:
-//!      - `manifest.json` is unconditionally written as the very first ZIP entry
-//!        (`index 0`) so streaming importers can verify digests before unpacking
-//!        payload entries.
-//!   2. `Zip-Slip Directory Traversal Prevention`:
-//!      - `NoteRecord::archive_path` normalizes path separators and strips `.`
-//!        and `..` segments through `slugify`, guaranteeing all note entries
-//!        remain strictly inside `notes/`.
-//!   3. `Deterministic Background Error Propagation & < 16 MiB Heap Ceiling`:
-//!      - `export_stream` awaits `err_rx.await` upon reader EOF so any background
-//!        storage or ZIP writer failure is reliably surfaced to the consumer
-//!        stream while keeping in-flight buffers bounded to `CHUNK_SIZE` (64 KiB).
-//!
-//! EXECUTION LIFECYCLE:
-//! --------------------
-//!   `ArchiveExporter::export_stream()`
-//!     ├── 1. Pass 1 (`compile_manifest`): compute SHA-256 and byte sizes for all entries.
-//!     ├── 2. Spawn background `write_archive` task writing into a bounded duplex stream.
-//!     └── 3. Yield 64 KiB `Bytes` chunks to caller and propagate any task error via `err_rx`.
-//! ============================================================================
+//! Two-pass streaming .trame campaign archive exporter.
 
 use super::manifest::{ArchiveEntryDescriptor, CampaignManifest, CampaignMetadata, ManifestStats};
 use crate::storage::blob::{BlobStore, BlobStoreError, CHUNK_SIZE, Sha256Hasher};
@@ -80,7 +48,6 @@ pub struct NoteRecord {
 
 impl NoteRecord {
     /// Computes the archive path for this note, e.g. `notes/factions/harpers.md` or `notes/overview.md`.
-    /// Normalizes path separators and strips `.` and `..` traversal segments to prevent Zip Slip (CWE-22).
     pub fn archive_path(&self) -> String {
         let slug = slugify(&self.title);
         let filename = if slug.is_empty() {
@@ -88,20 +55,20 @@ impl NoteRecord {
         } else {
             format!("{slug}.md")
         };
-        let sanitized_segments: Vec<String> = self
-            .folder
-            .as_deref()
-            .unwrap_or("")
-            .replace('\\', "/")
-            .split('/')
-            .filter(|s| !s.is_empty() && *s != "." && *s != "..")
-            .map(slugify)
-            .filter(|s| !s.is_empty())
-            .collect();
-        if sanitized_segments.is_empty() {
-            format!("notes/{filename}")
-        } else {
-            format!("notes/{}/{filename}", sanitized_segments.join("/"))
+        match &self.folder {
+            Some(folder) => {
+                let clean_segments: Vec<&str> = folder
+                    .split(['/', '\\'])
+                    .map(str::trim)
+                    .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
+                    .collect();
+                if clean_segments.is_empty() {
+                    format!("notes/{filename}")
+                } else {
+                    format!("notes/{}/{filename}", clean_segments.join("/"))
+                }
+            }
+            None => format!("notes/{filename}"),
         }
     }
 
