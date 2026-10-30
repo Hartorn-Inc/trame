@@ -161,8 +161,8 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Avoid**: `HP shield`, `bonus HP`
 
 ### TurnTrigger
-- **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
-- **Allowed**: `AbilityModifier`, `ability modifier`
-- **Avoid**: `stat mod`, `ability bonus`
+- **Definition**: Interface utilisateur tactile allégée dédiée aux terminaux mobiles et tablettes dont la largeur d'affichage est strictement inférieure à 768 pixels, désactivant le moteur de rendu WebGL pour préserver l'autonomie et les performances.
+- **Allowed**: `TurnTrigger`, `turn trigger`
+- **Avoid**: Mobile view, Lite app, Responsive fallback, Phone skin.
 
-### AbilityScore
+### CRDT (Conflict-free Replicated Data Type)
