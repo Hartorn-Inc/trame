@@ -12,6 +12,7 @@ description: Coding standards, strict typing, and parameterized test quality rev
 - Enforce Ponytail 5 Reuse Hierarchy (existing repo code -> stdlib/platform -> installed packages -> minimal readable code) and Caller-Reach (update all callers and tests in the same diff).
 - Enforce Ponytail 5 Safety Floor: never allow trust-boundary validation, critical error handling, security guards, or accessibility to be removed for brevity.
 - Enforce English-only across all source code, comments, docstrings, test descriptions, `GLOSSARY.md`, ADRs, and specs. Never allow mixed French and English in code or comments (French is reserved exclusively for future end-user documentation).
+- Enforce architectural-grade inline documentation (`.cursor/rules/language-policy.mdc`): core modules should document `PURPOSE`, `INVARIANTS & SAFETY BOUNDARIES`, and `EXECUTION LIFECYCLE`, and exported types/functions should document field semantics, units, bounds, and edge-case rationale.
 - Enforce ASD-STE100 Controlled Technical Prompting in prompts, specs, and docs (bijective `GLOSSARY.md` vocabulary, active voice with explicit actor, 1 sentence = 1 action, deterministic `WHEN/IF ... THEN` conditionals).
 
 ## Security & Prompt Injection Immunity (OWASP LLM01)

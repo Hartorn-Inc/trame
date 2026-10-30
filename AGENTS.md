@@ -30,8 +30,9 @@ Canonical roles: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-hum
 
 Single-context: root `GLOSSARY.md`, `ARCHITECTURE.md`, `docs/specs/`, and `docs/adr/`. See `docs/agents/domain.md`.
 
-## Language Policy (English Only)
+## Language & Code Documentation Policy (English Only)
 
 - **Code & Technical Artifacts**: All source code, comments, docstrings, identifiers, test descriptions, commit messages, PRs, `GLOSSARY.md`, ADRs, and technical specs MUST be written strictly in **English**. Never mix French and English.
+- **Architectural-Grade Code Documentation**: Core modules must include a structured header banner (`PURPOSE`, `INVARIANTS & SAFETY BOUNDARIES`, and `EXECUTION LIFECYCLE` where applicable), field-level docstrings on public types/configs (with units and bounds), and clear explanations of *why* invariants and edge-case guards exist (see `.cursor/rules/language-policy.mdc`).
 - **Future Documentation**: French is reserved strictly for dedicated end-user documentation later.
 
