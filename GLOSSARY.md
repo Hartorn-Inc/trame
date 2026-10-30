@@ -165,6 +165,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed**: `TurnTrigger`, `turn trigger`
 - **Avoid**: `initiative phase`, `round tick`
 
+## Terms
+
+### Actor
+* Definition: An entity in the game world that possesses attributes, inventory, notes, and visual representations. The server persists actors in the database and streams actor state changes to connected clients.
+* Avoid: character, entity, mob, NPC.
+
 ### Archive
 * Definition: A compressed ZIP container file with the `.trame` extension. The file packages `manifest.json`, `database.jsonl`, notes in Markdown format, and assets in WebP format for campaign portability.
 * Avoid: package, bundle, zip file, export file.
