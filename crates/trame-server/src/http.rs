@@ -24,6 +24,15 @@
 //!        unconditionally invokes `disconnect_client(session_id)` and aborts the
 //!        outbound forwarding task so `RoomLeaseManager` accurately tracks zero
 //!        active connections for `Idle-Lease` hibernation.
+//!
+//! EXECUTION LIFECYCLE:
+//! --------------------
+//!   `GET /ws/campaigns/{campaign_id}?user_id=...&role=...`
+//!     ├── 1. Resolve `CampaignRole` (`Gm`, `Spectator`, or default `Player`).
+//!     ├── 2. Upgrade HTTP connection to WebSocket & call `mgr.get_or_wake_room(campaign_id)`.
+//!     ├── 3. Register `ConnectedClient` (triggers immediate `StateSnapshot` binary frame).
+//!     ├── 4. Spawn outbound `send_task` forwarding `rx` bytes & read inbound `Message::Binary` frames.
+//!     └── 5. On disconnect, remove client session & abort `send_task`.
 //! ============================================================================
 
 use crate::assets::store::{AssetStore, AssetStoreError, PRESIGNED_URL_DEFAULT_TTL};

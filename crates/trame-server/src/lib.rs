@@ -2,7 +2,8 @@
     async_fn_in_trait,
     clippy::unnecessary_sort_by,
     clippy::too_many_arguments,
-    clippy::type_complexity
+    clippy::type_complexity,
+    clippy::doc_lazy_continuation
 )]
 
 //! ============================================================================
@@ -35,6 +36,14 @@
 //!      - Every accepted `TrameCommand` increments `seq_id` and appends a
 //!        `WalEntry` prior to broadcasting `ServerEnvelope::CommandAccepted`,
 //!        ensuring zero state loss across room hibernation or process restarts.
+//!
+//! EXECUTION LIFECYCLE:
+//! --------------------
+//!   `Client WebSocket Frame (MessagePack) / HTTP Request`
+//!     ├── 1. `http::ws_campaign_handler` upgrades connection & wakes `TableRoomActor`.
+//!     ├── 2. `room::TableRoomActor` validates & applies `ClientEnvelope` command/roll.
+//!     ├── 3. `wal::WalStorage` persists `WalEntry` & periodic `TableStateSnapshot`.
+//!     └── 4. `sync::project_state_for_recipient` strips hidden state per recipient socket.
 //! ============================================================================
 
 pub mod assets;
