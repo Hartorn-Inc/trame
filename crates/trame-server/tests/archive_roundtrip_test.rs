@@ -125,8 +125,6 @@ async fn archive_export_import_roundtrip_and_remap_ids_integration() {
         }],
         asset_ids: vec![asset_id],
     };
-        asset_ids: vec![asset_id],
-    };
 
     let exporter = ArchiveExporter::new(source, src_blobs);
     let mut export_stream = exporter.export_stream().await.expect("start export");
