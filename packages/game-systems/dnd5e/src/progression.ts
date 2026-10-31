@@ -404,31 +404,7 @@ export function applyLevelUp(
   clone.attributes.hitDiceMax += 1;
   clone.attributes.hitDiceCurrent += 1;
 
-  // 8. Calculate and apply HP increase
-  const conModifier = Math.floor((clone.abilities.con.score - 10) / 2);
-  let hpGain: number;
-  if (hitPointsMode === "fixed") {
-    hpGain = Math.max(
-      1,
-      Math.floor(clone.attributes.hitDieSize / 2) + 1 + conModifier
-    );
-  } else {
-    hpGain = Math.max(1, options.rolledHp! + conModifier);
-  }
-  clone.attributes.hp.max += hpGain;
-  clone.attributes.hp.current += hpGain;
-
-  // 9. Record subclass & class
-  if (options.subclassId) {
-    clone.subclassId = options.subclassId;
-    clone.attributes.subclassId = options.subclassId;
-  }
-  if (options.classId) {
-    clone.classId = options.classId;
-    clone.attributes.classId = options.classId;
-  }
-
-  // 10. Apply ASI bonuses or Feat
+  // 8. Apply ASI bonuses or Feat
   if (isAsi && options.asiOrFeat) {
     if (options.asiOrFeat.mode === "asi") {
       for (const [key, bonus] of Object.entries(options.asiOrFeat.bonuses)) {
@@ -443,6 +419,30 @@ export function applyLevelUp(
       }
       clone.features.push(options.asiOrFeat.featId);
     }
+  }
+
+  // 9. Calculate and apply HP increase
+  const conModifier = Math.floor((clone.abilities.con.score - 10) / 2);
+  let hpGain: number;
+  if (hitPointsMode === "fixed") {
+    hpGain = Math.max(
+      1,
+      Math.floor(clone.attributes.hitDieSize / 2) + 1 + conModifier
+    );
+  } else {
+    hpGain = Math.max(1, options.rolledHp! + conModifier);
+  }
+  clone.attributes.hp.max += hpGain;
+  clone.attributes.hp.current += hpGain;
+
+  // 10. Record subclass & class
+  if (options.subclassId) {
+    clone.subclassId = options.subclassId;
+    clone.attributes.subclassId = options.subclassId;
+  }
+  if (options.classId) {
+    clone.classId = options.classId;
+    clone.attributes.classId = options.classId;
   }
 
   // 11. Register new spell identifiers

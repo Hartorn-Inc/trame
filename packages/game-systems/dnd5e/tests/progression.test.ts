@@ -357,6 +357,44 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
       assert.equal(leveled2.abilities.dex.score, 15);
     });
 
+    it("WHEN options.asiOrFeat.mode equals 'asi' and increases Constitution, hpGain uses the updated Constitution modifier.", () => {
+      const actor = createDefaultActorData("asi-con-boost", "Tough Hero");
+      actor.attributes.level = 3;
+      actor.attributes.hitDieSize = 10;
+      actor.abilities.con.score = 13;
+      actor.attributes.hp.max = 25;
+      actor.attributes.hp.current = 25;
+
+      const result = applyLevelUp(actor, {
+        targetLevel: 4,
+        hitPointsMode: "fixed",
+        asiOrFeat: { mode: "asi", bonuses: { con: 1, str: 1 } },
+      });
+
+      assert.equal(result.abilities.con.score, 14);
+      assert.equal(result.attributes.hp.max, 33);
+      assert.equal(result.attributes.hp.current, 33);
+    });
+
+    it("WHEN options.asiOrFeat.mode equals 'asi' and increases Constitution, hpGain uses the updated Constitution modifier.", () => {
+      const actor = createDefaultActorData("asi-con-boost", "Tough Hero");
+      actor.attributes.level = 3;
+      actor.attributes.hitDieSize = 10;
+      actor.abilities.con.score = 13;
+      actor.attributes.hp.max = 25;
+      actor.attributes.hp.current = 25;
+
+      const result = applyLevelUp(actor, {
+        targetLevel: 4,
+        hitPointsMode: "fixed",
+        asiOrFeat: { mode: "asi", bonuses: { con: 1, str: 1 } },
+      });
+
+      assert.equal(result.abilities.con.score, 14);
+      assert.equal(result.attributes.hp.max, 33);
+      assert.equal(result.attributes.hp.current, 33);
+    });
+
     it("WHEN targetLevel corresponds to an ASI level and options.asiOrFeat.mode equals 'feat' with an existing featId, applyLevelUp appends featId to actor features.", () => {
       const actor = createDefaultActorData("feat-actor", "Caster");
       actor.attributes.level = 3;
