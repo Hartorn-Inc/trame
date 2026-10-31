@@ -63,9 +63,6 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
 
   return (
     <div
-      role="alert"
-      aria-live="assertive"
-      aria-atomic="true"
       data-testid="reaction-banner"
       style={{
         position: "fixed",
@@ -84,7 +81,7 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
         boxShadow: "0 10px 25px rgba(0,0,0,0.6)",
       }}
     >
-      <div>
+      <div role="alert" aria-live="assertive" aria-atomic="true">
         <strong style={{ display: "block", fontSize: "0.875rem" }}>Opportunity Reaction Available!</strong>
         <span style={{ fontSize: "0.75rem", color: "#fed7aa" }}>
           {prompt.triggerTokenName} provoked a reaction from {prompt.reactorTokenName} ({prompt.description})
@@ -92,6 +89,7 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
       </div>
 
       <div
+        aria-hidden="true"
         data-testid="reaction-timer-value"
         style={{
           fontSize: "1.25rem",

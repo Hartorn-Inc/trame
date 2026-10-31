@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "preact/hooks";
 import type { ComponentChildren, JSX } from "preact";
 import { appSignals } from "../state/appSignals.ts";
 import type { HandoutRevealedBroadcast } from "../types/index.ts";
@@ -10,15 +11,29 @@ export interface HandoutPopupModalProps {
 
 export function HandoutPopupModal(props: HandoutPopupModalProps): JSX.Element | null {
   const handout = props.handout ?? appSignals.revealedHandoutSignal.value;
-
-  if (!handout) {
-    return null;
-  }
+  const closeBtnRef = useRef<HTMLButtonElement | null>(null);
 
   const handleClose = () => {
     appSignals.revealedHandoutSignal.value = null;
     props.onClose?.();
   };
+
+  useEffect(() => {
+    if (!handout) return;
+    closeBtnRef.current?.focus();
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        handleClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handout]);
+
+  if (!handout) {
+    return null;
+  }
 
   return (
     <div
@@ -76,6 +91,7 @@ export function HandoutPopupModal(props: HandoutPopupModalProps): JSX.Element | 
 
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <button
+            ref={closeBtnRef}
             type="button"
             onClick={handleClose}
             data-testid="close-handout-modal-btn"

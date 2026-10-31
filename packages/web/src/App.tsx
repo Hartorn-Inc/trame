@@ -141,7 +141,12 @@ export function App(): import("preact").JSX.Element {
 
       <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
         <TableCanvas />
-        {activeDrawer === "sheet" && <ActorSheetDrawer onClose={() => (appSignals.activeDrawerSignal.value = null)} />}
+        {activeDrawer === "sheet" && (
+          <ActorSheetDrawer
+            onClose={() => (appSignals.activeDrawerSignal.value = null)}
+            onOpenBuilder={() => setIsBuilderOpen(true)}
+          />
+        )}
         {activeDrawer === "compendium" && <CompendiumDrawer onClose={() => (appSignals.activeDrawerSignal.value = null)} />}
         {activeDrawer === "dice" && <DiceTrayDrawer onClose={() => (appSignals.activeDrawerSignal.value = null)} />}
         {activeDrawer === "wiki" && <WikiNotesDrawer onClose={() => (appSignals.activeDrawerSignal.value = null)} />}

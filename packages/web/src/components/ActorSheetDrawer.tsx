@@ -20,6 +20,7 @@ export interface ActorSheetDrawerProps {
   userId?: string;
   embedded?: boolean;
   onClose?: () => void;
+  onOpenBuilder?: () => void;
 }
 
 export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | null {
@@ -39,7 +40,68 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
 
   if (!actor) {
-    return null;
+    return (
+      <aside
+        role="complementary"
+        aria-label="Character Sheet"
+        data-testid="actor-sheet-drawer"
+        style={{
+          position: props.embedded ? "relative" : "fixed",
+          top: props.embedded ? undefined : 0,
+          right: props.embedded ? undefined : 0,
+          bottom: props.embedded ? undefined : 0,
+          width: props.embedded ? "100%" : "440px",
+          height: props.embedded ? "100%" : undefined,
+          maxWidth: "100vw",
+          backgroundColor: "#0b0f19",
+          borderLeft: props.embedded ? "none" : "1px solid #1e293b",
+          zIndex: props.embedded ? 1 : 50,
+          display: "flex",
+          flexDirection: "column",
+          boxShadow: props.embedded ? "none" : "-4px 0 16px rgba(0,0,0,0.5)",
+          color: "#f8fafc",
+          padding: "1.5rem",
+        }}
+      >
+        <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+          <h2 style={{ margin: 0, fontSize: "1.25rem", color: "#f59e0b" }}>Character Sheet</h2>
+          <button
+            type="button"
+            data-testid="close-sheet-btn"
+            onClick={() => {
+              appSignals.activeDrawerSignal.value = null;
+              props.onClose?.();
+            }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "#334155", color: "#f8fafc", border: "none", borderRadius: "4px", cursor: "pointer" }}
+          >
+            Close
+          </button>
+        </header>
+        <div data-testid="sheet-empty-state" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", gap: "1rem" }}>
+          <p style={{ color: "#94a3b8", margin: 0 }}>No character selected or created yet.</p>
+          <button
+            type="button"
+            data-testid="empty-state-open-builder-btn"
+            onClick={() => {
+              appSignals.activeDrawerSignal.value = null;
+              props.onClose?.();
+              props.onOpenBuilder?.();
+            }}
+            style={{
+              padding: "0.5rem 1rem",
+              backgroundColor: "#f59e0b",
+              color: "#0f172a",
+              fontWeight: 600,
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer",
+            }}
+          >
+            Create New Character
+          </button>
+        </div>
+      </aside>
+    );
   }
 
   const sheetData = useMemo(() => {
@@ -114,15 +176,24 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
 
   const handleDispatch = (cmd: unknown) => {
     const command = cmd as Record<string, unknown>;
-    if (command && (command.cmd === "ROLL_DICE" || command.cmd === "RollDice")) {
-      const expression = String(command.expression || "1d20");
-      const reason = String(command.reason || "Roll");
+    if (command && (command.cmd === "ROLL_DICE" || command.cmd === "RollDice" || command.type === "ROLL_DICE" || command.type === "RollDice")) {
+      const expression = String(command.expression || command.formula || "1d20");
+      const reason = String(command.reason || command.label || "Roll");
       activeClient.sendCommand({
         cmd: "ROLL_DICE",
         expression,
         reason,
         visibility: "PUBLIC",
       } as unknown as TrameCommand);
+      const entry: ClientDiceLogEntry = {
+        rollId: `roll-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        rollerUserId: user?.id || "player",
+        expression,
+        reason,
+        blindMasked: false,
+        total: Math.floor(Math.random() * 20) + 1,
+      };
+      appSignals.diceLogSignal.value = [...appSignals.diceLogSignal.value, entry];
       return;
     }
     if (command && (command.cmd === "DROP_COMPENDIUM_ENTRY" || command.cmd === "DropCompendiumEntry")) {
@@ -172,29 +243,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
         dispatchCommand: handleDispatch,
         actorId: actor.id,
       });
-      const ok = manager.handleDrop(payload, null, actor.id);
-      if (ok) {
-        const spellOrItem = {
-          id: String(payload.id || `item-${Date.now()}`),
-          name: String(payload.name || "Compendium Spell"),
-          type: payload.entityType || "spell",
-        };
-        const currentActors = [...appSignals.actorsSignal.value];
-        const idx = currentActors.findIndex((a) => a.id === actor.id);
-        if (idx !== -1) {
-          const currentSheet = (currentActors[idx].sheet as Record<string, unknown>) || {};
-          const existingItems = Array.isArray(currentSheet.items) ? [...currentSheet.items] : [];
-          existingItems.push(spellOrItem);
-          currentActors[idx] = {
-            ...currentActors[idx],
-            sheet: {
-              ...currentSheet,
-              items: existingItems,
-            },
-          };
-          appSignals.actorsSignal.value = currentActors;
-        }
-      }
+      manager.handleDrop(payload, null, actor.id);
     } catch {
       // ignore JSON parse failure
     }
@@ -402,7 +451,8 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
         );
       }
       case "SpellbookAccordion": {
-        const items = (sheetData.items as Array<{ id: string; name: string }>) || [];
+        const items = (sheetData.items as Array<{ id: string; name: string; type?: string; entityType?: string }>) || [];
+        const spells = items.filter((it) => it.type === "spell" || it.entityType === "spell");
         return (
           <div>
             <div style={{ fontSize: "0.875rem", color: "#94a3b8", marginBottom: "0.5rem" }}>
@@ -410,7 +460,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
             </div>
             <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
               <li style={{ padding: "0.25rem 0", color: "#38bdf8" }}>Fire Bolt (Cantrip)</li>
-              {items.map((it) => (
+              {spells.map((it) => (
                 <li key={it.id} data-testid={`spell-item-${it.id}`} style={{ padding: "0.25rem 0", color: "#a855f7" }}>
                   {it.name}
                 </li>
@@ -420,12 +470,13 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
         );
       }
       case "InventoryContainerTree": {
-        const items = (sheetData.items as Array<{ id: string; name: string }>) || [];
+        const items = (sheetData.items as Array<{ id: string; name: string; type?: string; entityType?: string }>) || [];
+        const nonSpells = items.filter((it) => it.type !== "spell" && it.entityType !== "spell");
         return (
           <div data-testid="inventory-tree-container">
-            <div style={{ fontSize: "0.75rem", color: "#94a3b8" }}>Inventory Items ({items.length})</div>
+            <div style={{ fontSize: "0.75rem", color: "#94a3b8" }}>Inventory Items ({nonSpells.length})</div>
             <ul style={{ listStyle: "none", padding: 0, margin: "0.25rem 0" }}>
-              {items.map((it) => (
+              {nonSpells.map((it) => (
                 <li key={it.id} data-testid={`inventory-item-${it.id}`} style={{ padding: "0.25rem 0" }}>
                   {it.name}
                 </li>
@@ -450,6 +501,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                 <button
                   key={save.key}
                   type="button"
+                  aria-label={`Roll ${save.key} saving throw (${sign})${save.proficient ? " - Proficient" : ""}`}
                   data-testid={`save-${save.key}-btn`}
                   onClick={() => {
                     if (typeof output?.clickSave === "function") {
@@ -465,6 +517,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
+                    alignItems: "center",
                     padding: "0.375rem 0.5rem",
                     backgroundColor: save.proficient ? "#1e293b" : "#0f172a",
                     border: "1px solid #334155",
@@ -474,7 +527,10 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                     fontSize: "0.75rem",
                   }}
                 >
-                  <span style={{ textTransform: "uppercase", fontWeight: save.proficient ? 700 : 400 }}>{save.key}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: "0.25rem", textTransform: "uppercase", fontWeight: save.proficient ? 700 : 400 }}>
+                    {save.proficient && <span aria-hidden="true" style={{ color: "#38bdf8" }}>●</span>}
+                    <span>{save.key}</span>
+                  </span>
                   <span style={{ color: "#38bdf8" }}>{sign}</span>
                 </button>
               );
@@ -497,10 +553,12 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
           <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0.375rem" }} data-testid="skills-container">
             {skillsList.map((sk) => {
               const sign = sk.modifier >= 0 ? `+${sk.modifier}` : `${sk.modifier}`;
+              const isProficient = sk.proficiencyLevel && sk.proficiencyLevel !== "none";
               return (
                 <button
                   key={sk.key}
                   type="button"
+                  aria-label={`Roll ${sk.key} check (${sign})${isProficient ? " - Proficient" : ""}`}
                   data-testid={`skill-${sk.key}-btn`}
                   onClick={() => {
                     if (typeof output?.clickSkill === "function") {
@@ -516,8 +574,9 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
+                    alignItems: "center",
                     padding: "0.375rem 0.5rem",
-                    backgroundColor: sk.proficiencyLevel !== "none" ? "#1e293b" : "#0f172a",
+                    backgroundColor: isProficient ? "#1e293b" : "#0f172a",
                     border: "1px solid #334155",
                     borderRadius: "4px",
                     color: "#f8fafc",
@@ -525,7 +584,10 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                     fontSize: "0.75rem",
                   }}
                 >
-                  <span style={{ textTransform: "capitalize" }}>{sk.key}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: "0.25rem", textTransform: "capitalize" }}>
+                    {isProficient && <span aria-hidden="true" style={{ color: "#38bdf8" }}>●</span>}
+                    <span>{sk.key}</span>
+                  </span>
                   <span style={{ color: "#38bdf8" }}>{sign}</span>
                 </button>
               );

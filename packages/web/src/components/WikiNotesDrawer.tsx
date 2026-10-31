@@ -2,7 +2,6 @@ import { useEffect, useState } from "preact/hooks";
 import type { ComponentChildren, JSX } from "preact";
 import { client as defaultClient, type ApiClient } from "../api/client.ts";
 import { appSignals } from "../state/appSignals.ts";
-import { HandoutPopupModal } from "./HandoutPopupModal.tsx";
 import type { NoteDto } from "../types/index.ts";
 
 export interface WikiNotesDrawerProps {
