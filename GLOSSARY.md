@@ -99,11 +99,17 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: Browser navigation, campaign selection, and archive management.
 - **_Avoid_**: DashboardPage, HomePortal, GameBrowser.
 
-### ChaCha20Rng
+### CampaignWorkspace
 
-- **Definition**: Cryptographically secure pseudorandom number generator on the server producing authoritative dice roll results for hit points, hit dice, and combat actions.
-- **Allowed Context**: Server-authoritative dice rolling, random number generation, and audit verification.
-- **_Avoid_**: ServerRNG, DiceEngine, RandomService.
+- **Definition**: Campaign-scoped authenticated Preact shell housing the `Map`, `Actors`, `Journal`, `Compendium`, and `Settings` workspaces alongside the live tabletop canvas.
+- **Allowed Context**: Active campaign preparation, workspace tab switching, and live tabletop session framing.
+- **_Avoid_**: CampaignDashboard, GameRoomShell, TableWrapper.
+
+### CanvasThemePalette
+
+- **Definition**: Typed WebGL and PixiJS v8 color and stroke-pattern registry bridging active ATLAS theme tokens (`dark`, `light`, `system`) to `SceneGraph` layers while keeping uploaded battlemap textures invariant.
+- **Allowed Context**: PixiJS v8 `SceneGraph` rendering, tactical overlays, wall segment geometry, and theme synchronization.
+- **_Avoid_**: PixiColorMap, ShaderThemeConfig, CanvasStyleSheet.
 
 ### CombatTracker
 
@@ -230,6 +236,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Extended rest period of at least 8 hours restoring all HP, resetting temporary HP to 0, restoring `Math.max(1, Math.floor(hitDiceMax / 2))` hit dice, reducing exhaustion by 1 level, and resetting all spell slots and long-rest resource pools.
 - **Allowed Context**: `LongRest`, `long rest`.
 - **_Avoid_**: `extended rest`, `full rest`.
+
+### PadlockEditMode
+
+- **Definition**: Explicit boolean state toggle (`locked` read and roll play state vs. `unlocked` structural edit state) in the `DeclarativeSheetRenderer` header preventing accidental actor mutations during live sessions.
+- **Allowed Context**: Character sheet header controls, `DeclarativeSheetRenderer` view-models, and structural field editing guards.
+- **_Avoid_**: SheetReadOnlyFlag, EditLockToggle, CharacterFreezeMode.
 
 ### PointerPing
 

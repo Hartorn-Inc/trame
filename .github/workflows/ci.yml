@@ -29,6 +29,8 @@ jobs:
           node-version: "24"
       - name: Domain Glossary & ADR Integrity check
         run: python3 scripts/check-glossary-and-adrs.py
+      - name: Impeccable Design System & WCAG AA Contrast check
+        run: node scripts/check-impeccable-design.mjs
       - name: Rust Format check (cargo fmt)
         run: cargo fmt --all -- --check
       - name: Rust Lint check (cargo clippy)
