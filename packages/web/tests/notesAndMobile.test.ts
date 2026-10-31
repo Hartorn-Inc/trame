@@ -30,8 +30,8 @@ describe("[E5-T1] Wiki Markdown Parser & Zero-Trust Role Filtering", () => {
     assert.equal(links[2].label, "Sunblade");
 
     const html = renderWikiLinksToHtml(text);
-    assert.ok(html.includes('<a class="wiki-entity-link" data-entity="Valeros">Valeros</a>'));
-    assert.ok(html.includes('<a class="wiki-entity-link" data-entity="Cragmaw Castle">the fortress</a>'));
+    assert.ok(html.includes('<a class="wiki-entity-link" href="#entity/Valeros" data-entity="Valeros">Valeros</a>'));
+    assert.ok(html.includes('<a class="wiki-entity-link" href="#entity/Cragmaw Castle" data-entity="Cragmaw Castle">the fortress</a>'));
   });
 
   it("parses :::dm and :::handout directive blocks into typed AST", () => {
@@ -204,10 +204,14 @@ describe("[E5-T1] Mobile Companion Mode (< 768px) & Handout Reveal Modal", () =>
 
     const modal = container.querySelector('[data-testid="handout-reveal-modal"]');
     assert.ok(modal);
+    assert.equal(modal.getAttribute("role"), "dialog");
+    assert.equal(modal.getAttribute("aria-modal"), "true");
+    assert.equal(modal.getAttribute("aria-labelledby"), "handout-title");
 
     const titleEl = container.querySelector('[data-testid="handout-title"]');
     assert.ok(titleEl);
     assert.equal(titleEl.textContent, "Lettre interceptée");
+    assert.equal(titleEl.getAttribute("id"), "handout-title");
 
     const contentEl = container.querySelector('[data-testid="handout-content"]');
     assert.ok(contentEl);
