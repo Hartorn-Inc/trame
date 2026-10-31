@@ -27,6 +27,7 @@ import {
   groupNotesByFolder,
   documentsNotesSignal,
   documentsHandoutsSignal,
+  selectedNoteIdSignal,
   activeHandoutModalSignal,
   isGmSignal,
   DocumentsWorkspaceTab,
@@ -472,7 +473,7 @@ describe("[Ticket #89 - Acceptance Criterion 5] Folder-Organized Notes Hierarchy
     const playerEditor = playerVNode.props.children.find((c: any) => c && c.props && c.props["data-testid"] === "note-editor-pane");
     assert.ok(playerEditor);
     const playerHandoutBlock = playerEditor.props.children.find((c: any) => c && c.props && c.props["data-testid"] === "note-handout-directives");
-    assert.equal(playerHandoutBlock, false);
+    assert.equal(playerHandoutBlock, undefined);
 
     // GM rendering
     const gmVNode = DocumentsWorkspaceTab({ isGm: true, currentUserId: "gm-1" }) as any;
