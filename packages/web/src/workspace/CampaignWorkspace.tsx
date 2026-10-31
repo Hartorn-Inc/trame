@@ -57,6 +57,9 @@ export function CampaignWorkspace({
             data-testid={`tab-${tab.id}`}
             onClick={() => { activeTabSignal.value = tab.id; }}
             style={{
+              minHeight: '40px',
+              display: 'inline-flex',
+              alignItems: 'center',
               padding: 'var(--atlas-space-sm) var(--atlas-space-md)',
               background: 'transparent',
               border: 'none',

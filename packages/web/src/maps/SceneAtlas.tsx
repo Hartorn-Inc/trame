@@ -38,6 +38,15 @@ export function SceneAtlas({ campaignId, scenes, onSelectScene }: SceneAtlasProp
               type="button"
               data-testid="close-preview-btn"
               onClick={() => { activePreviewSceneSignal.value = null; }}
+              style={{
+                minHeight: '40px',
+                padding: 'var(--atlas-space-xs) var(--atlas-space-sm)',
+                background: 'var(--atlas-surface-raised)',
+                color: 'var(--atlas-text)',
+                border: '1px solid var(--atlas-border)',
+                borderRadius: 'var(--atlas-radius-sm)',
+                cursor: 'pointer',
+              }}
             >
               Back to Gallery
             </button>

@@ -272,11 +272,15 @@ pub fn sanitize_scene_for_player(mut scene: CampaignMapScene) -> CampaignMapScen
             wall.door_state = None;
             wall.blocks_vision = true;
             wall.blocks_movement = true;
+            wall.blocks_sound = true;
+            wall.blocks_light = true;
         }
         if wall.wall_type == WallType::Illusion {
             wall.wall_type = WallType::Normal;
             wall.blocks_vision = true;
             wall.blocks_movement = true;
+            wall.blocks_sound = true;
+            wall.blocks_light = true;
         }
     }
     scene
@@ -369,6 +373,7 @@ pub async fn put_campaign_maps_handler(
 
     let mut scenes = payload.scenes;
     for scene in &mut scenes {
+        scene.campaign_id = campaign_id;
         for light in &mut scene.light_sources {
             if let Some(ref pt) = light.origin {
                 if light.x == 0.0 && light.y == 0.0 {

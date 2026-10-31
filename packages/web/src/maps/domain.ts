@@ -120,13 +120,12 @@ export function parseUvttImport(uvttJson: {
 }): { walls: StudioWallSegment[]; lights: StudioLightSource[] } {
   const ppg = uvttJson.resolution?.pixels_per_grid ?? 1;
   const walls: StudioWallSegment[] = [];
-  let wallCounter = 1;
 
   if (uvttJson.line_of_sight) {
     for (const poly of uvttJson.line_of_sight) {
       for (let i = 0; i < poly.length - 1; i++) {
         walls.push({
-          id: `uvtt-wall-${wallCounter++}`,
+          id: generateEntityUuid(),
           a: { x: poly[i].x * ppg, y: poly[i].y * ppg },
           b: { x: poly[i + 1].x * ppg, y: poly[i + 1].y * ppg },
           wallType: 'Normal',
@@ -145,7 +144,7 @@ export function parseUvttImport(uvttJson: {
     for (const portal of uvttJson.portals) {
       if (portal.bounds && portal.bounds.length >= 2) {
         walls.push({
-          id: `uvtt-door-${wallCounter++}`,
+          id: generateEntityUuid(),
           a: { x: portal.bounds[0].x * ppg, y: portal.bounds[0].y * ppg },
           b: { x: portal.bounds[1].x * ppg, y: portal.bounds[1].y * ppg },
           wallType: 'Door',
@@ -164,8 +163,8 @@ export function parseUvttImport(uvttJson: {
     }
   }
 
-  const lights: StudioLightSource[] = (uvttJson.lights || []).map((l, idx) => ({
-    id: `uvtt-light-${idx + 1}`,
+  const lights: StudioLightSource[] = (uvttJson.lights || []).map((l) => ({
+    id: generateEntityUuid(),
     origin: { x: l.position.x * ppg, y: l.position.y * ppg },
     brightRadiusFt: l.range * 0.5 * ppg,
     dimRadiusFt: l.range * ppg,
@@ -330,6 +329,12 @@ export function mapBackendSceneToFrontend(raw: Record<string, any>): CampaignMap
   };
 }
 
+const UUID_FORMAT_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function normalizeEntityUuid(id: string | undefined): string {
+  return id && UUID_FORMAT_REGEX.test(id) ? id : generateEntityUuid();
+}
+
 export function mapFrontendSceneToBackend(scene: CampaignMapScene): Record<string, any> {
   const wall_segments = scene.walls.map((w) => {
     let door_state: 'Open' | 'Closed' | 'Locked' | null = null;
@@ -346,7 +351,7 @@ export function mapFrontendSceneToBackend(scene: CampaignMapScene): Record<strin
     }
 
     return {
-      id: w.id,
+      id: normalizeEntityUuid(w.id),
       p1: { x: w.a.x, y: w.a.y },
       p2: { x: w.b.x, y: w.b.y },
       wall_type: w.wallType,
@@ -361,7 +366,7 @@ export function mapFrontendSceneToBackend(scene: CampaignMapScene): Record<strin
   });
 
   const light_sources = scene.lights.map((l) => ({
-    id: l.id,
+    id: normalizeEntityUuid(l.id),
     x: l.origin.x,
     y: l.origin.y,
     elevation_ft: l.elevationFt ?? 0,
@@ -371,7 +376,7 @@ export function mapFrontendSceneToBackend(scene: CampaignMapScene): Record<strin
   }));
 
   const spatial_audio_emitters = scene.audioEmitters.map((a) => ({
-    id: a.id,
+    id: normalizeEntityUuid(a.id),
     x: a.x,
     y: a.y,
     elevation_ft: a.elevationFt,
@@ -383,7 +388,7 @@ export function mapFrontendSceneToBackend(scene: CampaignMapScene): Record<strin
   }));
 
   const staged_tokens = scene.stagedTokens.map((t) => ({
-    id: t.id,
+    id: normalizeEntityUuid(t.id),
     name: t.name,
     monster_template_id: t.monsterTemplateId ?? t.templateKey ?? null,
     x: t.x,
@@ -396,18 +401,18 @@ export function mapFrontendSceneToBackend(scene: CampaignMapScene): Record<strin
 
   const spawn_points = scene.spawnPoints && scene.spawnPoints.length > 0
     ? scene.spawnPoints.map((sp) => ({
-        id: sp.id,
+        id: normalizeEntityUuid(sp.id),
         name: sp.name,
         x: sp.x,
         y: sp.y,
       }))
     : scene.spawnPoint
-    ? [{ id: 'sp-default', name: 'Default Spawn', x: scene.spawnPoint.x, y: scene.spawnPoint.y }]
+    ? [{ id: generateEntityUuid(), name: 'Default Spawn', x: scene.spawnPoint.x, y: scene.spawnPoint.y }]
     : [];
 
   return {
-    id: scene.id,
-    campaign_id: scene.campaignId,
+    id: normalizeEntityUuid(scene.id),
+    campaign_id: normalizeEntityUuid(scene.campaignId),
     name: scene.title,
     grid_type: scene.gridType ?? 'square',
     grid_size_px: scene.gridCellSizePx,

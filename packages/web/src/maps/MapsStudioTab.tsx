@@ -478,6 +478,8 @@ export function MapsStudioTab({
                 }}
               >
                 <svg
+                  role="img"
+                  aria-label="Scene map authoring canvas"
                   width="100%"
                   height="100%"
                   viewBox={`0 0 ${selectedScene.widthPx} ${selectedScene.heightPx}`}
@@ -710,6 +712,7 @@ export function MapsStudioTab({
                         </span>
                         <button
                           type="button"
+                          aria-label={`Delete wall segment ${w.id}`}
                           data-testid={`delete-wall-${w.id}`}
                           onClick={() => handleDeleteWall(w.id)}
                           style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
@@ -761,6 +764,7 @@ export function MapsStudioTab({
                             </button>
                             <button
                               type="button"
+                              aria-label={`Delete door ${door.id}`}
                               data-testid={`delete-wall-${door.id}`}
                               onClick={() => handleDeleteWall(door.id)}
                               style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
