@@ -54,9 +54,6 @@ use crate::archive::{
 use crate::assets::store::{
     AssetStore, AssetStoreError, InMemoryAssetStore, PRESIGNED_URL_DEFAULT_TTL,
 };
-pub use crate::maps::{
-    get_campaign_maps_handler, put_campaign_maps_handler, InMemoryMapStorage,
-};
 use crate::auth::magic_link::MagicLinkService;
 use crate::auth::password::extract_session_token;
 use crate::auth::pat::PatMiddleware;
@@ -65,6 +62,7 @@ use crate::auth::session::{
     hash_session_token,
 };
 use crate::auth::totp::TotpService;
+pub use crate::maps::{InMemoryMapStorage, get_campaign_maps_handler, put_campaign_maps_handler};
 use crate::room::{ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomLeaseManager};
 use crate::storage::blob::{
     AssetDescriptor, BlobStore, BlobStoreError, BlobStream, Sha256Hasher, slice_to_stream,
@@ -578,7 +576,11 @@ pub async fn resolve_authenticated_user(
 }
 
 /// Checks whether `user_id` is an authorized member of `campaign_id` via `membership` or `session_store`.
-pub async fn is_authorized_campaign_member(state: &AppState, campaign_id: Uuid, user_id: Uuid) -> bool {
+pub async fn is_authorized_campaign_member(
+    state: &AppState,
+    campaign_id: Uuid,
+    user_id: Uuid,
+) -> bool {
     if state.membership.is_member(campaign_id, user_id) {
         return true;
     }

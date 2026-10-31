@@ -180,7 +180,9 @@ pub fn sanitize_scene_for_player(mut scene: CampaignMapScene) -> CampaignMapScen
             wall.wall_type = WallType::Normal;
         }
     }
-    scene.staged_tokens.retain(|t| t.visibility != VisibilityChannel::GmHidden);
+    scene
+        .staged_tokens
+        .retain(|t| t.visibility != VisibilityChannel::GmHidden);
     scene.spatial_audio_emitters.retain(|e| !e.gm_only);
     scene
 }
@@ -191,19 +193,20 @@ pub async fn get_campaign_maps_handler(
     Query(query): Query<CampaignMapsQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let user_id = match crate::http::resolve_authenticated_user(&state, &headers, query.user_id).await {
-        Ok(uid) => uid,
-        Err(status) => {
-            return (
-                status,
-                Json(crate::http::ErrorResponse {
-                    code: Some("UNAUTHORIZED".to_string()),
-                    error: "valid authentication credentials required".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
+    let user_id =
+        match crate::http::resolve_authenticated_user(&state, &headers, query.user_id).await {
+            Ok(uid) => uid,
+            Err(status) => {
+                return (
+                    status,
+                    Json(crate::http::ErrorResponse {
+                        code: Some("UNAUTHORIZED".to_string()),
+                        error: "valid authentication credentials required".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
 
     let is_gm = crate::http::is_authorized_campaign_gm(&state, campaign_id, user_id).await;
     if !is_gm && !crate::http::is_authorized_campaign_member(&state, campaign_id, user_id).await {
@@ -238,19 +241,20 @@ pub async fn put_campaign_maps_handler(
     headers: HeaderMap,
     Json(payload): Json<PutCampaignMapsPayload>,
 ) -> Response {
-    let user_id = match crate::http::resolve_authenticated_user(&state, &headers, query.user_id).await {
-        Ok(uid) => uid,
-        Err(status) => {
-            return (
-                status,
-                Json(crate::http::ErrorResponse {
-                    code: Some("UNAUTHORIZED".to_string()),
-                    error: "valid authentication credentials required".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
+    let user_id =
+        match crate::http::resolve_authenticated_user(&state, &headers, query.user_id).await {
+            Ok(uid) => uid,
+            Err(status) => {
+                return (
+                    status,
+                    Json(crate::http::ErrorResponse {
+                        code: Some("UNAUTHORIZED".to_string()),
+                        error: "valid authentication credentials required".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
 
     let is_gm = crate::http::is_authorized_campaign_gm(&state, campaign_id, user_id).await;
     if !is_gm {
@@ -264,6 +268,8 @@ pub async fn put_campaign_maps_handler(
             .into_response();
     }
 
-    state.map_storage.save_campaign_maps(campaign_id, payload.scenes);
+    state
+        .map_storage
+        .save_campaign_maps(campaign_id, payload.scenes);
     StatusCode::NO_CONTENT.into_response()
 }
