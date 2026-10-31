@@ -254,7 +254,7 @@ export function normalizeServerEnvelopeObject(raw: Record<string, unknown>): Ser
       type: "Delta",
       seqId: Number(raw.seqId ?? raw.seq_id ?? 0),
       events: (raw.events as TrameEvent[]) || [],
-      state: payloadState(raw),
+      state: raw.state as Partial<CampaignRoomState> | undefined,
     };
   }
   if (raw.CommandRejected || raw.type === "CommandRejected") {
@@ -287,10 +287,6 @@ export function normalizeServerEnvelopeObject(raw: Record<string, unknown>): Ser
   }
 
   return raw as unknown as ServerEnvelope;
-}
-
-function payloadState(raw: Record<string, unknown>): Partial<CampaignRoomState> | undefined {
-  return raw.state as Partial<CampaignRoomState> | undefined;
 }
 
 export function decodeServerEnvelope(bytes: Uint8Array | ArrayBuffer): ServerEnvelope {
@@ -621,6 +617,22 @@ export class ApiClient {
     }
   }
 
+  public sendEnvelope(envelope: ClientEnvelope): Uint8Array {
+    const buffer = encode(envelope);
+    if (this.ws && this.ws.readyState === (typeof WebSocket !== "undefined" ? WebSocket.OPEN : 1)) {
+      this.ws.send(buffer);
+    }
+    return buffer;
+  }
+
+  public sendPointerPing(pos: Point2D, colorHex = "#38bdf8"): Uint8Array {
+    return this.sendEnvelope({
+      type: "PointerPing",
+      pos,
+      colorHex,
+    });
+  }
+
   public sendCommand(command: TrameCommand): Uint8Array {
     const envelope: ClientEnvelope = {
       type: "Command",
@@ -628,30 +640,12 @@ export class ApiClient {
       Command: command,
       SubmitCommand: command,
     };
-    const buffer = encode(envelope);
-    if (this.ws && this.ws.readyState === (typeof WebSocket !== "undefined" ? WebSocket.OPEN : 1)) {
-      this.ws.send(buffer);
-    }
-    return buffer;
-  }
-
-  public sendPointerPing(pos: Point2D, colorHex = "#f59e0b"): Uint8Array {
-    const envelope: ClientEnvelope = {
-      type: "PointerPing",
-      pos,
-      colorHex,
-    };
-    const buffer = encode(envelope);
-    if (this.ws && this.ws.readyState === (typeof WebSocket !== "undefined" ? WebSocket.OPEN : 1)) {
-      this.ws.send(buffer);
-    }
-    return buffer;
+    return this.sendEnvelope(envelope);
   }
 
   public handleServerMessage(
     bytesOrEnvelope: Uint8Array | ArrayBuffer | RawServerEnvelope,
-  ):
-    ServerEnvelope {
+  ): ServerEnvelope {
     const envelope: ServerEnvelope = bytesOrEnvelope instanceof Uint8Array || bytesOrEnvelope instanceof ArrayBuffer
       ? decodeServerEnvelope(bytesOrEnvelope)
       : normalizeServerEnvelopeObject(bytesOrEnvelope as Record<string, unknown>);
@@ -683,6 +677,13 @@ export class ApiClient {
       }
     } else if (envelope.type === "HandoutRevealed") {
       appSignals.revealedHandoutSignal.value = envelope.handout;
+    } else if (envelope.type === "PointerPingBroadcast") {
+      if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+        const ev = typeof CustomEvent !== "undefined"
+          ? new CustomEvent("trame-pointer-ping", { detail: envelope })
+          : ({ type: "trame-pointer-ping", detail: envelope } as unknown as Event);
+        window.dispatchEvent(ev);
+      }
     }
 
     return envelope;
@@ -692,7 +693,6 @@ export class ApiClient {
 export const client = new ApiClient();
 export const apiClient = client;
 export const sendCommand = (cmd: TrameCommand): Uint8Array => client.sendCommand(cmd);
-export const sendPointerPing = (pos: Point2D, colorHex = "#f59e0b"): Uint8Array => client.sendPointerPing(pos, colorHex);
 export const handleServerMessage = (
   msg: Uint8Array | ArrayBuffer | RawServerEnvelope,
 ): ServerEnvelope => client.handleServerMessage(msg);

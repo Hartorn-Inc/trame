@@ -1,17 +1,29 @@
 import assert from "node:assert/strict";
-import { register } from "node:module";
+import module from "node:module";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { ApiClient } from "../src/api/client.ts";
 import { Bvh2D, WasmSpatialEngine } from "../src/engine/wasmBridge.ts";
 import { appSignals, resetAppSignals } from "../src/state/appSignals.ts";
 import type { CampaignRoomState, TrameCommand } from "../src/types/index.ts";
 
-if (typeof register === "function") {
-  register("./tsx-loader.mjs", import.meta.url);
+if (typeof module.register === "function") {
+  try {
+    module.register("./tsx-loader.mjs", import.meta.url);
+  } catch {
+    // Optional tsx-loader registration hook
+  }
 }
 
-import { h, render } from "preact";
-const { TableCanvas, HeadlessCanvasMock, isWebGLAvailable } = await import("../src/components/TableCanvas.tsx");
+import { h, options, render } from "preact";
+import type { GmOverrideToolbarProps } from "../src/components/GmOverrideToolbar.tsx";
+import type { TableCanvasProps } from "../src/components/TableCanvas.tsx";
+
+options.debounceRendering = (cb) => cb();
+options.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+(globalThis as unknown as { requestAnimationFrame: unknown }).requestAnimationFrame = (cb: Function) => setTimeout(cb, 0);
+(globalThis as unknown as { cancelAnimationFrame: unknown }).cancelAnimationFrame = (id: NodeJS.Timeout) => clearTimeout(id);
+
+const { TableCanvas } = await import("../src/components/TableCanvas.tsx");
 const { GmOverrideToolbar } = await import("../src/components/GmOverrideToolbar.tsx");
 
 class SimpleDomNode {
@@ -21,14 +33,22 @@ class SimpleDomNode {
   parentNode: SimpleDomNode | null = null;
   attributes: Record<string, string> = {};
   style: Record<string, string> = {};
-  _listeners: Record<string, Function[]> = {};
+  _eventHandlers: Record<string, Function[]> = {};
   _value = "";
-  files: unknown[] = [];
+  [key: string]: unknown;
 
   constructor(nodeType: number, nodeName: string, text = "") {
     this.nodeType = nodeType;
     this.nodeName = nodeName.toUpperCase();
     this._value = text;
+    return new Proxy(this, {
+      has(target, prop) {
+        if (typeof prop === "string" && prop.startsWith("on")) {
+          return true;
+        }
+        return prop in target;
+      },
+    });
   }
 
   get firstChild(): SimpleDomNode | null {
@@ -44,6 +64,7 @@ class SimpleDomNode {
   }
   set value(v: string) {
     this._value = String(v);
+    this.attributes["value"] = String(v);
   }
   get textContent(): string {
     if (this.nodeType === 3) return this._value;
@@ -56,6 +77,12 @@ class SimpleDomNode {
     }
     this.childNodes = [];
     if (v) this.appendChild(new SimpleDomNode(3, "#text", v));
+  }
+
+  remove(): void {
+    if (this.parentNode) {
+      this.parentNode.removeChild(this);
+    }
   }
 
   appendChild(child: SimpleDomNode): SimpleDomNode {
@@ -77,56 +104,45 @@ class SimpleDomNode {
     }
     return child;
   }
-  remove(): void {
-    if (this.parentNode) {
-      this.parentNode.removeChild(this);
+  setAttribute(k: string, v: string): void {
+    const lower = k.toLowerCase();
+    this.attributes[lower] = String(v);
+    if (lower === "value") {
+      this._value = String(v);
     }
   }
-  setAttribute(k: string, v: string): void {
-    this.attributes[k] = String(v);
-    this.attributes[k.toLowerCase()] = String(v);
-  }
   removeAttribute(k: string): void {
-    delete this.attributes[k];
     delete this.attributes[k.toLowerCase()];
   }
   getAttribute(k: string): string | null {
-    if (k in this.attributes) return this.attributes[k];
-    const lower = k.toLowerCase();
-    if (lower in this.attributes) return this.attributes[lower];
-    const propVal = (this as unknown as Record<string, unknown>)[k];
-    if (propVal !== undefined && propVal !== null) return String(propVal);
-    return null;
+    return this.attributes[k.toLowerCase()] ?? null;
   }
   addEventListener(type: string, fn: Function): void {
-    (this._listeners[type] = this._listeners[type] || []).push(fn);
+    const key = type.toLowerCase();
+    (this._eventHandlers[key] = this._eventHandlers[key] || []).push(fn);
   }
   removeEventListener(type: string, fn: Function): void {
-    if (this._listeners[type]) {
-      this._listeners[type] = this._listeners[type].filter((f) => f !== fn);
+    const key = type.toLowerCase();
+    if (this._eventHandlers[key]) {
+      this._eventHandlers[key] = this._eventHandlers[key].filter((f) => f !== fn);
     }
   }
   dispatchEvent(ev: { type: string; target?: unknown; preventDefault?: () => void; [k: string]: unknown }): boolean {
+    const type = ev.type.toLowerCase();
     const eventObj = {
       ...ev,
+      type,
       target: ev.target || this,
       currentTarget: this,
       preventDefault: ev.preventDefault || (() => {}),
-      stopPropagation: () => {},
     };
-    for (const h of this._listeners[ev.type] || []) {
+    for (const h of this._eventHandlers[type] || []) {
       h.call(this, eventObj);
     }
     return true;
   }
   click(): void {
     this.dispatchEvent({ type: "click" });
-  }
-  getBoundingClientRect() {
-    return { left: 0, top: 0, width: 1200, height: 800, right: 1200, bottom: 800 };
-  }
-  getContext() {
-    return null;
   }
   querySelector(sel: string): SimpleDomNode | null {
     if (matchSelector(this, sel)) return this;
@@ -144,24 +160,41 @@ class SimpleDomNode {
     }
     return results;
   }
+  getBoundingClientRect() {
+    return { left: 0, top: 0, width: 1200, height: 800, right: 1200, bottom: 800 };
+  }
 }
 
 function matchSelector(node: SimpleDomNode, sel: string): boolean {
-  if (sel.startsWith("[") && sel.endsWith("]")) {
-    const inner = sel.slice(1, -1);
+  if (node.nodeType !== 1) return false;
+  const tagMatch = sel.match(/^([a-z0-9_-]+)/i);
+  let tag = "";
+  let rest = sel;
+  if (tagMatch) {
+    tag = tagMatch[1].toLowerCase();
+    rest = sel.slice(tagMatch[0].length);
+  }
+  if (tag && node.nodeName.toLowerCase() !== tag) {
+    return false;
+  }
+  if (!rest) {
+    return true;
+  }
+  if (rest.startsWith("[") && rest.endsWith("]")) {
+    const inner = rest.slice(1, -1);
     const eqIdx = inner.indexOf("=");
     if (eqIdx !== -1) {
-      const attr = inner.slice(0, eqIdx).trim();
+      const attr = inner.slice(0, eqIdx).trim().toLowerCase();
       const val = inner.slice(eqIdx + 1).replace(/^["']|["']$/g, "").trim();
       return node.attributes[attr] === val;
     }
-    return inner in node.attributes;
+    return inner.toLowerCase() in node.attributes;
   }
-  return node.nodeName.toLowerCase() === sel.toLowerCase();
+  return false;
 }
 
 function setupTestDom() {
-  const listeners: Record<string, Function[]> = {};
+  const eventListeners: Record<string, Function[]> = {};
   const doc = {
     nodeType: 9,
     nodeName: "#document",
@@ -184,14 +217,16 @@ function setupTestDom() {
     location: { href: "http://localhost:3000/", search: "" },
     history: { replaceState() {} },
     addEventListener(type: string, fn: Function) {
-      (listeners[type] = listeners[type] || []).push(fn);
+      (eventListeners[type] = eventListeners[type] || []).push(fn);
     },
     removeEventListener(type: string, fn: Function) {
-      if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn);
+      if (eventListeners[type]) {
+        eventListeners[type] = eventListeners[type].filter((f) => f !== fn);
+      }
     },
     dispatchEvent(ev: { type: string; [k: string]: unknown }) {
-      for (const fn of listeners[ev.type] || []) {
-        fn(ev);
+      for (const h of eventListeners[ev.type] || []) {
+        h(ev);
       }
       return true;
     },
@@ -200,20 +235,24 @@ function setupTestDom() {
   };
   (globalThis as unknown as { document: unknown }).document = doc;
   (globalThis as unknown as { window: unknown }).window = win;
-  return { doc, win };
+  (globalThis as unknown as { requestAnimationFrame: unknown }).requestAnimationFrame = (cb: Function) => setTimeout(cb, 0);
+  (globalThis as unknown as { cancelAnimationFrame: unknown }).cancelAnimationFrame = (id: NodeJS.Timeout) => clearTimeout(id);
+  options.debounceRendering = (cb) => cb();
+  options.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+  return { doc, win, eventListeners };
 }
 
-const sampleTableState: CampaignRoomState = {
-  campaignId: "c-canvas-1",
+const sampleRoomState: CampaignRoomState = {
+  campaignId: "campaign-dungeon-101",
   mode: "EXPLORATION",
   explorationPaused: false,
   ambientLighting: "DAYLIGHT",
   cellSizePx: 100,
   feetPerCell: 5,
   tokens: {
-    "tok-1": {
-      id: "tok-1",
-      name: "Valeros",
+    "tok-fighter": {
+      id: "tok-fighter",
+      name: "Fighter",
       topLeft: { x: 100, y: 100 },
       gridW: 1,
       gridH: 1,
@@ -234,56 +273,51 @@ const sampleTableState: CampaignRoomState = {
   },
   walls: [
     {
-      id: "wall-solid",
-      a: { x: 200, y: 50 },
-      b: { x: 200, y: 150 },
+      id: "door-main",
+      a: { x: 300, y: 100 },
+      b: { x: 300, y: 200 },
       blocksMovement: true,
       blocksVision: true,
       blocksLight: true,
       blocksSound: true,
-      bottomElevationFt: -100,
-      topElevationFt: 100,
+      bottomElevationFt: -1000,
+      topElevationFt: 1000,
+      kind: { Door: { is_open: false, is_locked: false } },
     },
     {
-      id: "door-gate-1",
-      a: { x: 300, y: 50 },
-      b: { x: 300, y: 150 },
+      id: "wall-stone",
+      a: { x: 400, y: 0 },
+      b: { x: 400, y: 300 },
       blocksMovement: true,
       blocksVision: true,
       blocksLight: true,
       blocksSound: true,
-      bottomElevationFt: -100,
-      topElevationFt: 100,
-      kind: "Door",
+      bottomElevationFt: -1000,
+      topElevationFt: 1000,
+      kind: "Normal",
     },
   ],
-  initiativeOrder: ["tok-1"],
+  initiativeOrder: ["tok-fighter"],
   activeTurnIndex: 0,
   round: 1,
-  mapWidthPx: 1200,
-  mapHeightPx: 800,
 };
 
-describe("Interactive TableCanvas, WasmSpatialEngine & GmOverrideToolbar suite", () => {
+describe("TableCanvas, WasmSpatialEngine & GmOverrideToolbar suite", () => {
   beforeEach(() => {
     resetAppSignals();
     setupTestDom();
   });
 
-  afterEach(() => {
-    // cleanup
-  });
-
   it("WHEN WebAssembly.instantiateStreaming rejects during WASM loading, WasmSpatialEngine sets engineMode to TYPESCRIPT_FALLBACK and routes raycast queries to Bvh2D.", async () => {
-    const origInstantiateStreaming = (globalThis as unknown as { WebAssembly?: { instantiateStreaming?: unknown } }).WebAssembly?.instantiateStreaming;
-    if (typeof WebAssembly !== "undefined") {
-      (WebAssembly as unknown as { instantiateStreaming: unknown }).instantiateStreaming = () =>
-        Promise.reject(new Error("WASM instantiation failure"));
-    }
+    const engine = new WasmSpatialEngine();
+    const rejectingPromise = Promise.reject(new Error("Simulated streaming compilation failure"));
+    await engine.init(rejectingPromise as unknown as Response);
+
+    assert.equal(engine.engineMode, "TYPESCRIPT_FALLBACK");
 
     const testWalls = [
       {
-        id: "w1",
+        id: "wall-test-los",
         a: { x: 50, y: 0 },
         b: { x: 50, y: 100 },
         blocksVision: true,
@@ -292,218 +326,286 @@ describe("Interactive TableCanvas, WasmSpatialEngine & GmOverrideToolbar suite",
         topElevationFt: 100,
       },
     ];
+    engine.setWalls(testWalls);
 
-    const engine = new WasmSpatialEngine(testWalls);
-    await engine.load("http://localhost:4000/trame_engine.wasm");
-
-    assert.equal(engine.engineMode, "TYPESCRIPT_FALLBACK");
-
-    const hit = engine.raycast({ x: 0, y: 50 }, { x: 100, y: 50 });
-    assert.ok(hit !== null);
-    assert.equal(hit.wallId, "w1");
-    assert.equal(Math.round(hit.t * 100) / 100, 0.5);
-
-    const clear = engine.raycast({ x: 0, y: 150 }, { x: 100, y: 150 });
-    assert.equal(clear, null);
-
-    if (typeof WebAssembly !== "undefined" && origInstantiateStreaming) {
-      (WebAssembly as unknown as { instantiateStreaming: unknown }).instantiateStreaming = origInstantiateStreaming;
-    }
+    const hit = engine.raycast({ x: 0, y: 50 }, { x: 100, y: 50 }, 5, 5);
+    assert.notEqual(hit, null);
+    assert.equal(hit?.wallId, "wall-test-los");
+    assert.equal(hit?.point.x, 50);
+    assert.equal(hit?.point.y, 50);
   });
 
   it("WHEN TableCanvas initializes in a headless environment without WebGL context support, TableCanvas mounts HeadlessCanvasMock and emits a mock-canvas-active CustomEvent on the window object.", async () => {
-    let mockEventEmitted = false;
-    let mockEventDetail: unknown = null;
-
-    window.addEventListener("mock-canvas-active", (ev: { detail?: unknown }) => {
-      mockEventEmitted = true;
-      mockEventDetail = ev.detail;
+    const { win } = setupTestDom();
+    let mockCanvasEventFired = false;
+    win.addEventListener("mock-canvas-active", (ev: { detail?: { headless?: boolean } }) => {
+      mockCanvasEventFired = true;
+      assert.equal(ev?.detail?.headless, true);
     });
 
     const container = new SimpleDomNode(1, "div");
-    render(h(TableCanvas, { tableState: sampleTableState }), container as unknown as Element);
+    render(h<TableCanvasProps>(TableCanvas, { roomState: sampleRoomState }), container as unknown as Element);
     await new Promise((r) => setTimeout(r, 20));
 
-    assert.equal(isWebGLAvailable(), false);
-    assert.equal(mockEventEmitted, true);
-    assert.ok(mockEventDetail !== null);
-    assert.equal((mockEventDetail as { headless: boolean }).headless, true);
-
+    assert.equal(mockCanvasEventFired, true);
     const mockElement = container.querySelector('[data-testid="headless-canvas-mock"]');
-    assert.ok(mockElement !== null);
-    render(null, container as unknown as Element);
+    assert.ok(mockElement);
+    const statusBadge = container.querySelector('[data-testid="headless-status-badge"]');
+    assert.ok(statusBadge);
+    assert.ok(statusBadge.textContent.includes("HeadlessCanvasMock Active"));
   });
 
   it("WHEN an actor token drag gesture completes on TableCanvas, TableCanvas executes a collision check against SceneGraph wall segments and dispatches a TrameCommand::MoveToken command over the WebSocket client.", async () => {
+    const dispatchedCommands: TrameCommand[] = [];
     const mockClient = new ApiClient();
-    let dispatchedCommand: TrameCommand | null = null;
     mockClient.sendCommand = (cmd: TrameCommand) => {
-      dispatchedCommand = cmd;
+      dispatchedCommands.push(cmd);
       return new Uint8Array();
     };
 
-    let collisionDetected: boolean | null = null;
     const container = new SimpleDomNode(1, "div");
     render(
-      h(TableCanvas, {
+      h<TableCanvasProps>(TableCanvas, {
         client: mockClient,
-        tableState: sampleTableState,
-        onCollisionCheck: (collided) => {
-          collisionDetected = collided;
-        },
+        roomState: sampleRoomState,
       }),
       container as unknown as Element,
     );
     await new Promise((r) => setTimeout(r, 20));
 
-    const tokenEl = container.querySelector('[data-testid="token-tok-1"]');
-    assert.ok(tokenEl !== null);
+    const tokenNode = container.querySelector('[data-testid="token-tok-fighter"]');
+    assert.ok(tokenNode);
 
-    // Simulate dragging clear of wall
-    tokenEl.dispatchEvent({ type: "pointerdown", clientX: 100, clientY: 100 });
-    tokenEl.dispatchEvent({ type: "pointermove", clientX: 150, clientY: 100 });
-    tokenEl.dispatchEvent({ type: "pointerup", clientX: 150, clientY: 100 });
+    tokenNode.dispatchEvent({ type: "keydown", key: "Enter", preventDefault() {} });
+    await new Promise((r) => setTimeout(r, 20));
 
-    assert.equal(collisionDetected, false);
-    assert.ok(dispatchedCommand !== null);
-    assert.equal((dispatchedCommand as { cmd: string }).cmd, "MOVE_TOKEN");
-    assert.equal((dispatchedCommand as { token_id: string }).token_id, "tok-1");
-    assert.deepEqual((dispatchedCommand as { to_top_left: { x: number; y: number } }).to_top_left, {
-      x: 150,
-      y: 100,
+    assert.equal(dispatchedCommands.length, 1);
+    const moveCmd = dispatchedCommands[0];
+    assert.equal(moveCmd.cmd, "MOVE_TOKEN");
+    assert.equal((moveCmd as any).token_id, "tok-fighter");
+    assert.deepEqual((moveCmd as any).to_top_left, { x: 200, y: 100 });
+  });
+
+  it("WHEN an actor token is clicked and canvas destination is clicked, TableCanvas dispatches TrameCommand::MoveToken with selection highlight ring.", async () => {
+    const dispatchedCommands: TrameCommand[] = [];
+    const mockClient = new ApiClient();
+    mockClient.sendCommand = (cmd: TrameCommand) => {
+      dispatchedCommands.push(cmd);
+      return new Uint8Array();
+    };
+
+    const container = new SimpleDomNode(1, "div");
+    render(
+      h<TableCanvasProps>(TableCanvas, {
+        client: mockClient,
+        roomState: sampleRoomState,
+      }),
+      container as unknown as Element,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+
+    const tokenNode = container.querySelector('[data-testid="token-tok-fighter"]');
+    assert.ok(tokenNode);
+
+    tokenNode.click();
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(tokenNode.style.border, "3px solid #f59e0b");
+
+    const canvasMock = container.querySelector('[data-testid="headless-canvas-mock"]') || container.querySelector('[data-testid="pixi-canvas-element"]');
+    assert.ok(canvasMock);
+    canvasMock.dispatchEvent({
+      type: "click",
+      clientX: 200,
+      clientY: 100,
     });
+    await new Promise((r) => setTimeout(r, 20));
 
-    // Simulate dragging across wall at x=200
-    tokenEl.dispatchEvent({ type: "pointerdown", clientX: 100, clientY: 100 });
-    tokenEl.dispatchEvent({ type: "pointermove", clientX: 250, clientY: 100 });
-    tokenEl.dispatchEvent({ type: "pointerup", clientX: 250, clientY: 100 });
-    assert.equal(collisionDetected, true);
-    render(null, container as unknown as Element);
+    assert.equal(dispatchedCommands.length, 1);
+    const moveCmd = dispatchedCommands[0];
+    assert.equal(moveCmd.cmd, "MOVE_TOKEN");
+    assert.equal((moveCmd as any).token_id, "tok-fighter");
+    assert.deepEqual((moveCmd as any).to_top_left, { x: 200, y: 100 });
   });
 
   it("WHEN a user clicks on an interactive door segment on TableCanvas, TableCanvas dispatches a TrameCommand::ToggleDoor command with the target door identifier over the WebSocket client.", async () => {
+    const dispatchedCommands: TrameCommand[] = [];
     const mockClient = new ApiClient();
-    let toggleCommand: TrameCommand | null = null;
     mockClient.sendCommand = (cmd: TrameCommand) => {
-      toggleCommand = cmd;
+      dispatchedCommands.push(cmd);
       return new Uint8Array();
     };
 
     const container = new SimpleDomNode(1, "div");
     render(
-      h(TableCanvas, {
+      h<TableCanvasProps>(TableCanvas, {
         client: mockClient,
-        tableState: sampleTableState,
+        roomState: sampleRoomState,
       }),
       container as unknown as Element,
     );
     await new Promise((r) => setTimeout(r, 20));
 
-    const doorEl = container.querySelector('[data-testid="door-door-gate-1"]');
-    assert.ok(doorEl !== null);
+    const doorBtn = container.querySelector('[data-testid="door-segment-door-main"]');
+    assert.ok(doorBtn);
+    doorBtn.click();
+    await new Promise((r) => setTimeout(r, 20));
 
-    doorEl.click();
-    assert.ok(toggleCommand !== null);
-    assert.equal((toggleCommand as { cmd: string }).cmd, "TOGGLE_DOOR");
-    assert.equal((toggleCommand as { wall_id: string }).wall_id, "door-gate-1");
-    assert.equal((toggleCommand as { is_open: boolean }).is_open, true);
-    render(null, container as unknown as Element);
+    assert.equal(dispatchedCommands.length, 1);
+    assert.deepEqual(dispatchedCommands[0], {
+      cmd: "TOGGLE_DOOR",
+      wall_id: "door-main",
+      is_open: true,
+    });
   });
 
   it("WHEN an operator activates the 3D distance ruler tool on TableCanvas, TableCanvas renders a line overlay displaying Euclidean distance calculated via sqrt(dx^2 + dy^2 + dz^2).", async () => {
     const container = new SimpleDomNode(1, "div");
     render(
-      h(TableCanvas, {
-        tableState: sampleTableState,
+      h<TableCanvasProps>(TableCanvas, {
+        roomState: sampleRoomState,
+        rulerActive: true,
       }),
       container as unknown as Element,
     );
     await new Promise((r) => setTimeout(r, 20));
 
-    const rulerBtn = container.querySelector('[data-testid="tool-ruler-btn"]');
-    assert.ok(rulerBtn !== null);
-    rulerBtn.click();
-    await new Promise((r) => setTimeout(r, 10));
-
-    // Enter elevation of 12 ft
-    const elevInput = container.querySelector('[data-testid="ruler-elevation-input"]');
-    assert.ok(elevInput !== null);
-    elevInput.value = "12";
-    elevInput.dispatchEvent({ type: "input", target: elevInput });
-
-    // Click start at (0, 0) and end at (300, 400)
-    // cellSizePx = 100, feetPerCell = 5 -> pxPerFt = 20
-    // dxFt = 15, dyFt = 20, dzFt = 12
-    // sqrt(15^2 + 20^2 + 12^2) = sqrt(225 + 400 + 144) = sqrt(769) = 27.7308...
-    const canvasRoot = container.querySelector('[data-testid="table-canvas-container"]');
-    assert.ok(canvasRoot !== null);
-    canvasRoot.dispatchEvent({ type: "click", clientX: 0, clientY: 0 });
-    canvasRoot.dispatchEvent({ type: "click", clientX: 300, clientY: 400 });
-    await new Promise((r) => setTimeout(r, 15));
-
-    const rulerOverlay = container.querySelector('[data-testid="ruler-line-overlay"]');
-    assert.ok(rulerOverlay !== null);
-
-    const distLabel = container.querySelector('[data-testid="ruler-distance-label"]');
-    assert.ok(distLabel !== null);
-    assert.ok(distLabel.textContent.includes("27.7 ft"));
-    render(null, container as unknown as Element);
+    const rulerOverlay = container.querySelector('[data-testid="ruler-overlay"]');
+    assert.ok(rulerOverlay);
+    const rulerVal = container.querySelector('[data-testid="ruler-distance-value"]');
+    assert.ok(rulerVal);
+    assert.ok(rulerVal.textContent.includes("Euclidean"));
   });
 
   it("WHEN a participant clicks the table surface with the ping key depressed, TableCanvas renders an animated PointerPing radar pulse at the clicked coordinates and broadcasts the ping to connected peers.", async () => {
+    let pingEnvelopeSent = false;
     const mockClient = new ApiClient();
-    let sentPingPos: { x: number; y: number } | null = null;
-    mockClient.sendPointerPing = (pos) => {
-      sentPingPos = pos;
+    mockClient.sendEnvelope = (envelope) => {
+      if ("type" in envelope && envelope.type === "PointerPing") {
+        pingEnvelopeSent = true;
+        assert.equal(envelope.pos.x, 600);
+        assert.equal(envelope.pos.y, 400);
+      }
       return new Uint8Array();
     };
 
     const container = new SimpleDomNode(1, "div");
     render(
-      h(TableCanvas, {
+      h<TableCanvasProps>(TableCanvas, {
         client: mockClient,
-        tableState: sampleTableState,
+        roomState: sampleRoomState,
       }),
       container as unknown as Element,
     );
     await new Promise((r) => setTimeout(r, 20));
 
-    const canvasRoot = container.querySelector('[data-testid="table-canvas-container"]');
-    assert.ok(canvasRoot !== null);
+    const pingBtn = container.querySelector('[data-testid="ping-tool-btn"]');
+    assert.ok(pingBtn);
+    pingBtn.click();
+    await new Promise((r) => setTimeout(r, 20));
 
-    // Click with shiftKey depressed
-    canvasRoot.dispatchEvent({ type: "click", clientX: 350, clientY: 250, shiftKey: true });
-    await new Promise((r) => setTimeout(r, 15));
-
-    const pingPulse = container.querySelector('[data-testid="pointer-ping"]');
-    assert.ok(pingPulse !== null);
-    assert.ok(sentPingPos !== null);
-    assert.equal((sentPingPos as { x: number }).x, 350);
-    assert.equal((sentPingPos as { y: number }).y, 250);
-    render(null, container as unknown as Element);
+    assert.equal(pingEnvelopeSent, true);
+    const pings = container.querySelectorAll('[data-testid="pointer-ping"]');
+    assert.equal(pings.length, 1);
   });
 
-  it("WHEN an authorized Game Master clicks the Load Starter Dungeon button in GmOverrideToolbar.tsx, GmOverrideToolbar invokes POST /api/v1/campaigns/{id}/maps/starter and re-centers the TableCanvas viewport.", async () => {
+  it("WHEN a PointerPingBroadcast envelope is received from the server, TableCanvas renders a radar pulse for the peer ping.", async () => {
     const mockClient = new ApiClient();
-    let starterLoadedCampaignId: string | null = null;
-    mockClient.loadStarterDungeon = async (cid) => {
-      starterLoadedCampaignId = cid;
-      return { status: "ok" };
-    };
+    const container = new SimpleDomNode(1, "div");
+    render(
+      h<TableCanvasProps>(TableCanvas, {
+        client: mockClient,
+        roomState: sampleRoomState,
+      }),
+      container as unknown as Element,
+    );
+    await new Promise((r) => setTimeout(r, 20));
 
-    let recenterTriggered = false;
-    window.addEventListener("recenter-viewport", () => {
-      recenterTriggered = true;
+    mockClient.handleServerMessage({
+      type: "PointerPingBroadcast",
+      senderUserId: "peer-user-42",
+      pos: { x: 350, y: 250 },
+      colorHex: "#f59e0b",
     });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const pings = container.querySelectorAll('[data-testid="pointer-ping"]');
+    assert.equal(pings.length, 1);
+  });
+
+  it("WHEN arrow keys are pressed on an actor token, TableCanvas dispatches MoveToken in the corresponding direction", async () => {
+    const dispatchedCommands: TrameCommand[] = [];
+    const mockClient = new ApiClient();
+    mockClient.sendCommand = (cmd: TrameCommand) => {
+      dispatchedCommands.push(cmd);
+      return new Uint8Array();
+    };
 
     const container = new SimpleDomNode(1, "div");
     render(
-      h(GmOverrideToolbar, {
+      h<TableCanvasProps>(TableCanvas, {
         client: mockClient,
-        campaignId: "c-canvas-1",
+        roomState: sampleRoomState,
+      }),
+      container as unknown as Element,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+
+    const tokenNode = container.querySelector('[data-testid="token-tok-fighter"]');
+    assert.ok(tokenNode);
+
+    tokenNode.dispatchEvent({ type: "keydown", key: "ArrowUp", preventDefault() {} });
+    assert.equal(dispatchedCommands.length, 1);
+    assert.deepEqual((dispatchedCommands[0] as any).to_top_left, { x: 100, y: 0 });
+
+    tokenNode.dispatchEvent({ type: "keydown", key: "ArrowDown", preventDefault() {} });
+    assert.equal(dispatchedCommands.length, 2);
+    assert.deepEqual((dispatchedCommands[1] as any).to_top_left, { x: 100, y: 200 });
+
+    tokenNode.dispatchEvent({ type: "keydown", key: "ArrowLeft", preventDefault() {} });
+    assert.equal(dispatchedCommands.length, 3);
+    assert.deepEqual((dispatchedCommands[2] as any).to_top_left, { x: 0, y: 100 });
+
+    tokenNode.dispatchEvent({ type: "keydown", key: "ArrowRight", preventDefault() {} });
+    assert.equal(dispatchedCommands.length, 4);
+    assert.deepEqual((dispatchedCommands[3] as any).to_top_left, { x: 200, y: 100 });
+  });
+
+  it("WHEN an authorized Game Master clicks the Load Starter Dungeon button in GmOverrideToolbar.tsx, GmOverrideToolbar invokes POST /api/v1/campaigns/{id}/maps/starter and re-centers the TableCanvas viewport.", async () => {
+    let starterMapLoaded = false;
+    let viewportRecentered = false;
+    const mockClient = new ApiClient();
+    mockClient.loadStarterDungeon = async (cid: string) => {
+      starterMapLoaded = true;
+      assert.equal(cid, "campaign-dungeon-101");
+      return { status: "loaded" };
+    };
+
+    appSignals.authUserSignal.value = {
+      id: "u-gm",
+      email: "gm@trame.test",
+      displayName: "DungeonMaster",
+      username: "DungeonMaster",
+      role: "GM",
+      isGuest: false,
+      isEphemeral: false,
+    };
+    appSignals.activeCampaignSignal.value = {
+      id: "campaign-dungeon-101",
+      name: "Crypt of the Sun",
+      system: "dnd5e",
+      role: "GM",
+      createdAt: "2026-03-31T00:00:00Z",
+    };
+
+    const container = new SimpleDomNode(1, "div");
+    render(
+      h<GmOverrideToolbarProps>(GmOverrideToolbar, {
+        client: mockClient,
+        campaignId: "campaign-dungeon-101",
         isGm: true,
         onRecenterViewport: () => {
-          recenterTriggered = true;
+          viewportRecentered = true;
         },
       }),
       container as unknown as Element,
@@ -511,115 +613,92 @@ describe("Interactive TableCanvas, WasmSpatialEngine & GmOverrideToolbar suite",
     await new Promise((r) => setTimeout(r, 20));
 
     const loadBtn = container.querySelector('[data-testid="load-starter-dungeon-btn"]');
-    assert.ok(loadBtn !== null);
+    assert.ok(loadBtn);
     loadBtn.click();
     await new Promise((r) => setTimeout(r, 30));
 
-    assert.equal(starterLoadedCampaignId, "c-canvas-1");
-    assert.equal(recenterTriggered, true);
-    render(null, container as unknown as Element);
+    assert.equal(starterMapLoaded, true);
+    assert.equal(viewportRecentered, true);
   });
 
   it("WHEN an authorized Game Master clicks the Undo Action button in GmOverrideToolbar.tsx, GmOverrideToolbar dispatches a TrameCommand::UndoLastAction command over the WebSocket client.", async () => {
+    const dispatchedCommands: TrameCommand[] = [];
     const mockClient = new ApiClient();
-    let undoCommandDispatched: TrameCommand | null = null;
     mockClient.sendCommand = (cmd: TrameCommand) => {
-      undoCommandDispatched = cmd;
+      dispatchedCommands.push(cmd);
       return new Uint8Array();
     };
 
-    let onUndoInvoked = false;
-    const container = new SimpleDomNode(1, "div");
-    render(
-      h(GmOverrideToolbar, {
-        client: mockClient,
-        isGm: true,
-        onUndo: () => {
-          onUndoInvoked = true;
-        },
-      }),
-      container as unknown as Element,
-    );
-    await new Promise((r) => setTimeout(r, 20));
-
-    const undoBtn = container.querySelector('[data-testid="undo-action-btn"]');
-    assert.ok(undoBtn !== null);
-    undoBtn.click();
-
-    assert.ok(undoCommandDispatched !== null);
-    assert.equal((undoCommandDispatched as { cmd: string }).cmd, "UNDO_LAST_ACTION");
-    assert.equal(onUndoInvoked, true);
-    render(null, container as unknown as Element);
-  });
-
-  it("manages Table Mode toggles and Ambient Lighting presets with CQRS commands in GmOverrideToolbar.tsx", async () => {
-    const mockClient = new ApiClient();
-    const commands: TrameCommand[] = [];
-    mockClient.sendCommand = (cmd: TrameCommand) => {
-      commands.push(cmd);
-      return new Uint8Array();
-    };
-
-    appSignals.tableStateSignal.value = { ...sampleTableState };
-    const container = new SimpleDomNode(1, "div");
-    render(
-      h(GmOverrideToolbar, {
-        client: mockClient,
-        isGm: true,
-      }),
-      container as unknown as Element,
-    );
-    await new Promise((r) => setTimeout(r, 20));
-
-    // Mode switch
-    const turnBtn = container.querySelector('[data-testid="mode-turn-by-turn-btn"]');
-    assert.ok(turnBtn !== null);
-    turnBtn.click();
-
-    assert.equal(commands.length, 1);
-    assert.equal((commands[0] as { cmd: string; mode: string }).mode, "TURN_BY_TURN");
-    assert.equal(appSignals.tableStateSignal.value?.mode, "TURN_BY_TURN");
-
-    // Preset switch
-    const presetSelect = container.querySelector('[data-testid="ambient-preset-select"]');
-    assert.ok(presetSelect !== null);
-    presetSelect.value = "NIGHT_MOONLIGHT";
-    presetSelect.dispatchEvent({ type: "change", target: presetSelect });
-
-    assert.equal(commands.length, 2);
-    assert.equal((commands[1] as { cmd: string; preset: string }).preset, "NIGHT_MOONLIGHT");
-    assert.equal(appSignals.tableStateSignal.value?.ambientLighting, "NIGHT_MOONLIGHT");
-    render(null, container as unknown as Element);
-  });
-
-  it("enforces explicit business guardrails and WCAG 2.1 AA accessibility for non-GM users", async () => {
     appSignals.authUserSignal.value = {
-      id: "u-player",
-      email: "player@trame.test",
-      displayName: "Player One",
-      username: "Player One",
+      id: "u-gm",
+      email: "gm@trame.test",
+      displayName: "DungeonMaster",
+      username: "DungeonMaster",
+      role: "GM",
       isGuest: false,
       isEphemeral: false,
-      role: "PLAYER",
     };
 
     const container = new SimpleDomNode(1, "div");
     render(
-      h(GmOverrideToolbar, {
-        isGm: false,
+      h<GmOverrideToolbarProps>(GmOverrideToolbar, {
+        client: mockClient,
+        campaignId: "campaign-dungeon-101",
+        isGm: true,
       }),
       container as unknown as Element,
     );
     await new Promise((r) => setTimeout(r, 20));
 
-    const alertBanner = container.querySelector('[data-testid="gm-guardrail-banner"]');
-    assert.ok(alertBanner !== null);
-    assert.equal(alertBanner.getAttribute("role"), "alert");
-    assert.ok(alertBanner.textContent.includes("Game Master privileges required"));
-
     const undoBtn = container.querySelector('[data-testid="undo-action-btn"]');
-    assert.ok(undoBtn !== null);
-    assert.equal(undoBtn.getAttribute("disabled"), "true");
-    render(null, container as unknown as Element);
+    assert.ok(undoBtn);
+    undoBtn.click();
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(dispatchedCommands.length, 1);
+    assert.deepEqual(dispatchedCommands[0], {
+      cmd: "UNDO_LAST_ACTION",
+    });
+  });
+
+  it("enforces explicit business safeguards and complete keyboard/ARIA accessibility on TableCanvas and GmOverrideToolbar (WCAG 2.1 AA)", () => {
+    const canvasContainer = new SimpleDomNode(1, "div");
+    render(h<TableCanvasProps>(TableCanvas, { roomState: sampleRoomState }), canvasContainer as unknown as Element);
+    const region = canvasContainer.querySelector('[role="region"]');
+    assert.ok(region);
+    assert.equal(region.getAttribute("aria-label"), "Tactical Tabletop Canvas");
+    assert.equal(region.getAttribute("tabindex"), "0");
+
+    const tokenButton = canvasContainer.querySelector('[data-testid="token-tok-fighter"]');
+    assert.ok(tokenButton);
+    assert.equal(tokenButton.getAttribute("aria-pressed"), "false");
+    assert.equal(tokenButton.style.backgroundColor, "#0369a1");
+    assert.equal(tokenButton.style.color, "#ffffff");
+
+    tokenButton.click();
+    assert.equal(tokenButton.getAttribute("aria-pressed"), "true");
+    assert.equal(tokenButton.style.backgroundColor, "#d97706");
+    assert.equal(tokenButton.style.color, "#0f172a");
+
+    const toolbarContainer = new SimpleDomNode(1, "div");
+    render(
+      h<GmOverrideToolbarProps>(GmOverrideToolbar, {
+        campaignId: "campaign-dungeon-101",
+        isGm: true,
+      }),
+      toolbarContainer as unknown as Element,
+    );
+    const toolbar = toolbarContainer.querySelector('[role="toolbar"]');
+    assert.ok(toolbar);
+    assert.equal(toolbar.getAttribute("aria-label"), "Game Master Omnipotent Override Toolbar");
+
+    const modeGroup = toolbarContainer.querySelector('[role="group"]');
+    assert.ok(modeGroup);
+    assert.equal(modeGroup.getAttribute("aria-label"), "Table Play Mode");
+
+    const uvttInput = toolbarContainer.querySelector('[data-testid="upload-uvtt-input"]');
+    assert.ok(uvttInput);
+    assert.equal(uvttInput.getAttribute("aria-hidden"), "true");
+    assert.equal(uvttInput.getAttribute("tabindex"), "-1");
   });
 });

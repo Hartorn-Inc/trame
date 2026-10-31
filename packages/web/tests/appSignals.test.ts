@@ -97,6 +97,12 @@ class SimpleDomNode {
     if (v) this.appendChild(new SimpleDomNode(3, "#text", v));
   }
 
+  remove(): void {
+    if (this.parentNode) {
+      this.parentNode.removeChild(this);
+    }
+  }
+
   appendChild(child: SimpleDomNode): SimpleDomNode {
     return this.insertBefore(child, null);
   }

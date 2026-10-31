@@ -1,5 +1,24 @@
 import type { Point2D } from "../engine/wasmBridge.ts";
-import { type ActionEconomyType, normalizeActionEconomyType } from "./combatTracker.ts";
+
+export type ActionEconomyType =
+  | "ACTION"
+  | "BONUS_ACTION"
+  | "REACTION"
+  | "MOVEMENT"
+  | "Action"
+  | "BonusAction"
+  | "Reaction"
+  | "Movement";
+
+export function normalizeActionEconomyType(
+  type: ActionEconomyType,
+): "ACTION" | "BONUS_ACTION" | "REACTION" | "MOVEMENT" {
+  const upper = String(type).toUpperCase().replace(/[-_]/g, "");
+  if (upper === "BONUSACTION") return "BONUS_ACTION";
+  if (upper === "REACTION") return "REACTION";
+  if (upper === "MOVEMENT") return "MOVEMENT";
+  return "ACTION";
+}
 
 export type AmbientPreset =
   | "DAYLIGHT"
