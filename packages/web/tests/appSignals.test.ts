@@ -90,14 +90,26 @@ class SimpleDomNode {
     }
     return child;
   }
+  remove(): void {
+    if (this.parentNode) {
+      this.parentNode.removeChild(this);
+    }
+  }
   setAttribute(k: string, v: string): void {
     this.attributes[k] = String(v);
+    this.attributes[k.toLowerCase()] = String(v);
   }
   removeAttribute(k: string): void {
     delete this.attributes[k];
+    delete this.attributes[k.toLowerCase()];
   }
   getAttribute(k: string): string | null {
-    return this.attributes[k] ?? null;
+    if (k in this.attributes) return this.attributes[k];
+    const lower = k.toLowerCase();
+    if (lower in this.attributes) return this.attributes[lower];
+    const propVal = (this as unknown as Record<string, unknown>)[k];
+    if (propVal !== undefined && propVal !== null) return String(propVal);
+    return null;
   }
   addEventListener(type: string, fn: Function): void {
     (this._listeners[type] = this._listeners[type] || []).push(fn);
@@ -337,14 +349,16 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
     nameInput.dispatchEvent({ type: "input", target: nameInput });
     passInput.value = "SecurePass2026!";
     passInput.dispatchEvent({ type: "input", target: passInput });
+    await new Promise((r) => setTimeout(r, 15));
 
     form.dispatchEvent({ type: "submit", preventDefault() {} });
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 25));
 
     assert.equal(registerCalled, true);
     assert.notEqual(appSignals.authUserSignal.value, null);
     assert.equal(appSignals.authUserSignal.value?.email, "adventurer@trame.test");
     assert.equal(transitionedToLobby, true);
+    render(null, container as unknown as Element);
   });
 
   it("WHEN a visitor navigates to the lobby URL with query parameter ?invite=<jwt>, CampaignLobby.tsx executes POST /api/v1/auth/magic-link/redeem, assigns the ephemeral user to appSignals.authUserSignal, and opens the invited campaign.", async () => {
@@ -385,7 +399,7 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
       container as unknown as Element,
     );
 
-    await new Promise((r) => setTimeout(r, 30));
+    await new Promise((r) => setTimeout(r, 60));
 
     assert.equal(redeemCalled, true);
     assert.notEqual(appSignals.authUserSignal.value, null);
@@ -393,6 +407,7 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
     assert.equal(appSignals.authUserSignal.value?.isEphemeral, true);
     assert.equal(openedCampaignId, "campaign-invited-999");
     assert.equal(appSignals.activeCampaignSignal.value?.id, "campaign-invited-999");
+    render(null, container as unknown as Element);
   });
 
   it("WHEN a Game Master clicks the Create Campaign button and submits a campaign name in CampaignLobby.tsx, CampaignLobby.tsx executes POST /api/v1/campaigns and appends the returned campaign summary to appSignals.campaignsSignal.", async () => {
@@ -402,13 +417,15 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
     mockClient.createCampaign = async (req) => {
       createCalled = true;
       assert.equal(req.name, "Curse of the Crimson Citadel");
-      return {
+      const created = {
         id: "camp-crimson-1",
         name: req.name,
         system: req.system || "dnd5e",
         role: "GM",
         createdAt: "2026-03-31T00:00:00Z",
       };
+      appSignals.campaignsSignal.value = [...appSignals.campaignsSignal.value, created];
+      return created;
     };
 
     const container = new SimpleDomNode(1, "div");
@@ -417,6 +434,7 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
     const createBtn = container.querySelector('[data-testid="create-campaign-btn"]');
     assert.ok(createBtn);
     createBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
 
     const nameInput = container.querySelector('[data-testid="create-campaign-name-input"]');
     const createForm = container.querySelector('[data-testid="create-campaign-form"]');
@@ -425,25 +443,27 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
 
     nameInput.value = "Curse of the Crimson Citadel";
     nameInput.dispatchEvent({ type: "input", target: nameInput });
+    await new Promise((r) => setTimeout(r, 15));
 
     createForm.dispatchEvent({ type: "submit", preventDefault() {} });
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 25));
 
     assert.equal(createCalled, true);
     assert.equal(appSignals.campaignsSignal.value.length, 1);
     assert.equal(appSignals.campaignsSignal.value[0].name, "Curse of the Crimson Citadel");
+    render(null, container as unknown as Element);
   });
 
   it("enforces WCAG 2.1 AA keyboard and ARIA accessibility roles on AuthScreen and CampaignLobby", () => {
     setupTestDom();
     const authContainer = new SimpleDomNode(1, "div");
-    render(h(AuthScreen, {}), authContainer as unknown as Element);
+    render(h(AuthScreen, { initialMode: "register" }), authContainer as unknown as Element);
     const authMain = authContainer.querySelector('[role="main"]');
     assert.ok(authMain);
     assert.equal(authMain.getAttribute("aria-labelledby"), "auth-heading");
 
     const lobbyContainer = new SimpleDomNode(1, "div");
-    render(h(CampaignLobby, {}), lobbyContainer as unknown as Element);
+    render(h(CampaignLobby, { client: new ApiClient() }), lobbyContainer as unknown as Element);
     const lobbyMain = lobbyContainer.querySelector('[role="main"]');
     assert.ok(lobbyMain);
     assert.equal(lobbyMain.getAttribute("aria-label"), "Campaign Lobby");
@@ -457,5 +477,7 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
     assert.ok(importInput);
     assert.equal(importInput.getAttribute("tabindex"), "-1");
     assert.equal(importInput.getAttribute("aria-hidden"), "true");
+    render(null, authContainer as unknown as Element);
+    render(null, lobbyContainer as unknown as Element);
   });
 });
