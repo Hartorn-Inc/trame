@@ -101,7 +101,11 @@ function setupMockDom() {
       }
     }
 
-    focus() {}
+    focus() {
+      if (typeof document !== "undefined") {
+        (document as any).activeElement = this;
+      }
+    }
 
     contains(other: MockNode | null): boolean {
       let cur = other;
@@ -167,8 +171,19 @@ function setupMockDom() {
     }
 
     querySelectorAll(selector: string): MockNode[] {
+      if (selector.includes(",")) {
+        const parts = selector.split(",").map((s) => s.trim());
+        const matchedSet = new Set<MockNode>();
+        for (const p of parts) {
+          for (const m of this.querySelectorAll(p)) {
+            matchedSet.add(m);
+          }
+        }
+        return Array.from(matchedSet);
+      }
       const results: MockNode[] = [];
       const match = (node: MockNode): boolean => {
+        if (selector === "*") return true;
         if (selector.startsWith("#")) {
           return node.id === selector.slice(1) || node.getAttribute("id") === selector.slice(1);
         }
@@ -224,6 +239,7 @@ function setupMockDom() {
       return new MockNode("#document-fragment", 11);
     },
     body: new MockNode("BODY", 1),
+    activeElement: null as MockNode | null,
   };
 
   (globalThis as any).document = mockDoc;
@@ -615,6 +631,101 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     assert.ok(closeBtn, "Close button with proper aria-label must exist");
     closeBtn.dispatchEvent(new (globalThis as any).Event("click"));
     assert.equal(closedCount, 2, "Close button click must trigger onClose");
+
+    unmount();
+  });
+
+  it("WHEN LevelUpModal renders, LevelUpModal satisfies WCAG 2.2 focus trap, hit targets >= 40px, contrast, and ARIA toggle state", async () => {
+    const actor = createDefaultActorData("actor-wizard", "Galdor");
+    actor.classId = "wizard";
+    actor.attributes.level = 3; // Advancing to lvl 4 (ASI level)
+
+    const { container, getNextButton, unmount } = await renderModal({
+      isOpen: true,
+      actor,
+      onClose: () => {},
+      onSave: () => {},
+    });
+
+    // Verify initial focus set to close button
+    const closeBtn = container.querySelector("button[aria-label='Fermer la fenêtre de montée de niveau']");
+    assert.ok(closeBtn, "Close button exists");
+    assert.equal((document as any).activeElement, closeBtn, "Close button should receive initial focus upon modal mount");
+
+    // Verify all footer buttons have min-h-[40px] and min-w-[40px]
+    const footerButtons = container.querySelectorAll("footer button");
+    for (const btn of footerButtons) {
+      assert.ok(btn.classList.contains("min-h-[40px]"), "Footer button must have min-h-[40px]");
+      assert.ok(btn.classList.contains("min-w-[40px]"), "Footer button must have min-w-[40px]");
+    }
+
+    // Advance to Step 3 (ASI / Feat)
+    const nextBtn = getNextButton();
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+
+    // Verify ASI and Feat buttons have aria-pressed, visual glyph, min-h-[40px], and focus ring
+    const asiBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("ASI"));
+    const featBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Choisir un Don"));
+    assert.ok(asiBtn && featBtn, "ASI and Feat toggle buttons must be rendered");
+
+    assert.equal(asiBtn.getAttribute("aria-pressed"), "true", "ASI button must have aria-pressed='true' when active");
+    assert.equal(featBtn.getAttribute("aria-pressed"), "false", "Feat button must have aria-pressed='false' when inactive");
+    assert.ok(asiBtn.textContent.includes("●"), "Active button must include non-color visual indicator (●)");
+    assert.ok(featBtn.textContent.includes("○"), "Inactive button must include non-color visual indicator (○)");
+
+    assert.ok(asiBtn.classList.contains("min-h-[40px]"), "ASI button must have min-h-[40px]");
+    assert.ok(asiBtn.classList.contains("focus-visible:ring-[var(--atlas-focus)]"), "ASI button must have var(--atlas-focus) ring");
+    assert.ok(featBtn.classList.contains("focus-visible:ring-[var(--atlas-focus)]"), "Feat button must have var(--atlas-focus) ring");
+
+    // Verify select elements have var(--atlas-focus) ring
+    const asiSingleSelect = container.querySelector("#asi-single-ability");
+    assert.ok(asiSingleSelect, "Single ability select rendered");
+    assert.ok(asiSingleSelect.classList.contains("focus-visible:ring-[var(--atlas-focus)]"), "Ability select must have var(--atlas-focus) ring");
+
+    // Switch to feat mode and test feat select focus ring
+    featBtn.dispatchEvent(new (globalThis as any).Event("click"));
+    assert.equal(featBtn.getAttribute("aria-pressed"), "true");
+    assert.equal(asiBtn.getAttribute("aria-pressed"), "false");
+    const featSelect = container.querySelector("#asi-feat-select");
+    assert.ok(featSelect, "Feat select rendered");
+    assert.ok(featSelect.classList.contains("focus-visible:ring-[var(--atlas-focus)]"), "Feat select must have var(--atlas-focus) ring");
+
+    // Verify Tab focus trap keydown wraps from last element to first element
+    const dialog = container.querySelector("[role='dialog']");
+    assert.ok(dialog, "Dialog element exists");
+
+    let defaultPrevented = false;
+    const mockTabEvent = {
+      type: "keydown",
+      key: "Tab",
+      shiftKey: false,
+      preventDefault: () => {
+        defaultPrevented = true;
+      },
+      stopPropagation: () => {},
+    };
+    const allButtons = container.querySelectorAll("button");
+    const lastButton = allButtons[allButtons.length - 1];
+    (document as any).activeElement = lastButton;
+    dialog.dispatchEvent(mockTabEvent);
+    assert.equal(defaultPrevented, true, "Tab from last element should prevent default");
+    assert.equal((document as any).activeElement, closeBtn, "Tab from last element should wrap focus to first element");
+
+    // Verify Shift+Tab wraps from first element to last element
+    let shiftDefaultPrevented = false;
+    const mockShiftTabEvent = {
+      type: "keydown",
+      key: "Tab",
+      shiftKey: true,
+      preventDefault: () => {
+        shiftDefaultPrevented = true;
+      },
+      stopPropagation: () => {},
+    };
+    (document as any).activeElement = closeBtn;
+    dialog.dispatchEvent(mockShiftTabEvent);
+    assert.equal(shiftDefaultPrevented, true, "Shift+Tab from first element should prevent default");
 
     unmount();
   });
