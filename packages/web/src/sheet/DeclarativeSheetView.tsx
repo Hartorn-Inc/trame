@@ -1,6 +1,6 @@
 import { h, type VNode } from 'preact';
 import { DND5E_SHEET_LAYOUT } from '../../../game-systems/dnd5e/sheetLayout.ts';
-import { PadlockLockedIcon, PadlockUnlockedIcon } from '../components/icons/AtlasIcons.tsx';
+import { PadlockLockedIcon, PadlockUnlockedIcon } from './PadlockIcons.tsx';
 import { isNodeAuthorized } from './DeclarativeSheetRenderer.ts';
 import { BindingResolver } from './binding.ts';
 import { WidgetRegistry } from './WidgetRegistry.ts';

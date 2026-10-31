@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { DeclarativeSheetView } from "../../src/sheet/DeclarativeSheetView.tsx";
-
 import { CompendiumDrawer } from "../../src/compendium/CompendiumDrawer.tsx";
 
 describe("DeclarativeSheetView Component & CoreBuildLock", () => {
@@ -24,7 +23,7 @@ describe("DeclarativeSheetView Component & CoreBuildLock", () => {
     assert.equal(vnode.props['data-testid'], 'declarative-sheet-view');
   });
 
-  it("CompendiumDrawer exposes tablist role and programmatic selection state on category buttons", () => {
+  it("CompendiumDrawer exposes tablist role, tabpanel, and programmatic selection state on category buttons", () => {
     const drawer = CompendiumDrawer({
       isOpen: true,
       onClose: () => {},
@@ -36,10 +35,12 @@ describe("DeclarativeSheetView Component & CoreBuildLock", () => {
     const firstTab = tabsContainer.props.children[0];
     assert.equal(firstTab.props.role, 'tab');
     assert.equal(firstTab.props['aria-selected'], 'true');
-    assert.equal(firstTab.props['aria-pressed'], 'true');
+    assert.equal(firstTab.props['aria-controls'], 'compendium-tabpanel');
     const secondTab = tabsContainer.props.children[1];
+    assert.equal(secondTab.props.role, 'tab');
     assert.equal(secondTab.props['aria-selected'], 'false');
-    assert.equal(secondTab.props['aria-pressed'], 'false');
+    const tabPanel = drawer.props.children[3];
+    assert.equal(tabPanel.props.role, 'tabpanel');
   });
 
   it("CompendiumDrawer dispatches DropCompendiumEntry command when clicking [ Add ]", () => {
@@ -62,7 +63,8 @@ describe("DeclarativeSheetView Component & CoreBuildLock", () => {
       ],
     });
     assert.ok(drawer);
-    const list = drawer.props.children[3];
+    const tabPanel = drawer.props.children[3];
+    const list = tabPanel.props.children;
     const itemCard = list.props.children[0];
     const addButton = itemCard.props.children[3];
     assert.equal(addButton.props['data-testid'], 'btn-add-entry-longsword');

@@ -28,6 +28,13 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
     isCompendiumDrawerOpenSignal.value = false;
   };
 
+  const handleSheetKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      closeSheet();
+    }
+  };
+
   const actorId = props.actorId ?? (props.actorState as any)?.id ?? (props.actorState as any)?.sheet?.id;
 
   return h(
@@ -36,7 +43,12 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
     isSheetDrawerOpenSignal.value
       ? h(
           'aside',
-          { class: 'ds-hud-sheet-drawer', 'data-testid': 'hud-sheet-drawer', 'aria-label': 'Character Sheet Drawer' },
+          {
+            class: 'ds-hud-sheet-drawer',
+            'data-testid': 'hud-sheet-drawer',
+            'aria-label': 'Character Sheet Drawer',
+            onKeyDown: handleSheetKeyDown,
+          },
           h(
             'header',
             { class: 'ds-drawer-header' },

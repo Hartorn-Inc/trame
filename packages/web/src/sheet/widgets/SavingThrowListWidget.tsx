@@ -51,6 +51,7 @@ export function SavingThrowListWidget(props: WidgetProps): VNode<any> {
           proficient = Boolean(val.proficient);
         }
         const modDisplay = mod >= 0 ? `+${mod}` : `${mod}`;
+        const profText = proficient ? 'proficient' : 'unproficient';
 
         return h(
           'li',
@@ -60,7 +61,9 @@ export function SavingThrowListWidget(props: WidgetProps): VNode<any> {
             'data-testid': `save-row-${key}`,
             role: isLocked ? 'button' : undefined,
             tabIndex: isLocked ? 0 : undefined,
-            'aria-label': isLocked ? `Roll ${key.toUpperCase()} saving throw (${modDisplay})` : undefined,
+            'aria-label': isLocked
+              ? `Roll ${key.toUpperCase()} saving throw (${modDisplay}, ${profText})`
+              : undefined,
             onClick: () => isLocked && handleSaveClick(key, mod),
             onKeyDown: isLocked
               ? (e: KeyboardEvent) => {

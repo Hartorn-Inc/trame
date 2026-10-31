@@ -1,6 +1,6 @@
 import { h, type VNode } from 'preact';
-import { useSafeState } from '../sheet/safeHooks.ts';
 import type { CompendiumEntry } from '../../../../packages/game-systems/dnd5e/src/compendium.ts';
+import { useSafeState } from '../sheet/safeHooks.ts';
 import type { CommandDispatcher } from '../sheet/types.ts';
 import { CompendiumDragDropManager } from './CompendiumDragDropManager.ts';
 
@@ -59,9 +59,21 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
     props.onDragStart?.(entry, e);
   };
 
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      props.onClose();
+    }
+  };
+
   return h(
     'aside',
-    { class: 'ds-compendium-drawer', 'data-testid': 'compendium-drawer', 'aria-label': 'Compendium Drawer' },
+    {
+      class: 'ds-compendium-drawer',
+      'data-testid': 'compendium-drawer',
+      'aria-label': 'Compendium Drawer',
+      onKeyDown: handleKeyDown,
+    },
     h(
       'header',
       { class: 'ds-drawer-header' },
@@ -89,52 +101,62 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
           'button',
           {
             key: cat,
+            id: `compendium-tab-btn-${cat}`,
             type: 'button',
             role: 'tab',
             class: `ds-tab-btn ${category === cat ? 'is-active' : ''}`,
             'data-testid': `compendium-tab-${cat}`,
             'aria-selected': category === cat ? 'true' : 'false',
-            'aria-pressed': category === cat ? 'true' : 'false',
+            'aria-controls': 'compendium-tabpanel',
             onClick: () => setCategory(cat),
           },
           cat.toUpperCase(),
         ),
       ),
     ),
-    filtered.length === 0
-      ? h('p', { class: 'ds-empty-state', 'data-testid': 'compendium-empty-state' }, 'No compendium entries found matching your query.')
-      : h(
-          'ul',
-          { class: 'ds-compendium-entry-list', 'data-testid': 'compendium-entry-list' },
-          filtered.map((entry) =>
-            h(
-              'li',
-              {
-                key: entry.id,
-                class: 'ds-compendium-entry-card',
-                'data-testid': `compendium-entry-${entry.slug}`,
-                draggable: true,
-                onDragStart: (e: DragEvent) => handleDragStart(entry, e),
-              },
-              h('strong', { class: 'ds-entry-name' }, entry.name),
-              h('span', { class: 'ds-entry-type' }, ` [${entry.entityType}] `),
-              h('span', { class: 'ds-entry-tier' }, entry.tier),
+    h(
+      'div',
+      {
+        id: 'compendium-tabpanel',
+        role: 'tabpanel',
+        'aria-labelledby': `compendium-tab-btn-${category}`,
+        class: 'ds-compendium-tabpanel',
+      },
+      filtered.length === 0
+        ? h('p', { class: 'ds-empty-state', 'data-testid': 'compendium-empty-state' }, 'No compendium entries found matching your query.')
+        : h(
+            'ul',
+            { class: 'ds-compendium-entry-list', 'data-testid': 'compendium-entry-list' },
+            filtered.map((entry) =>
               h(
-                'button',
+                'li',
                 {
-                  type: 'button',
-                  class: 'ds-btn-add-entry',
-                  'data-testid': `btn-add-entry-${entry.slug}`,
-                  'aria-label': `Add ${entry.name} to character sheet`,
-                  onClick: (e: Event) => {
-                    e.stopPropagation();
-                    handleAddEntry(entry);
-                  },
+                  key: entry.id,
+                  class: 'ds-compendium-entry-card',
+                  'data-testid': `compendium-entry-${entry.slug}`,
+                  draggable: true,
+                  onDragStart: (e: DragEvent) => handleDragStart(entry, e),
                 },
-                '[ Add ]',
+                h('strong', { class: 'ds-entry-name' }, entry.name),
+                h('span', { class: 'ds-entry-type' }, ` [${entry.entityType}] `),
+                h('span', { class: 'ds-entry-tier' }, entry.tier),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    class: 'ds-btn-add-entry',
+                    'data-testid': `btn-add-entry-${entry.slug}`,
+                    'aria-label': `Add ${entry.name} to character sheet`,
+                    onClick: (e: Event) => {
+                      e.stopPropagation();
+                      handleAddEntry(entry);
+                    },
+                  },
+                  '[ Add ]',
+                ),
               ),
             ),
           ),
-        ),
+    ),
   );
 }

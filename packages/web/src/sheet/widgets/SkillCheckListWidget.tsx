@@ -61,8 +61,9 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
           passive = typeof val.passive === 'number' ? val.passive : 10 + mod;
         }
         const modDisplay = mod >= 0 ? `+${mod}` : `${mod}`;
-
+        const rankText = rank === 2 ? 'expertise' : rank === 1 ? 'proficient' : 'unproficient';
         const rankGlyph = rank === 2 ? '[E]' : rank === 1 ? '[P]' : '[ ]';
+
         return h(
           'li',
           {
@@ -71,7 +72,9 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
             'data-testid': `skill-row-${key}`,
             role: isLocked ? 'button' : undefined,
             tabIndex: isLocked ? 0 : undefined,
-            'aria-label': isLocked ? `Roll ${key} skill check (${modDisplay})` : undefined,
+            'aria-label': isLocked
+              ? `Roll ${key} skill check (${modDisplay}, ${rankText}, passive ${passive})`
+              : undefined,
             onClick: () => isLocked && handleSkillClick(key, mod),
             onKeyDown: isLocked
               ? (e: KeyboardEvent) => {
@@ -91,7 +94,7 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
                   class: `ds-prof-pip rank-${rank}`,
                   'data-testid': `skill-prof-cycle-${key}`,
                   'data-rank': rank,
-                  'aria-label': `Cycle proficiency rank for ${key}, current rank: ${rank}`,
+                  'aria-label': `Cycle proficiency rank for ${key}, current rank: ${rankText}`,
                   onClick: (e: Event) => {
                     e.stopPropagation();
                     handleCycleRank(key, rank);
