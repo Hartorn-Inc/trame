@@ -311,10 +311,10 @@ export function applyLevelUp(
 ): Dnd5eActorData {
   // 1. Level ceiling checks
   if (options.targetLevel !== undefined && options.targetLevel > 20) {
-    throw new Error("Max level is 20");
+    throw new Error("Max level is 20 (level 20 ceiling reached)");
   }
   if (actor.attributes.level >= 20) {
-    throw new Error("Max level is 20");
+    throw new Error("Max level is 20 (level 20 ceiling reached)");
   }
 
   // 2. Level increment validation
