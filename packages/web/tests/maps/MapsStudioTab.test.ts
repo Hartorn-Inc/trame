@@ -14,212 +14,19 @@ import {
   convertDrawingToWallSegments,
 } from "../../src/engine/wasmBridge.ts";
 
-export type WallType =
-  | "Normal"
-  | "Window"
-  | "Terrain"
-  | "OneWay"
-  | "Door"
-  | "SecretDoor"
-  | "Illusion";
-
-export interface StudioWallSegment {
-  id: string;
-  a: Point2D;
-  b: Point2D;
-  wallType: WallType;
-  blocksMovement: boolean;
-  blocksVision: boolean;
-  blocksLight: boolean;
-  blocksSound: boolean;
-  bottomElevationFt: number;
-  topElevationFt: number;
-  doorState?: {
-    isOpen: boolean;
-    isLocked: boolean;
-  };
-  secretDoorState?: {
-    isOpen: boolean;
-  };
-}
-
-export interface StudioLightSource {
-  id: string;
-  origin: Point2D;
-  brightRadiusFt: number;
-  dimRadiusFt: number;
-  colorHex: string;
-  intensity: number;
-}
-
-export interface StagedToken {
-  id: string;
-  name: string;
-  templateKey: "Goblin" | "Bandit" | "Guard" | "Skeleton" | "Wolf" | "Ogre" | "Boss";
-  x: number;
-  y: number;
-  elevationFt: number;
-  visibilityChannel: "Public" | "GmHidden";
-  ownerUserId: string | null;
-  hpCurrent: number;
-  hpMax: number;
-}
-
-export interface CampaignMapScene {
-  id: string;
-  campaignId: string;
-  title: string;
-  revealedToPlayers: boolean;
-  gridCellSizePx: number;
-  feetPerCell: number;
-  widthPx: number;
-  heightPx:
-    number;
-  walls: StudioWallSegment[];
-  lights: StudioLightSource[];
-  audioEmitters: Array<{
-    id: string;
-    url: string;
-    x: number;
-    y: number;
-    elevationFt: number;
-    refDistanceFt: number;
-    maxDistanceFt: number;
-    rolloff: number;
-    loopPlayback: boolean;
-    volume: number;
-  }>;
-  stagedTokens: StagedToken[];
-  spawnPoint: Point2D;
-}
-
-export interface ActiveTableRoomState {
-  activeSceneId: string;
-  walls: StudioWallSegment[];
-  lights: StudioLightSource[];
-  tokens: StagedToken[];
-}
-
-export function filterScenesForRole(
-  scenes: CampaignMapScene[],
-  role: "GM" | "PLAYER" | "SPECTATOR",
-): CampaignMapScene[] {
-  if (role === "GM") {
-    return scenes;
-  }
-  return scenes
-    .filter((scene) => scene.revealedToPlayers)
-    .map((scene) => ({
-      ...scene,
-      walls: scene.walls.map((wall) => {
-        if (wall.wallType === "SecretDoor" && !wall.secretDoorState?.isOpen) {
-          return {
-            ...wall,
-            wallType: "Normal",
-            secretDoorState: undefined,
-          };
-        }
-        return wall;
-      }),
-      stagedTokens: scene.stagedTokens.filter(
-        (token) => token.visibilityChannel !== "GmHidden",
-      ),
-    }));
-}
-
-export function activateSceneTransition(
-  currentTable: ActiveTableRoomState,
-  targetScene: CampaignMapScene,
-): ActiveTableRoomState {
-  const heroTokens = currentTable.tokens.filter((t) => t.ownerUserId !== null);
-  const preservedHeroes = heroTokens.map((hero, index) => ({
-    ...hero,
-    x: targetScene.spawnPoint.x + index * 10,
-    y: targetScene.spawnPoint.y,
-  }));
-
-  const nonHeroStaged = targetScene.stagedTokens.filter((t) => t.ownerUserId === null);
-
-  return {
-    activeSceneId: targetScene.id,
-    walls: [...targetScene.walls],
-    lights: [...targetScene.lights],
-    tokens: [...preservedHeroes, ...nonHeroStaged],
-  };
-}
-
-export function parseUvttImport(uvttJson: {
-  format: number;
-  resolution: { pixels_per_grid: number };
-  line_of_sight?: Array<Array<{ x: number; y: number }>>;
-  portals?: Array<{
-    position: { x: number; y: number };
-    bounds: Array<{ x: number; y: number }>;
-    closed: boolean;
-  }>;
-  lights?: Array<{
-    position: { x: number; y: number };
-    range: number;
-    color: string;
-    intensity: number;
-  }>;
-}): { walls: StudioWallSegment[]; lights: StudioLightSource[] } {
-  const walls: StudioWallSegment[] = [];
-  let wallCounter = 1;
-
-  if (uvttJson.line_of_sight) {
-    for (const poly of uvttJson.line_of_sight) {
-      for (let i = 0; i < poly.length - 1; i++) {
-        walls.push({
-          id: `uvtt-wall-${wallCounter++}`,
-          a: { x: poly[i].x, y: poly[i].y },
-          b: { x: poly[i + 1].x, y: poly[i + 1].y },
-          wallType: "Normal",
-          blocksMovement: true,
-          blocksVision: true,
-          blocksLight: true,
-          blocksSound: true,
-          bottomElevationFt: -1000,
-          topElevationFt: 1000,
-        });
-      }
-    }
-  }
-
-  if (uvttJson.portals) {
-    for (const portal of uvttJson.portals) {
-      if (portal.bounds && portal.bounds.length >= 2) {
-        walls.push({
-          id: `uvtt-door-${wallCounter++}`,
-          a: { x: portal.bounds[0].x, y: portal.bounds[0].y },
-          b: { x: portal.bounds[1].x, y: portal.bounds[1].y },
-          wallType: "Door",
-          blocksMovement: portal.closed,
-          blocksVision: portal.closed,
-          blocksLight: portal.closed,
-          blocksSound: portal.closed,
-          bottomElevationFt: -1000,
-          topElevationFt: 1000,
-          doorState: {
-            isOpen: !portal.closed,
-            isLocked: false,
-          },
-        });
-      }
-    }
-  }
-
-  const lights: StudioLightSource[] = (uvttJson.lights || []).map((l, idx) => ({
-    id: `uvtt-light-${idx + 1}`,
-    origin: { x: l.position.x, y: l.position.y },
-    brightRadiusFt: l.range * 0.5,
-    dimRadiusFt: l.range,
-    colorHex: l.color,
-    intensity: l.intensity,
-  }));
-
-  return { walls, lights };
-}
+import {
+  type ActiveTableRoomState,
+  type CampaignMapScene,
+  type StagedToken,
+  type StudioLightSource,
+  type StudioWallSegment,
+  type WallType,
+  activateSceneTransition,
+  filterScenesForRole,
+  parseUvttImport,
+  toggleDoorState,
+} from "../../src/maps/index.ts";
+import { CampaignWorkspace } from "../../src/workspace/CampaignWorkspace.tsx";
 
 describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
   describe("Scene Creation & UvttMap Import Verification", () => {
@@ -337,8 +144,8 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
       });
     }
 
-    it("WHEN interactive door is opened, its movement, vision, and light blocks become permeable.", () => {
-      const door: StudioWallSegment = {
+    it("WHEN interactive door is opened via toggleDoorState, its movement, vision, and light blocks become permeable.", () => {
+      const closedDoor: StudioWallSegment = {
         id: "door-1",
         a: { x: 50, y: 0 },
         b: { x: 50, y: 50 },
@@ -352,17 +159,69 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
         doorState: { isOpen: false, isLocked: false },
       };
 
-      assert.equal(door.doorState?.isOpen, false);
-      assert.equal(door.blocksMovement, true);
+      assert.equal(closedDoor.doorState?.isOpen, false);
+      assert.equal(closedDoor.blocksMovement, true);
+      assert.equal(closedDoor.blocksVision, true);
+      assert.equal(closedDoor.blocksLight, true);
+      assert.equal(closedDoor.blocksSound, true);
 
-      door.doorState!.isOpen = true;
-      door.blocksMovement = false;
-      door.blocksVision = false;
-      door.blocksLight = false;
+      const openedDoor = toggleDoorState(closedDoor);
+      assert.equal(openedDoor.doorState?.isOpen, true);
+      assert.equal(openedDoor.blocksMovement, false);
+      assert.equal(openedDoor.blocksVision, false);
+      assert.equal(openedDoor.blocksLight, false);
+      assert.equal(openedDoor.blocksSound, false);
 
-      assert.equal(door.doorState?.isOpen, true);
-      assert.equal(door.blocksMovement, false);
-      assert.equal(door.blocksVision, false);
+      const reclosedDoor = toggleDoorState(openedDoor);
+      assert.equal(reclosedDoor.doorState?.isOpen, false);
+      assert.equal(reclosedDoor.blocksMovement, true);
+      assert.equal(reclosedDoor.blocksVision, true);
+      assert.equal(reclosedDoor.blocksLight, true);
+      assert.equal(reclosedDoor.blocksSound, true);
+
+      const lockedDoor: StudioWallSegment = {
+        ...closedDoor,
+        doorState: { isOpen: false, isLocked: true },
+      };
+      const attemptedUnlock = toggleDoorState(lockedDoor);
+      assert.equal(attemptedUnlock.doorState?.isOpen, false);
+      assert.equal(attemptedUnlock.blocksMovement, true);
+
+      const secretDoor: StudioWallSegment = {
+        id: "sec-door-1",
+        a: { x: 0, y: 0 },
+        b: { x: 50, y: 0 },
+        wallType: "SecretDoor",
+        blocksMovement: true,
+        blocksVision: true,
+        blocksLight: true,
+        blocksSound: true,
+        bottomElevationFt: 0,
+        topElevationFt: 10,
+        secretDoorState: { isOpen: false },
+      };
+      const openedSecret = toggleDoorState(secretDoor);
+      assert.equal(openedSecret.secretDoorState?.isOpen, true);
+      assert.equal(openedSecret.blocksMovement, false);
+      assert.equal(openedSecret.blocksVision, false);
+    });
+
+    it("WHEN CampaignWorkspace is rendered, it exposes MapsStudioTab for GM and SceneAtlas for Player in Tab 2.", () => {
+      const gmWorkspace = CampaignWorkspace({
+        campaignId: "campaign-test-1",
+        userRole: "GM",
+        activeTab: 2,
+        scenes: [],
+      });
+      assert.ok(gmWorkspace);
+
+      const playerWorkspace = CampaignWorkspace({
+        campaignId: "campaign-test-1",
+        userRole: "PLAYER",
+        activeTab: 2,
+        scenes: [],
+      });
+      assert.ok(playerWorkspace);
     });
   });
 

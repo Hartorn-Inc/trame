@@ -54,6 +54,9 @@ use crate::archive::{
 use crate::assets::store::{
     AssetStore, AssetStoreError, InMemoryAssetStore, PRESIGNED_URL_DEFAULT_TTL,
 };
+pub use crate::maps::{
+    get_campaign_maps_handler, put_campaign_maps_handler, InMemoryMapStorage,
+};
 use crate::auth::magic_link::MagicLinkService;
 use crate::auth::password::extract_session_token;
 use crate::auth::pat::PatMiddleware;
@@ -411,6 +414,8 @@ pub struct AppState {
     pub auth_state: AuthState,
     /// Simulated or live database connectivity flag checked by `GET /healthz`.
     pub db_healthy: Arc<AtomicBool>,
+    /// In-memory storage for campaign map scenes.
+    pub map_storage: InMemoryMapStorage,
 }
 
 impl AppState {
@@ -488,6 +493,7 @@ pub fn build_full_router(
         blob_store: InMemoryBlobStore::new(),
         auth_state,
         db_healthy: Arc::new(AtomicBool::new(true)),
+        map_storage: InMemoryMapStorage::new(),
     };
     build_router_with_state(state)
 }
@@ -520,12 +526,16 @@ pub fn build_router_with_state(state: AppState) -> Router {
             "/api/v1/campaigns/{campaign_id}/invites",
             post(create_campaign_invite_handler),
         )
+        .route(
+            "/api/v1/campaigns/{campaign_id}/maps",
+            get(get_campaign_maps_handler).put(put_campaign_maps_handler),
+        )
         .with_state(state)
         .merge(auth_router)
 }
 
 /// Resolves an authenticated user ID from session cookie, Bearer session token, Bearer PAT, or explicit `fallback_user_id`.
-async fn resolve_authenticated_user(
+pub async fn resolve_authenticated_user(
     state: &AppState,
     headers: &HeaderMap,
     fallback_user_id: Option<Uuid>,
@@ -568,7 +578,7 @@ async fn resolve_authenticated_user(
 }
 
 /// Checks whether `user_id` is an authorized member of `campaign_id` via `membership` or `session_store`.
-async fn is_authorized_campaign_member(state: &AppState, campaign_id: Uuid, user_id: Uuid) -> bool {
+pub async fn is_authorized_campaign_member(state: &AppState, campaign_id: Uuid, user_id: Uuid) -> bool {
     if state.membership.is_member(campaign_id, user_id) {
         return true;
     }
@@ -583,7 +593,7 @@ async fn is_authorized_campaign_member(state: &AppState, campaign_id: Uuid, user
 }
 
 /// Checks whether `user_id` holds Game Master (`"GM"`) privileges for `campaign_id`.
-async fn is_authorized_campaign_gm(state: &AppState, campaign_id: Uuid, user_id: Uuid) -> bool {
+pub async fn is_authorized_campaign_gm(state: &AppState, campaign_id: Uuid, user_id: Uuid) -> bool {
     if state.membership.is_gm(campaign_id, user_id) {
         return true;
     }

@@ -1,15 +1,33 @@
-# ADR-0035: SceneAtlas Gallery, Zero-Trust RBAC, and Server-Side Secret Masking
+# ADR-0035: SceneAtlas Gallery, Zero-Trust Access Control, and Secret Masking
 
 ## Status
 Accepted
 
 ## Context
-Players use `SceneAtlas` to inspect regional maps and explored dungeon floors. However, raw `CampaignMapScene` records contain GM-only secrets (`WallType::SecretDoor`, `WallType::Illusion`, `VisibilityChannel::GmHidden` tokens, `gm_only` audio emitters, and unexplored areas). Filtering these solely on the client would leak secrets in network responses.
+Browsing regional overviews, town layouts, or explored dungeon floors enhances the player experience via the `SceneAtlas` tab. However, a map scene contains privileged Game Master secrets:
+- Secret doors (`WallType::SecretDoor`) hidden inside walls;
+- Traps or illusory walls (`WallType::Illusion`) appearing solid to adventurers;
+- Staged monsters and hidden NPCs (`VisibilityChannel::GmHidden`);
+- Backstage sound triggers (`SpatialAudioEmitter` with `gm_only = true`);
+- Unexplored areas masked by fog of war.
+
+Sending raw scene documents to web clients and relying on frontend JavaScript filtering violates zero-trust principles and allows secret exfiltration via browser developer tools.
 
 ## Decision
-1. **Strict Server-Side RBAC**: `GET /api/v1/campaigns/{id}/maps` and `GET /api/v1/campaigns/{id}/maps/{map_id}` return full scenes to `CampaignRole::Gm` and reject unrevealed scenes (`revealed_to_players == false`) with `HTTP 403 Forbidden` for `CampaignRole::Player`.
-2. **Active Secret Masking**: Before serializing a revealed scene to a player, the server transforms unopened `WallType::SecretDoor` and `WallType::Illusion` segments into `WallType::Normal` (`door_state = None`), strips all `VisibilityChannel::GmHidden` tokens and `gm_only` audio emitters, and includes only the consolidated `explored_fog_texture`.
+1. **Strict Server-Side RBAC Filtering**: Backend routes `GET /api/v1/campaigns/{id}/maps` and `GET /api/v1/campaigns/{id}/maps/{map_id}` inspect caller role:
+   - For Game Masters (`CampaignRole::Gm`), the server transmits unredacted scene geometry and tokens.
+   - For Players (`CampaignRole::Player`), the server rejects unrevealed scenes (`revealed_to_players == false`) with `403 Forbidden`.
+2. **Active Secret Sanitization**: When serving requests from player accounts, the backend sanitizes the scene payload before serialization:
+   - `WallType::SecretDoor` segments with `door_state != DoorState::Open` convert to `WallType::Normal`, with `door_state = None`.
+   - `WallType::Illusion` segments convert to `WallType::Normal`.
+   - Tokens with `visibility == VisibilityChannel::GmHidden` are omitted from `staged_tokens`.
+   - Audio emitters with `gm_only == true` are omitted from `spatial_audio_emitters`.
+   - Only the explored fog texture is provided, preventing unrevealed room leakage.
 
 ## Consequences
-- Zero-trust network security against client-side packet inspection.
-- Unified scene payload structure reused cleanly by `SceneAtlas`.
+### Positive
+- Cryptographic and architectural immunity against client-side packet inspection.
+- Unified client rendering pipeline for both GM Map Studio and Player SceneAtlas.
+
+### Negative
+- Minor backend CPU serialization overhead during filtering and cloning before JSON dispatch.

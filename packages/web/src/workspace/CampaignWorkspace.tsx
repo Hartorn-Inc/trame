@@ -1,0 +1,75 @@
+import { signal } from '@preact/signals';
+import type { CampaignMapScene, UserRole } from '../maps/types.ts';
+import { MapsStudioTab } from '../maps/MapsStudioTab.tsx';
+import { SceneAtlas } from '../maps/SceneAtlas.tsx';
+
+export interface CampaignWorkspaceProps {
+  campaignId: string;
+  userRole: UserRole;
+  activeTab?: number;
+  scenes?: CampaignMapScene[];
+  onActivateScene?: (scene: CampaignMapScene) => void;
+  onSaveScene?: (scene: CampaignMapScene) => Promise<void>;
+}
+
+export function CampaignWorkspace({
+  campaignId,
+  userRole,
+  activeTab = 0,
+  scenes = [],
+  onActivateScene,
+  onSaveScene,
+}: CampaignWorkspaceProps) {
+  const activeTabSignal = signal<number>(activeTab);
+
+  const tabs = [
+    { id: 0, label: 'Table' },
+    { id: 1, label: 'Journal' },
+    { id: 2, label: userRole === 'GM' ? 'Maps Studio' : 'Scene Atlas' },
+  ];
+
+  return (
+    <div class="campaign-workspace" data-testid="campaign-workspace" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <nav class="workspace-tab-bar" style={{ display: 'flex', borderBottom: '1px solid var(--atlas-border)', gap: 'var(--atlas-space-sm)', padding: '0 var(--atlas-space-md)' }}>
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            data-testid={`tab-${tab.id}`}
+            onClick={() => { activeTabSignal.value = tab.id; }}
+            style={{
+              padding: 'var(--atlas-space-sm) var(--atlas-space-md)',
+              background: 'transparent',
+              border: 'none',
+              borderBottom: activeTabSignal.value === tab.id ? '2px solid var(--atlas-action)' : '2px solid transparent',
+              fontWeight: activeTabSignal.value === tab.id ? 'bold' : 'normal',
+              cursor: 'pointer',
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
+      <div class="workspace-tab-content" style={{ flex: 1, padding: 'var(--atlas-space-md)', minHeight: 0 }}>
+        {activeTabSignal.value === 0 && <div data-testid="tab-content-0">Table View</div>}
+        {activeTabSignal.value === 1 && <div data-testid="tab-content-1">Journal View</div>}
+        {activeTabSignal.value === 2 && (
+          userRole === 'GM' ? (
+            <MapsStudioTab
+              campaignId={campaignId}
+              userRole={userRole}
+              initialScenes={scenes}
+              onActivateScene={onActivateScene}
+              onSaveScene={onSaveScene}
+            />
+          ) : (
+            <SceneAtlas
+              campaignId={campaignId}
+              scenes={scenes}
+            />
+          )
+        )}
+      </div>
+    </div>
+  );
+}

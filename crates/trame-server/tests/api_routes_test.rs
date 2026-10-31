@@ -86,9 +86,148 @@ fn create_test_app_state() -> (AppState, Arc<InMemoryMembershipValidator>) {
         blob_store: InMemoryBlobStore::new(),
         auth_state,
         db_healthy: Arc::new(AtomicBool::new(true)),
+        map_storage: trame_server::maps::InMemoryMapStorage::new(),
     };
 
     (state, membership)
+}
+
+#[tokio::test]
+async fn test_campaign_maps_rbac_and_sanitization() {
+    let (state, membership) = create_test_app_state();
+    let app = build_router_with_state(state.clone());
+
+    let campaign_id = Uuid::new_v4();
+    let gm_user_id = Uuid::new_v4();
+    let player_user_id = Uuid::new_v4();
+    let outsider_user_id = Uuid::new_v4();
+
+    membership.add_member_with_role(campaign_id, gm_user_id, "GM");
+    membership.add_member_with_role(campaign_id, player_user_id, "PLAYER");
+
+    let test_scene = trame_server::maps::CampaignMapScene {
+        id: Uuid::new_v4(),
+        campaign_id,
+        name: "Dungeon Floor 1".to_string(),
+        grid_type: "square".to_string(),
+        grid_size_px: 70,
+        grid_cell_distance_ft: 5.0,
+        width_px: 1400,
+        height_px: 1400,
+        background_image_url: None,
+        default_ground_elevation_ft: 0.0,
+        revealed_to_players: true,
+        spawn_points: vec![],
+        wall_segments: vec![
+            trame_server::maps::WallSegment {
+                id: Uuid::new_v4(),
+                p1: trame_server::maps::Point2D { x: 0.0, y: 0.0 },
+                p2: trame_server::maps::Point2D { x: 100.0, y: 0.0 },
+                wall_type: trame_server::maps::WallType::SecretDoor,
+                door_state: Some(trame_server::maps::DoorState::Closed),
+                bottom_elevation_ft: 0.0,
+                top_elevation_ft: 10.0,
+                blocks_light: true,
+                blocks_movement: true,
+                blocks_sound: true,
+            },
+        ],
+        light_sources: vec![],
+        spatial_audio_emitters: vec![
+            trame_server::maps::SpatialAudioEmitter {
+                id: Uuid::new_v4(),
+                x: 10.0,
+                y: 10.0,
+                elevation_ft: 0.0,
+                radius_ft: 30.0,
+                volume: 1.0,
+                looping: true,
+                gm_only: true,
+                audio_clip_url: "secret.ogg".to_string(),
+            },
+        ],
+        staged_tokens: vec![
+            trame_server::maps::StagedToken {
+                id: Uuid::new_v4(),
+                name: "Ambush Goblin".to_string(),
+                monster_template_id: None,
+                x: 50.0,
+                y: 50.0,
+                elevation_ft: 0.0,
+                size_cells: 1,
+                token_avatar_url: None,
+                visibility: trame_server::maps::VisibilityChannel::GmHidden,
+            },
+        ],
+        explored_fog_texture: None,
+    };
+
+    // 1. Unauthenticated GET returns 401
+    let req_unauth = Request::builder()
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps"))
+        .body(Body::empty())
+        .unwrap();
+    let res_unauth = app.clone().oneshot(req_unauth).await.unwrap();
+    assert_eq!(res_unauth.status(), StatusCode::UNAUTHORIZED);
+
+    // 2. Outsider GET returns 403
+    let req_outsider = Request::builder()
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps?user_id={outsider_user_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let res_outsider = app.clone().oneshot(req_outsider).await.unwrap();
+    assert_eq!(res_outsider.status(), StatusCode::FORBIDDEN);
+
+    // 3. Player PUT returns 403
+    let payload = trame_server::maps::PutCampaignMapsPayload {
+        scenes: vec![test_scene.clone()],
+    };
+    let req_player_put = Request::builder()
+        .method("PUT")
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps?user_id={player_user_id}"))
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+        .unwrap();
+    let res_player_put = app.clone().oneshot(req_player_put).await.unwrap();
+    assert_eq!(res_player_put.status(), StatusCode::FORBIDDEN);
+
+    // 4. GM PUT returns 204
+    let req_gm_put = Request::builder()
+        .method("PUT")
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps?user_id={gm_user_id}"))
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+        .unwrap();
+    let res_gm_put = app.clone().oneshot(req_gm_put).await.unwrap();
+    assert_eq!(res_gm_put.status(), StatusCode::NO_CONTENT);
+
+    // 5. GM GET returns unredacted scene
+    let req_gm_get = Request::builder()
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps?user_id={gm_user_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let res_gm_get = app.clone().oneshot(req_gm_get).await.unwrap();
+    assert_eq!(res_gm_get.status(), StatusCode::OK);
+    let gm_body = axum::body::to_bytes(res_gm_get.into_body(), 1024 * 1024).await.unwrap();
+    let gm_scenes: Vec<trame_server::maps::CampaignMapScene> = serde_json::from_slice(&gm_body).unwrap();
+    assert_eq!(gm_scenes.len(), 1);
+    assert_eq!(gm_scenes[0].wall_segments[0].wall_type, trame_server::maps::WallType::SecretDoor);
+    assert_eq!(gm_scenes[0].staged_tokens.len(), 1);
+    assert_eq!(gm_scenes[0].spatial_audio_emitters.len(), 1);
+
+    // 6. Player GET returns sanitized scene
+    let req_player_get = Request::builder()
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps?user_id={player_user_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let res_player_get = app.clone().oneshot(req_player_get).await.unwrap();
+    assert_eq!(res_player_get.status(), StatusCode::OK);
+    let player_body = axum::body::to_bytes(res_player_get.into_body(), 1024 * 1024).await.unwrap();
+    let player_scenes: Vec<trame_server::maps::CampaignMapScene> = serde_json::from_slice(&player_body).unwrap();
+    assert_eq!(player_scenes.len(), 1);
+    assert_eq!(player_scenes[0].wall_segments[0].wall_type, trame_server::maps::WallType::Normal);
+    assert_eq!(player_scenes[0].staged_tokens.len(), 0);
+    assert_eq!(player_scenes[0].spatial_audio_emitters.len(), 0);
 }
 
 #[tokio::test]

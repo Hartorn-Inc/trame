@@ -672,8 +672,8 @@ mod tests {
     use trame_server::auth::session::{AuthState, InMemorySessionStore, SessionStore};
     use trame_server::auth::totp::TotpService;
     use trame_server::http::{
-        AppState, InMemoryBlobStore, InMemoryMembershipValidator, build_router_with_state,
-        seed_campaign_for_export,
+        AppState, InMemoryBlobStore, InMemoryMapStorage, InMemoryMembershipValidator,
+        build_router_with_state, seed_campaign_for_export,
     };
     use trame_server::room::RoomLeaseManager;
     use trame_server::storage::blob::{BlobStore, slice_to_stream};
@@ -975,6 +975,7 @@ mod tests {
             blob_store: InMemoryBlobStore::new(),
             auth_state,
             db_healthy: Arc::new(AtomicBool::new(true)),
+            map_storage: InMemoryMapStorage::new(),
         };
 
         seed_campaign_for_export(
