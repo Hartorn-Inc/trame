@@ -6,14 +6,20 @@
  * PURPOSE:
  * --------
  * Provides the root Preact shell for the TRAME browser client (`CampaignLobby`
- * and `CampaignWorkspace`) using ATLAS v1.1 semantic tokens (`tokens.css`).
+ * and live tabletop workspace).
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -------------------------------
  *   1. `PreactSignalState`:
- *      - Top-level reactive signals drive view transitions and theme switching
- *        (`dark`, `light`, `system`) without full-tree re-renders.
- *   2. Zero inline raw hex colors: all colors resolve via `var(--atlas-*)`.
+ *      - Top-level reactive signals drive view transitions without full-tree
+ *        re-renders.
+ *   2. `ImpeccableDesignTokens`:
+ *      - All colors and styling strictly use ATLAS v1.1 CSS custom properties.
+ *
+ * EXECUTION LIFECYCLE:
+ * --------------------
+ *   1. Initialize reactive application state.
+ *   2. Render active view (`CampaignLobby` or active campaign table).
  * ============================================================================
  */
 
@@ -30,6 +36,8 @@ export const appThemeSignal = themeModeSignal;
 export const setAppTheme = setThemeMode;
 
 export function App() {
+  const isMobile = !shouldMountCanvas.value;
+
   return (
     <div
       data-testid="trame-app-root"
