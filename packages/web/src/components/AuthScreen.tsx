@@ -154,7 +154,7 @@ export function AuthScreen(props: AuthScreenProps): JSX.Element {
                 borderRadius: "4px",
                 color: "#f8fafc",
                 fontSize: "1rem",
-                outline: "none",
+                outlineColor: "#f59e0b",
                 boxSizing: "border-box",
               }}
             />
@@ -185,7 +185,7 @@ export function AuthScreen(props: AuthScreenProps): JSX.Element {
                   borderRadius: "4px",
                   color: "#f8fafc",
                   fontSize: "1rem",
-                  outline: "none",
+                  outlineColor: "#f59e0b",
                   boxSizing: "border-box",
                 }}
               />
@@ -216,7 +216,7 @@ export function AuthScreen(props: AuthScreenProps): JSX.Element {
                 borderRadius: "4px",
                 color: "#f8fafc",
                 fontSize: "1rem",
-                outline: "none",
+                outlineColor: "#f59e0b",
                 boxSizing: "border-box",
               }}
             />

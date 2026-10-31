@@ -390,19 +390,23 @@ export type ClientEnvelope =
   | { type: "Ping"; clientTimeMs: number };
 
 export type ServerEnvelope =
-  | { type: "StateSync"; seqId?: number; seq_id?: number; state: CampaignRoomState }
+  | { type: "StateSync"; seqId: number; seq_id?: number; state: CampaignRoomState }
+  | { type: "Delta"; seqId: number; seq_id?: number; events: TrameEvent[]; state?: Partial<CampaignRoomState> }
+  | { type: "CommandRejected"; reason: string }
+  | { type: "DiceRolled"; roll: unknown }
+  | { type: "HandoutRevealed"; handout: HandoutRevealedBroadcast }
+  | { type: "PointerPingBroadcast"; senderUserId: string; sender_user_id?: string; pos: Point2D; colorHex: string; color_hex?: string }
+  | { type: "Pong"; clientTimeMs: number; client_time_ms?: number; serverTimeMs: number; server_time_ms?: number };
+
+export type RawServerEnvelope =
+  | ServerEnvelope
   | { StateSync: { seq_id?: number; seqId?: number; state: CampaignRoomState } }
   | { StateSnapshot: { seq_id?: number; seqId?: number; state: CampaignRoomState } }
-  | { type: "Delta"; seqId?: number; seq_id?: number; events: TrameEvent[]; state?: Partial<CampaignRoomState> }
   | { Delta: { seq_id?: number; seqId?: number; events: TrameEvent[]; state?: Partial<CampaignRoomState> } }
   | { CommandAccepted: { seq_id?: number; seqId?: number; events: TrameEvent[]; state: CampaignRoomState } }
-  | { type: "CommandRejected"; reason: string }
   | { CommandRejected: { reason: string } }
-  | { type: "DiceRolled"; roll: unknown }
   | { DiceRolled: unknown }
-  | { type: "HandoutRevealed"; handout: HandoutRevealedBroadcast }
   | { HandoutRevealed: HandoutRevealedBroadcast }
-  | { type: "PointerPingBroadcast"; senderUserId?: string; sender_user_id?: string; pos: Point2D; colorHex?: string; color_hex?: string }
   | { PointerPingBroadcast: { sender_user_id?: string; pos: Point2D; color_hex?: string } }
-  | { type: "Pong"; clientTimeMs?: number; client_time_ms?: number; serverTimeMs?: number; server_time_ms?: number }
-  | { Pong: { client_time_ms: number; server_time_ms: number } };
+  | { Pong: { client_time_ms: number; server_time_ms: number } }
+  | Record<string, unknown>;

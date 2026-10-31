@@ -19,6 +19,7 @@ import type {
   NoteDto,
   PartyJournalEntry,
   PatRecord,
+  RawServerEnvelope,
   RegisterRequest,
   RevealHandoutRequest,
   ServerEnvelope,
@@ -26,6 +27,7 @@ import type {
   Token,
   TokenMovedEvent,
   TrameCommand,
+  TrameEvent,
 } from "../types/index.ts";
 
 export function normalizeToken(id: string, raw: Record<string, unknown>): Token {
@@ -154,8 +156,7 @@ export function normalizeCampaignRoomState(raw: Record<string, unknown> | null |
   };
 }
 
-export function decodeServerEnvelope(bytes: Uint8Array | ArrayBuffer): ServerEnvelope {
-  const raw = decode(bytes as unknown as Uint8Array) as Record<string, unknown>;
+export function normalizeServerEnvelopeObject(raw: Record<string, unknown>): ServerEnvelope {
   if (!raw || typeof raw !== "object") {
     throw new Error("Invalid MessagePack server envelope: expected object");
   }
@@ -181,7 +182,7 @@ export function decodeServerEnvelope(bytes: Uint8Array | ArrayBuffer): ServerEnv
     return {
       type: "Delta",
       seqId: Number(payload.seq_id ?? payload.seqId ?? 0),
-      events: (payload.events as ServerEnvelope extends { events: infer E } ? E : never) || [],
+      events: (payload.events as TrameEvent[]) || [],
       state: payload.state as Partial<CampaignRoomState> | undefined,
     };
   }
@@ -190,7 +191,7 @@ export function decodeServerEnvelope(bytes: Uint8Array | ArrayBuffer): ServerEnv
     return {
       type: "Delta",
       seqId: Number(payload.seq_id ?? payload.seqId ?? 0),
-      events: (payload.events as ServerEnvelope extends { events: infer E } ? E : never) || [],
+      events: (payload.events as TrameEvent[]) || [],
       state: payload.state as Partial<CampaignRoomState> | undefined,
     };
   }
@@ -205,7 +206,7 @@ export function decodeServerEnvelope(bytes: Uint8Array | ArrayBuffer): ServerEnv
     return {
       type: "Delta",
       seqId: Number(raw.seqId ?? raw.seq_id ?? 0),
-      events: (raw.events as ServerEnvelope extends { events: infer E } ? E : never) || [],
+      events: (raw.events as TrameEvent[]) || [],
       state: raw.state as Partial<CampaignRoomState> | undefined,
     };
   }
@@ -238,7 +239,12 @@ export function decodeServerEnvelope(bytes: Uint8Array | ArrayBuffer): ServerEnv
     };
   }
 
-  return raw as ServerEnvelope;
+  return raw as unknown as ServerEnvelope;
+}
+
+export function decodeServerEnvelope(bytes: Uint8Array | ArrayBuffer): ServerEnvelope {
+  const raw = decode(bytes as unknown as Uint8Array) as Record<string, unknown>;
+  return normalizeServerEnvelopeObject(raw);
 }
 
 export class ApiClient {
@@ -308,10 +314,29 @@ export class ApiClient {
   }
 
   public async redeemMagicLink(token: string, nickname?: string): Promise<MagicLinkLoginResponse> {
-    const res = await this.requestJson<MagicLinkLoginResponse>(`${this.baseUrl}/api/v1/auth/magic-link/redeem`, {
+    const raw = await this.requestJson<Record<string, unknown>>(`${this.baseUrl}/api/v1/auth/magic-link/redeem`, {
       method: "POST",
       body: JSON.stringify({ token, nickname }),
     });
+    const rawUser = (raw.user || {}) as Record<string, unknown>;
+    const user: AuthUser = {
+      id: String(rawUser.id ?? raw.userId ?? raw.user_id ?? ""),
+      email: String(rawUser.email ?? ""),
+      displayName: String(rawUser.displayName ?? rawUser.display_name ?? raw.username ?? "Guest"),
+      username: String(rawUser.username ?? raw.username ?? "Guest"),
+      role: String(rawUser.role ?? raw.role ?? "PLAYER"),
+      isGuest: Boolean(rawUser.isGuest ?? rawUser.is_guest ?? rawUser.is_ephemeral ?? true),
+      isEphemeral: Boolean(rawUser.isEphemeral ?? rawUser.is_ephemeral ?? rawUser.is_guest ?? true),
+    };
+    const res: MagicLinkLoginResponse = {
+      userId: String(raw.userId ?? raw.user_id ?? user.id),
+      username: String(raw.username ?? user.username),
+      campaignId: String(raw.campaignId ?? raw.campaign_id ?? ""),
+      characterId: (raw.characterId ?? raw.character_id ?? null) as string | null,
+      role: String(raw.role ?? user.role),
+      sessionId: String(raw.sessionId ?? raw.session_id ?? ""),
+      user,
+    };
     appSignals.authUserSignal.value = res.user;
     return res;
   }
@@ -345,10 +370,20 @@ export class ApiClient {
     campaignId: string,
     req: CreateCampaignInviteRequest = {},
   ): Promise<CampaignInviteResponse> {
-    return this.requestJson<CampaignInviteResponse>(`${this.baseUrl}/api/v1/campaigns/${campaignId}/invites`, {
+    const raw = await this.requestJson<Record<string, unknown>>(`${this.baseUrl}/api/v1/campaigns/${campaignId}/invites`, {
       method: "POST",
-      body: JSON.stringify(req),
+      body: JSON.stringify({
+        ...req,
+        ttl_seconds: req.ttlSeconds,
+      }),
     });
+    return {
+      inviteUrl: String(raw.inviteUrl ?? raw.invite_url ?? ""),
+      token: String(raw.token ?? ""),
+      expiresAt: Number(raw.expiresAt ?? raw.expires_at ?? 0),
+      campaignId: String(raw.campaignId ?? raw.campaign_id ?? campaignId),
+      role: String(raw.role ?? req.role ?? "PLAYER"),
+    };
   }
 
   public async loadStarterDungeon(campaignId: string): Promise<unknown> {
@@ -361,10 +396,11 @@ export class ApiClient {
     campaignId: string,
     data: Uint8Array | ArrayBuffer | Blob,
   ): Promise<unknown> {
+    const bodyInit: BodyInit = data instanceof Blob ? data : new Blob([data as unknown as BlobPart]);
     const res = await fetch(`${this.baseUrl}/api/v1/campaigns/${campaignId}/maps/import-uvtt`, {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream" },
-      body: data,
+      body: bodyInit,
       credentials: "include",
     });
     if (!res.ok) {
@@ -465,10 +501,11 @@ export class ApiClient {
     archiveData: Blob | Uint8Array | ArrayBuffer,
     remapIds = false,
   ): Promise<ImportArchiveResult> {
+    const bodyInit: BodyInit = archiveData instanceof Blob ? archiveData : new Blob([archiveData as unknown as BlobPart]);
     const res = await fetch(`${this.baseUrl}/api/v1/campaigns/import?remap_ids=${remapIds}`, {
       method: "POST",
       headers: { "Content-Type": "application/zip" },
-      body: archiveData,
+      body: bodyInit,
       credentials: "include",
     });
     if (!res.ok) {
@@ -541,11 +578,11 @@ export class ApiClient {
   }
 
   public handleServerMessage(
-    bytesOrEnvelope: Uint8Array | ArrayBuffer | ServerEnvelope,
+    bytesOrEnvelope: Uint8Array | ArrayBuffer | RawServerEnvelope,
   ): ServerEnvelope {
-    const envelope = bytesOrEnvelope instanceof Uint8Array || bytesOrEnvelope instanceof ArrayBuffer
+    const envelope: ServerEnvelope = bytesOrEnvelope instanceof Uint8Array || bytesOrEnvelope instanceof ArrayBuffer
       ? decodeServerEnvelope(bytesOrEnvelope)
-      : bytesOrEnvelope;
+      : normalizeServerEnvelopeObject(bytesOrEnvelope as Record<string, unknown>);
 
     if (envelope.type === "StateSync") {
       appSignals.tableStateSignal.value = envelope.state;
@@ -584,7 +621,7 @@ export const client = new ApiClient();
 export const apiClient = client;
 export const sendCommand = (cmd: TrameCommand): Uint8Array => client.sendCommand(cmd);
 export const handleServerMessage = (
-  msg: Uint8Array | ArrayBuffer | ServerEnvelope,
+  msg: Uint8Array | ArrayBuffer | RawServerEnvelope,
 ): ServerEnvelope => client.handleServerMessage(msg);
 export const exportArchive = (campaignId: string, filename?: string): Promise<Blob> =>
   client.exportArchive(campaignId, filename);

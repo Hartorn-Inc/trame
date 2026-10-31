@@ -72,6 +72,19 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
   }, [props.inviteToken]);
 
   useEffect(() => {
+    if (!isCreateModalOpen && !isInviteModalOpen && !isPatModalOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsCreateModalOpen(false);
+        setIsInviteModalOpen(false);
+        setIsPatModalOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isCreateModalOpen, isInviteModalOpen, isPatModalOpen]);
+
+  useEffect(() => {
     if (user && campaigns.length === 0) {
       activeClient.listCampaigns().catch((err: unknown) => {
         setErrorMessage(err instanceof Error ? err.message : "Failed to load campaigns");
@@ -319,7 +332,16 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
 
         <label
           data-testid="import-archive-btn"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              (e.currentTarget.querySelector('input[type="file"]') as HTMLInputElement | null)?.click();
+            }
+          }}
           style={{
+            position: "relative",
+            overflow: "hidden",
             padding: "0.625rem 1.25rem",
             backgroundColor: "#1e293b",
             color: "#38bdf8",
@@ -332,10 +354,21 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
           Import Archive (.trame)
           <input
             type="file"
+            aria-label="Import Archive (.trame)"
             accept=".trame,.zip"
             onChange={handleImportArchiveChange}
             data-testid="import-archive-input"
-            style={{ display: "none" }}
+            style={{
+              position: "absolute",
+              width: "1px",
+              height: "1px",
+              padding: 0,
+              margin: "-1px",
+              overflow: "hidden",
+              clip: "rect(0, 0, 0, 0)",
+              whiteSpace: "nowrap",
+              border: 0,
+            }}
           />
         </label>
       </section>
@@ -356,11 +389,10 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
             style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}
           >
             {campaigns.map((camp) => (
-              <article
-                key={camp.id}
-                role="listitem"
-                aria-labelledby={`camp-title-${camp.id}`}
-                data-testid={`campaign-card-${camp.id}`}
+              <div key={camp.id} role="listitem">
+                <article
+                  aria-labelledby={`camp-title-${camp.id}`}
+                  data-testid={`campaign-card-${camp.id}`}
                 style={{
                   backgroundColor: "#131a2a",
                   border: "1px solid #1e293b",
@@ -437,7 +469,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                     </button>
                   )}
                 </div>
-              </article>
+                </article>
+              </div>
             ))}
           </div>
         )}
@@ -647,8 +680,15 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
             </form>
             {mintedInviteUrl && (
               <div style={{ marginTop: "1rem", padding: "0.75rem", backgroundColor: "#0f172a", borderRadius: "4px" }}>
-                <span style={{ fontSize: "0.75rem", color: "#94a3b8", display: "block" }}>Shareable Magic Link:</span>
+                <label
+                  htmlFor="minted-invite-url-input"
+                  style={{ fontSize: "0.75rem", color: "#94a3b8", display: "block" }}
+                >
+                  Shareable Magic Link:
+                </label>
                 <input
+                  id="minted-invite-url-input"
+                  aria-label="Shareable Magic Link"
                   type="text"
                   readOnly
                   value={mintedInviteUrl}
@@ -703,8 +743,16 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
               Personal Access Tokens (PAT)
             </h2>
             <form onSubmit={handleCreatePatSubmit} data-testid="create-pat-form" style={{ marginBottom: "1.5rem" }}>
+              <label
+                htmlFor="pat-name-input"
+                style={{ display: "block", fontSize: "0.75rem", color: "#94a3b8", marginBottom: "0.25rem" }}
+              >
+                Token Label
+              </label>
               <div style={{ display: "flex", gap: "0.5rem" }}>
                 <input
+                  id="pat-name-input"
+                  aria-label="Token Label"
                   type="text"
                   placeholder="Token Label (e.g. MCP Assistant)"
                   value={newPatName}

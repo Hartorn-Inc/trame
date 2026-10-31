@@ -14,8 +14,11 @@ class MockWebSocket {
   public binaryType = "arraybuffer";
   public sentData: Uint8Array[] = [];
   public onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
+  public url: string;
 
-  constructor(public url: string) {}
+  constructor(url: string) {
+    this.url = url;
+  }
 
   public send(data: Uint8Array | ArrayBuffer): void {
     const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;

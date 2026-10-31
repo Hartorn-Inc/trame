@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import module from "node:module";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { ApiClient } from "../src/api/client.ts";
-import { AuthScreen } from "../src/components/AuthScreen.tsx";
-import { CampaignLobby } from "../src/components/CampaignLobby.tsx";
 import {
   activeCampaignSignal,
   activeDrawerSignal,
@@ -20,6 +22,50 @@ import {
   timelineSignal,
 } from "../src/state/appSignals.ts";
 import type { CampaignRoomState } from "../src/types/index.ts";
+
+if (typeof module.registerHooks === "function") {
+  module.registerHooks({
+    load(url, context, nextLoad) {
+      if (url.endsWith(".tsx")) {
+        const source = fs.readFileSync(fileURLToPath(url), "utf8");
+        const transpiled = ts.transpileModule(source, {
+          compilerOptions: {
+            module: ts.ModuleKind.ESNext,
+            target: ts.ScriptTarget.ES2022,
+            jsx: ts.JsxEmit.ReactJSX,
+            jsxImportSource: "preact",
+          },
+          fileName: url,
+        });
+        return {
+          format: "module",
+          shortCircuit: true,
+          source: transpiled.outputText,
+        };
+      }
+      return nextLoad(url, context);
+    },
+  });
+}
+
+import { options } from "preact";
+const { AuthScreen } = await import("../src/components/AuthScreen.tsx");
+const { CampaignLobby } = await import("../src/components/CampaignLobby.tsx");
+
+function invokeComponent<P>(Component: (props: P) => ReturnType<typeof AuthScreen>, props: P) {
+  const hookOpt = options as unknown as { __r?: (vnode: unknown) => void };
+  hookOpt.__r?.({
+    type: Component,
+    props,
+    __c: {
+      props,
+      setState() {},
+      __H: { __: [], __h: [] },
+      __h: [],
+    },
+  });
+  return Component(props);
+}
 
 const originalFetch = globalThis.fetch;
 
@@ -145,7 +191,7 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
     };
 
     let transitionedToLobby = false;
-    const element = AuthScreen({
+    const element = invokeComponent(AuthScreen, {
       client: mockClient,
       onNavigateToLobby: () => {
         transitionedToLobby = true;
@@ -192,7 +238,7 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
     };
 
     let openedCampaignId: string | null = null;
-    const element = CampaignLobby({
+    const element = invokeComponent(CampaignLobby, {
       client: mockClient,
       inviteToken: "test-jwt-token-xyz",
       onOpenCampaign: (id) => {
@@ -237,7 +283,7 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
       return newCamp;
     };
 
-    const element = CampaignLobby({ client: mockClient });
+    const element = invokeComponent(CampaignLobby, { client: mockClient });
     assert.ok(element);
 
     assert.equal(appSignals.campaignsSignal.value.length, 0);
@@ -253,11 +299,11 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
   });
 
   it("enforces WCAG 2.1 AA keyboard and ARIA accessibility roles on AuthScreen and CampaignLobby", () => {
-    const authVNode = AuthScreen({});
+    const authVNode = invokeComponent(AuthScreen, {});
     assert.equal(authVNode.props.role, "main");
     assert.equal(authVNode.props["aria-labelledby"], "auth-heading");
 
-    const lobbyVNode = CampaignLobby({});
+    const lobbyVNode = invokeComponent(CampaignLobby, {});
     assert.equal(lobbyVNode.props.role, "main");
     assert.equal(lobbyVNode.props["aria-label"], "Campaign Lobby");
   });
