@@ -28,6 +28,7 @@ import {
   documentsNotesSignal,
   documentsHandoutsSignal,
   activeHandoutModalSignal,
+  selectedNoteIdSignal,
   isGmSignal,
   DocumentsWorkspaceTab,
   type NoteHierarchyNode,
@@ -426,6 +427,21 @@ describe("[Ticket #89 - Acceptance Criterion 5] Folder-Organized Notes Hierarchy
     assert.equal(grouped.get("Folder B")?.[0].title, "Beta Note");
   });
 
+  function findVNode(vnode: any, testId: string): any {
+    if (!vnode || typeof vnode !== "object") return null;
+    if (vnode.props?.["data-testid"] === testId) return vnode;
+    const children = vnode.props?.children;
+    if (Array.isArray(children)) {
+      for (const child of children) {
+        const found = findVNode(child, testId);
+        if (found) return found;
+      }
+    } else if (children && typeof children === "object") {
+      return findVNode(children, testId);
+    }
+    return null;
+  }
+
   it("conditionally exposes filter-dm-only and DM_ONLY scope option exclusively to Game Masters", () => {
     isGmSignal.value = false;
     const nonGmElement = DocumentsWorkspaceTab({ isGm: false });
@@ -433,5 +449,39 @@ describe("[Ticket #89 - Acceptance Criterion 5] Folder-Organized Notes Hierarchy
 
     const gmElement = DocumentsWorkspaceTab({ isGm: true });
     assert.ok(gmElement);
+  });
+
+  it("resolves selectedNote to null for non-GM when selectedNoteId points to a DM_ONLY note", () => {
+    documentsNotesSignal.value = [
+      { id: "note-secret", title: "Secret GM Plan", folder: "GM Lore", visibility: "DM_ONLY", ownerUserId: "gm", content: "Lich details" },
+      { id: "note-party", title: "Party Log", folder: "Journal", visibility: "PARTY", ownerUserId: "u1", content: "Session 1" },
+    ];
+    selectedNoteIdSignal.value = "note-secret";
+
+    const nonGmVnode = DocumentsWorkspaceTab({ isGm: false });
+    assert.equal(findVNode(nonGmVnode, "note-editor-pane"), null);
+
+    const gmVnode = DocumentsWorkspaceTab({ isGm: true });
+    assert.ok(findVNode(gmVnode, "note-editor-pane"));
+  });
+
+  it("restricts handout reveal action button exclusively to Game Masters", () => {
+    documentsNotesSignal.value = [
+      {
+        id: "note-handout-test",
+        title: "Torn Parchment",
+        folder: "Handouts",
+        visibility: "PARTY",
+        ownerUserId: "u1",
+        content: ':::handout{id="h-map" title="Torn Map" revealed="false"}\nSecret path\n:::',
+      },
+    ];
+    selectedNoteIdSignal.value = "note-handout-test";
+
+    const playerVnode = DocumentsWorkspaceTab({ isGm: false });
+    assert.equal(findVNode(playerVnode, "btn-reveal-handout"), null);
+
+    const gmVnode = DocumentsWorkspaceTab({ isGm: true });
+    assert.ok(findVNode(gmVnode, "btn-reveal-handout"));
   });
 });
