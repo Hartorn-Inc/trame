@@ -24,7 +24,11 @@ import {
 import type { CampaignRoomState } from "../src/types/index.ts";
 
 if (typeof module.register === "function") {
-  module.register("./tsx-loader.mjs", import.meta.url);
+  try {
+    module.register("./tsx-loader.mjs", import.meta.url);
+  } catch {
+    // Optional tsx-loader registration hook
+  }
 }
 
 import { h, options, render } from "preact";
@@ -91,6 +95,12 @@ class SimpleDomNode {
     }
     this.childNodes = [];
     if (v) this.appendChild(new SimpleDomNode(3, "#text", v));
+  }
+
+  remove(): void {
+    if (this.parentNode) {
+      this.parentNode.removeChild(this);
+    }
   }
 
   appendChild(child: SimpleDomNode): SimpleDomNode {

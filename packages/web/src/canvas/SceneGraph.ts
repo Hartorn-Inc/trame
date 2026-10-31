@@ -37,6 +37,13 @@ export class ViewportCamera {
     this.offsetY += deltaScreenY;
   }
 
+  public zoom(factor: number): void {
+    this.scale = Math.max(
+      this.minScale,
+      Math.min(this.maxScale, this.scale * factor),
+    );
+  }
+
   public zoomAtCursor(zoomFactor: number, screenX: number, screenY: number): void {
     const worldBefore = this.screenToWorld({ x: screenX, y: screenY });
     const nextScale = Math.max(
@@ -119,7 +126,8 @@ export function measureRulerWaypointsFt(
     }
   }
 
-  const pxPerFt = effectiveCellSizePx / Math.max(1, effectiveFeetPerCell);
+  const safeCellSize = Math.max(1e-6, effectiveCellSizePx);
+  const pxPerFt = safeCellSize / Math.max(1, effectiveFeetPerCell);
   const normMetric = String(metric).toUpperCase().replace(/[-_]/g, "");
 
   let totalFt = 0;

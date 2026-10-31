@@ -19,6 +19,7 @@ import type {
   NoteDto,
   PartyJournalEntry,
   PatRecord,
+  Point2D,
   RawServerEnvelope,
   RegisterRequest,
   RevealHandoutRequest,
@@ -616,6 +617,22 @@ export class ApiClient {
     }
   }
 
+  public sendEnvelope(envelope: ClientEnvelope): Uint8Array {
+    const buffer = encode(envelope);
+    if (this.ws && this.ws.readyState === (typeof WebSocket !== "undefined" ? WebSocket.OPEN : 1)) {
+      this.ws.send(buffer);
+    }
+    return buffer;
+  }
+
+  public sendPointerPing(pos: Point2D, colorHex = "#38bdf8"): Uint8Array {
+    return this.sendEnvelope({
+      type: "PointerPing",
+      pos,
+      colorHex,
+    });
+  }
+
   public sendCommand(command: TrameCommand): Uint8Array {
     const envelope: ClientEnvelope = {
       type: "Command",
@@ -623,11 +640,7 @@ export class ApiClient {
       Command: command,
       SubmitCommand: command,
     };
-    const buffer = encode(envelope);
-    if (this.ws && this.ws.readyState === (typeof WebSocket !== "undefined" ? WebSocket.OPEN : 1)) {
-      this.ws.send(buffer);
-    }
-    return buffer;
+    return this.sendEnvelope(envelope);
   }
 
   public handleServerMessage(
@@ -664,6 +677,13 @@ export class ApiClient {
       }
     } else if (envelope.type === "HandoutRevealed") {
       appSignals.revealedHandoutSignal.value = envelope.handout;
+    } else if (envelope.type === "PointerPingBroadcast") {
+      if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+        const ev = typeof CustomEvent !== "undefined"
+          ? new CustomEvent("trame-pointer-ping", { detail: envelope })
+          : ({ type: "trame-pointer-ping", detail: envelope } as unknown as Event);
+        window.dispatchEvent(ev);
+      }
     }
 
     return envelope;
