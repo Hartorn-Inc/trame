@@ -43,7 +43,7 @@ export * from "./ConditionBadgeStripWidget.tsx";
 export * from "./FeatureTraitListWidget.tsx";
 export * from "./HitDiceAndDeathSavesWidget.tsx";
 export * from "./InventoryContainerTreeWidget.tsx";
-export * from "./NotesMarkdownPaneWidget.tsx";
+export { NotesMarkdownPaneWidget } from "./NotesMarkdownPaneWidget.tsx";
 export * from "./ResourceBarWidget.tsx";
 export * from "./SavingThrowListWidget.tsx";
 export * from "./SkillCheckListWidget.tsx";
