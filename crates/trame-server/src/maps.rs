@@ -83,8 +83,9 @@ impl<'de> Deserialize<'de> for DoorState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum VisibilityChannel {
+    #[default]
     Public,
     GmHidden,
 }
@@ -176,12 +177,6 @@ pub struct StagedToken {
     pub token_avatar_url: Option<String>,
     #[serde(default, alias = "visibilityChannel")]
     pub visibility: VisibilityChannel,
-}
-
-impl Default for VisibilityChannel {
-    fn default() -> Self {
-        Self::Public
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -1,6 +1,6 @@
 import { useSignal } from '@preact/signals';
 import type { CampaignMapScene } from './types.ts';
-import { filterScenesForRole } from './domain.ts';
+import { filterScenesForRole, mapBackendSceneToFrontend } from './domain.ts';
 import { EmptyMapAtlasSvg } from '../components/icons/AtlasEmptyStates.tsx';
 
 export interface SceneAtlasProps {
