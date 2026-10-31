@@ -3,6 +3,34 @@
  * adhering to docs/specs/e5-collaborative-wiki-notes-ui-hando.md.
  */
 
+export type NoteVisibility = "PRIVATE" | "PARTY" | "DM_ONLY";
+export type UserRole = "GameMaster" | "Player" | "Spectator";
+export type NoteAccessDecision = "OK" | "FORBIDDEN" | "NOT_FOUND";
+
+export interface NoteAccessQuery {
+  visibility: NoteVisibility;
+  ownerUserId: string;
+  requestingUserId: string;
+  requestingUserRole: UserRole;
+  isWrite?: boolean;
+}
+
+export function evaluateNoteAccess(query: NoteAccessQuery): NoteAccessDecision {
+  if (query.visibility === "PRIVATE") {
+    return query.ownerUserId === query.requestingUserId ? "OK" : "NOT_FOUND";
+  }
+  if (query.visibility === "DM_ONLY") {
+    return query.requestingUserRole === "GameMaster" ? "OK" : "FORBIDDEN";
+  }
+  if (query.visibility === "PARTY") {
+    if (query.isWrite && query.requestingUserRole === "Spectator") {
+      return "FORBIDDEN";
+    }
+    return "OK";
+  }
+  return "NOT_FOUND";
+}
+
 export interface WikiLinkToken {
   type: "wikilink";
   target: string;
@@ -72,10 +100,10 @@ function parseDirectiveAttributes(header: string): Record<string, string> {
     return attrs;
   }
   const inner = header.slice(start + 1, end);
-  const attrRegex = /(\w+)="([^"]*)"/g;
+  const attrRegex = /(\w+)=(["'])(.*?)\2/g;
   let match: RegExpExecArray | null;
   while ((match = attrRegex.exec(inner)) !== null) {
-    attrs[match[1]] = match[2];
+    attrs[match[1]] = match[3];
   }
   return attrs;
 }
@@ -222,6 +250,6 @@ export function renderWikiLinksToHtml(text: string): string {
   return text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match, target, label) => {
     const linkTarget = escapeHtml((target as string).trim());
     const linkLabel = escapeHtml(label ? (label as string).trim() : (target as string).trim());
-    return `<a class="wiki-entity-link" data-entity="${linkTarget}">${linkLabel}</a>`;
+    return `<a class="wiki-entity-link" href="#entity/${linkTarget}" data-entity="${linkTarget}">${linkLabel}</a>`;
   });
 }

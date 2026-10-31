@@ -79,8 +79,9 @@ mod tests {
         UvttResolution, import_uvtt_map, parse_hex_color,
     };
     use crate::notes::{
-        FilteredNoteDocument, InMemoryPartyJournalStorage, PartyJournalStorage,
-        RevealHandoutCommand, UserRole, parse_handout_revealed_attr, reveal_handout,
+        FilteredNoteDocument, InMemoryPartyJournalStorage, NoteAccessDecision, NoteVisibility,
+        PartyJournalStorage, RevealHandoutCommand, UserRole, evaluate_note_access,
+        parse_handout_revealed_attr, reveal_handout,
     };
     use crate::room::{ConnectedClient, OutboundClientFrame, RoomLeaseManager};
     use crate::sync::{
@@ -764,6 +765,171 @@ Party moves forward."#;
     }
 
     #[test]
+    fn test_merge_party_note_ast_preserves_gm_secrets_across_player_mutations() {
+        let stored_doc = "Texte public\n\n:::dm\nSecret MJ\n:::\n\nFin public";
+        let player_view = FilteredNoteDocument::filter_for_role(stored_doc, UserRole::Player);
+        assert!(!player_view.contains(":::dm"));
+        assert!(!player_view.contains("Secret MJ"));
+
+        let player_mutation = "Texte public modifie\n\nFin public";
+        let merged = FilteredNoteDocument::merge_party_note_ast(stored_doc, player_mutation);
+
+        assert!(merged.contains(":::dm"));
+        assert!(merged.contains("Secret MJ"));
+        assert!(merged.contains("Texte public modifie"));
+        assert!(merged.contains("Fin public"));
+    }
+
+    #[test]
+    fn test_notes_rbac_isolation() {
+        // 1. PRIVATE notes: only the owner gets Ok; peers, GMs, and spectators get NotFound (404)
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Private,
+                "user-alice",
+                "user-alice",
+                UserRole::Player,
+                false
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Private,
+                "user-alice",
+                "user-alice",
+                UserRole::Player,
+                true
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Private,
+                "user-alice",
+                "user-bob",
+                UserRole::Player,
+                false
+            ),
+            NoteAccessDecision::NotFound
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Private,
+                "user-alice",
+                "user-gm",
+                UserRole::GameMaster,
+                false
+            ),
+            NoteAccessDecision::NotFound
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Private,
+                "user-alice",
+                "user-spec",
+                UserRole::Spectator,
+                false
+            ),
+            NoteAccessDecision::NotFound
+        );
+
+        // 2. DM_ONLY notes: only GameMaster gets Ok; players and spectators get Forbidden (403)
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::DmOnly,
+                "user-gm",
+                "user-gm",
+                UserRole::GameMaster,
+                false
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::DmOnly,
+                "user-gm",
+                "user-gm",
+                UserRole::GameMaster,
+                true
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::DmOnly,
+                "user-gm",
+                "user-alice",
+                UserRole::Player,
+                false
+            ),
+            NoteAccessDecision::Forbidden
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::DmOnly,
+                "user-gm",
+                "user-spec",
+                UserRole::Spectator,
+                false
+            ),
+            NoteAccessDecision::Forbidden
+        );
+
+        // 3. PARTY notes: readable by all roles; writable by GM & Player, Forbidden for Spectator writes
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Party,
+                "user-alice",
+                "user-bob",
+                UserRole::Player,
+                false
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Party,
+                "user-alice",
+                "user-bob",
+                UserRole::Player,
+                true
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Party,
+                "user-alice",
+                "user-gm",
+                UserRole::GameMaster,
+                true
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Party,
+                "user-alice",
+                "user-spec",
+                UserRole::Spectator,
+                false
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Party,
+                "user-alice",
+                "user-spec",
+                UserRole::Spectator,
+                true
+            ),
+            NoteAccessDecision::Forbidden
+        );
+    }
+
+    #[test]
     fn test_filter_for_role_preserves_everything_for_gamemaster() {
         let input = r#"# Adventure Notes
 :::dm
@@ -847,13 +1013,19 @@ Hidden Text
         );
         assert_eq!(stored_entry.revealed_by, "user-gm-1");
 
+        let listed_entries = journal
+            .list_entries("camp-alpha")
+            .expect("list entries succeeds");
+        assert_eq!(listed_entries.len(), 1);
+        assert_eq!(listed_entries[0].handout_id, "h-456");
+
         let timeline_resp = timeline
             .get_timeline("camp-alpha", 1, 0, 10)
             .expect("timeline query succeeds");
         assert_eq!(timeline_resp.events.len(), 1);
         let ev = &timeline_resp.events[0];
         assert_eq!(ev.seq_id, 1);
-        assert_eq!(ev.event_type, "HandoutRevealed");
+        assert_eq!(ev.event_type, "handout_revealed");
         assert_eq!(ev.actor_id.as_deref(), Some("user-gm-1"));
         assert_eq!(ev.payload["handout_id"], "h-456");
         assert_eq!(ev.payload["title"], "Lettre interceptée");
