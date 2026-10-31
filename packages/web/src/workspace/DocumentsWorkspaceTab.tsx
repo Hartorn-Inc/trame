@@ -51,37 +51,13 @@ export function HandoutRevealModal() {
 
   useEffect(() => {
     if (!activeModal || typeof window === "undefined") return;
-    const previousActiveElement =
-      typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleEscape = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         activeHandoutModalSignal.value = null;
-        return;
-      }
-      if (e.key === "Tab" && typeof document !== "undefined") {
-        const modalEl = document.querySelector?.('[data-testid="handout-reveal-modal"]');
-        const focusable = modalEl?.querySelectorAll?.(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-        );
-        if (focusable && focusable.length > 0) {
-          const first = focusable[0] as HTMLElement;
-          const last = focusable[focusable.length - 1] as HTMLElement;
-          if (e.shiftKey && document.activeElement === first) {
-            e.preventDefault();
-            last.focus?.();
-          } else if (!e.shiftKey && document.activeElement === last) {
-            e.preventDefault();
-            first.focus?.();
-          }
-        }
       }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      previousActiveElement?.focus?.();
-    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
   }, [activeModal]);
 
   if (!activeModal) return null;
@@ -129,7 +105,7 @@ export function HandoutRevealModal() {
           onClick={() => {
             activeHandoutModalSignal.value = null;
           }}
-          style={{ marginTop: "1rem" }}
+          style={{ marginTop: "1rem", minHeight: "40px" }}
         >
           {t("action.close")}
         </button>
@@ -156,7 +132,7 @@ export function updateHandoutDirectiveRevealed(
     const titleMatch = attrsStr.match(/\btitle=["']([^"']*)["']/);
     const matchesId = Boolean(handoutId && idMatch && idMatch[1] === handoutId);
     const matchesTitle = Boolean(!handoutId && handoutTitle && titleMatch && titleMatch[1] === handoutTitle);
-    if (matchesId || matchesTitle || (!idMatch && !titleMatch)) {
+    if (matchesId || matchesTitle || (!handoutId && !handoutTitle && !idMatch && !titleMatch)) {
       if (/\brevealed=["'][^"']*["']/.test(attrsStr)) {
         const updatedAttrs = attrsStr.replace(/\brevealed=["'][^"']*["']/, 'revealed="true"');
         return `:::handout{${updatedAttrs}}`;
@@ -337,9 +313,9 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                   class="folder-breadcrumb"
                   data-testid={`folder-breadcrumb-${folderName.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`}
                 >
-                  <span aria-hidden="true">📁</span> {folderName}
+                  📁 {folderName}
                 </span>
-                <span class="atlas-tabular-nums" style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
+                <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
                   {folderNotes.length} {folderNotes.length === 1 ? t("docs.notes.count.singular") : t("docs.notes.count.plural")}
                 </span>
               </div>

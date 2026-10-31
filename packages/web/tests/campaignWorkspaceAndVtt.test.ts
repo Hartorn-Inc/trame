@@ -32,6 +32,7 @@ import {
   isGmSignal,
   DocumentsWorkspaceTab,
   type NoteHierarchyNode,
+  updateHandoutDirectiveRevealed,
 } from "../src/workspace/DocumentsWorkspaceTab.tsx";
 import { render } from "preact";
 import {
@@ -521,5 +522,30 @@ describe("[Ticket #89 - Acceptance Criterion 5] Folder-Organized Notes Hierarchy
     assert.equal(parsed.handouts[0].id, "h-single");
     assert.equal(parsed.handouts[0].title, "Single Quote Handout");
     assert.equal(parsed.handouts[0].revealed, true);
+  });
+
+  it("does not falsely reveal unrevealed handout when title enclosed in single quotes contains double quotes", () => {
+    const trapDoc = `:::handout{title='Secret "revealed=true" trap' revealed='false'}\nConfidential trap lore.\n:::`;
+    const parsed = parseWikiMarkdown(trapDoc);
+    assert.equal(parsed.handouts.length, 1);
+    assert.equal(parsed.handouts[0].title, 'Secret "revealed=true" trap');
+    assert.equal(parsed.handouts[0].revealed, false);
+
+    const nonGmFiltered = filterWikiMarkdownForRole(trapDoc, false);
+    assert.equal(nonGmFiltered.includes("Confidential trap lore"), false);
+  });
+
+  it("does not inadvertently reveal unrevealed headless directives when targeting by ID", () => {
+    const multiDoc = `:::handout{id="target-1" revealed="false"}\nTarget content\n:::\n\n:::handout{revealed="false"}\nHeadless secret content\n:::`;
+    const updated = updateHandoutDirectiveRevealed(multiDoc, "target-1");
+    assert.ok(updated.includes(':::handout{id="target-1" revealed="true"}'));
+    assert.ok(updated.includes(':::handout{revealed="false"}'));
+    assert.ok(!updated.includes(':::handout{revealed="true"}\nHeadless'));
+  });
+
+  it("reveals headless directive only when neither handoutId nor handoutTitle is provided", () => {
+    const headlessDoc = `:::handout{revealed="false"}\nHeadless secret content\n:::`;
+    const updated = updateHandoutDirectiveRevealed(headlessDoc, "");
+    assert.ok(updated.includes(':::handout{revealed="true"}'));
   });
 });
