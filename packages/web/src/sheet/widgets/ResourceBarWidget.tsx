@@ -7,7 +7,7 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
   const max = Number(props.boundValues?.max ?? props.boundValues?.hpMax ?? 0);
   const temp = Number(props.boundValues?.temp ?? props.boundValues?.hpTemp ?? 0);
   const label = (props.options?.label as string) ?? 'Hit Points';
-  const color = (props.options?.color as string) ?? 'var(--atlas-primary)';
+  const color = (props.options?.color as string) ?? 'var(--atlas-action)';
   const isLocked = props.isLocked !== false;
 
   const handleHpChange = (path: string, val: number) => {
@@ -34,32 +34,35 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
         { class: 'ds-resource-values' },
         h('input', {
           type: 'number',
-          class: 'ds-resource-input-current atlas-tabular-nums',
+          class: 'ds-resource-input-current',
           'data-testid': 'resource-input-current',
-          'aria-label': `${label} Current`,
+          'aria-label': `Current ${label}`,
           value: current,
           onChange: (e: Event) => handleHpChange('hp.current', Number((e.target as HTMLInputElement).value)),
         }),
         h('span', { class: 'ds-resource-separator' }, '/'),
         isLocked
-          ? h('span', { class: 'ds-resource-max-locked atlas-tabular-nums', 'data-testid': 'resource-max-val' }, max)
+          ? h('span', { class: 'ds-resource-max-locked', 'data-testid': 'resource-max-val' }, max)
           : h('input', {
               type: 'number',
-              class: 'ds-resource-input-max atlas-tabular-nums',
+              class: 'ds-resource-input-max',
               'data-testid': 'resource-input-max',
-              'aria-label': `${label} Maximum`,
+              'aria-label': `Maximum ${label}`,
               value: max,
               onChange: (e: Event) => handleHpChange('hp.max', Number((e.target as HTMLInputElement).value)),
             }),
-        h('span', { class: 'ds-resource-temp-label' }, ' Temp: '),
+        h('span', { class: 'ds-resource-separator' }, '+'),
         h('input', {
           type: 'number',
-          class: 'ds-resource-input-temp atlas-tabular-nums',
+          class: 'ds-resource-input-temp',
           'data-testid': 'resource-input-temp',
-          'aria-label': `${label} Temporary`,
+          'aria-label': `Temporary ${label}`,
           value: temp,
           onChange: (e: Event) => handleHpChange('hp.temp', Number((e.target as HTMLInputElement).value)),
         }),
+        temp > 0
+          ? h('span', { class: 'ds-resource-temp', 'data-testid': 'resource-temp-val' }, ` (${temp} Temp)`)
+          : null,
       ),
     ),
     h(

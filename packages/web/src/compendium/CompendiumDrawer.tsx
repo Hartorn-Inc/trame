@@ -13,7 +13,7 @@ export interface CompendiumDrawerProps {
 
 const CATEGORIES = ['all', 'item', 'spell', 'feat', 'monster'] as const;
 
-export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | null {
+export function CompendiumDrawer(props: CompendiumDrawerProps): VNode | null {
   if (!props.isOpen) return null;
 
   const [query, setQuery] = useState('');
@@ -28,9 +28,17 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
     return entry.name.toLowerCase().includes(q) || entry.slug.toLowerCase().includes(q);
   });
 
+  const handleAddEntry = (entry: CompendiumEntry) => {
+    dragManager.handleDrop({
+      systemId: props.systemId ?? 'dnd5e',
+      entryRef: entry.id || entry.slug,
+      entryType: entry.entityType,
+      data: entry.data,
+    });
+  };
+
   const handleDragStart = (entry: CompendiumEntry, e: DragEvent) => {
     const payload = {
-      type: entry.entityType,
       systemId: props.systemId ?? 'dnd5e',
       entryRef: entry.id || entry.slug,
       entryType: entry.entityType,
@@ -49,17 +57,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
       'header',
       { class: 'ds-drawer-header' },
       h('h3', null, 'Compendium'),
-      h(
-        'button',
-        {
-          type: 'button',
-          class: 'ds-btn-close',
-          'data-testid': 'btn-close-compendium',
-          'aria-label': 'Close compendium drawer',
-          onClick: props.onClose,
-        },
-        '×',
-      ),
+      h('button', { type: 'button', class: 'ds-btn-close', 'data-testid': 'btn-close-compendium', 'aria-label': 'Close compendium', onClick: props.onClose }, '×'),
     ),
     h(
       'div',
@@ -91,24 +89,40 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
         ),
       ),
     ),
-    h(
-      'ul',
-      { class: 'ds-compendium-entry-list', 'data-testid': 'compendium-entry-list' },
-      filtered.map((entry) =>
-        h(
-          'li',
-          {
-            key: entry.id,
-            class: 'ds-compendium-entry-card',
-            'data-testid': `compendium-entry-${entry.slug}`,
-            draggable: true,
-            onDragStart: (e: DragEvent) => handleDragStart(entry, e),
-          },
-          h('strong', { class: 'ds-entry-name' }, entry.name),
-          h('span', { class: 'ds-entry-type' }, ` [${entry.entityType}] `),
-          h('span', { class: 'ds-entry-tier' }, entry.tier),
+    filtered.length === 0
+      ? h('p', { class: 'ds-empty-state', 'data-testid': 'compendium-empty-state' }, 'No compendium entries found matching your query.')
+      : h(
+          'ul',
+          { class: 'ds-compendium-entry-list', 'data-testid': 'compendium-entry-list' },
+          filtered.map((entry) =>
+            h(
+              'li',
+              {
+                key: entry.id,
+                class: 'ds-compendium-entry-card',
+                'data-testid': `compendium-entry-${entry.slug}`,
+                draggable: true,
+                onDragStart: (e: DragEvent) => handleDragStart(entry, e),
+              },
+              h('strong', { class: 'ds-entry-name' }, entry.name),
+              h('span', { class: 'ds-entry-type' }, ` [${entry.entityType}] `),
+              h('span', { class: 'ds-entry-tier' }, entry.tier),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  class: 'ds-btn-add-entry',
+                  'data-testid': `btn-add-entry-${entry.slug}`,
+                  'aria-label': `Add ${entry.name} to character sheet`,
+                  onClick: (e: Event) => {
+                    e.stopPropagation();
+                    handleAddEntry(entry);
+                  },
+                },
+                '[ Add ]',
+              ),
+            ),
+          ),
         ),
-      ),
-    ),
   );
 }
