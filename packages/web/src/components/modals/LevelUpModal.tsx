@@ -161,7 +161,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
       setRollError(null);
       const result = await diceRollService.roll(`1d${hitDieSize}`, {
         reason: `Level up HP (Lvl ${currentLevel} -> ${targetLevel})`,
-        actorId: actor.id || actor.sheet?.id,
+        actorId: actor.id,
       });
       const rolled = result.rolls && result.rolls.length > 0 ? result.rolls[0] : result.total;
       setRolledValue(rolled);
