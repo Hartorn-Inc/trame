@@ -100,7 +100,7 @@ function parseDirectiveAttributes(header: string): Record<string, string> {
     return attrs;
   }
   const inner = header.slice(start + 1, end);
-  const attrRegex = /(\w+)="([^"]*)"/g;
+  const attrRegex = /(\w+)=["']([^"']*)["']/g;
   let match: RegExpExecArray | null;
   while ((match = attrRegex.exec(inner)) !== null) {
     attrs[match[1]] = match[2];

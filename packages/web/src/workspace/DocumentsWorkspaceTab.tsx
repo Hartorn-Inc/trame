@@ -115,17 +115,45 @@ export function HandoutRevealModal() {
 }
 
 export const isGmSignal = signal<boolean>(false);
+export const currentUserIdSignal = signal<string>("");
 
 export interface DocumentsWorkspaceTabProps {
   isGm?: boolean;
+  currentUserId?: string;
+}
+
+export function updateHandoutDirectiveRevealed(
+  content: string,
+  handoutId: string,
+  handoutTitle?: string,
+): string {
+  return content.replace(/:::handout\{([^}]*)\}/g, (match, attrsStr) => {
+    const idMatch = attrsStr.match(/\bid=["']([^"']*)["']/);
+    const titleMatch = attrsStr.match(/\btitle=["']([^"']*)["']/);
+    const matchesId = Boolean(handoutId && idMatch && idMatch[1] === handoutId);
+    const matchesTitle = Boolean(!handoutId && handoutTitle && titleMatch && titleMatch[1] === handoutTitle);
+    if (matchesId || matchesTitle || (!idMatch && !titleMatch)) {
+      if (/\brevealed=["'][^"']*["']/.test(attrsStr)) {
+        const updatedAttrs = attrsStr.replace(/\brevealed=["'][^"']*["']/, 'revealed="true"');
+        return `:::handout{${updatedAttrs}}`;
+      }
+      return `:::handout{${attrsStr.trim()} revealed="true"}`;
+    }
+    return match;
+  });
 }
 
 export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
   const isGm = props.isGm ?? isGmSignal.value;
+  const currentUserId = props.currentUserId ?? currentUserIdSignal.value;
   const activeFilter = noteScopeFilterSignal.value;
   const effectiveFilter = !isGm && activeFilter === "DM_ONLY" ? "ALL" : activeFilter;
   const allNotes = documentsNotesSignal.value;
-  const visibleNotes = isGm ? allNotes : allNotes.filter((n) => n.visibility !== "DM_ONLY");
+  const visibleNotes = allNotes.filter((n) => {
+    if (n.visibility === "DM_ONLY") return isGm;
+    if (n.visibility === "PRIVATE") return n.ownerUserId === currentUserId;
+    return true;
+  });
   const filteredNotes = effectiveFilter === "ALL"
     ? visibleNotes
     : visibleNotes.filter((n) => n.visibility === effectiveFilter);
@@ -157,7 +185,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
       title: `${t("action.create_note")} ${allNotes.length + 1}`,
       folder: "Root",
       visibility: defaultScope,
-      ownerUserId: "",
+      ownerUserId: currentUserId,
       content: "",
     };
     documentsNotesSignal.value = [...allNotes, newNote];
@@ -165,16 +193,29 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
   };
 
   const handleRevealHandout = (handout: { id: string; title: string; content: string }) => {
+    if (!isGm) return;
+    const activeGm = currentUserId || "gm";
     const entry: PartyJournalEntry = {
       handoutId: handout.id,
       title: handout.title,
       content: handout.content,
-      revealedBy: selectedNote?.ownerUserId || "gm",
+      revealedBy: activeGm,
       timestamp: Date.now(),
     };
     activeHandoutModalSignal.value = entry;
     const existing = documentsHandoutsSignal.value.filter((h) => h.handoutId !== handout.id);
     documentsHandoutsSignal.value = [entry, ...existing];
+
+    if (selectedNote) {
+      const updatedContent = updateHandoutDirectiveRevealed(
+        selectedNote.content ?? "",
+        handout.id,
+        handout.title,
+      );
+      documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
+        n.id === selectedNote.id ? { ...n, content: updatedContent } : n,
+      );
+    }
   };
 
   const toggleFilter = (scope: NoteScopeFilter) => {

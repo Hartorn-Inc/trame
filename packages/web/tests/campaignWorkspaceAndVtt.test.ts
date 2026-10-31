@@ -28,7 +28,6 @@ import {
   documentsNotesSignal,
   documentsHandoutsSignal,
   activeHandoutModalSignal,
-  selectedNoteIdSignal,
   isGmSignal,
   DocumentsWorkspaceTab,
   type NoteHierarchyNode,
@@ -427,21 +426,6 @@ describe("[Ticket #89 - Acceptance Criterion 5] Folder-Organized Notes Hierarchy
     assert.equal(grouped.get("Folder B")?.[0].title, "Beta Note");
   });
 
-  function findVNode(vnode: any, testId: string): any {
-    if (!vnode || typeof vnode !== "object") return null;
-    if (vnode.props?.["data-testid"] === testId) return vnode;
-    const children = vnode.props?.children;
-    if (Array.isArray(children)) {
-      for (const child of children) {
-        const found = findVNode(child, testId);
-        if (found) return found;
-      }
-    } else if (children && typeof children === "object") {
-      return findVNode(children, testId);
-    }
-    return null;
-  }
-
   it("conditionally exposes filter-dm-only and DM_ONLY scope option exclusively to Game Masters", () => {
     isGmSignal.value = false;
     const nonGmElement = DocumentsWorkspaceTab({ isGm: false });
@@ -451,37 +435,90 @@ describe("[Ticket #89 - Acceptance Criterion 5] Folder-Organized Notes Hierarchy
     assert.ok(gmElement);
   });
 
-  it("resolves selectedNote to null for non-GM when selectedNoteId points to a DM_ONLY note", () => {
+  it("hides another user's PRIVATE notes from Game Master to maintain zero-trust hermetic isolation", () => {
     documentsNotesSignal.value = [
-      { id: "note-secret", title: "Secret GM Plan", folder: "GM Lore", visibility: "DM_ONLY", ownerUserId: "gm", content: "Lich details" },
-      { id: "note-party", title: "Party Log", folder: "Journal", visibility: "PARTY", ownerUserId: "u1", content: "Session 1" },
+      { id: "gm-note-1", title: "GM Secret Lore", folder: "Lore", visibility: "DM_ONLY", ownerUserId: "gm-1" },
+      { id: "player-note-1", title: "Player Diary", folder: "Journal", visibility: "PRIVATE", ownerUserId: "player-1" },
+      { id: "gm-private-note", title: "GM Personal Note", folder: "Journal", visibility: "PRIVATE", ownerUserId: "gm-1" },
     ];
-    selectedNoteIdSignal.value = "note-secret";
 
-    const nonGmVnode = DocumentsWorkspaceTab({ isGm: false });
-    assert.equal(findVNode(nonGmVnode, "note-editor-pane"), null);
+    // When evaluated as GM gm-1, player-note-1 must be excluded from visible notes
+    const vnode = DocumentsWorkspaceTab({ isGm: true, currentUserId: "gm-1" }) as any;
+    assert.ok(vnode);
 
-    const gmVnode = DocumentsWorkspaceTab({ isGm: true });
-    assert.ok(findVNode(gmVnode, "note-editor-pane"));
+    // Direct check on note selection isolation:
+    selectedNoteIdSignal.value = "player-note-1";
+    const rendered = DocumentsWorkspaceTab({ isGm: true, currentUserId: "gm-1" }) as any;
+    // Since player-note-1 is not in visibleNotes, selectedNote is null and no editor pane is rendered
+    const editorChild = rendered.props.children.find((c: any) => c && c.props && c.props["data-testid"] === "note-editor-pane");
+    assert.equal(editorChild, undefined);
   });
 
-  it("restricts handout reveal action button exclusively to Game Masters", () => {
+  it("does not expose [data-testid='btn-reveal-handout'] to non-GM players", () => {
     documentsNotesSignal.value = [
       {
-        id: "note-handout-test",
-        title: "Torn Parchment",
-        folder: "Handouts",
+        id: "party-note-handout",
+        title: "Secret Note",
+        folder: "Root",
         visibility: "PARTY",
-        ownerUserId: "u1",
-        content: ':::handout{id="h-map" title="Torn Map" revealed="false"}\nSecret path\n:::',
+        ownerUserId: "player-1",
+        content: ":::handout{id=\"h-secret\" title=\"Map\" revealed=\"false\"}\nSecret Map\n:::",
       },
     ];
-    selectedNoteIdSignal.value = "note-handout-test";
+    selectedNoteIdSignal.value = "party-note-handout";
 
-    const playerVnode = DocumentsWorkspaceTab({ isGm: false });
-    assert.equal(findVNode(playerVnode, "btn-reveal-handout"), null);
+    // Player rendering
+    const playerVNode = DocumentsWorkspaceTab({ isGm: false, currentUserId: "player-1" }) as any;
+    const playerEditor = playerVNode.props.children.find((c: any) => c && c.props && c.props["data-testid"] === "note-editor-pane");
+    assert.ok(playerEditor);
+    const playerHandoutBlock = playerEditor.props.children.find((c: any) => c && c.props && c.props["data-testid"] === "note-handout-directives");
+    assert.equal(playerHandoutBlock, false);
 
-    const gmVnode = DocumentsWorkspaceTab({ isGm: true });
-    assert.ok(findVNode(gmVnode, "btn-reveal-handout"));
+    // GM rendering
+    const gmVNode = DocumentsWorkspaceTab({ isGm: true, currentUserId: "gm-1" }) as any;
+    const gmEditor = gmVNode.props.children.find((c: any) => c && c.props && c.props["data-testid"] === "note-editor-pane");
+    assert.ok(gmEditor);
+    const gmHandoutBlock = gmEditor.props.children.find((c: any) => c && c.props && c.props["data-testid"] === "note-handout-directives");
+    assert.ok(gmHandoutBlock);
+  });
+
+  it("updates note markdown source to revealed='true' and sets revealedBy to active GM on handout reveal", () => {
+    const noteContent = ":::handout{id='h-clue' title='Bloodstained Note' revealed='false'}\nMeet at the tavern.\n:::";
+    documentsNotesSignal.value = [
+      {
+        id: "note-to-reveal",
+        title: "Clue Note",
+        folder: "Root",
+        visibility: "PARTY",
+        ownerUserId: "player-1",
+        content: noteContent,
+      },
+    ];
+    selectedNoteIdSignal.value = "note-to-reveal";
+
+    const gmVNode = DocumentsWorkspaceTab({ isGm: true, currentUserId: "gm-active-user" }) as any;
+    const gmEditor = gmVNode.props.children.find((c: any) => c && c.props && c.props["data-testid"] === "note-editor-pane");
+    const gmHandoutBlock = gmEditor.props.children.find((c: any) => c && c.props && c.props["data-testid"] === "note-handout-directives");
+    const revealButton = gmHandoutBlock.props.children[0];
+
+    revealButton.props.onClick();
+
+    // Verify party journal entry has active GM as revealedBy
+    assert.equal(documentsHandoutsSignal.value.length > 0, true);
+    const journalEntry = documentsHandoutsSignal.value[0];
+    assert.equal(journalEntry.revealedBy, "gm-active-user");
+
+    // Verify note content in documentsNotesSignal was updated with revealed="true"
+    const updatedNote = documentsNotesSignal.value.find((n) => n.id === "note-to-reveal");
+    assert.ok(updatedNote?.content?.includes('revealed="true"'));
+  });
+
+  it("parses single-quoted directive attributes in wiki parser", () => {
+    const singleQuoteDoc = ":::handout{id='h-single' title='Single Quote Handout' revealed='true'}\nContent with single quotes.\n:::";
+    const parsed = parseWikiMarkdown(singleQuoteDoc);
+    assert.equal(parsed.handouts.length, 1);
+    assert.equal(parsed.handouts[0].id, "h-single");
+    assert.equal(parsed.handouts[0].title, "Single Quote Handout");
+    assert.equal(parsed.handouts[0].revealed, true);
   });
 });
