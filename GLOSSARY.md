@@ -317,6 +317,102 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### UndoDrawer
 
-- **Definition**: Slide-out Game Master panel tracking the ring buffer of recent reversible actions with 1-click rollback execution.
+- **Definition**: Interactive Game Master HUD drawer inspecting the 50-action reversible command history and executing 1-click rollbacks (`UndoLastAction`).
 - **Allowed Context**: Game Master HUD, action history inspection, and rollback execution.
 - **_Avoid_**: HistorySidebar, RollbackPanel.
+
+### CampaignRoomState
+
+- **Definition**: Live authoritative table and campaign state held in memory by `TableRoomActor`, encompassing active walls, tokens, lighting, initiative order, and the 50-action undo ring buffer.
+- **Allowed Context**: Server room state, WAL snapshots, and recipient projections.
+- **_Avoid_**: table state, room aggregate, live game session.
+
+### CampaignWorkspace
+
+- **Definition**: Top-level 4-tab campaign view (`Characters & Party`, `Maps Studio / SceneAtlas`, `Journal & Documents`, `Live Table`) providing access to all campaign preparation, character management, lore, and live tabletop play.
+- **Allowed Context**: Campaign navigation, pre-session preparation, and live play transitions.
+- **_Avoid_**: CampaignDashboard, HubPage, PortalTabs.
+
+### CombatAutomationMode
+
+- **Definition**: Campaign-level combat resolution policy (`ASSISTED_DM_CONFIRM`, `FULL_AUTOMATION`, or `MANUAL_CLASSIC`) governing whether server-rolled attacks and saving throws require 1-click damage confirmation or automatically deduct hit points.
+- **Allowed Context**: Campaign settings, right-click attack resolution, and AoE saving throw cards.
+- **_Avoid_**: AutoHitSetting, DamageMode, RollPolicy.
+
+### CoreBuildLock
+
+- **Definition**: Dual-tier character sheet protection mechanism combining a client padlock toggle (`coreStatsLocked`, locked by default so stat clicks roll dice) and an optional server-enforced Game Master lock (`gm_core_locked`) protecting level, class, base ability scores, saving throw proficiencies, and mastered skills.
+- **Allowed Context**: Character sheet header, actor update RBAC validation, and roll-vs-edit mode switching.
+- **_Avoid_**: SheetFreeze, StatReadonly, BuildGuard.
+
+### DualBufferFogOfWar
+
+- **Definition**: Client and server fog-of-war state machine maintaining separate active line-of-sight (`VISIBLE`) and persistent explored terrain memory (`EXPLORED_MEMORY`) buffers with transactional rollback support.
+- **Allowed Context**: Canvas fog rendering, vision polygon updates on token drop, and undo rollbacks.
+- **_Avoid_**: fog mask, vision buffer, sight layer.
+
+### FilteredNoteDocument
+
+- **Definition**: Role-projected Markdown note representation produced after server-side stripping of `:::dm` secret blocks and unrevealed `:::handout` directives for non-GM recipients.
+- **Allowed Context**: Campaign wiki note projection, handout reveal filtering, and player journal queries.
+- **_Avoid_**: role note, secret note, redacted journal.
+
+### HeadlessCanvasMock
+
+- **Definition**: Deterministic in-memory canvas and WebGL context double used to verify scene graph transforms, fog buffers, and spatial overlays in Node test environments without a browser GPU.
+- **Allowed Context**: Frontend unit and integration test suites.
+- **_Avoid_**: dummy canvas, fake pixi, virtual viewport.
+
+### LevelUpModal
+
+- **Definition**: Focused 4-step character progression modal (`Class & Subclass` -> `HP Gain` -> `Class Features & ASI/Feat` -> `New Spells & Slots`) accessible from the character sheet header both in `CampaignWorkspace` and in the live table drawer.
+- **Allowed Context**: Character progression, `applyLevelUp` execution, and level advancement UI.
+- **_Avoid_**: ProgressionWizard, LevelDrawer, UpgradePopup.
+
+### MagicLink
+
+- **Definition**: Cryptographically signed, single-step campaign or session authentication URL allowing instant player onboarding and role-bound campaign joining.
+- **Allowed Context**: Authentication flows, campaign invitations, and session bootstrap.
+- **_Avoid_**: invite link, guest token, join url.
+
+### SceneAtlas
+
+- **Definition**: Player-accessible gallery of campaign maps marked `revealed_to_players` by the Game Master, supporting interactive pan and zoom inspection outside the active tabletop canvas.
+- **Allowed Context**: Player `CampaignWorkspace` map tab and shared cartography browsing.
+- **_Avoid_**: MapGallery, WorldViewer, ExploredMapList.
+
+### SceneGraph
+
+- **Definition**: Layered 2D/2.5D rendering tree managing camera transforms, battlemap textures, wall segments, AoE templates, fog overlays, tokens, and HUD indicators on the tabletop canvas.
+- **Allowed Context**: Tabletop rendering pipeline, viewport pan/zoom, and spatial hit-testing.
+- **_Avoid_**: pixi tree, render hierarchy, display list.
+
+### SessionTimelineEvent
+
+- **Definition**: Immutable, timestamped campaign chronology record (`combat_started`, `attack_rolled`, `creature_defeated`, `door_opened`, `handout_revealed`, `loot_acquired`) persisted to `TimelineStorage`.
+- **Allowed Context**: Session history feed, campaign recaps, and MCP timeline queries.
+- **_Avoid_**: history entry, audit log item, timeline row.
+
+### TableCanvas
+
+- **Definition**: Interactive desktop tabletop viewport rendering the active `SceneGraph`, processing token drag-and-drop with vision-on-drop discipline, and dispatching contextual right-click `TrameCommand` actions.
+- **Allowed Context**: Live table tab, spatial token interactions, and right-click context menus.
+- **_Avoid_**: map view, board component, game canvas.
+
+### TrameArchive
+
+- **Definition**: Portable `.trame` bundle encapsulating campaign metadata, actors, scenes, walls, timeline events, and Markdown wiki notes for zero-loss migration across hosting environments.
+- **Allowed Context**: Campaign export/import endpoints and CLI backup workflows.
+- **_Avoid_**: backup zip, export bundle, world archive.
+
+### UvttMap
+
+- **Definition**: Universal Virtual Tabletop (`.uvtt` / `.dd2vtt`) battlemap interchange payload containing base64 map imagery, grid calibration, line-of-sight wall segments, portals, and dynamic light sources.
+- **Allowed Context**: Map import pipeline, WebP asset extraction, and scene creation.
+- **_Avoid_**: dungeondraft map, vtt file, map export.
+
+### WasmSpatialEngine
+
+- **Definition**: Compiled WebAssembly module (`trame-engine`) executing 2.5D `BVH` raycasting, visibility polygon construction, wall collision checks, and AoE grid discretization in the browser at 60 FPS.
+- **Allowed Context**: Client spatial bridge, visibility calculations, and AoE previewing.
+- **_Avoid_**: spatial wasm, physics engine, raycast worker.

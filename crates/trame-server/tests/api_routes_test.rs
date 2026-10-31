@@ -444,8 +444,19 @@ async fn test_campaign_invites_gm_authorization_and_magic_link_onboarding_flow()
 
     // 5. Test download_asset_handler authorization with and without signature
     let asset_id = Uuid::new_v4();
-    let asset_key = format!("instances/{}/campaigns/{}/assets/{}.webp", state.instance_id, campaign_id, asset_id);
-    state.asset_store.put_asset(&asset_key, bytes::Bytes::from_static(b"FAKE_IMAGE"), "image/webp").await.unwrap();
+    let asset_key = format!(
+        "instances/{}/campaigns/{}/assets/{}.webp",
+        state.instance_id, campaign_id, asset_id
+    );
+    state
+        .asset_store
+        .put_asset(
+            &asset_key,
+            bytes::Bytes::from_static(b"FAKE_IMAGE"),
+            "image/webp",
+        )
+        .await
+        .unwrap();
 
     // Unauthenticated and unsigned download request -> 403 Forbidden
     let unauth_dl = Request::builder()
@@ -457,7 +468,11 @@ async fn test_campaign_invites_gm_authorization_and_magic_link_onboarding_flow()
     assert_eq!(unauth_dl_resp.status(), StatusCode::FORBIDDEN);
 
     // Presigned download URL with valid exp and sig -> 200 OK
-    let presigned_url = state.asset_store.mint_presigned_get_url(&asset_key, std::time::Duration::from_secs(900)).await.unwrap();
+    let presigned_url = state
+        .asset_store
+        .mint_presigned_get_url(&asset_key, std::time::Duration::from_secs(900))
+        .await
+        .unwrap();
     let presigned_dl = Request::builder()
         .method("GET")
         .uri(&presigned_url)

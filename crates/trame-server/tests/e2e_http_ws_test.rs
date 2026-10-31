@@ -257,9 +257,7 @@ async fn test_end_to_end_playable_http_and_tabletop_lifecycle() {
     let actor_id = Uuid::new_v4();
     let actor_req = Request::builder()
         .method("PUT")
-        .uri(format!(
-            "/api/v1/campaigns/{campaign_id}/actors/{actor_id}"
-        ))
+        .uri(format!("/api/v1/campaigns/{campaign_id}/actors/{actor_id}"))
         .header(COOKIE, &player_cookie)
         .header(CONTENT_TYPE, "application/json")
         .body(Body::from(
