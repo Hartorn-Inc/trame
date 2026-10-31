@@ -1,10 +1,11 @@
 import { useState } from "preact/hooks";
-import type { JSX } from "preact";
+import type { ComponentChildren, JSX } from "preact";
 import { client, type ApiClient } from "../api/client.ts";
 import { appSignals } from "../state/appSignals.ts";
 import type { AuthUser } from "../types/index.ts";
 
 export interface AuthScreenProps {
+  children?: ComponentChildren;
   client?: ApiClient;
   onSuccess?: (user: AuthUser) => void;
   onNavigateToLobby?: () => void;
@@ -220,7 +221,7 @@ export function AuthScreen(props: AuthScreenProps): JSX.Element {
                 boxSizing: "border-box",
               }}
             />
-            <small style={{ color: "#64748b", fontSize: "0.75rem", display: "block", marginTop: "0.25rem" }}>
+            <small style={{ color: "#94a3b8", fontSize: "0.75rem", display: "block", marginTop: "0.25rem" }}>
               Minimum 8 characters (OWASP Argon2id protected)
             </small>
           </div>

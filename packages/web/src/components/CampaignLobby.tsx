@@ -1,10 +1,11 @@
 import { useEffect, useState } from "preact/hooks";
-import type { JSX } from "preact";
+import type { ComponentChildren, JSX } from "preact";
 import { client, type ApiClient } from "../api/client.ts";
 import { appSignals } from "../state/appSignals.ts";
 import type { Campaign, CreatePatResponse, PatRecord } from "../types/index.ts";
 
 export interface CampaignLobbyProps {
+  children?: ComponentChildren;
   client?: ApiClient;
   inviteToken?: string;
   onOpenCampaign?: (campaignId: string) => void;
@@ -331,7 +332,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
         </button>
 
         <label
-          role={"button" as unknown as undefined}
+          role={"button" as any}
           data-testid="import-archive-btn"
           tabIndex={0}
           onKeyDown={(e) => {
@@ -382,7 +383,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
         </h2>
 
         {campaigns.length === 0 ? (
-          <p data-testid="empty-campaigns-msg" style={{ color: "#64748b" }}>
+          <p data-testid="empty-campaigns-msg" style={{ color: "#94a3b8" }}>
             No campaigns available. Click "Create Campaign" to bootstrap your adventure.
           </p>
         ) : (
@@ -812,7 +813,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
 
             <div style={{ maxHeight: "200px", overflowY: "auto", marginBottom: "1rem" }}>
               {patList.length === 0 ? (
-                <p style={{ color: "#64748b", fontSize: "0.875rem" }}>No active access tokens.</p>
+                <p style={{ color: "#94a3b8", fontSize: "0.875rem" }}>No active access tokens.</p>
               ) : (
                 <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
                   {patList.map((pat) => (
@@ -827,7 +828,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                       }}
                     >
                       <span>{pat.name || "Token"}</span>
-                      <span style={{ color: "#64748b" }}>Scopes: {pat.scopes.join(", ")}</span>
+                      <span style={{ color: "#94a3b8" }}>Scopes: {pat.scopes.join(", ")}</span>
                     </li>
                   ))}
                 </ul>
