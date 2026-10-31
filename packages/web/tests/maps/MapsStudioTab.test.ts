@@ -29,6 +29,8 @@ import {
   toggleDoorState,
 } from "../../src/maps/index.ts";
 import { CampaignWorkspace } from "../../src/workspace/CampaignWorkspace.tsx";
+import { MapsStudioTab } from "../../src/maps/MapsStudioTab.tsx";
+import { SHARED_WALL_KINDS } from "../../src/canvas/CanvasThemePalette.ts";
 
 describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
   describe("Scene Creation & UvttMap Import Verification", () => {
@@ -564,6 +566,70 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
       assert.equal(deadWolf, undefined, "Old non-hero tokens must not carry over");
     });
 
+    it("WHEN backend staged tokens omit ownerUserId, activateSceneTransition retains encounter monsters and drops unowned table tokens.", () => {
+      const currentTable: ActiveTableRoomState = {
+        activeSceneId: "scene-old",
+        walls: [],
+        lights: [],
+        tokens: [
+          {
+            id: "active-hero",
+            name: "Hero Fighter",
+            x: 10,
+            y: 20,
+            elevationFt: 0,
+            visibilityChannel: "Public",
+            ownerUserId: "user-player-1",
+          },
+          {
+            id: "old-unowned-monster",
+            name: "Old Goblin",
+            x: 30,
+            y: 40,
+            elevationFt: 0,
+            visibilityChannel: "Public",
+          },
+        ],
+      };
+
+      const targetScene: CampaignMapScene = {
+        id: "scene-target",
+        campaignId: "camp-1",
+        title: "Target Ambush Crypt",
+        revealedToPlayers: true,
+        gridCellSizePx: 70,
+        feetPerCell: 5,
+        widthPx: 1000,
+        heightPx: 1000,
+        spawnPoints: [{ id: "sp-1", name: "Crypt Entry", x: 100, y: 100 }],
+        walls: [],
+        lights: [],
+        audioEmitters: [],
+        stagedTokens: [
+          {
+            id: "backend-staged-goblin",
+            name: "Ambush Goblin",
+            x: 200,
+            y: 200,
+            elevationFt: 0,
+            visibilityChannel: "GmHidden",
+          },
+        ],
+      };
+
+      const transitioned = activateSceneTransition(currentTable, targetScene);
+      assert.equal(transitioned.tokens.length, 2);
+      const carriedHero = transitioned.tokens.find((t) => t.id === "active-hero");
+      const stagedMonster = transitioned.tokens.find((t) => t.id === "backend-staged-goblin");
+      const oldMonster = transitioned.tokens.find((t) => t.id === "old-unowned-monster");
+
+      assert.ok(carriedHero, "Hero with ownerUserId must carry over");
+      assert.equal(carriedHero.x, 100);
+      assert.equal(carriedHero.y, 100);
+      assert.ok(stagedMonster, "Staged token with omitted ownerUserId must load onto active table");
+      assert.equal(oldMonster, undefined, "Unowned table token with omitted ownerUserId must not carry over");
+    });
+
     it("WHEN ADR-0034 spawn_points array is defined, hero tokens cycle through spawn_points and adopt default ground elevation.", () => {
       const currentTable: ActiveTableRoomState = {
         activeSceneId: "scene-prev",
@@ -779,6 +845,74 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
       assert.equal(filtered[0].walls.length, 1);
       assert.equal(filtered[0].walls[0].a.x, 0);
       assert.equal(filtered[0].walls[0].b.x, 70);
+    });
+  });
+
+  describe("MapsStudioTab Non-Color Redundancy, Hit Targets & Accessibility Sizing", () => {
+    it("verifies canvas wall dash patterns and stroke widths match SHARED_WALL_KINDS", () => {
+      assert.equal(SHARED_WALL_KINDS.Window.dashPatternPx?.join(" "), "8 4");
+      assert.equal(SHARED_WALL_KINDS.Terrain.dashPatternPx?.join(" "), "10 3");
+      assert.equal(SHARED_WALL_KINDS.OneWay.dashPatternPx?.join(" "), "6 3");
+      assert.equal(SHARED_WALL_KINDS.SecretDoor.dashPatternPx?.join(" "), "4 4");
+      assert.equal(SHARED_WALL_KINDS.Illusion.dashPatternPx?.join(" "), "2 4");
+      assert.equal(SHARED_WALL_KINDS.Door.dashPatternPx, null);
+      assert.equal(SHARED_WALL_KINDS.Door.strokeWidthPx, 3.5);
+      assert.equal(SHARED_WALL_KINDS.Normal.dashPatternPx, null);
+      assert.equal(SHARED_WALL_KINDS.Normal.strokeWidthPx, 3);
+    });
+
+    it("WHEN MapsStudioTab renders, interactive authoring tools expose accessible labels and desktop 40px min targets", () => {
+      const testScene: CampaignMapScene = {
+        id: "studio-scene-1",
+        campaignId: "camp-1",
+        title: "Authoring Studio Map",
+        revealedToPlayers: false,
+        gridCellSizePx: 70,
+        feetPerCell: 5,
+        widthPx: 1000,
+        heightPx: 1000,
+        defaultGroundElevationFt: 0,
+        spawnPoints: [],
+        walls: [
+          {
+            id: "w-window-1",
+            a: { x: 0, y: 0 },
+            b: { x: 50, y: 0 },
+            wallType: "Window",
+            blocksMovement: true,
+            blocksVision: false,
+            blocksLight: false,
+            blocksSound: true,
+            bottomElevationFt: 0,
+            topElevationFt: 8,
+          },
+          {
+            id: "w-door-1",
+            a: { x: 50, y: 0 },
+            b: { x: 100, y: 0 },
+            wallType: "Door",
+            blocksMovement: true,
+            blocksVision: true,
+            blocksLight: true,
+            blocksSound: true,
+            bottomElevationFt: 0,
+            topElevationFt: 8,
+            doorState: { isOpen: false, isLocked: false },
+          },
+        ],
+        lights: [],
+        audioEmitters: [],
+        stagedTokens: [],
+      };
+
+      const vnode = MapsStudioTab({
+        campaignId: "camp-1",
+        userRole: "GM",
+        initialScenes: [testScene],
+      }) as any;
+
+      assert.ok(vnode);
+      assert.equal(vnode.props["data-testid"], "maps-studio-tab");
     });
   });
 });

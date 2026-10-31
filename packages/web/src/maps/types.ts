@@ -63,7 +63,8 @@ export interface StagedToken {
   y: number;
   elevationFt: number;
   visibilityChannel: 'Public' | 'GmHidden';
-  ownerUserId: string | null;
+  ownerUserId?: string | null;
+  owner_user_id?: string | null;
   hpCurrent?: number;
   hpMax?: number;
   sizeCells?: number;

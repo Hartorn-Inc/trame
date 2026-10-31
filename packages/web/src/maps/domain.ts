@@ -54,7 +54,7 @@ export function activateSceneTransition(
   currentTable: ActiveTableRoomState,
   targetScene: CampaignMapScene,
 ): ActiveTableRoomState {
-  const heroTokens = currentTable.tokens.filter((t) => t.ownerUserId !== null);
+  const heroTokens = currentTable.tokens.filter((t) => Boolean(t.ownerUserId || (t as any).owner_user_id));
   const defaultElevation = targetScene.defaultGroundElevationFt ?? targetScene.default_ground_elevation_ft ?? 0;
   const rawSpawns = targetScene.spawnPoints || targetScene.spawn_points;
   const spawnPoints = rawSpawns && rawSpawns.length > 0
@@ -83,7 +83,7 @@ export function activateSceneTransition(
   });
 
   const staged = targetScene.stagedTokens || targetScene.staged_tokens || [];
-  const nonHeroStaged = staged.filter((t: any) => t.ownerUserId === null || t.owner_user_id === null);
+  const nonHeroStaged = staged.filter((t: any) => !t.ownerUserId && !t.owner_user_id);
 
   return {
     activeSceneId: targetScene.id,
@@ -268,7 +268,7 @@ export function mapBackendSceneToFrontend(raw: Record<string, any>): CampaignMap
     y: Number(t.y ?? 0),
     elevationFt: Number(t.elevation_ft ?? t.elevationFt ?? 0),
     visibilityChannel: t.visibility || t.visibilityChannel || 'Public',
-    ownerUserId: t.ownerUserId ?? null,
+    ownerUserId: t.ownerUserId ?? t.owner_user_id ?? null,
     hpCurrent: Number(t.hpCurrent ?? 10),
     hpMax: Number(t.hpMax ?? 10),
     sizeCells: Number(t.size_cells ?? t.sizeCells ?? 1),

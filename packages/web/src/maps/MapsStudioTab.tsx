@@ -2,6 +2,7 @@ import { useSignal } from '@preact/signals';
 import type { CampaignMapScene, StudioWallSegment, StagedToken, StudioLightSource, AudioEmitterConfig, UserRole, WallType } from './types.ts';
 import { mapBackendSceneToFrontend, toggleDoorState } from './domain.ts';
 import { SceneAtlas } from './SceneAtlas.tsx';
+import { SHARED_WALL_KINDS, type CanonicalWallKind } from '../canvas/CanvasThemePalette.ts';
 
 export interface MapsStudioTabProps {
   campaignId: string;
@@ -312,7 +313,7 @@ export function MapsStudioTab({
             disabled={!selectedScene}
             aria-pressed={Boolean(selectedScene?.revealedToPlayers)}
             onClick={handleToggleRevealed}
-            style={{ padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', background: 'var(--atlas-surface-raised)', color: 'var(--atlas-text)' }}
+            style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', background: 'var(--atlas-surface-raised)', color: 'var(--atlas-text)' }}
           >
             {selectedScene?.revealedToPlayers ? 'Revealed in Atlas' : 'Hidden from Atlas'}
           </button>
@@ -321,7 +322,7 @@ export function MapsStudioTab({
             data-testid="activate-scene-btn"
             disabled={!selectedScene}
             onClick={() => selectedScene && onActivateScene?.(selectedScene)}
-            style={{ padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', background: 'var(--atlas-action)', color: 'var(--atlas-on-action)' }}
+            style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', background: 'var(--atlas-action)', color: 'var(--atlas-on-action)' }}
           >
             Activate Scene
           </button>
@@ -330,7 +331,7 @@ export function MapsStudioTab({
             data-testid="save-scene-btn"
             disabled={!selectedScene || isSavingSignal.value}
             onClick={handleSave}
-            style={{ padding: 'var(--atlas-space-xs) var(--atlas-space-sm)' }}
+            style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)' }}
           >
             {isSavingSignal.value ? 'Saving...' : 'Save Scene'}
           </button>
@@ -345,7 +346,7 @@ export function MapsStudioTab({
               type="button"
               data-testid="create-scene-btn"
               onClick={handleCreateScene}
-              style={{ padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
+              style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
             >
               + New Scene
             </button>
@@ -371,6 +372,7 @@ export function MapsStudioTab({
                   data-testid="empty-create-scene-btn"
                   onClick={handleCreateScene}
                   style={{
+                    minHeight: '40px',
                     padding: 'var(--atlas-space-xs) var(--atlas-space-sm)',
                     fontSize: 'var(--atlas-text-xs)',
                     background: 'var(--atlas-action)',
@@ -394,6 +396,7 @@ export function MapsStudioTab({
                     onClick={() => { selectedSceneIdSignal.value = scene.id; }}
                     style={{
                       width: '100%',
+                      minHeight: '40px',
                       textAlign: 'left',
                       padding: 'var(--atlas-space-xs) var(--atlas-space-sm)',
                       fontWeight: scene.id === selectedSceneIdSignal.value ? 'bold' : 'normal',
@@ -425,7 +428,7 @@ export function MapsStudioTab({
                 data-testid={`template-${tmpl}`}
                 disabled={!selectedScene}
                 onClick={() => handleAddStagedMonster(tmpl)}
-                style={{ textAlign: 'left', padding: 'var(--atlas-space-xs)', opacity: !selectedScene ? 0.5 : 1, cursor: !selectedScene ? 'not-allowed' : 'pointer' }}
+                style={{ minHeight: '40px', textAlign: 'left', padding: 'var(--atlas-space-xs)', opacity: !selectedScene ? 0.5 : 1, cursor: !selectedScene ? 'not-allowed' : 'pointer' }}
               >
                 + {tmpl} (Hidden)
               </button>
@@ -462,18 +465,24 @@ export function MapsStudioTab({
                   onClick={handleCanvasClick}
                   style={{ display: 'block', cursor: 'crosshair' }}
                 >
-                  {selectedScene.walls.map((wall) => (
-                    <line
-                      key={wall.id}
-                      data-testid={`canvas-wall-${wall.id}`}
-                      x1={wall.a.x}
-                      y1={wall.a.y}
-                      x2={wall.b.x}
-                      y2={wall.b.y}
-                      stroke="var(--atlas-action)"
-                      strokeWidth="3"
-                    />
-                  ))}
+                  {selectedScene.walls.map((wall) => {
+                    const wallStyle = SHARED_WALL_KINDS[wall.wallType as CanonicalWallKind];
+                    const strokeDasharray = wallStyle?.dashPatternPx ? wallStyle.dashPatternPx.join(' ') : undefined;
+                    const strokeWidth = wallStyle?.strokeWidthPx ?? (wall.wallType === 'Door' ? 3.5 : 3);
+                    return (
+                      <line
+                        key={wall.id}
+                        data-testid={`canvas-wall-${wall.id}`}
+                        x1={wall.a.x}
+                        y1={wall.a.y}
+                        x2={wall.b.x}
+                        y2={wall.b.y}
+                        stroke="var(--atlas-action)"
+                        strokeWidth={strokeWidth}
+                        strokeDasharray={strokeDasharray}
+                      />
+                    );
+                  })}
                   {selectedScene.lights.map((light) => (
                     <circle
                       key={light.id}
@@ -516,7 +525,7 @@ export function MapsStudioTab({
                     data-testid="wall-type-select"
                     value={wallTypeSignal.value}
                     onChange={(e) => { wallTypeSignal.value = (e.currentTarget as HTMLSelectElement).value as WallType; }}
-                    style={{ fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ minHeight: '40px', fontSize: 'var(--atlas-text-xs)' }}
                   >
                     <option value="Normal">Normal</option>
                     <option value="Window">Window</option>
@@ -529,36 +538,40 @@ export function MapsStudioTab({
                   <label htmlFor="wall-p1x" style={{ fontSize: 'var(--atlas-text-xs)' }}>P1:</label>
                   <input
                     id="wall-p1x"
+                    aria-label="P1 X coordinate"
                     data-testid="wall-p1x-input"
                     type="number"
                     value={wallP1XSignal.value}
                     onInput={(e) => { wallP1XSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-text-xs)' }}
                   />
                   <input
                     id="wall-p1y"
+                    aria-label="P1 Y coordinate"
                     data-testid="wall-p1y-input"
                     type="number"
                     value={wallP1YSignal.value}
                     onInput={(e) => { wallP1YSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-text-xs)' }}
                   />
                   <label htmlFor="wall-p2x" style={{ fontSize: 'var(--atlas-text-xs)' }}>P2:</label>
                   <input
                     id="wall-p2x"
+                    aria-label="P2 X coordinate"
                     data-testid="wall-p2x-input"
                     type="number"
                     value={wallP2XSignal.value}
                     onInput={(e) => { wallP2XSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-text-xs)' }}
                   />
                   <input
                     id="wall-p2y"
+                    aria-label="P2 Y coordinate"
                     data-testid="wall-p2y-input"
                     type="number"
                     value={wallP2YSignal.value}
                     onInput={(e) => { wallP2YSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-text-xs)' }}
                   />
                   <label htmlFor="wall-bottom-elevation" style={{ fontSize: 'var(--atlas-text-xs)' }}>Bottom(ft):</label>
                   <input
@@ -567,7 +580,7 @@ export function MapsStudioTab({
                     type="number"
                     value={wallBottomFtSignal.value}
                     onInput={(e) => { wallBottomFtSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-text-xs)' }}
                   />
                   <label htmlFor="wall-top-elevation" style={{ fontSize: 'var(--atlas-text-xs)' }}>Top(ft):</label>
                   <input
@@ -576,13 +589,13 @@ export function MapsStudioTab({
                     type="number"
                     value={wallTopFtSignal.value}
                     onInput={(e) => { wallTopFtSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-text-xs)' }}
                   />
                   <button
                     type="button"
                     data-testid="add-wall-btn"
                     onClick={handleAddWall}
-                    style={{ padding: '2px 8px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
                   >
                     Add Wall Segment
                   </button>
@@ -592,19 +605,21 @@ export function MapsStudioTab({
                   <label htmlFor="light-x" style={{ fontSize: 'var(--atlas-text-xs)' }}>Light X,Y:</label>
                   <input
                     id="light-x"
+                    aria-label="Light X coordinate"
                     data-testid="light-x-input"
                     type="number"
                     value={lightXSignal.value}
                     onInput={(e) => { lightXSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-text-xs)' }}
                   />
                   <input
                     id="light-y"
+                    aria-label="Light Y coordinate"
                     data-testid="light-y-input"
                     type="number"
                     value={lightYSignal.value}
                     onInput={(e) => { lightYSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-text-xs)' }}
                   />
                   <label htmlFor="light-radius" style={{ fontSize: 'var(--atlas-text-xs)' }}>Radius:</label>
                   <input
@@ -613,13 +628,13 @@ export function MapsStudioTab({
                     type="number"
                     value={lightRadiusFtSignal.value}
                     onInput={(e) => { lightRadiusFtSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-text-xs)' }}
                   />
                   <button
                     type="button"
                     data-testid="add-light-btn"
                     onClick={handleAddLight}
-                    style={{ padding: '2px 8px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
                   >
                     Add Light
                   </button>
@@ -627,25 +642,27 @@ export function MapsStudioTab({
                   <label htmlFor="audio-x" style={{ fontSize: 'var(--atlas-text-xs)', marginLeft: 'var(--atlas-space-sm)' }}>Audio X,Y:</label>
                   <input
                     id="audio-x"
+                    aria-label="Audio X coordinate"
                     data-testid="audio-x-input"
                     type="number"
                     value={audioXSignal.value}
                     onInput={(e) => { audioXSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-text-xs)' }}
                   />
                   <input
                     id="audio-y"
+                    aria-label="Audio Y coordinate"
                     data-testid="audio-y-input"
                     type="number"
                     value={audioYSignal.value}
                     onInput={(e) => { audioYSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-text-xs)' }}
                   />
                   <button
                     type="button"
                     data-testid="add-audio-btn"
                     onClick={handleAddAudio}
-                    style={{ padding: '2px 8px', fontSize: 'var(--atlas-text-xs)' }}
+                    style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
                   >
                     Add Audio Emitter
                   </button>
@@ -654,7 +671,7 @@ export function MapsStudioTab({
                     type="button"
                     data-testid="paint-fog-btn"
                     onClick={handlePaintFog}
-                    style={{ padding: '2px 8px', fontSize: 'var(--atlas-text-xs)', marginLeft: 'var(--atlas-space-sm)' }}
+                    style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)', marginLeft: 'var(--atlas-space-sm)' }}
                   >
                     Paint Fog
                   </button>
@@ -669,14 +686,14 @@ export function MapsStudioTab({
                   ) : (
                     selectedScene.walls.map((w) => (
                       <div key={w.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--atlas-text-xs)', padding: '2px 4px', background: 'var(--atlas-surface-raised)', borderRadius: 'var(--atlas-radius-sm)' }}>
-                        <span>
+                        <span class="atlas-tabular-nums">
                           <strong>{w.wallType}</strong> ({w.id}): [{w.bottomElevationFt}ft .. {w.topElevationFt}ft] ({w.a.x},{w.a.y}) &rarr; ({w.b.x},{w.b.y})
                         </span>
                         <button
                           type="button"
                           data-testid={`delete-wall-${w.id}`}
                           onClick={() => handleDeleteWall(w.id)}
-                          style={{ padding: '1px 6px', fontSize: 'var(--atlas-text-xs)' }}
+                          style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
                         >
                           Delete
                         </button>
@@ -710,7 +727,7 @@ export function MapsStudioTab({
                                 type="button"
                                 data-testid={`toggle-lock-${door.id}`}
                                 onClick={() => handleToggleDoorLock(door.id)}
-                                style={{ padding: '2px 6px', fontSize: 'var(--atlas-text-xs)' }}
+                                style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
                               >
                                 {isDoorLocked ? 'Unlock' : 'Lock'}
                               </button>
@@ -719,7 +736,7 @@ export function MapsStudioTab({
                               type="button"
                               data-testid={`toggle-door-${door.id}`}
                               onClick={() => handleDoorToggle(door.id)}
-                              style={{ padding: '2px 6px', fontSize: 'var(--atlas-text-xs)' }}
+                              style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
                             >
                               Toggle Door
                             </button>
@@ -727,7 +744,7 @@ export function MapsStudioTab({
                               type="button"
                               data-testid={`delete-wall-${door.id}`}
                               onClick={() => handleDeleteWall(door.id)}
-                              style={{ padding: '2px 6px', fontSize: 'var(--atlas-text-xs)' }}
+                              style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
                             >
                               Delete
                             </button>
