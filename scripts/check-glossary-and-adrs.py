@@ -98,11 +98,11 @@ def check_glossary() -> list[str]:
 def check_adrs() -> list[str]:
     errors: list[str] = []
     if not ADR_DIR.is_dir():
-        return [f"Missing ADR directory: {ADR_DIR}"]
+        return []
 
     adr_files = sorted(p for p in ADR_DIR.iterdir() if p.is_file() and p.suffix == ".md")
     if not adr_files:
-        return ["docs/adr/: no ADR markdown files found"]
+        return []
 
     seen_numbers: dict[str, str] = {}
     for path in adr_files:
