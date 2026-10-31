@@ -335,11 +335,9 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### UndoDrawer
 
-- **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
-- **Allowed Context**: `AbilityModifier`, `ability modifier`, derived attribute evaluation.
-- **_Avoid_**: `stat mod`, `ability bonus`.
-
-### AbilityScore
+- **Definition**: Game Master history drawer displaying recent table mutations and triggering single-click rollbacks.
+- **Allowed Context**: Game Master HUD, action history inspection, and rollback execution.
+- **_Avoid_**: HistorySidebar, RollbackPanel.
 
 ## Domain Terminology / Terminologie Métier
 
