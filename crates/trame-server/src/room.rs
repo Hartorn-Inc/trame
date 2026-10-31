@@ -9,7 +9,8 @@
 //! (`TableRoomHandle`), eliminating lock contention across concurrent campaigns
 //! while serializing all commands, CSPRNG dice rolls, WAL appends, and per-client
 //! 2.5D BVH visibility projections within a room. `RoomLeaseManager` coordinates
-//! on-demand WAL wake-up and `Idle-Lease` hibernation (`04-RUNTIME-AND-DEDICATED-HOSTING.md`).
+//! on-demand WAL wake-up, `Idle-Lease` hibernation, and SIGTERM scale-to-zero
+//! graceful shutdown lifecycle handling (`04-RUNTIME-AND-DEDICATED-HOSTING.md`).
 //!
 //! INVARIANTS & SAFETY BOUNDARIES:
 //! -------------------------------
@@ -32,6 +33,11 @@
 //!        whose idle duration (`current_time_ms - last_activity_ms`) meets or
 //!        exceeds `idle_timeout_ms`, flushing a final compacted snapshot before
 //!        terminating the actor loop.
+//!   5. `Graceful Cloud Run Shutdown & WebSocket Close Frame 1001`:
+//!      - On shutdown or room hibernation, `TableRoomHandle::hibernate` sends
+//!        WebSocket Close frame code `1001` ("Going Away") to all active client
+//!        connections and serializes uncommitted actor state to `WalStorage`
+//!        before terminating the actor task.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -51,11 +57,36 @@ use crate::sync::{
 use crate::wal::{TableStateSnapshot, WalEntry, WalError, WalStorage, recover_table_state};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use trame_engine::commands::{CampaignRole, CommandActor, TableState};
 use uuid::Uuid;
+
+/// Global atomic boolean flag indicating if the server runtime is in the process of shutting down.
+/// When set to `true`, incoming HTTP/WebSocket connections are rejected.
+pub static IS_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// RFC 6455 WebSocket Close Code `1001 Going Away` emitted during graceful scale-to-zero / hibernation.
+pub const WS_CLOSE_CODE_GOING_AWAY: u16 = 1001;
+
+/// Standard reason string broadcast alongside close code 1001.
+pub const WS_CLOSE_REASON_GOING_AWAY: &str = "Server Hibernating";
+
+/// Outbound frame sent from a room actor to a connected client's socket transmission task.
+#[derive(Debug, Clone)]
+pub enum OutboundClientFrame {
+    /// Binary payload carrying MessagePack-encoded `ServerEnvelope`.
+    Binary(Vec<u8>),
+    /// WebSocket Close frame with status code and descriptive reason.
+    Close {
+        /// 16-bit WebSocket status code (e.g. 1001).
+        code: u16,
+        /// Descriptive close reason string.
+        reason: String,
+    },
+}
 
 /// Errors raised when interacting with a `TableRoomActor` or its underlying `WalStorage`.
 #[derive(Debug, Error)]
@@ -66,6 +97,12 @@ pub enum RoomError {
     /// Underlying Write-Ahead Log or snapshot persistence failure.
     #[error("WAL storage error: {0}")]
     Wal(#[from] WalError),
+    /// The server is shutting down and cannot accept new room connections.
+    #[error("Server is shutting down")]
+    ShuttingDown,
+    /// Hibernation timed out.
+    #[error("Hibernation timed out")]
+    Timeout,
 }
 
 /// Represents a live WebSocket client session attached to a `TableRoomActor`.
@@ -76,15 +113,15 @@ pub struct ConnectedClient {
     pub user_id: Uuid,
     /// Campaign role (`Gm`, `Player`, or `Spectator`) governing RBAC and state projection.
     pub role: CampaignRole,
-    /// Outbound channel carrying MessagePack-encoded `ServerEnvelope` binary frames (`bytes`) to the socket task.
-    pub tx: mpsc::UnboundedSender<Vec<u8>>,
+    /// Outbound channel carrying frames (`OutboundClientFrame`) to the socket task.
+    pub tx: mpsc::UnboundedSender<OutboundClientFrame>,
 }
 
 /// Internal control messages processed sequentially by `TableRoomActor::run`.
 pub enum RoomActorMessage {
     /// Registers a newly connected client and pushes an initial role-filtered `StateSnapshot`.
     ConnectClient {
-        /// Client session descriptor and outbound byte channel.
+        /// Client session descriptor and outbound frame channel.
         client: ConnectedClient,
         /// Oneshot acknowledgment signal once initial snapshot enqueue completes.
         reply: oneshot::Sender<Result<(), RoomError>>,
@@ -108,7 +145,7 @@ pub enum RoomActorMessage {
         /// Oneshot channel receiving the current `RoomMetrics`.
         reply: oneshot::Sender<RoomMetrics>,
     },
-    /// Flushes a final `TableStateSnapshot` to `WalStorage` and gracefully stops the actor loop.
+    /// Flushes a final `TableStateSnapshot` to `WalStorage`, sends close code 1001 to all clients, and stops.
     Hibernate {
         /// Oneshot channel receiving the final persisted `seq_id`.
         reply: oneshot::Sender<Result<u64, RoomError>>,
@@ -129,7 +166,7 @@ pub struct RoomMetrics {
 }
 
 /// Cloneable async handle used by HTTP/WebSocket handlers and `RoomLeaseManager` to communicate with a `TableRoomActor`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TableRoomHandle {
     /// Campaign UUID associated with this room handle.
     pub campaign_id: Uuid,
@@ -139,6 +176,9 @@ pub struct TableRoomHandle {
 impl TableRoomHandle {
     /// Attaches a `ConnectedClient` to the room and triggers an immediate `ServerEnvelope::StateSnapshot` push.
     pub async fn connect_client(&self, client: ConnectedClient) -> Result<(), RoomError> {
+        if IS_SHUTTING_DOWN.load(Ordering::Acquire) {
+            return Err(RoomError::ShuttingDown);
+        }
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(RoomActorMessage::ConnectClient {
@@ -186,8 +226,7 @@ impl TableRoomHandle {
         reply_rx.await.map_err(|_| RoomError::ActorClosed)
     }
 
-    /// Commands the room actor to flush a compacted `TableStateSnapshot` and terminate its task,
-    /// returning the final `seq_id`.
+    /// Commands the room actor to flush state, broadcast WebSocket Close 1001 to all clients, and terminate.
     pub async fn hibernate(&self) -> Result<u64, RoomError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -215,9 +254,6 @@ pub struct TableRoomActor {
 impl TableRoomActor {
     /// Rehydrates `campaign_id` from `wal` (`recover_table_state`), seeds the room's ChaCha20 CSPRNG,
     /// and spawns the asynchronous actor loop with a 256-message bounded mailbox.
-    ///
-    /// `snapshot_interval` (clamped to `>= 1`) controls how many accepted commands elapse between
-    /// automatic write-behind snapshots.
     pub fn spawn(
         campaign_id: Uuid,
         wal: Arc<dyn WalStorage>,
@@ -257,7 +293,7 @@ impl TableRoomActor {
                         state: projected,
                     };
                     if let Ok(bytes) = encode_server_envelope(&snapshot_env) {
-                        let _ = client.tx.send(bytes);
+                        let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
                     }
                     self.clients.insert(client.session_id, client);
                     let _ = reply.send(Ok(()));
@@ -284,6 +320,16 @@ impl TableRoomActor {
                     });
                 }
                 RoomActorMessage::Hibernate { reply } => {
+                    // 1. Broadcast Close frame 1001 Going Away to all connected clients
+                    for client in self.clients.values() {
+                        let _ = client.tx.send(OutboundClientFrame::Close {
+                            code: WS_CLOSE_CODE_GOING_AWAY,
+                            reason: WS_CLOSE_REASON_GOING_AWAY.to_string(),
+                        });
+                    }
+                    self.clients.clear();
+
+                    // 2. Flush uncommitted state to storage
                     let res = self
                         .flush_snapshot()
                         .map(|()| self.seq_id)
@@ -350,7 +396,7 @@ impl TableRoomActor {
                                 state: projected_state,
                             };
                             if let Ok(bytes) = encode_server_envelope(&out) {
-                                let _ = client.tx.send(bytes);
+                                let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
                             }
                         }
                     }
@@ -359,7 +405,7 @@ impl TableRoomActor {
                             reason: err.to_string(),
                         };
                         if let Ok(bytes) = encode_server_envelope(&out) {
-                            let _ = sender_tx.send(bytes);
+                            let _ = sender_tx.send(OutboundClientFrame::Binary(bytes));
                         }
                     }
                 }
@@ -380,7 +426,7 @@ impl TableRoomActor {
                             {
                                 let out = ServerEnvelope::DiceRolled(projected_roll);
                                 if let Ok(bytes) = encode_server_envelope(&out) {
-                                    let _ = client.tx.send(bytes);
+                                    let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
                                 }
                             }
                         }
@@ -390,7 +436,7 @@ impl TableRoomActor {
                             reason: err.to_string(),
                         };
                         if let Ok(bytes) = encode_server_envelope(&out) {
-                            let _ = sender_tx.send(bytes);
+                            let _ = sender_tx.send(OutboundClientFrame::Binary(bytes));
                         }
                     }
                 }
@@ -403,7 +449,7 @@ impl TableRoomActor {
                 };
                 if let Ok(bytes) = encode_server_envelope(&out) {
                     for client in self.clients.values() {
-                        let _ = client.tx.send(bytes.clone());
+                        let _ = client.tx.send(OutboundClientFrame::Binary(bytes.clone()));
                     }
                 }
             }
@@ -413,7 +459,7 @@ impl TableRoomActor {
                     server_time_ms: self.last_activity_ms,
                 };
                 if let Ok(bytes) = encode_server_envelope(&out) {
-                    let _ = sender_tx.send(bytes);
+                    let _ = sender_tx.send(OutboundClientFrame::Binary(bytes));
                 }
             }
         }
@@ -435,7 +481,7 @@ impl TableRoomActor {
     }
 }
 
-/// Manages active `TableRoomActor` instances and enforces the `Idle-Lease` hibernation policy.
+/// Manages active `TableRoomActor` instances and enforces the `Idle-Lease` and scale-to-zero hibernation policy.
 pub struct RoomLeaseManager {
     rooms: RwLock<HashMap<Uuid, TableRoomHandle>>,
     wal: Arc<dyn WalStorage>,
@@ -457,6 +503,10 @@ impl RoomLeaseManager {
 
     /// Gets an active room handle or wakes a hibernated room transparently from WAL storage.
     pub async fn get_or_wake_room(&self, campaign_id: Uuid) -> Result<TableRoomHandle, RoomError> {
+        if IS_SHUTTING_DOWN.load(Ordering::Acquire) {
+            return Err(RoomError::ShuttingDown);
+        }
+
         {
             let guard = self.rooms.read().await;
             if let Some(handle) = guard.get(&campaign_id) {
@@ -469,6 +519,10 @@ impl RoomLeaseManager {
             return Ok(handle.clone());
         }
 
+        if IS_SHUTTING_DOWN.load(Ordering::Acquire) {
+            return Err(RoomError::ShuttingDown);
+        }
+
         let handle = TableRoomActor::spawn(campaign_id, self.wal.clone(), self.snapshot_interval)?;
         guard.insert(campaign_id, handle.clone());
         Ok(handle)
@@ -477,6 +531,30 @@ impl RoomLeaseManager {
     /// Returns the number of campaign rooms currently awake in memory.
     pub async fn active_room_count(&self) -> usize {
         self.rooms.read().await.len()
+    }
+
+    /// Commands all active `TableRoomHandle` actors to hibernate within a timeout (default 10 seconds),
+    /// broadcasting close code 1001 to all clients and flushing uncommitted state to storage.
+    pub async fn hibernate_all(&self, timeout: Duration) -> Result<Vec<Uuid>, RoomError> {
+        let active: Vec<(Uuid, TableRoomHandle)> = {
+            let mut guard = self.rooms.write().await;
+            guard.drain().collect()
+        };
+
+        let hibernation_future = async {
+            let mut hibernated = Vec::with_capacity(active.len());
+            for (campaign_id, handle) in active {
+                if handle.hibernate().await.is_ok() {
+                    hibernated.push(campaign_id);
+                }
+            }
+            hibernated
+        };
+
+        match tokio::time::timeout(timeout, hibernation_future).await {
+            Ok(hibernated) => Ok(hibernated),
+            Err(_) => Err(RoomError::Timeout),
+        }
     }
 
     /// Sweeps all rooms and hibernates any room with `0` active connections whose idle duration
