@@ -35,6 +35,28 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
     );
   };
 
+  const handleToggleSuccess = (idx: number) => {
+    const nextSuccesses = (idx + 1 === deathSuccesses) ? idx : idx + 1;
+    props.dispatchCommand?.(
+      TrameCommand.UpdateActorSheet({
+        path: 'deathSuccesses',
+        deathSuccesses: nextSuccesses,
+        value: nextSuccesses,
+      }),
+    );
+  };
+
+  const handleToggleFailure = (idx: number) => {
+    const nextFailures = (idx + 1 === deathFailures) ? idx : idx + 1;
+    props.dispatchCommand?.(
+      TrameCommand.UpdateActorSheet({
+        path: 'deathFailures',
+        deathFailures: nextFailures,
+        value: nextFailures,
+      }),
+    );
+  };
+
   const handleRollDeathSave = () => {
     props.dispatchCommand?.(
       TrameCommand.RollDice({
@@ -53,7 +75,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
       'div',
       { class: 'ds-hitdice-pane', 'data-testid': 'hitdice-pane' },
       h('span', { class: 'ds-pane-label' }, 'Hit Dice'),
-      h('span', { class: 'ds-hitdice-val', 'data-testid': 'hitdice-count' }, `${hitDiceCurrent} / ${hitDiceMax} (d${hitDieSides})`),
+      h('span', { class: 'ds-hitdice-val atlas-tabular-nums', 'data-testid': 'hitdice-count' }, `${hitDiceCurrent} / ${hitDiceMax} (d${hitDieSides})`),
       h(
         'button',
         {
@@ -76,11 +98,18 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
             { class: 'ds-deathsave-row' },
             h('span', { class: 'ds-label-success' }, 'Successes: '),
             [0, 1, 2].map((idx) =>
-              h('span', {
-                key: `succ-${idx}`,
-                class: `ds-pip ${idx < deathSuccesses ? 'is-filled' : ''}`,
-                'data-testid': `death-success-pip-${idx}`,
-              }),
+              h(
+                'button',
+                {
+                  key: `succ-${idx}`,
+                  type: 'button',
+                  class: `ds-pip ${idx < deathSuccesses ? 'is-filled' : ''}`,
+                  'data-testid': `death-success-pip-${idx}`,
+                  'aria-label': `Death save success ${idx + 1}`,
+                  'aria-pressed': idx < deathSuccesses,
+                  onClick: () => handleToggleSuccess(idx),
+                },
+              ),
             ),
           ),
           h(
@@ -88,11 +117,18 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
             { class: 'ds-deathsave-row' },
             h('span', { class: 'ds-label-failure' }, 'Failures: '),
             [0, 1, 2].map((idx) =>
-              h('span', {
-                key: `fail-${idx}`,
-                class: `ds-pip ${idx < deathFailures ? 'is-filled' : ''}`,
-                'data-testid': `death-failure-pip-${idx}`,
-              }),
+              h(
+                'button',
+                {
+                  key: `fail-${idx}`,
+                  type: 'button',
+                  class: `ds-pip ${idx < deathFailures ? 'is-filled' : ''}`,
+                  'data-testid': `death-failure-pip-${idx}`,
+                  'aria-label': `Death save failure ${idx + 1}`,
+                  'aria-pressed': idx < deathFailures,
+                  onClick: () => handleToggleFailure(idx),
+                },
+              ),
             ),
           ),
           h(

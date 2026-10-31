@@ -30,6 +30,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
 
   const handleDragStart = (entry: CompendiumEntry, e: DragEvent) => {
     const payload = {
+      type: entry.entityType,
       systemId: props.systemId ?? 'dnd5e',
       entryRef: entry.id || entry.slug,
       entryType: entry.entityType,
@@ -48,7 +49,17 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
       'header',
       { class: 'ds-drawer-header' },
       h('h3', null, 'Compendium'),
-      h('button', { type: 'button', class: 'ds-btn-close', 'data-testid': 'btn-close-compendium', 'aria-label': 'Close compendium', onClick: props.onClose }, '×'),
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'ds-btn-close',
+          'data-testid': 'btn-close-compendium',
+          'aria-label': 'Close compendium drawer',
+          onClick: props.onClose,
+        },
+        '×',
+      ),
     ),
     h(
       'div',

@@ -1,14 +1,15 @@
 import { h, type VNode } from 'preact';
+import { useState } from 'preact/hooks';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
-
-import { useState } from 'preact/hooks';
 import { CompendiumDragDropManager } from '../../compendium/CompendiumDragDropManager.ts';
 
 export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
   const rawSlots = (props.boundValues?.slots as Record<string, any>) ?? {};
   const rawSpells = Array.isArray(props.boundValues?.spells) ? props.boundValues.spells : [];
   const autoDeductSlots = props.options?.autoDeductSlots !== false;
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragManager = new CompendiumDragDropManager(props.options?.systemId as string ?? 'dnd5e', props.dispatchCommand, props.actorId);
 
   const spells = rawSpells.map((s: any) => ({
     id: String(s.id ?? ''),
@@ -18,10 +19,21 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
     aoeTemplate: s.aoeTemplate ?? (s.requiresAoE ? { shape: 'circle', radiusFeet: 20 } : undefined),
   }));
 
+  const handleToggleSlotPip = (slotKey: string, currentVal: number, maxVal: number) => {
+    const nextVal = currentVal > 0 ? currentVal - 1 : maxVal;
+    props.dispatchCommand?.(
+      TrameCommand.UpdateActorSheet({
+        path: `slots.${slotKey}.current`,
+        slotLevel: slotKey,
+        current: nextVal,
+        value: nextVal,
+      }),
+    );
+  };
+
   const handleCast = (spell: (typeof spells)[0]) => {
     if (spell.isAoE) {
       if (props.isTableCanvasMounted === false) {
-        // Canvas not mounted
         props.dispatchCommand?.({
           cmd: 'NOTIFICATION',
           type: 'warning',
@@ -68,144 +80,82 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
     }
   };
 
-  const [expandedLevels, setExpandedLevels] = useState<number[]>([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-  const dragManager = new CompendiumDragDropManager('dnd5e');
-
-  const toggleLevel = (lvl: number) => {
-    setExpandedLevels((prev) => (prev.includes(lvl) ? prev.filter((l) => l !== lvl) : [...prev, lvl]));
+  const handleDragOver = (e: DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
   };
 
-  const handleToggleSlotPip = (slotKey: string, lvl: number, currentVal: number) => {
-    const nextVal = currentVal > 0 ? currentVal - 1 : 0;
-    props.dispatchCommand?.(
-      TrameCommand.UpdateActorSheet({
-        path: `slots.${slotKey}.current`,
-        slotLevel: lvl,
-        current: nextVal,
-        value: nextVal,
-      }),
-    );
+  const handleDragLeave = () => {
+    setIsDragOver(false);
   };
 
   const handleDrop = (e: DragEvent) => {
     e.preventDefault();
+    setIsDragOver(false);
     const payload = dragManager.parseDragEvent(e);
-    if (!payload) return;
-    const entryType = String(payload.entryType ?? payload.type ?? '').toLowerCase();
-    if (entryType === 'spell' || entryType === 'spells') {
-      props.dispatchCommand?.(
-        TrameCommand.DropCompendiumEntry({
-          actorId: props.actorId,
-          entryRef: String(payload.entryRef ?? payload.ref ?? payload.id ?? ''),
-          entryType: 'spell',
-          data: payload.data,
-        }),
-      );
+    if (payload) {
+      dragManager.handleDrop(payload, null, props.actorId);
     }
   };
-
-  const spellsByLevel = new Map<number, typeof spells>();
-  for (let lvl = 0; lvl <= 9; lvl++) {
-    spellsByLevel.set(lvl, []);
-  }
-  for (const spell of spells) {
-    const list = spellsByLevel.get(spell.level) ?? [];
-    list.push(spell);
-    spellsByLevel.set(spell.level, list);
-  }
 
   return h(
     'div',
     {
-      class: 'ds-spellbook-widget',
+      class: `ds-spellbook-widget ${isDragOver ? 'is-drag-over' : ''}`,
       'data-testid': 'spellbook-accordion-widget',
-      onDragOver: (e: DragEvent) => e.preventDefault(),
+      onDragOver: handleDragOver,
+      onDragLeave: handleDragLeave,
       onDrop: handleDrop,
     },
-    h('h4', { class: 'ds-widget-title' }, 'Spellbook & Spell Slots'),
+    h('h4', { class: 'ds-widget-title' }, 'Spellbook'),
     h(
       'div',
-      { class: 'ds-spell-levels-accordion' },
-      Array.from({ length: 10 }, (_, lvl) => {
-        const levelSpells = spellsByLevel.get(lvl) ?? [];
-        const isExpanded = expandedLevels.includes(lvl);
-        const slotKey = `level${lvl}`;
-        const slotData = rawSlots[slotKey] ?? rawSlots[`slot_${lvl}`];
-        const maxSlots = Number(slotData?.max ?? 0);
-        const currentSlots = Number(slotData?.current ?? maxSlots);
-
+      { class: 'ds-spell-slots-container', 'data-testid': 'spell-slots-container' },
+      Object.entries(rawSlots).map(([slotKey, slotData]: [string, any]) => {
+        const current = Number(slotData?.current ?? slotData ?? 0);
+        const max = Number(slotData?.max ?? slotData ?? current);
         return h(
           'div',
-          { key: `lvl-${lvl}`, class: 'ds-spell-level-group', 'data-testid': `spell-level-group-${lvl}` },
-          h(
-            'div',
-            {
-              class: 'ds-spell-level-header',
-              'data-testid': `spell-level-header-${lvl}`,
-              role: 'button',
-              tabIndex: 0,
-              'aria-expanded': isExpanded ? 'true' : 'false',
-              onClick: () => toggleLevel(lvl),
-              onKeyDown: (e: KeyboardEvent) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  toggleLevel(lvl);
-                }
+          { key: slotKey, class: 'ds-spell-slot-row', 'data-testid': `slot-row-${slotKey}` },
+          h('span', { class: 'ds-slot-label' }, `${slotKey}: `),
+          Array.from({ length: max }).map((_, pipIdx) =>
+            h(
+              'button',
+              {
+                key: `${slotKey}-pip-${pipIdx}`,
+                type: 'button',
+                class: `ds-slot-pip ${pipIdx < current ? 'is-available' : 'is-expended'}`,
+                'data-testid': `slot-pip-${slotKey}-${pipIdx}`,
+                'aria-label': `${slotKey} slot pip ${pipIdx + 1}`,
+                'aria-pressed': pipIdx < current,
+                onClick: () => handleToggleSlotPip(slotKey, current, max),
               },
-            },
-            h('span', { class: 'ds-level-title' }, lvl === 0 ? 'Cantrips' : `Level ${lvl}`),
-            lvl > 0 && maxSlots > 0
-              ? h(
-                  'div',
-                  { class: 'ds-slot-pips-container', 'data-testid': `slot-pips-lvl-${lvl}` },
-                  Array.from({ length: maxSlots }, (_, idx) => {
-                    const isFilled = idx < currentSlots;
-                    return h(
-                      'button',
-                      {
-                        key: `pip-${idx}`,
-                        type: 'button',
-                        class: `ds-slot-pip ${isFilled ? 'is-filled' : 'is-expended'}`,
-                        'data-testid': `slot-pip-${lvl}-${idx}`,
-                        'aria-label': `Toggle level ${lvl} spell slot ${idx + 1}, currently ${isFilled ? 'expended' : 'empty'}`,
-                        onClick: (e: Event) => {
-                          e.stopPropagation();
-                          handleToggleSlotPip(slotKey, lvl, currentSlots);
-                        },
-                      },
-                      isFilled ? '●' : '○',
-                    );
-                  }),
-                )
-              : null,
+            ),
           ),
-          isExpanded
-            ? h(
-                'div',
-                { class: 'ds-spell-level-body' },
-                levelSpells.length === 0
-                  ? h('span', { class: 'ds-no-spells' }, 'No spells learned')
-                  : levelSpells.map((spell) =>
-                      h(
-                        'div',
-                        { key: spell.id, class: 'ds-spell-item', 'data-testid': `spell-item-${spell.id}` },
-                        h('span', { class: 'ds-spell-title' }, `${spell.name} (Lvl ${spell.level})`),
-                        h(
-                          'button',
-                          {
-                            type: 'button',
-                            class: 'ds-btn-cast-spell',
-                            'data-testid': `btn-cast-spell-${spell.id}`,
-                            onClick: () => handleCast(spell),
-                          },
-                          spell.isAoE ? 'Cast / Project AoE' : 'Cast',
-                        ),
-                      ),
-                    ),
-              )
-            : null,
+          h('span', { class: 'ds-slot-count atlas-tabular-nums' }, `(${current}/${max})`),
         );
       }),
+    ),
+    h(
+      'div',
+      { class: 'ds-spell-list' },
+      spells.map((spell) =>
+        h(
+          'div',
+          { key: spell.id, class: 'ds-spell-item', 'data-testid': `spell-item-${spell.id}` },
+          h('span', { class: 'ds-spell-title' }, `${spell.name} (Lvl ${spell.level})`),
+          h(
+            'button',
+            {
+              type: 'button',
+              class: 'ds-btn-cast-spell',
+              'data-testid': `btn-cast-spell-${spell.id}`,
+              onClick: () => handleCast(spell),
+            },
+            spell.isAoE ? 'Cast / Project AoE' : 'Cast',
+          ),
+        ),
+      ),
     ),
   );
 }

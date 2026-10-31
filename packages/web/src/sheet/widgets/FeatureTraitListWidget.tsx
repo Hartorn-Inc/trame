@@ -1,18 +1,52 @@
 import { h, type VNode } from 'preact';
 import { useState } from 'preact/hooks';
 import type { WidgetProps } from '../WidgetRegistry.ts';
+import { CompendiumDragDropManager } from '../../compendium/CompendiumDragDropManager.ts';
 
 export function FeatureTraitListWidget(props: WidgetProps): VNode<any> {
   const rawFeatures = Array.isArray(props.boundValues?.features) ? props.boundValues.features : [];
   const [expandedIds, setExpandedIds] = useState<string[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragManager = new CompendiumDragDropManager(props.options?.systemId as string ?? 'dnd5e', props.dispatchCommand, props.actorId);
 
   const toggle = (id: string) => {
     setExpandedIds((prev) => (prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]));
   };
 
+  const handleKeyDown = (e: KeyboardEvent, id: string) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggle(id);
+    }
+  };
+
+  const handleDragOver = (e: DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const payload = dragManager.parseDragEvent(e);
+    if (payload) {
+      dragManager.handleDrop(payload, null, props.actorId);
+    }
+  };
+
   return h(
     'div',
-    { class: 'ds-features-widget', 'data-testid': 'feature-trait-list-widget' },
+    {
+      class: `ds-features-widget ${isDragOver ? 'is-drag-over' : ''}`,
+      'data-testid': 'feature-trait-list-widget',
+      onDragOver: handleDragOver,
+      onDragLeave: handleDragLeave,
+      onDrop: handleDrop,
+    },
     h('h4', { class: 'ds-widget-title' }, 'Features & Traits'),
     h(
       'ul',
@@ -30,15 +64,10 @@ export function FeatureTraitListWidget(props: WidgetProps): VNode<any> {
               'data-testid': `feature-header-${id}`,
               role: 'button',
               tabIndex: 0,
-              'aria-expanded': isExpanded ? 'true' : 'false',
+              'aria-expanded': isExpanded,
               'aria-label': `Toggle details for ${feat.name ?? 'Feature'}`,
               onClick: () => toggle(id),
-              onKeyDown: (e: KeyboardEvent) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  toggle(id);
-                }
-              },
+              onKeyDown: (e: KeyboardEvent) => handleKeyDown(e, id),
             },
             h('strong', null, feat.name ?? 'Feature'),
             h('span', { class: 'ds-feature-source' }, ` (${feat.source ?? 'General'})`),
