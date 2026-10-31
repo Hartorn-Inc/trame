@@ -28,6 +28,9 @@ import {
   documentsNotesSignal,
   documentsHandoutsSignal,
   activeHandoutModalSignal,
+  revealedHandoutsSignal,
+  activeRevealedHandoutSignal,
+  selectedNoteIdSignal,
   type NoteHierarchyNode,
 } from "../src/workspace/DocumentsWorkspaceTab.tsx";
 import {
@@ -421,5 +424,37 @@ describe("[Ticket #89 - Acceptance Criterion 5] Folder-Organized Notes Hierarchy
     assert.equal(grouped.size, 2);
     assert.equal(grouped.get("Folder A")?.[0].title, "Alpha Note");
     assert.equal(grouped.get("Folder B")?.[0].title, "Beta Note");
+  });
+
+  it("exposes revealedHandoutsSignal and activeRevealedHandoutSignal aliases", () => {
+    assert.equal(revealedHandoutsSignal, documentsHandoutsSignal);
+    assert.equal(activeRevealedHandoutSignal, activeHandoutModalSignal);
+
+    const sampleHandout = {
+      handoutId: "h-alias-1",
+      title: "Alias Check",
+      content: "Content",
+      revealedBy: "gm",
+      timestamp: 12345,
+    };
+    revealedHandoutsSignal.value = [sampleHandout];
+    assert.equal(documentsHandoutsSignal.value.length, 1);
+    assert.equal(documentsHandoutsSignal.value[0].title, "Alias Check");
+  });
+
+  it("tracks selected note id and mutates note folder and visibility", () => {
+    documentsNotesSignal.value = [
+      { id: "note-dyn-1", title: "Dyn Note", folder: "InitialFolder", visibility: "PRIVATE", ownerUserId: "u1" },
+    ];
+    selectedNoteIdSignal.value = "note-dyn-1";
+    assert.equal(selectedNoteIdSignal.value, "note-dyn-1");
+
+    documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
+      n.id === "note-dyn-1" ? { ...n, folder: "CustomFolder", visibility: "PARTY" } : n,
+    );
+
+    const updated = documentsNotesSignal.value.find((n) => n.id === "note-dyn-1");
+    assert.equal(updated?.folder, "CustomFolder");
+    assert.equal(updated?.visibility, "PARTY");
   });
 });
