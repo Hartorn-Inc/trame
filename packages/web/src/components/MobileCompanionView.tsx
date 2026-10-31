@@ -52,6 +52,7 @@ export function MobileCompanionView(_props: MobileCompanionViewProps): JSX.Eleme
       </div>
 
       <nav
+        role="tablist"
         aria-label="Companion Tabs"
         style={{
           display: "flex",
@@ -63,6 +64,8 @@ export function MobileCompanionView(_props: MobileCompanionViewProps): JSX.Eleme
           <button
             key={tab}
             type="button"
+            role="tab"
+            aria-selected={activeTab === tab}
             data-testid={`mobile-tab-${tab}`}
             onClick={() => setActiveTab(tab)}
             style={{
@@ -71,6 +74,7 @@ export function MobileCompanionView(_props: MobileCompanionViewProps): JSX.Eleme
               backgroundColor: activeTab === tab ? "#1e293b" : "transparent",
               color: activeTab === tab ? "#38bdf8" : "#94a3b8",
               border: "none",
+              borderTop: activeTab === tab ? "2px solid #38bdf8" : "2px solid transparent",
               fontWeight: 600,
               fontSize: "0.875rem",
               cursor: "pointer",

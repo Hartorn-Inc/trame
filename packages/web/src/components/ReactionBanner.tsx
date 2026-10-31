@@ -24,22 +24,45 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
 
   const [secondsRemaining, setSecondsRemaining] = useState(totalDuration);
   const reactBtnRef = useRef<HTMLButtonElement | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const decidedRef = useRef(false);
+
+  const clearTimer = () => {
+    if (intervalRef.current !== null) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  };
+
+  const handleDecision = (accepted: boolean) => {
+    if (!prompt || decidedRef.current) return;
+    decidedRef.current = true;
+    clearTimer();
+    activeClient.sendCommand({
+      cmd: "DECIDE_REACTION",
+      prompt_id: prompt.id,
+      accepted,
+    });
+    props.onDecision?.(accepted);
+  };
 
   useEffect(() => {
+    clearTimer();
     if (!prompt) return;
-    setSecondsRemaining(totalDuration);
-    const interval = setInterval(() => {
-      setSecondsRemaining((prev) => {
-        if (prev <= 1) {
-          clearInterval(interval);
-          handleDecision(false);
-          return 0;
-        }
-        return prev - 1;
-      });
+    decidedRef.current = false;
+    let remaining = totalDuration;
+    setSecondsRemaining(remaining);
+    intervalRef.current = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        setSecondsRemaining(0);
+        handleDecision(false);
+      } else {
+        setSecondsRemaining(remaining);
+      }
     }, 1000);
 
-    return () => clearInterval(interval);
+    return () => clearTimer();
   }, [prompt]);
 
   useEffect(() => {
@@ -51,15 +74,6 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
   if (!prompt) {
     return null;
   }
-
-  const handleDecision = (accepted: boolean) => {
-    activeClient.sendCommand({
-      cmd: "DECIDE_REACTION",
-      prompt_id: prompt.id,
-      accepted,
-    });
-    props.onDecision?.(accepted);
-  };
 
   return (
     <div
@@ -112,7 +126,7 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
           onClick={() => handleDecision(true)}
           style={{
             padding: "0.375rem 0.75rem",
-            backgroundColor: "#ea580c",
+            backgroundColor: "#c2410c",
             color: "#ffffff",
             fontWeight: 600,
             border: "none",

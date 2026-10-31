@@ -72,6 +72,8 @@ export function CombatTrackerBar(props: CombatTrackerBarProps): JSX.Element | nu
               <div
                 key={tokenId}
                 role="listitem"
+                aria-current={isCurrent ? "true" : undefined}
+                aria-label={`${idx + 1}. ${label}${isCurrent ? " (Active turn)" : ""}`}
                 data-testid={`initiative-token-${tokenId}`}
                 data-active-turn={String(isCurrent)}
                 style={{
@@ -89,6 +91,9 @@ export function CombatTrackerBar(props: CombatTrackerBarProps): JSX.Element | nu
             );
           })}
         </div>
+        <span role="status" aria-live="polite" style={{ fontSize: "0.75rem", color: "#cbd5e1" }}>
+          Active turn: {roomState.tokens?.[initiativeOrder[activeTurnIndex]]?.name || initiativeOrder[activeTurnIndex] || "None"}
+        </span>
       </div>
 
       <div style={{ display: "flex", gap: "0.5rem" }}>

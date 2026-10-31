@@ -73,8 +73,6 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
         color: "#f8fafc",
       }}
     >
-      <HandoutPopupModal />
-
       <header style={{ padding: "1rem", borderBottom: "1px solid #1e293b", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
           <h2 style={{ margin: 0, fontSize: "1.125rem", color: "#f59e0b" }}>Wiki Notes & Handouts</h2>
