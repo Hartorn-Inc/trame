@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
 CREATE TABLE IF NOT EXISTS campaign_members (
     campaign_id UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    character_id UUID NULL,
     role VARCHAR(30) NOT NULL CHECK (role IN ('GM', 'ASSISTANT_GM', 'PLAYER', 'SPECTATOR')),
     joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (campaign_id, user_id)

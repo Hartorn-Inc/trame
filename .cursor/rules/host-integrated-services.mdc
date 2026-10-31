@@ -5,6 +5,10 @@ alwaysApply: true
 
 # Host-integrated services
 
+- Always prefer Docker/Compose (e.g. `make fmt`, `make lint`, `make test`, or
+  `docker compose run --rm`) over host-installed language toolchains (`cargo`,
+  `npm`, `node`, `pytest`, etc.). Do not install or search for local compilers
+  or language runtimes on the host when a container service is available.
 - Treat Docker/Compose, the Docker socket, host ports, and browser-facing
   development servers as host-integrated operations.
 - If a sandboxed command reports that `/var/run/docker.sock` is unavailable,

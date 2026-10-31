@@ -122,7 +122,7 @@ pub struct FilteredNoteDocument;
 impl FilteredNoteDocument {
     /// Pure function filtering raw Markdown notes based on user role.
     /// Preserves everything for GameMaster;
-    /// Completely purges all `:::dm` blocks and unrevealed `:::handout` (`revealed="false"`) blocks for non-GM.
+    /// Completely purges all `:::dm` / `:::gm` blocks and unrevealed `:::handout` (`revealed="false"`) blocks for non-GM.
     pub fn filter_for_role(raw_content: &str, role: UserRole) -> String {
         if role == UserRole::GameMaster {
             return raw_content.to_string();
@@ -136,7 +136,11 @@ impl FilteredNoteDocument {
             let line = lines[idx];
             let trimmed = line.trim();
 
-            if trimmed == ":::dm" {
+            if trimmed == ":::dm"
+                || trimmed == ":::gm"
+                || trimmed.starts_with(":::dm ")
+                || trimmed.starts_with(":::gm ")
+            {
                 idx += 1;
                 while idx < lines.len() {
                     if lines[idx].trim() == ":::" {

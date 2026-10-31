@@ -265,6 +265,18 @@ impl SqlxPostgresStore {
         user_id: Uuid,
         role: &str,
     ) -> Result<(), String> {
+        self.upsert_campaign_member_with_character(campaign_id, user_id, None, role)
+            .await
+    }
+
+    /// Adds or updates a member in `campaign_members` including optional `character_id`.
+    pub async fn upsert_campaign_member_with_character(
+        &self,
+        campaign_id: Uuid,
+        user_id: Uuid,
+        character_id: Option<Uuid>,
+        role: &str,
+    ) -> Result<(), String> {
         let normalized_role = match role.to_uppercase().as_str() {
             "GM" | "DM" => "GM",
             "ASSISTANT_GM" => "ASSISTANT_GM",
@@ -272,12 +284,15 @@ impl SqlxPostgresStore {
             _ => "PLAYER",
         };
         sqlx::query(
-            "INSERT INTO campaign_members (campaign_id, user_id, role)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (campaign_id, user_id) DO UPDATE SET role = EXCLUDED.role",
+            "INSERT INTO campaign_members (campaign_id, user_id, character_id, role)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (campaign_id, user_id) DO UPDATE SET
+               role = EXCLUDED.role,
+               character_id = COALESCE(EXCLUDED.character_id, campaign_members.character_id)",
         )
         .bind(campaign_id)
         .bind(user_id)
+        .bind(character_id)
         .bind(normalized_role)
         .execute(&self.pool)
         .await
@@ -711,7 +726,7 @@ impl SessionStore for SqlxPostgresStore {
             self.ensure_campaign_row(campaign_id)
                 .await
                 .map_err(SessionError::Storage)?;
-            self.upsert_campaign_member(campaign_id, user_id, role)
+            self.upsert_campaign_member_with_character(campaign_id, user_id, character_id, role)
                 .await
                 .map_err(SessionError::Storage)?;
             Ok(CampaignMemberRecord {
@@ -829,7 +844,7 @@ impl SessionStore for SqlxPostgresStore {
     ) -> BoxFuture<'_, Result<Option<CampaignMemberRecord>, SessionError>> {
         Box::pin(async move {
             let row_opt = sqlx::query(
-                "SELECT campaign_id, user_id, role,
+                "SELECT campaign_id, user_id, character_id, role,
                         EXTRACT(EPOCH FROM joined_at)::BIGINT AS joined_epoch
                  FROM campaign_members
                  WHERE campaign_id = $1 AND user_id = $2",
@@ -851,7 +866,7 @@ impl SessionStore for SqlxPostgresStore {
                 user_id: row
                     .try_get("user_id")
                     .map_err(|e| SessionError::Storage(e.to_string()))?,
-                character_id: None,
+                character_id: row.try_get("character_id").ok().flatten(),
                 role: row
                     .try_get("role")
                     .map_err(|e| SessionError::Storage(e.to_string()))?,
@@ -866,7 +881,7 @@ impl SessionStore for SqlxPostgresStore {
     ) -> BoxFuture<'_, Result<Vec<CampaignMemberRecord>, SessionError>> {
         Box::pin(async move {
             let rows = sqlx::query(
-                "SELECT campaign_id, user_id, role,
+                "SELECT campaign_id, user_id, character_id, role,
                         EXTRACT(EPOCH FROM joined_at)::BIGINT AS joined_epoch
                  FROM campaign_members
                  WHERE user_id = $1",
@@ -883,7 +898,7 @@ impl SessionStore for SqlxPostgresStore {
                         .try_get("campaign_id")
                         .map_err(|e| SessionError::Storage(e.to_string()))?,
                     user_id,
-                    character_id: None,
+                    character_id: row.try_get("character_id").ok().flatten(),
                     role: row
                         .try_get("role")
                         .map_err(|e| SessionError::Storage(e.to_string()))?,

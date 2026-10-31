@@ -519,7 +519,7 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/v1/campaigns/{campaign_id}", get(get_campaign_handler))
         .route(
             "/api/v1/campaigns/{campaign_id}/actors/{actor_id}",
-            put(update_actor_handler),
+            put(update_actor_handler).post(update_actor_handler),
         )
         .route(
             "/api/v1/campaigns/{campaign_id}/maps",
@@ -1651,16 +1651,18 @@ pub async fn starter_map_handler(
     table_state.data.initiative_order = vec![hero1_id, goblin1_id, hero2_id, goblin2_id];
 
     let scene_id = Uuid::new_v4();
-    if let Ok(room) = state.lease_manager.get_or_wake_room(campaign_id).await {
-        let _ = room.replace_state(table_state).await;
-    }
+    let seq_id = if let Ok(room) = state.lease_manager.get_or_wake_room(campaign_id).await {
+        room.replace_state(table_state).await.unwrap_or(1)
+    } else {
+        1
+    };
 
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     let wal_entry = crate::wal::WalEntry {
-        seq_id: 1,
+        seq_id,
         campaign_id,
         timestamp_ms: now_ms,
         actor_user_id: user_id,
@@ -1830,8 +1832,10 @@ pub async fn import_uvtt_handler(
             .into_response();
     }
 
+    let uvtt_bytes: Vec<u8> = extract_uvtt_payload_bytes(&headers, &body);
+
     let imported: ImportedMapResult = match import_uvtt_map(
-        &body,
+        &uvtt_bytes,
         state.instance_id,
         campaign_id,
         state.asset_store.as_ref(),
@@ -1901,6 +1905,40 @@ pub async fn import_uvtt_handler(
     }
 
     (StatusCode::CREATED, Json(imported)).into_response()
+}
+
+fn extract_uvtt_payload_bytes(headers: &HeaderMap, body: &Bytes) -> Vec<u8> {
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let is_multipart = content_type
+        .to_ascii_lowercase()
+        .starts_with("multipart/form-data")
+        || body.starts_with(b"--");
+
+    if !is_multipart {
+        return body.to_vec();
+    }
+
+    // Extract the first JSON object from multipart form-data body
+    if let Some(header_end) = body
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| i + 4)
+        .or_else(|| body.windows(2).position(|w| w == b"\n\n").map(|i| i + 2))
+    {
+        let part_slice = &body[header_end..];
+        let part_end = part_slice
+            .windows(4)
+            .position(|w| w == b"\r\n--")
+            .or_else(|| part_slice.windows(3).position(|w| w == b"\n--"))
+            .unwrap_or(part_slice.len());
+        return part_slice[..part_end].to_vec();
+    }
+
+    body.to_vec()
 }
 
 // ============================================================================
