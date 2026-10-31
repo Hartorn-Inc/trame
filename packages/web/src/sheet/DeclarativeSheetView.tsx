@@ -1,6 +1,6 @@
 import { h, type VNode } from 'preact';
 import { useMemo, useState } from 'preact/hooks';
-import { DND5E_SHEET_LAYOUT } from '../../../game-systems/dnd5e/src/sheetLayout.ts';
+import { DND5E_SHEET_LAYOUT } from '../../../../packages/game-systems/dnd5e/src/sheetLayout.ts';
 import { BindingResolver } from './binding.ts';
 import { WidgetRegistry } from './WidgetRegistry.ts';
 import type { CommandDispatcher, SheetLayoutNode, SheetLayoutTree, ViewerContext } from './types.ts';

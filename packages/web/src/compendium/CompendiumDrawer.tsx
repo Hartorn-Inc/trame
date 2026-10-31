@@ -1,6 +1,6 @@
 import { h, type VNode } from 'preact';
 import { useState } from 'preact/hooks';
-import type { CompendiumEntry } from '../../../game-systems/dnd5e/src/compendium.ts';
+import type { CompendiumEntry } from '../../../../packages/game-systems/dnd5e/src/compendium.ts';
 import type { CommandDispatcher } from '../sheet/types.ts';
 import { CompendiumDragDropManager } from './CompendiumDragDropManager.ts';
 

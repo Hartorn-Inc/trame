@@ -2,7 +2,7 @@ import { h, type VNode } from 'preact';
 import { signal } from '@preact/signals';
 import { DeclarativeSheetView } from '../sheet/DeclarativeSheetView.tsx';
 import { CompendiumDrawer } from '../compendium/CompendiumDrawer.tsx';
-import type { CompendiumEntry } from '../../../game-systems/dnd5e/src/compendium.ts';
+import type { CompendiumEntry } from '../../../../packages/game-systems/dnd5e/src/compendium.ts';
 
 export const isSheetDrawerOpenSignal = signal<boolean>(false);
 export const isCompendiumDrawerOpenSignal = signal<boolean>(false);

@@ -69,7 +69,11 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
   };
 
   const [expandedLevels, setExpandedLevels] = useState<number[]>([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-  const dragManager = new CompendiumDragDropManager('dnd5e');
+  const dragManager = new CompendiumDragDropManager({
+    systemId: 'dnd5e',
+    dispatchCommand: props.dispatchCommand,
+    actorId: props.actorId,
+  });
 
   const toggleLevel = (lvl: number) => {
     setExpandedLevels((prev) => (prev.includes(lvl) ? prev.filter((l) => l !== lvl) : [...prev, lvl]));
@@ -94,14 +98,7 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
     if (!payload) return;
     const entryType = String(payload.entryType ?? payload.type ?? '').toLowerCase();
     if (entryType === 'spell' || entryType === 'spells') {
-      props.dispatchCommand?.(
-        TrameCommand.DropCompendiumEntry({
-          actorId: props.actorId,
-          entryRef: String(payload.entryRef ?? payload.ref ?? payload.id ?? ''),
-          entryType: 'spell',
-          data: payload.data,
-        }),
-      );
+      dragManager.handleDrop(payload, null, props.actorId);
     }
   };
 
