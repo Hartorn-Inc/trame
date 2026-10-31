@@ -1,5 +1,5 @@
 import { h, type VNode } from 'preact';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useSafeEffect, useSafeRef, useSafeState } from '../safeHooks.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
@@ -15,8 +15,8 @@ export function sanitizeHtml(input: string): string {
 
 export function NotesMarkdownPaneWidget(props: WidgetProps): VNode<any> {
   const initialNotes = String(props.boundValues?.notes ?? props.boundValues?.markdownContent ?? '');
-  const [text, setText] = useState(initialNotes);
-  const timerRef = useRef<any>(null);
+  const [text, setText] = useSafeState(initialNotes);
+  const timerRef = useSafeRef<any>(null);
 
   const handleChange = (newVal: string) => {
     setText(newVal);
@@ -34,7 +34,7 @@ export function NotesMarkdownPaneWidget(props: WidgetProps): VNode<any> {
     }, 500);
   };
 
-  useEffect(() => {
+  useSafeEffect(() => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };

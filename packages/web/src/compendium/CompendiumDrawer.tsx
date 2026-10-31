@@ -1,5 +1,5 @@
 import { h, type VNode } from 'preact';
-import { useState } from 'preact/hooks';
+import { useSafeState } from '../sheet/safeHooks.ts';
 import type { CompendiumEntry } from '../../../../packages/game-systems/dnd5e/src/compendium.ts';
 import type { CommandDispatcher } from '../sheet/types.ts';
 import { CompendiumDragDropManager } from './CompendiumDragDropManager.ts';
@@ -19,8 +19,8 @@ const CATEGORIES = ['all', 'item', 'spell', 'feat', 'monster'] as const;
 export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | null {
   if (!props.isOpen) return null;
 
-  const [query, setQuery] = useState('');
-  const [category, setCategory] = useState<string>('all');
+  const [query, setQuery] = useSafeState('');
+  const [category, setCategory] = useSafeState<string>('all');
   const entries = props.entries ?? [];
   const dragManager = new CompendiumDragDropManager({
     systemId: props.systemId ?? 'dnd5e',

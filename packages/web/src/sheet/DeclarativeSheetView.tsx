@@ -1,9 +1,10 @@
 import { h, type VNode } from 'preact';
-import { useState } from 'preact/hooks';
 import { DND5E_SHEET_LAYOUT } from '../../../game-systems/dnd5e/sheetLayout.ts';
 import { PadlockLockedIcon, PadlockUnlockedIcon } from '../components/icons/AtlasIcons.tsx';
+import { isNodeAuthorized } from './DeclarativeSheetRenderer.ts';
 import { BindingResolver } from './binding.ts';
 import { WidgetRegistry } from './WidgetRegistry.ts';
+import { useSafeState } from './safeHooks.ts';
 import type { CommandDispatcher, SheetLayoutNode, SheetLayoutTree, ViewerContext } from './types.ts';
 import {
   StatBlock6Widget,
@@ -68,8 +69,8 @@ export interface DeclarativeSheetViewProps {
 
 export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<any> {
   const layout: SheetLayoutTree = props.sheetLayout ?? (DND5E_SHEET_LAYOUT as unknown as SheetLayoutTree) ?? DEFAULT_FALLBACK_LAYOUT;
-  const [localLocked, setLocalLocked] = useState(props.coreStatsLocked ?? true);
-  const [activeTabId, setActiveTabId] = useState<string>('tab-combat');
+  const [localLocked, setLocalLocked] = useSafeState<boolean>(props.coreStatsLocked ?? true);
+  const [activeTabId, setActiveTabId] = useSafeState<string>('tab-combat');
 
   const isGmLocked = Boolean(props.gm_core_locked);
   const effectiveLocked = isGmLocked
@@ -88,6 +89,10 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
   };
 
   const renderNode = (node: SheetLayoutNode): VNode<any> | null => {
+    if (!isNodeAuthorized(node.visibilityTier, props.viewer)) {
+      return null;
+    }
+
     if (node.kind === 'section' || node.kind === 'column' || node.kind === 'row') {
       const children = (node.children || []).map((child) => renderNode(child)).filter(Boolean);
       return h(
@@ -103,7 +108,7 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
     }
 
     if (node.kind === 'tabs') {
-      const tabs = node.tabs || [];
+      const tabs = (node.tabs || []).filter((tab) => isNodeAuthorized(tab.visibilityTier, props.viewer));
       const currentTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
       return h(
         'div',

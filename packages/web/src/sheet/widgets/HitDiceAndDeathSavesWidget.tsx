@@ -62,15 +62,79 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
     );
   };
 
-  const handleRollDeathSave = () => {
+  const evaluateDeathSaveResult = (rollResult: number) => {
+    if (rollResult === 1) {
+      const nextFailures = Math.min(3, deathFailures + 2);
+      const isDeceased = nextFailures >= 3;
+      props.dispatchCommand?.(
+        TrameCommand.UpdateActorSheet({
+          path: 'deathSaves.failures',
+          deathFailures: nextFailures,
+          value: nextFailures,
+          increment: 2,
+          ...(isDeceased ? { condition: 'deceased', status: 'deceased' } : {}),
+        }),
+      );
+    } else if (rollResult >= 2 && rollResult <= 9) {
+      const nextFailures = Math.min(3, deathFailures + 1);
+      const isDeceased = nextFailures >= 3;
+      props.dispatchCommand?.(
+        TrameCommand.UpdateActorSheet({
+          path: 'deathSaves.failures',
+          deathFailures: nextFailures,
+          value: nextFailures,
+          increment: 1,
+          ...(isDeceased ? { condition: 'deceased', status: 'deceased' } : {}),
+        }),
+      );
+    } else if (rollResult >= 10 && rollResult <= 19) {
+      const nextSuccesses = Math.min(3, deathSuccesses + 1);
+      const isStable = nextSuccesses >= 3;
+      props.dispatchCommand?.(
+        TrameCommand.UpdateActorSheet({
+          path: 'deathSaves.successes',
+          deathSuccesses: nextSuccesses,
+          value: nextSuccesses,
+          increment: 1,
+          ...(isStable ? { condition: 'stable', status: 'stable' } : {}),
+        }),
+      );
+    } else if (rollResult === 20) {
+      props.dispatchCommand?.(
+        TrameCommand.UpdateActorSheet({
+          path: 'hp.current',
+          deathSuccesses: 0,
+          deathFailures: 0,
+          hpCurrent: Math.max(1, hpCurrent + 1),
+          currentHp: Math.max(1, hpCurrent + 1),
+          value: Math.max(1, hpCurrent + 1),
+          condition: 'stable',
+          status: 'stable',
+        }),
+      );
+    }
+  };
+
+  const handleRollDeathSave = (explicitRollResult?: number) => {
+    const rollResult = typeof explicitRollResult === 'number'
+      ? explicitRollResult
+      : typeof (props.options?.mockDeathSaveRoll as number | undefined) === 'number'
+      ? (props.options?.mockDeathSaveRoll as number)
+      : undefined;
+
     props.dispatchCommand?.(
       TrameCommand.RollDice({
         formula: '1d20',
         expression: '1d20',
+        ...(rollResult !== undefined ? { result: rollResult } : {}),
         visibility: 'PUBLIC',
         reason: 'Death Saving Throw',
       }),
     );
+
+    if (rollResult !== undefined) {
+      evaluateDeathSaveResult(rollResult);
+    }
   };
 
   return h(
@@ -154,7 +218,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
               type: 'button',
               class: 'ds-btn-death-save',
               'data-testid': 'btn-death-save',
-              onClick: handleRollDeathSave,
+              onClick: () => handleRollDeathSave(),
             },
             'Roll DeathSavingThrow',
           ),

@@ -1,5 +1,5 @@
 import { h, type VNode } from 'preact';
-import { useState } from 'preact/hooks';
+import { useSafeState } from '../safeHooks.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 import { CompendiumDragDropManager } from '../../compendium/CompendiumDragDropManager.ts';
@@ -67,7 +67,7 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
     }
   };
 
-  const [expandedLevels, setExpandedLevels] = useState<number[]>([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const [expandedLevels, setExpandedLevels] = useSafeState<number[]>([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   const dragManager = new CompendiumDragDropManager({
     systemId: 'dnd5e',
     dispatchCommand: props.dispatchCommand,

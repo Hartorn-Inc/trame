@@ -3,6 +3,14 @@ import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 import { CompendiumDragDropManager, calculateTotalInventoryWeight } from '../../compendium/CompendiumDragDropManager.ts';
 
+const CURRENCY_DENOMINATIONS = [
+  { key: 'pp', label: 'PP' },
+  { key: 'gp', label: 'GP' },
+  { key: 'ep', label: 'EP' },
+  { key: 'sp', label: 'SP' },
+  { key: 'cp', label: 'CP' },
+] as const;
+
 export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
   const rawItems = Array.isArray(props.boundValues?.items)
     ? props.boundValues.items
@@ -34,6 +42,20 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
   const regularEncumbrance = strScore * 5;
   const heavyEncumbrance = strScore * 10;
   const maxCapacity = strScore * 15;
+
+  const handleCurrencyChange = (denomination: string, val: number) => {
+    const cleanVal = Math.max(0, Math.floor(Number.isNaN(val) ? 0 : val));
+    props.dispatchCommand?.(
+      TrameCommand.UpdateActorSheet({
+        path: `currency.${denomination}`,
+        currency: {
+          ...rawCurrency,
+          [denomination]: cleanVal,
+        },
+        value: cleanVal,
+      }),
+    );
+  };
 
   const handleMoveItem = (itemId: string, targetContainerId: string | null) => {
     props.dispatchCommand?.(
@@ -120,11 +142,23 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
     h(
       'div',
       { class: 'ds-currency-strip atlas-tabular-nums', 'data-testid': 'currency-strip' },
-      h('span', { class: 'atlas-tabular-nums' }, `PP: ${rawCurrency.pp ?? 0} `),
-      h('span', { class: 'atlas-tabular-nums' }, `GP: ${rawCurrency.gp ?? 0} `),
-      h('span', { class: 'atlas-tabular-nums' }, `EP: ${rawCurrency.ep ?? 0} `),
-      h('span', { class: 'atlas-tabular-nums' }, `SP: ${rawCurrency.sp ?? 0} `),
-      h('span', { class: 'atlas-tabular-nums' }, `CP: ${rawCurrency.cp ?? 0}`),
+      CURRENCY_DENOMINATIONS.map(({ key, label }) =>
+        h(
+          'label',
+          { key, class: 'ds-currency-item atlas-tabular-nums' },
+          h('span', { class: 'ds-currency-label' }, `${label}: `),
+          h('input', {
+            type: 'number',
+            min: 0,
+            class: 'ds-currency-input atlas-tabular-nums',
+            'data-testid': `currency-input-${key}`,
+            'aria-label': `${label} currency amount`,
+            value: Number(rawCurrency[key] ?? 0),
+            onChange: (e: Event) =>
+              handleCurrencyChange(key, Number((e.target as HTMLInputElement).value)),
+          }),
+        ),
+      ),
     ),
     h(
       'div',

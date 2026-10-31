@@ -1,12 +1,12 @@
 import { h, type VNode } from 'preact';
-import { useState } from 'preact/hooks';
+import { useSafeState } from '../safeHooks.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 import { CompendiumDragDropManager } from '../../compendium/CompendiumDragDropManager.ts';
 
 export function FeatureTraitListWidget(props: WidgetProps): VNode<any> {
   const rawFeatures = Array.isArray(props.boundValues?.features) ? props.boundValues.features : [];
-  const [expandedIds, setExpandedIds] = useState<string[]>([]);
-  const [isDragOver, setIsDragOver] = useState(false);
+  const [expandedIds, setExpandedIds] = useSafeState<string[]>([]);
+  const [isDragOver, setIsDragOver] = useSafeState(false);
   const dragManager = new CompendiumDragDropManager(props.options?.systemId as string ?? 'dnd5e', props.dispatchCommand, props.actorId);
 
   const toggle = (id: string) => {

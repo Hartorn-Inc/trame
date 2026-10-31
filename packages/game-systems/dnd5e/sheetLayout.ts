@@ -228,6 +228,7 @@ export const DND5E_SHEET_LAYOUT: SheetLayoutTree = {
                         bindings: {
                           items: "sheet.items",
                           currency: "sheet.currency",
+                          strength: "sheet.abilities.str",
                         },
                       },
                     ],
