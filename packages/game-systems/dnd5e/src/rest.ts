@@ -34,13 +34,26 @@
  *   5. `State Immutability`:
  *      - All functions return deep-cloned state records, preserving pure,
  *        deterministic transitions across client-side UI and server pipelines.
+ *
+ * EXECUTION LIFECYCLE:
+ * --------------------
+ *   `applyShortRest(actorOrSheet, optionsOrRolls)`
+ *     ├── 1. Deep-clone actor state and validate hit die expenditure count.
+ *     ├── 2. Apply healing floor max(1, roll + conMod) per die and decrement hit dice.
+ *     ├── 3. Replenish SHORT_REST resource pools and Pact Magic spell slots.
+ *     └── 4. Return updated immutable actor data or recovery metric totals.
+ *   `applyLongRest(actorOrSheet)`
+ *     ├── 1. Deep-clone actor state and restore current HP to hp.max.
+ *     ├── 2. Clear temp HP to 0 and reset death save counters.
+ *     ├── 3. Recover max(1, floor(hitDiceMax / 2)) hit dice up to hitDiceMax.
+ *     ├── 4. Decrement exhaustion by 1 if greater than 0.
+ *     ├── 5. Replenish tiers 1-9 spell slots, Pact Magic, and SHORT/LONG_REST pools.
+ *     └── 6. Clear concentratingOnSpellId and return updated actor state.
  * ============================================================================
  */
 
 import type {
-  AbilityId,
   Dnd5eActorData,
-  ResourcePool,
   SpellSlotsState,
 } from "./types.ts";
 import type { Dnd5eActorSheet } from "./pipeline.ts";
