@@ -1,40 +1,40 @@
-# ADR 0034 : Architecture de la Montée de Niveau (Lvl 1-20), des Repos (Short/Long) et de l'Expansion SRD 5.1
+# ADR 0034: D&D 5e Level-Up (Lvl 1-20), Short/Long Rests, and SRD 5.1 Compendium Expansion Architecture
 
-- **Statut** : Accepté
-- **Date** : 2025-05-20
-- **Décideurs** : Architecte EPURE, Core Team TRAME
-- **Branche** : `plan/77-spec-d-d-5e-levelupmodal-lvl-1-20-sh`
+- **Status**: Accepted
+- **Date**: 2025-05-20
+- **Deciders**: EPURE Architect, TRAME Core Team
+- **Branch**: `plan/77-spec-d-d-5e-levelupmodal-lvl-1-20-sh`
 
-## 1. Contexte
-Le système de jeu `@trame/game-system-dnd5e` possède une fonction `applyLevelUp` embryonnaire dans `packages/game-systems/dnd5e/src/progression.ts`. Cette fonction ne gère pas le choix de sous-classes, le dilemme ASI (`+2` ou `+1/+1`) versus Dons, l'apprentissage de sorts ni la progression multiclasses/magie de pacte. De plus, aucune fonction de repos (`ShortRest`, `LongRest`) n'est définie dans le moteur. Dans l'interface utilisateur web (`@trame/web`), aucun dialogue n'est exposé pour exécuter la montée de niveau ou les repos depuis la fiche d'un `Actor` (`CampaignWorkspace` ou `HudDrawers.tsx`). Enfin, le compendium embarqué `compendium.ts` ne contient qu'une fraction minimale des objets et monstres du SRD 5.1 et ne prend pas en charge la localisation bilingue (`en`/`fr`).
+## 1. Context
+The `@trame/game-system-dnd5e` package initially contained a minimal `applyLevelUp` function in `packages/game-systems/dnd5e/src/progression.ts` without support for subclass selection, Ability Score Improvement (`+2` or `+1/+1`) versus Feat choices, spell learning, or multiclass/Pact Magic slot progression. In addition, no rest mechanics (`ShortRest`, `LongRest`) were defined in the engine, and `@trame/web` lacked UI modals (`LevelUpModal`, `RestModal`) for executing progression or rests from `CampaignWorkspace` or `HudDrawers.tsx`. Finally, the embedded `compendium.ts` only included a small subset of SRD 5.1 items and monsters without bilingual (`en`/`fr`) metadata.
 
-## 2. Décisions
+## 2. Decisions
 
-### 2.1 Découpage Modulaire dans `@trame/game-system-dnd5e`
-- Le module `packages/game-systems/dnd5e/src/rest.ts` regroupe les fonctions pures et synchrones `applyShortRest(actor: Dnd5eActorData, options: ShortRestOptions): Dnd5eActorData` et `applyLongRest(actor: Dnd5eActorData): Dnd5eActorData`.
-- Le module `packages/game-systems/dnd5e/src/progression.ts` étend `applyLevelUp(actor: Dnd5eActorData, options: LevelUpOptions): Dnd5eActorData` avec validation stricte du niveau maximum (20), du plafonnement des caractéristiques à 20 lors des ASI, et des tables de sorts canoniques.
-- Les tables d'emplacements de sorts `FULL_CASTER_SPELL_SLOTS`, `HALF_CASTER_SPELL_SLOTS` et `PACT_MAGIC_SPELL_SLOTS` sont exportées de `packages/game-systems/dnd5e/src/progression.ts`.
+### 2.1 Modular Separation in `@trame/game-system-dnd5e`
+- `packages/game-systems/dnd5e/src/rest.ts` groups the pure synchronous functions `applyShortRest(actor: Dnd5eActorData, options: ShortRestOptions): Dnd5eActorData` and `applyLongRest(actor: Dnd5eActorData): Dnd5eActorData`.
+- `packages/game-systems/dnd5e/src/progression.ts` extends `applyLevelUp(actor: Dnd5eActorData, options: LevelUpOptions): Dnd5eActorData` with strict level-20 cap validation, ability score caps at 20 during ASI, and canonical spell slot tables.
+- The canonical slot tables `FULL_CASTER_SPELL_SLOTS`, `HALF_CASTER_SPELL_SLOTS`, and `PACT_MAGIC_SPELL_SLOTS` are exported from `packages/game-systems/dnd5e/src/progression.ts`.
 
-### 2.2 Autorité des Tirages de Dés
-- Aucun composant d'interface utilisateur n'utilise `Math.random()`.
-- Les tirages de points de vie et de dés de vie pendant le repos sollicitent le service autoritaire serveur basé sur `ChaCha20Rng` via la route REST `POST /api/v1/campaigns/{id}/dice/roll` (hors session active) ou via la commande CQRS WebSocket `TrameCommand::RollDice` (sur table active).
-- Chaque jet génère un `TrameEvent` consigné dans le journal public de session avec sa signature autoritaire avant application de la mutation sur l'`Actor`.
+### 2.2 Server-Authoritative Dice Rolls
+- No UI component uses `Math.random()`.
+- Hit point progression rolls and hit dice expenditures during a short rest invoke the authoritative server `ChaCha20Rng` service via REST `POST /api/v1/campaigns/{id}/dice/roll` (outside an active table session) or via CQRS WebSocket `TrameCommand::RollDice` (on an active table).
+- Every roll emits an authoritative `TrameEvent` recorded in the public session log before applying the `Actor` mutation.
 
-### 2.3 Double Canal de Persistance (CQRS / REST)
-- Lorsque l'utilisateur déclenche une montée de niveau ou un repos depuis le HUD de table en direct (`HudDrawers.tsx`), le client expédie la commande CQRS `TrameCommand::UpdateActorData` via WebSocket. Le `TableRoomActor` traite la commande, diffuse la mise à jour aux abonnés et la persiste via `SqlxPostgresStore`.
-- Lorsque l'utilisateur déclenche l'action depuis `CampaignWorkspace` hors session active, le client expédie une requête REST `PUT /api/v1/campaigns/{id}/actors/{actor_id}`.
+### 2.3 Dual Persistence Channel (CQRS / REST)
+- When triggered from the live table HUD (`HudDrawers.tsx`), the client dispatches `TrameCommand::UpdateActorData` over WebSocket so `TableRoomActor` broadcasts the update and persists it through `SqlxPostgresStore`.
+- When triggered from `CampaignWorkspace` outside an active table session, the client sends a REST `PUT /api/v1/campaigns/{id}/actors/{actor_id}` request.
 
-### 2.4 Format Compendium et Internationalisation
-- Les clés d'identification des entrées du compendium conservent des slugs canoniques ASCII universels non traduits (`srd:spell:fireball`, `srd:item:bag_of_holding`).
-- Chaque entrée de `compendium.ts` supporte un bloc optionnel bilingue `i18n?: { en: { name: string, description: string }, fr: { name: string, description: string } }`.
-- Les conteneurs magiques utilisent la propriété `contentWeightMultiplier: 0` pour annuler le poids de leur contenu.
+### 2.4 Compendium Format and Internationalization
+- Compendium entry identifiers retain canonical untranslated ASCII slugs (`srd:spell:fireball`, `srd:item:bag_of_holding`).
+- Each entry in `compendium.ts` supports an optional bilingual metadata block `i18n?: { en: { name: string, description: string }, fr: { name: string, description: string } }`.
+- Extra-dimensional containers use `contentWeightMultiplier: 0` so contained items contribute zero weight to the outer carrier.
 
-## 3. Conséquences
+## 3. Consequences
 
-### 3.1 Conséquences Positives
-- Intégrité stricte des règles SRD 5.1 garantie par des fonctions pures et testables unitairement sans dépendance réseau.
-- Traçabilité et impossibilité de triche sur les tirages de dés de vie grâce au générateur `ChaCha20Rng` côté serveur.
-- Expérience utilisateur unifiée entre la préparation hors session (`CampaignWorkspace`) et le jeu en direct (`HudDrawers.tsx`).
+### 3.1 Positive Consequences
+- Strict SRD 5.1 rule integrity enforced by pure, deterministic functions testable without network dependencies.
+- Tamper-proof hit point and hit die rolls backed by server-side `ChaCha20Rng`.
+- Unified player and GM experience across asynchronous campaign preparation (`CampaignWorkspace`) and live table sessions (`HudDrawers.tsx`).
 
-### 3.2 Conséquences Négatives et Risques Atténués
-- Nécessité de maintenir deux canaux d'application (REST et CQRS) : le code UI partage le même modèle de présentation et délègue la persistance à un adaptateur d'environnement injecté.
+### 3.2 Negative Consequences and Mitigated Risks
+- Maintaining dual persistence channels (REST and CQRS) is mitigated by sharing a single pure state transition model and delegating persistence to an injected environment adapter.
