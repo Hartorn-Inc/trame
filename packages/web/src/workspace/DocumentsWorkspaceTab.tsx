@@ -40,11 +40,24 @@ export function groupNotesByFolder(notes: NoteHierarchyNode[]): Map<string, Note
 
 export function HandoutRevealModal() {
   const activeModal = activeHandoutModalSignal.value;
+
   if (!activeModal) return null;
+
+  if (typeof window !== "undefined") {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && activeHandoutModalSignal.value) {
+        activeHandoutModalSignal.value = null;
+      }
+    };
+    window.addEventListener("keydown", handleEscape, { once: true });
+  }
 
   return (
     <div
       data-testid="handout-reveal-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="handout-title"
       class="modal-backdrop fullscreen"
       style={{
         position: "fixed",
@@ -67,7 +80,7 @@ export function HandoutRevealModal() {
           border: "1px solid var(--atlas-border)",
         }}
       >
-        <h3 data-testid="handout-title">{activeModal.title}</h3>
+        <h3 id="handout-title" data-testid="handout-title">{activeModal.title}</h3>
         <div data-testid="handout-content" style={{ marginTop: "0.5rem" }}>
           {activeModal.content}
         </div>
@@ -197,7 +210,18 @@ export function DocumentsWorkspaceTab() {
             <div
               key={handout.handoutId}
               data-testid={`handout-card-${handout.handoutId}`}
-              style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}
+              role="button"
+              tabIndex={0}
+              onClick={() => {
+                activeHandoutModalSignal.value = handout;
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  activeHandoutModalSignal.value = handout;
+                }
+              }}
+              style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)", cursor: "pointer" }}
             >
               <h4>{handout.title}</h4>
               <p>{handout.content}</p>

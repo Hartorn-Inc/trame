@@ -763,6 +763,22 @@ Party moves forward."#;
     }
 
     #[test]
+    fn test_merge_party_note_ast_preserves_gm_secrets_across_player_mutations() {
+        let stored_doc = "Texte public\n\n:::dm\nSecret MJ\n:::\n\nFin public";
+        let player_view = FilteredNoteDocument::filter_for_role(stored_doc, UserRole::Player);
+        assert!(!player_view.contains(":::dm"));
+        assert!(!player_view.contains("Secret MJ"));
+
+        let player_mutation = "Texte public modifie\n\nFin public";
+        let merged = FilteredNoteDocument::merge_party_note_ast(stored_doc, player_mutation);
+
+        assert!(merged.contains(":::dm"));
+        assert!(merged.contains("Secret MJ"));
+        assert!(merged.contains("Texte public modifie"));
+        assert!(merged.contains("Fin public"));
+    }
+
+    #[test]
     fn test_filter_for_role_preserves_everything_for_gamemaster() {
         let input = r#"# Adventure Notes
 :::dm
@@ -846,13 +862,19 @@ Hidden Text
         );
         assert_eq!(stored_entry.revealed_by, "user-gm-1");
 
+        let listed_entries = journal
+            .list_entries("camp-alpha")
+            .expect("list entries succeeds");
+        assert_eq!(listed_entries.len(), 1);
+        assert_eq!(listed_entries[0].handout_id, "h-456");
+
         let timeline_resp = timeline
             .get_timeline("camp-alpha", 1, 0, 10)
             .expect("timeline query succeeds");
         assert_eq!(timeline_resp.events.len(), 1);
         let ev = &timeline_resp.events[0];
         assert_eq!(ev.seq_id, 1);
-        assert_eq!(ev.event_type, "HandoutRevealed");
+        assert_eq!(ev.event_type, "handout_revealed");
         assert_eq!(ev.actor_id.as_deref(), Some("user-gm-1"));
         assert_eq!(ev.payload["handout_id"], "h-456");
         assert_eq!(ev.payload["title"], "Lettre interceptée");

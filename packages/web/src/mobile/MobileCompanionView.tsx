@@ -1,5 +1,6 @@
 import { signal } from "@preact/signals";
 import { mobileCompanionOverrideSignal, t } from "../i18n/index.ts";
+import { DocumentsWorkspaceTab } from "../workspace/DocumentsWorkspaceTab.tsx";
 
 export type MobileCompanionTab = "sheet" | "dice" | "inventory" | "tracker" | "journal";
 
@@ -41,7 +42,7 @@ export function MobileCompanionView() {
             onClick={() => {
               mobileCompanionOverrideSignal.value = false;
             }}
-            style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem" }}
+            style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" }}
           >
             Exit
           </button>
@@ -53,7 +54,11 @@ export function MobileCompanionView() {
         {activeTab === "dice" && <div data-testid="tab-dice">{t("nav.dice")}</div>}
         {activeTab === "inventory" && <div data-testid="tab-inventory">{t("nav.inventory")}</div>}
         {activeTab === "tracker" && <div data-testid="tab-tracker">{t("nav.tracker")}</div>}
-        {activeTab === "journal" && <div data-testid="tab-journal">{t("nav.journal")}</div>}
+        {activeTab === "journal" && (
+          <div data-testid="tab-journal">
+            <DocumentsWorkspaceTab />
+          </div>
+        )}
       </main>
 
       <nav
@@ -80,10 +85,10 @@ export function MobileCompanionView() {
                 flex: 1,
                 minHeight: "44px",
                 padding: "0.75rem",
-                background: isActive ? "var(--atlas-action)" : "transparent",
-                color: isActive ? "var(--atlas-on-action)" : "var(--atlas-text)",
+                background: isActive ? "var(--atlas-surface-raised)" : "transparent",
+                color: isActive ? "var(--atlas-text)" : "var(--atlas-text-muted)",
                 border: "none",
-                borderTop: isActive ? "2px solid var(--atlas-focus)" : "2px solid transparent",
+                borderTop: isActive ? "2px solid var(--atlas-action)" : "2px solid transparent",
               }}
             >
               {t(tab.key)}
