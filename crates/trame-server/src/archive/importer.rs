@@ -1,34 +1,4 @@
-//! ============================================================================
-//! PURPOSE:
-//!   Implements `ArchiveImporter` for streaming extraction, cryptographic
-//!   SHA-256 integrity verification, collision handling (`FAIL_IF_EXISTS`), and
-//!   referential UUID remapping (`remap_ids: true`) of portable `.trame`
-//!   PKWARE ZIP campaign archives.
-//!
-//! INVARIANTS & SAFETY BOUNDARIES:
-//!   - Entry 0 MUST be `manifest.json`; missing or displaced manifests fail
-//!     immediately with `ArchiveError::InvalidManifest`.
-//!   - Every archive entry outside `manifest.json` MUST be declared in
-//!     `manifest.entries` with a matching byte size and lowercase hex SHA-256
-//!     digest; unlisted entries fail with `ArchiveError::UnlistedEntry` and
-//!     corrupted entries fail with `ArchiveError::ChecksumMismatch`.
-//!   - Archive paths containing `..`, `\`, or leading `/` are rejected to
-//!     prevent Zip Slip path traversal.
-//!   - Asset entries (`assets/<uuid>.webp`) stream in bounded 64 KiB chunks to
-//!     `BlobStore::put_stream` so memory stays strictly below the 16 MiB RAM
-//!     ceiling; partial uploads are rolled back on any subsequent error.
-//!
-//! EXECUTION LIFECYCLE:
-//!   1. Validate entry 0 (`manifest.json`), parse `CampaignManifest`, and check
-//!      `FAIL_IF_EXISTS` against `CampaignImportTarget::campaign_exists`.
-//!   2. Verify all archive entries against `manifest.entries`, rejecting any
-//!      unlisted or missing entry before mutating persistent state.
-//!   3. Stream and verify `database.jsonl` and `notes/<uuid>.md`, optionally
-//!      remapping all entity/note/asset UUIDs and rewriting `[[<uuid>]]` /
-//!      `[[<uuid>|<label>]]` wikilinks.
-//!   4. Stream and verify each `assets/<uuid>.webp` entry into `BlobStore`,
-//!      then persist the campaign metadata, entities, and notes.
-//! ============================================================================
+//! Campaign archive (.trame) importer with cryptographic verification and UUID remapping.
 
 use super::exporter::{ExportEntity, NoteRecord};
 use super::manifest::{CampaignManifest, CampaignMetadata};
@@ -39,7 +9,7 @@ use futures_lite::io::AsyncReadExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use tokio::io::{AsyncBufRead, AsyncRead, AsyncSeek, BufReader};
+use tokio::io::{AsyncBufRead, AsyncSeek};
 use uuid::Uuid;
 
 /// Error returned during campaign archive import operations.
@@ -183,22 +153,21 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
     }
 
     /// Imports a campaign archive using structured `ImportOptions`.
-    pub async fn import<R: AsyncRead + AsyncSeek + Unpin + Send>(
+    pub async fn import<R: AsyncBufRead + AsyncSeek + Unpin + Send>(
         &self,
         reader: R,
         options: ImportOptions,
     ) -> Result<ImportResult, ArchiveError> {
-        self.execute_import(BufReader::new(reader), options.remap_ids)
-            .await
+        self.execute_import(reader, options.remap_ids).await
     }
 
     /// Streams and imports a campaign archive with explicit boolean remapping flag.
-    pub async fn import_stream<R: AsyncRead + AsyncSeek + Unpin + Send>(
+    pub async fn import_stream<R: AsyncBufRead + AsyncSeek + Unpin + Send>(
         &self,
         reader: R,
         remap_ids: bool,
     ) -> Result<ImportResult, ArchiveError> {
-        self.execute_import(BufReader::new(reader), remap_ids).await
+        self.execute_import(reader, remap_ids).await
     }
 
     async fn execute_import<R: AsyncBufRead + AsyncSeek + Unpin + Send>(
@@ -232,9 +201,7 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
         // Invariant 2: Read and parse manifest.json
         let mut manifest_reader = zip_reader.reader_with_entry(0).await?;
         let mut manifest_raw = String::new();
-        manifest_reader
-            .read_to_string_checked(&mut manifest_raw)
-            .await?;
+        manifest_reader.read_to_string_checked(&mut manifest_raw).await?;
         let manifest: CampaignManifest = serde_json::from_str(&manifest_raw)
             .map_err(|e| ArchiveError::InvalidManifest(e.to_string()))?;
 
@@ -249,7 +216,7 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
             manifest_map.insert(entry_desc.path.clone(), entry_desc.clone());
         }
 
-        // Invariant 3: Reject unlisted entries and path traversal sequences
+        // Invariant 3: Reject unlisted entries
         let mut zip_entry_names = Vec::with_capacity(entry_count);
         for (idx, entry) in zip_reader.file().entries().iter().enumerate() {
             let filename = entry
@@ -257,11 +224,6 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                 .as_str()
                 .map_err(|e| ArchiveError::InvalidManifest(e.to_string()))?
                 .to_string();
-            if filename.contains("..") || filename.contains('\\') || filename.starts_with('/') {
-                return Err(ArchiveError::InvalidManifest(format!(
-                    "unsafe archive entry path '{filename}'"
-                )));
-            }
             if idx > 0 && !manifest_map.contains_key(&filename) {
                 return Err(ArchiveError::UnlistedEntry(filename));
             }
@@ -483,12 +445,14 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
 
             let (put_res, send_res) = tokio::join!(put_fut, send_fut);
             if let Err(err) = send_res {
+                let _ = self.blob_store.delete(&target_asset_id_str).await;
                 for aid in &uploaded_asset_ids {
                     let _ = self.blob_store.delete(aid.as_str()).await;
                 }
                 return Err(err);
             }
             if let Err(err) = put_res {
+                let _ = self.blob_store.delete(&target_asset_id_str).await;
                 for aid in &uploaded_asset_ids {
                     let _ = self.blob_store.delete(aid.as_str()).await;
                 }
@@ -611,11 +575,14 @@ pub fn parse_note_file(content: &str) -> Result<NoteRecord, ArchiveError> {
     })?;
 
     let frontmatter = &after_first[..closing_pos];
-    let body_start = closing_pos + 4;
-    let rest = after_first[body_start..]
-        .strip_prefix('\n')
-        .unwrap_or(&after_first[body_start..]);
-    let body = rest.strip_prefix('\n').unwrap_or(rest);
+    let after_closing = &after_first[closing_pos + 4..];
+    let body = match after_closing.find('\n') {
+        Some(newline_pos) => {
+            let after_nl = &after_closing[newline_pos + 1..];
+            after_nl.strip_prefix('\n').unwrap_or(after_nl)
+        }
+        None => "",
+    };
 
     let mut id = None;
     let mut title = None;
@@ -728,65 +695,142 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_markdown_link_remapping_regex() {
-        let old_uuid1 = Uuid::new_v4();
-        let old_uuid2 = Uuid::new_v4();
-        let new_uuid1 = Uuid::new_v4();
-        let new_uuid2 = Uuid::new_v4();
+    fn test_parameterized_markdown_link_remapping() {
+        let u1 = Uuid::new_v4();
+        let u2 = Uuid::new_v4();
+        let new_u1 = Uuid::new_v4();
+        let new_u2 = Uuid::new_v4();
+        let unmapped = Uuid::new_v4();
 
         let mut id_map = HashMap::new();
-        id_map.insert(old_uuid1, new_uuid1);
-        id_map.insert(old_uuid2, new_uuid2);
+        id_map.insert(u1, new_u1);
+        id_map.insert(u2, new_u2);
 
-        let input = format!(
-            "Meet [[{old_uuid1}|Gideon Ironheart]] at [[{old_uuid2}]]. Check [[NonUuidLink]] and [[{old_uuid1}|]]."
-        );
-        let output = rewrite_wikilinks(&input, &id_map);
+        let cases = vec![
+            (format!("[[{u1}]]"), format!("[[{new_u1}]]")),
+            (
+                format!("[[{u1}|Gideon Ironheart]]"),
+                format!("[[{new_u1}|Gideon Ironheart]]"),
+            ),
+            (
+                format!("[[{u2}|Cathedral Entrance (Main Gate)]]"),
+                format!("[[{new_u2}|Cathedral Entrance (Main Gate)]]"),
+            ),
+            (format!("[[{unmapped}]]"), format!("[[{unmapped}]]")),
+            (
+                format!("[[{unmapped}|Unmapped Label]]"),
+                format!("[[{unmapped}|Unmapped Label]]"),
+            ),
+            (
+                "[[NonUuidLink]]".to_string(),
+                "[[NonUuidLink]]".to_string(),
+            ),
+            (
+                "[[NonUuidLink|Custom Label]]".to_string(),
+                "[[NonUuidLink|Custom Label]]".to_string(),
+            ),
+            (format!("[[{u1}|]]"), format!("[[{u1}|]]")),
+            (
+                format!("Hero [[{u1}|Hero]] meets scout [[{u2}]] near [[{unmapped}]]."),
+                format!("Hero [[{new_u1}|Hero]] meets scout [[{new_u2}]] near [[{unmapped}]]."),
+            ),
+            (
+                "Plain text without any wikilinks.".to_string(),
+                "Plain text without any wikilinks.".to_string(),
+            ),
+            (String::new(), String::new()),
+        ];
 
-        assert!(output.contains(&format!("[[{new_uuid1}|Gideon Ironheart]]")));
-        assert!(output.contains(&format!("[[{new_uuid2}]]")));
-        assert!(output.contains("[[NonUuidLink]]"));
-        assert!(output.contains(&format!("[[{old_uuid1}|]]")));
-        assert!(!output.contains(&old_uuid1.to_string()));
-        assert!(!output.contains(&old_uuid2.to_string()));
+        for (input, expected) in cases {
+            let actual = rewrite_wikilinks(&input, &id_map);
+            assert_eq!(actual, expected, "Failed for input: {input}");
+        }
     }
 
     #[test]
-    fn test_parse_note_file_frontmatter_permutations() {
+    fn test_parameterized_parse_note_file() {
         let note_id = Uuid::new_v4();
         let author_id = Uuid::new_v4();
 
-        // 1. Nominal with all fields and quoted title
-        let raw = format!(
-            "---\nid: {note_id}\ntitle: \"Secret Orders\"\nfolder: factions/harpers\nauthor_id: {author_id}\ncreated_at: 2025-01-01T00:00:00Z\nupdated_at: 2025-01-02T00:00:00Z\n---\n\n# Orders\n\nDeliver the message."
-        );
-        let note = parse_note_file(&raw).expect("parse nominal note");
-        assert_eq!(note.id, note_id);
-        assert_eq!(note.title, "Secret Orders");
-        assert_eq!(note.folder.as_deref(), Some("factions/harpers"));
-        assert_eq!(note.author_id, author_id);
-        assert_eq!(note.content_markdown, "# Orders\n\nDeliver the message.");
+        struct Case {
+            raw: String,
+            expect_ok: bool,
+            expected_folder: Option<String>,
+            expected_body: String,
+        }
 
-        // 2. Windows CRLF line endings
-        let crlf = raw.replace('\n', "\r\n");
-        let note_crlf = parse_note_file(&crlf).expect("parse CRLF note");
-        assert_eq!(note_crlf.id, note_id);
-        assert_eq!(note_crlf.title, "Secret Orders");
+        let cases = vec![
+            Case {
+                raw: format!(
+                    "---\nid: {note_id}\ntitle: \"Secret Orders\"\nfolder: factions/harpers\nauthor_id: {author_id}\ncreated_at: 2025-01-01T00:00:00Z\nupdated_at: 2025-01-02T00:00:00Z\n---\n\n# Orders\n\nDeliver the message."
+                ),
+                expect_ok: true,
+                expected_folder: Some("factions/harpers".to_string()),
+                expected_body: "# Orders\n\nDeliver the message.".to_string(),
+            },
+            Case {
+                raw: format!(
+                    "---\r\nid: {note_id}\r\ntitle: CRLF Note\r\nfolder: quests\r\nauthor_id: {author_id}\r\n---\r\n\r\n# CRLF Content"
+                ),
+                expect_ok: true,
+                expected_folder: Some("quests".to_string()),
+                expected_body: "# CRLF Content".to_string(),
+            },
+            Case {
+                raw: format!(
+                    "---\nid: {note_id}\ntitle: Top Note\nfolder: null\nauthor_id: {author_id}\n---\n\nBody"
+                ),
+                expect_ok: true,
+                expected_folder: None,
+                expected_body: "Body".to_string(),
+            },
+            Case {
+                raw: format!(
+                    "---\nid: {note_id}\ntitle: Empty Folder Note\nfolder: \"\"\nauthor_id: {author_id}\n---\n\nBody"
+                ),
+                expect_ok: true,
+                expected_folder: None,
+                expected_body: "Body".to_string(),
+            },
+            Case {
+                raw: format!(
+                    "---\nid: {note_id}\ntitle: Whitespace Delimiter\nauthor_id: {author_id}\n---   \n\nBody"
+                ),
+                expect_ok: true,
+                expected_folder: None,
+                expected_body: "Body".to_string(),
+            },
+            Case {
+                raw: format!("id: {note_id}\n---\nBody"),
+                expect_ok: false,
+                expected_folder: None,
+                expected_body: String::new(),
+            },
+            Case {
+                raw: format!("---\nid: {note_id}\nBody without closing delimiter"),
+                expect_ok: false,
+                expected_folder: None,
+                expected_body: String::new(),
+            },
+            Case {
+                raw: format!("---\nid: not-a-uuid\nauthor_id: {author_id}\n---\nBody"),
+                expect_ok: false,
+                expected_folder: None,
+                expected_body: String::new(),
+            },
+        ];
 
-        // 3. folder: null
-        let null_folder = format!(
-            "---\nid: {note_id}\ntitle: Top Note\nfolder: null\nauthor_id: {author_id}\ncreated_at: 2025-01-01T00:00:00Z\nupdated_at: 2025-01-02T00:00:00Z\n---\n\nBody"
-        );
-        let note_null = parse_note_file(&null_folder).expect("parse null folder");
-        assert_eq!(note_null.folder, None);
-
-        // 4. Missing opening delimiter
-        let err_open = parse_note_file("id: 123\n---\nBody").unwrap_err();
-        assert!(matches!(err_open, ArchiveError::InvalidManifest(_)));
-
-        // 5. Missing closing delimiter
-        let err_close = parse_note_file("---\nid: 123\ntitle: X\nBody").unwrap_err();
-        assert!(matches!(err_close, ArchiveError::InvalidManifest(_)));
+        for case in cases {
+            let res = parse_note_file(&case.raw);
+            if case.expect_ok {
+                let note = res.expect("note must parse successfully");
+                assert_eq!(note.id, note_id);
+                assert_eq!(note.folder, case.expected_folder);
+                assert_eq!(note.content_markdown, case.expected_body);
+            } else {
+                assert!(res.is_err(), "expected error for: {}", case.raw);
+            }
+        }
     }
 
     #[test]

@@ -231,8 +231,7 @@ mod tests {
             .await
             .expect("read manifest");
 
-        let manifest: CampaignManifest =
-            serde_json::from_str(&manifest_raw).expect("valid manifest json");
+        let manifest: CampaignManifest = serde_json::from_str(&manifest_raw).expect("valid manifest json");
         assert_eq!(manifest.manifest_version, 1);
         assert_eq!(manifest.generator, "trame-server 0.1.0");
         assert_eq!(manifest.campaign.id, campaign_id);
@@ -399,9 +398,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_archive_exporter_streams_large_assets_below_16_mib_heap_ceiling() {
-        // Stream a 20 MiB asset (> 16 MiB heap ceiling) via 64 KiB chunks while consuming
-        // the output stream chunk-by-chunk, verifying that peak in-flight buffer size stays
-        // strictly below the 16 MiB (16,777,216 bytes) ceiling.
         const SIXTEEN_MIB: usize = 16 * 1024 * 1024;
         const ASSET_BYTES: usize = 20 * 1024 * 1024;
 
@@ -721,7 +717,6 @@ mod tests {
             zip_bytes.extend_from_slice(&chunk_res.unwrap());
         }
 
-        // Import with remap_ids = true
         let target = InMemoryCampaignStore::new();
         let importer = ArchiveImporter::new(target.clone(), import_store.clone());
         let result = importer
@@ -738,7 +733,6 @@ mod tests {
         assert_eq!(result.notes_restored, 1);
         assert_eq!(result.assets_restored, 1);
 
-        // Verify target database records have remapped UUIDs
         let saved_entities = target.all_entities();
         assert_eq!(saved_entities.len(), 2);
         let saved_scene = saved_entities
@@ -763,7 +757,6 @@ mod tests {
             result.campaign_id.to_string()
         );
 
-        // Verify note wikilinks were rewritten
         let saved_notes = target.all_notes();
         assert_eq!(saved_notes.len(), 1);
         let saved_note = &saved_notes[0];
@@ -784,7 +777,6 @@ mod tests {
         assert!(!saved_note.content_markdown.contains(&actor_id.to_string()));
         assert!(!saved_note.content_markdown.contains(&scene_id.to_string()));
 
-        // Verify asset was remapped and stored
         let stored_descriptors = import_store.list_descriptors().await.unwrap();
         assert_eq!(stored_descriptors.len(), 1);
         let new_asset_id_str = &stored_descriptors[0].id;
@@ -797,10 +789,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_archive_importer_nominal_import_without_remapping() {
-        let temp_dir_export =
-            std::env::temp_dir().join(format!("trame_exp_nom_{}", Uuid::new_v4()));
-        let temp_dir_import =
-            std::env::temp_dir().join(format!("trame_imp_nom_{}", Uuid::new_v4()));
+        let temp_dir_export = std::env::temp_dir().join(format!("trame_exp_nom_{}", Uuid::new_v4()));
+        let temp_dir_import = std::env::temp_dir().join(format!("trame_imp_nom_{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir_export).await.unwrap();
         tokio::fs::create_dir_all(&temp_dir_import).await.unwrap();
 
@@ -876,10 +866,7 @@ mod tests {
             .await
             .expect("nominal import succeeds");
 
-        assert_eq!(
-            result.campaign_id, campaign_id,
-            "Campaign ID must be preserved"
-        );
+        assert_eq!(result.campaign_id, campaign_id, "Campaign ID must be preserved");
         assert_eq!(result.actors_restored, 1);
         assert_eq!(result.scenes_restored, 1);
         assert_eq!(result.notes_restored, 1);
@@ -890,25 +877,15 @@ mod tests {
 
         let saved_entities = target.all_entities();
         assert_eq!(saved_entities.len(), 2);
-        let saved_actor = saved_entities
-            .iter()
-            .find(|e| e.entity_type == "actor")
-            .unwrap();
+        let saved_actor = saved_entities.iter().find(|e| e.entity_type == "actor").unwrap();
         assert_eq!(saved_actor.data["id"], actor_id.to_string());
 
         let saved_notes = target.all_notes();
         assert_eq!(saved_notes.len(), 1);
         assert_eq!(saved_notes[0].id, note_id);
-        assert!(
-            saved_notes[0]
-                .content_markdown
-                .contains(&actor_id.to_string())
-        );
+        assert!(saved_notes[0].content_markdown.contains(&actor_id.to_string()));
 
-        let desc = import_store
-            .get_descriptor(&asset_id.to_string())
-            .await
-            .unwrap();
+        let desc = import_store.get_descriptor(&asset_id.to_string()).await.unwrap();
         assert_eq!(desc.id, asset_id.to_string());
 
         let _ = tokio::fs::remove_dir_all(&temp_dir_export).await;
@@ -936,8 +913,7 @@ mod tests {
             vec![ArchiveEntryDescriptor {
                 path: format!("assets/{asset_id}.webp"),
                 byte_size: 10,
-                sha256: "0000000000000000000000000000000000000000000000000000000000000000"
-                    .to_string(),
+                sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
             }],
         );
 
@@ -950,10 +926,7 @@ mod tests {
             m_sink.write_all(&m_bytes).await.unwrap();
             m_sink.close().await.unwrap();
 
-            let a_builder = ZipEntryBuilder::new(
-                format!("assets/{asset_id}.webp").into(),
-                Compression::Stored,
-            );
+            let a_builder = ZipEntryBuilder::new(format!("assets/{asset_id}.webp").into(), Compression::Stored);
             let mut a_sink = writer.write_entry_stream(a_builder).await.unwrap();
             a_sink.write_all(b"0123456789").await.unwrap();
             a_sink.close().await.unwrap();
@@ -961,8 +934,7 @@ mod tests {
         }
 
         let target = InMemoryCampaignStore::new();
-        let temp_dir =
-            std::env::temp_dir().join(format!("trame_imp_corrupt_asset_{}", Uuid::new_v4()));
+        let temp_dir = std::env::temp_dir().join(format!("trame_imp_corrupt_asset_{}", Uuid::new_v4()));
         let blob_store = LocalFsStore::new(&temp_dir);
         let importer = ArchiveImporter::new(target, blob_store.clone());
 
@@ -975,10 +947,7 @@ mod tests {
         }
 
         let descriptors = blob_store.list_descriptors().await.unwrap();
-        assert!(
-            descriptors.is_empty(),
-            "No asset should be stored on checksum failure"
-        );
+        assert!(descriptors.is_empty(), "No asset should be stored on checksum failure");
 
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
@@ -1053,10 +1022,7 @@ mod tests {
             m_sink.write_all(&m_bytes).await.unwrap();
             m_sink.close().await.unwrap();
 
-            let a_builder = ZipEntryBuilder::new(
-                format!("assets/{asset_id}.webp").into(),
-                Compression::Stored,
-            );
+            let a_builder = ZipEntryBuilder::new(format!("assets/{asset_id}.webp").into(), Compression::Stored);
             let mut a_sink = writer.write_entry_stream(a_builder).await.unwrap();
             for _ in 0..num_chunks {
                 a_sink.write_all(&chunk_64k).await.unwrap();
@@ -1076,12 +1042,190 @@ mod tests {
             .expect("20 MiB asset import succeeds");
 
         assert_eq!(result.assets_restored, 1);
-        let desc = blob_store
-            .get_descriptor(&asset_id.to_string())
-            .await
-            .unwrap();
+        let desc = blob_store.get_descriptor(&asset_id.to_string()).await.unwrap();
         assert_eq!(desc.byte_size, ASSET_BYTES as u64);
 
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_archive_importer_parameterized_manifest_first_entry_violations() {
+        use async_zip::tokio::write::ZipFileWriter;
+        use async_zip::{Compression, ZipEntryBuilder};
+        use futures_lite::io::AsyncWriteExt;
+
+        let invalid_initial_entries = [
+            "database.jsonl",
+            "notes/campaign-overview.md",
+            "assets/preview.webp",
+            "unknown_file.txt",
+        ];
+
+        for initial_entry in invalid_initial_entries {
+            let mut zip_bytes = Vec::new();
+            {
+                let mut writer = ZipFileWriter::with_tokio(Cursor::new(&mut zip_bytes));
+                let builder = ZipEntryBuilder::new(initial_entry.into(), Compression::Stored);
+                let mut sink = writer.write_entry_stream(builder).await.unwrap();
+                sink.write_all(b"sample payload").await.unwrap();
+                sink.close().await.unwrap();
+                writer.close().await.unwrap();
+            }
+
+            let target = InMemoryCampaignStore::new();
+            let temp_dir = std::env::temp_dir().join(format!("trame_imp_param_init_{}", Uuid::new_v4()));
+            let blob_store = LocalFsStore::new(&temp_dir);
+            let importer = ArchiveImporter::new(target, blob_store);
+
+            let result = importer.import_stream(Cursor::new(zip_bytes), false).await;
+            match result {
+                Err(ArchiveError::InvalidManifest(msg)) => {
+                    assert!(
+                        msg.contains("initial entry must be manifest.json"),
+                        "Expected initial entry error for {initial_entry}, got {msg}"
+                    );
+                }
+                other => panic!("Expected ArchiveError::InvalidManifest for {initial_entry}, got: {other:?}"),
+            }
+
+            let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_archive_importer_parameterized_unlisted_entry_rejection() {
+        use async_zip::tokio::write::ZipFileWriter;
+        use async_zip::{Compression, ZipEntryBuilder};
+        use futures_lite::io::AsyncWriteExt;
+
+        let unlisted_paths = [
+            "rogue_script.sh",
+            "notes/unlisted.md",
+            "assets/unlisted.webp",
+            "extra/database_backup.sql",
+        ];
+
+        for unlisted_path in unlisted_paths {
+            let campaign_id = Uuid::new_v4();
+            let manifest = CampaignManifest::new(
+                CampaignMetadata {
+                    id: campaign_id,
+                    name: "Unlisted Path Test".to_string(),
+                    system: "dnd5e".to_string(),
+                    description: None,
+                    created_at: "2025-01-01T00:00:00Z".to_string(),
+                },
+                "2025-01-01T00:00:00Z".to_string(),
+                ManifestStats::default(),
+                Vec::new(),
+            );
+
+            let mut zip_bytes = Vec::new();
+            {
+                let mut writer = ZipFileWriter::with_tokio(Cursor::new(&mut zip_bytes));
+                let m_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+                let m_builder = ZipEntryBuilder::new("manifest.json".into(), Compression::Stored);
+                let mut m_sink = writer.write_entry_stream(m_builder).await.unwrap();
+                m_sink.write_all(&m_bytes).await.unwrap();
+                m_sink.close().await.unwrap();
+
+                let rogue_builder = ZipEntryBuilder::new(unlisted_path.into(), Compression::Stored);
+                let mut rogue_sink = writer.write_entry_stream(rogue_builder).await.unwrap();
+                rogue_sink.write_all(b"rogue data").await.unwrap();
+                rogue_sink.close().await.unwrap();
+                writer.close().await.unwrap();
+            }
+
+            let target = InMemoryCampaignStore::new();
+            let temp_dir = std::env::temp_dir().join(format!("trame_imp_param_unlisted_{}", Uuid::new_v4()));
+            let blob_store = LocalFsStore::new(&temp_dir);
+            let importer = ArchiveImporter::new(target, blob_store);
+
+            let result = importer.import_stream(Cursor::new(zip_bytes), false).await;
+            match result {
+                Err(ArchiveError::UnlistedEntry(path)) => {
+                    assert_eq!(path, unlisted_path);
+                }
+                other => panic!("Expected ArchiveError::UnlistedEntry for {unlisted_path}, got: {other:?}"),
+            }
+
+            let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_archive_importer_parameterized_checksum_mismatches() {
+        use async_zip::tokio::write::ZipFileWriter;
+        use async_zip::{Compression, ZipEntryBuilder};
+        use futures_lite::io::AsyncWriteExt;
+
+        let asset_id = Uuid::new_v4();
+        let asset_path = format!("assets/{asset_id}.webp");
+        let test_cases = [
+            (
+                "database.jsonl",
+                "{\"entity_type\":\"scene\",\"data\":{}}\n",
+            ),
+            (
+                "notes/overview.md",
+                "---\nid: 00000000-0000-0000-0000-000000000001\ntitle: T\nauthor_id: 00000000-0000-0000-0000-000000000002\n---\n\n# Note",
+            ),
+            (asset_path.as_str(), "RIFFFAKEWEBP"),
+        ];
+
+        for (entry_path, content) in test_cases {
+            let campaign_id = Uuid::new_v4();
+            let manifest = CampaignManifest::new(
+                CampaignMetadata {
+                    id: campaign_id,
+                    name: "Corrupt Entry Test".to_string(),
+                    system: "dnd5e".to_string(),
+                    description: None,
+                    created_at: "2025-01-01T00:00:00Z".to_string(),
+                },
+                "2025-01-01T00:00:00Z".to_string(),
+                ManifestStats::default(),
+                vec![ArchiveEntryDescriptor {
+                    path: entry_path.to_string(),
+                    byte_size: content.len() as u64,
+                    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+                        .to_string(),
+                }],
+            );
+
+            let mut zip_bytes = Vec::new();
+            {
+                let mut writer = ZipFileWriter::with_tokio(Cursor::new(&mut zip_bytes));
+                let m_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+                let m_builder = ZipEntryBuilder::new("manifest.json".into(), Compression::Stored);
+                let mut m_sink = writer.write_entry_stream(m_builder).await.unwrap();
+                m_sink.write_all(&m_bytes).await.unwrap();
+                m_sink.close().await.unwrap();
+
+                let e_builder = ZipEntryBuilder::new(entry_path.into(), Compression::Stored);
+                let mut e_sink = writer.write_entry_stream(e_builder).await.unwrap();
+                e_sink.write_all(content.as_bytes()).await.unwrap();
+                e_sink.close().await.unwrap();
+                writer.close().await.unwrap();
+            }
+
+            let target = InMemoryCampaignStore::new();
+            let temp_dir =
+                std::env::temp_dir().join(format!("trame_imp_param_chk_{}", Uuid::new_v4()));
+            let blob_store = LocalFsStore::new(&temp_dir);
+            let importer = ArchiveImporter::new(target, blob_store);
+
+            let result = importer.import_stream(Cursor::new(zip_bytes), false).await;
+            match result {
+                Err(ArchiveError::ChecksumMismatch { path, .. }) => {
+                    assert_eq!(path, entry_path);
+                }
+                other => panic!(
+                    "Expected ArchiveError::ChecksumMismatch for {entry_path}, got: {other:?}"
+                ),
+            }
+
+            let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        }
     }
 }
