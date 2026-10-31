@@ -274,7 +274,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                 >
                   📁 {folderName}
                 </span>
-                <span class="atlas-tabular-nums" style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
+                <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
                   {folderNotes.length} {folderNotes.length === 1 ? t("docs.notes.count.singular") : t("docs.notes.count.plural")}
                 </span>
               </div>
@@ -498,7 +498,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                 data-testid={`timeline-event-${event.seqId}`}
                 style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}
               >
-                <span class="atlas-tabular-nums">
+                <span>
                   #{event.seqId} {event.eventType}{titleSuffix}
                 </span>
               </div>
