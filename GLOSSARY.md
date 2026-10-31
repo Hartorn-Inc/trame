@@ -99,12 +99,6 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: Browser navigation, campaign selection, and archive management.
 - **_Avoid_**: DashboardPage, HomePortal, GameBrowser.
 
-### CampaignRoomState
-
-- **Definition**: In-memory live state container holding tabletop rooms, active sessions, and write-ahead logs managed by `TableRoomActor`.
-- **Allowed Context**: Server state management, campaign room lifecycle, and room lease allocation.
-- **_Avoid_**: RoomState, CampaignStateBuffer.
-
 ### CombatTracker
 
 - **Definition**: HUD component displaying the combat turn order carousel, initiative values, and action economy badges.
@@ -183,23 +177,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: Live table interaction tools and vector drawing replication.
 - **_Avoid_**: PaintLayer, AnnotationCanvas, WhiteboardOverlay.
 
-### DualBufferFogOfWar
-
-- **Definition**: Client-side fog-of-war rendering pipeline using an offscreen canvas buffer for explored static memory and a foreground buffer for active dynamic line-of-sight.
-- **Allowed Context**: Canvas fog rendering, memory layer blending, and visibility masks.
-- **_Avoid_**: FogBuffer, DoubleBufferFog.
-
 ### ElevationFt
 
 - **Definition**: Vertical spatial displacement coordinate expressed in integer feet along the Z axis relative to table zero level.
 - **Allowed Context**: Token 3D positioning, 3D ruler calculations, and spatial audio listener offsets.
 - **_Avoid_**: TokenHeight, Altitude, TokenElevation, VerticalLevel.
-
-### FilteredNoteDocument
-
-- **Definition**: Server-side note parser in `trame-server` filtering out `:::dm` secret blocks and unrevealed `:::handout` blocks for non-GM clients.
-- **Allowed Context**: Markdown note serialization, role-based note access, and handout filtering.
-- **_Avoid_**: NoteSanitizer, RedactedDocument.
 
 ### GameSystemPack
 
@@ -212,12 +194,6 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Interactive control panel allowing the Game Master to modify token resources, refund actions, teleport tokens, change table modes, and cycle ambient presets.
 - **Allowed Context**: Game Master view HUD.
 - **_Avoid_**: AdminBar, CheatMenu, MasterPanel.
-
-### HeadlessCanvasMock
-
-- **Definition**: Fallback canvas mock used by `TableCanvas` when WebGL or PixiJS rendering context is unavailable in automated test environments.
-- **Allowed Context**: Unit and integration testing, headless canvas assertions.
-- **_Avoid_**: CanvasStub, PixiMock.
 
 ### InstantDeath
 
@@ -236,12 +212,6 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Extended rest period of at least 8 hours restoring all HP, resetting temporary HP to 0, restoring `Math.max(1, Math.floor(hitDiceMax / 2))` hit dice, reducing exhaustion by 1 level, and resetting all spell slots and long-rest resource pools.
 - **Allowed Context**: `LongRest`, `long rest`.
 - **_Avoid_**: `extended rest`, `full rest`.
-
-### MagicLink
-
-- **Definition**: Cryptographic invitation link containing an HMAC-SHA256 signed JWT used for 1-click player onboarding into a campaign.
-- **Allowed Context**: Player invites, guest authentication, and token redemption.
-- **_Avoid_**: InviteLink, FastLoginUrl.
 
 ### PointerPing
 
@@ -291,18 +261,6 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: Canvas ruler overlays and spatial distance measurements.
 - **_Avoid_**: DistanceSystem, GridMeasure, MeasurementRule.
 
-### SceneGraph
-
-- **Definition**: Hierarchical 2D PixiJS v8 display tree organizing table background textures, grid lines, tokens, fog layers, and HUD overlays.
-- **Allowed Context**: Canvas rendering, display object hierarchies, and token sprite positioning.
-- **_Avoid_**: DisplayTree, RenderGraph.
-
-### SessionTimelineEvent
-
-- **Definition**: Chronologically ordered, append-only domain record capturing significant session occurrences (`DiceRolled`, `HandoutRevealed`) with monotonic sequence numbers.
-- **Allowed Context**: Session logs, MCP timeline queries, and party journal history.
-- **_Avoid_**: SessionHistoryEntry, TimelineLog.
-
 ### ShortRest
 
 - **Definition**: Rest period of at least 1 hour allowing interactive hit dice expenditure to regain HP, recovery of Pact Magic slots, and reset of `SHORT_REST` resource pools.
@@ -327,23 +285,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: `SystemSRD`, `system SRD`.
 - **_Avoid_**: `core compendium`, `builtin srd`.
 
-### TableCanvas
-
-- **Definition**: Interactive Preact and PixiJS v8 canvas component rendering the battlemap, tokens, dynamic lighting polygons, and measurement overlays.
-- **Allowed Context**: Main tabletop viewport and canvas mount lifecycle.
-- **_Avoid_**: BattlemapCanvas, BoardView.
-
 ### TableMode
 
 - **Definition**: Global operational mode of the table distinguishing free Exploration from turn-by-turn combat.
 - **Allowed Context**: Table state synchronization, top bar controls, and movement validation.
 - **_Avoid_**: GameState, PlayPhase, TableStatus.
-
-### TableRoomActor
-
-- **Definition**: Single-owner Tokio actor in `trame-server` managing authoritative campaign tabletop state, command execution, and client socket broadcasting.
-- **Allowed Context**: Server actor runtime, room lease management, and command serialization.
-- **_Avoid_**: RoomHandler, TableManager.
 
 ### TempHP
 
@@ -363,24 +309,6 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: Network synchronization, reaction banner timers, and latency compensation.
 - **_Avoid_**: ClockAlignment, NetworkNtp, TimeCorrection.
 
-### TrameArchive
-
-- **Definition**: Portable ZIP archive package (`.trame`) containing campaign metadata, entity records, notes, and WebP binary assets.
-- **Allowed Context**: Campaign backup, import/export operations, and cross-instance migrations.
-- **_Avoid_**: CampaignBackup, TrameZip.
-
-### TrameCommand
-
-- **Definition**: Single authoritative CQRS mutation command enum evaluated by `TableRoomActor` and `TableState` (`MoveToken`, `ToggleDoor`, `ApplyDamage`, etc.).
-- **Allowed Context**: CQRS command dispatch, WebSocket payloads, and undo ring buffer tracking.
-- **_Avoid_**: ActionCommand, TableMutation.
-
-### TrameEvent
-
-- **Definition**: Immutable domain event emitted after a `TrameCommand` is validated and applied, broadcast to connected clients and appended to write-ahead logs.
-- **Allowed Context**: Event broadcasting, WebSocket notifications, and WAL entries.
-- **_Avoid_**: DomainEvent, TableEvent.
-
 ### TurnTrigger
 
 - **Definition**: Combat cadence checkpoint (`ROUNDS`, `TURNS_START`, or `TURNS_END`) governing when an active `Condition` or `ActiveEffect` decrements its remaining duration.
@@ -389,18 +317,8 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### UndoDrawer
 
-- **Definition**: Slide-out Game Master panel tracking the ring buffer of recent reversible actions with 1-click rollback execution.
-- **Allowed Context**: Game Master HUD, action history inspection, and rollback execution.
-- **_Avoid_**: HistorySidebar, RollbackPanel.
+- **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
+- **Allowed Context**: `AbilityModifier`, `ability modifier`, derived attribute evaluation.
+- **_Avoid_**: `stat mod`, `ability bonus`.
 
-### UvttMap
-
-- **Definition**: Parsed Universal VTT battlemap data structure containing grid dimensions, walls, doors, lights, and WebP image assets.
-- **Allowed Context**: UVTT/dd2vtt import pipeline, map asset ingestion, and scene generation.
-- **_Avoid_**: UniversalVttFile, DdgMap.
-
-### WasmSpatialEngine
-
-- **Definition**: Compiled WebAssembly module in `trame-engine` providing client-side 60 FPS line-of-sight polygon generation and AoE cell discretization.
-- **Allowed Context**: Client spatial calculations, WASM bridge, and raycasting acceleration.
-- **_Avoid_**: WasmRaycaster, SpatialModule.
+### AbilityScore
