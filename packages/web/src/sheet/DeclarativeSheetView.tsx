@@ -1,6 +1,6 @@
 import { h, type VNode } from 'preact';
 import { useMemo, useState } from 'preact/hooks';
-import { DND5E_SHEET_LAYOUT } from '../../../game-systems/dnd5e/src/sheetLayout.ts';
+import { DND5E_SHEET_LAYOUT } from '../../../game-systems/dnd5e/src/index.ts';
 import { BindingResolver } from './binding.ts';
 import { WidgetRegistry } from './WidgetRegistry.ts';
 import type { CommandDispatcher, SheetLayoutNode, SheetLayoutTree, ViewerContext } from './types.ts';
@@ -153,7 +153,13 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode {
         {
           type: 'button',
           class: `ds-lock-toggle ${effectiveLocked ? 'is-locked' : 'is-unlocked'}`,
-          'data-testid': 'core-build-lock-toggle',
+          'data-testid': 'sheet-padlock-toggle',
+          'aria-pressed': effectiveLocked ? 'false' : 'true',
+          'aria-label': isGmLocked
+            ? 'Character sheet locked by GM'
+            : effectiveLocked
+            ? 'Character sheet locked in roll mode. Activate to enter edit mode.'
+            : 'Character sheet unlocked in edit mode. Activate to enter roll mode.',
           disabled: isGmLocked,
           title: isGmLocked ? 'Locked by GM' : (effectiveLocked ? 'Unlock Build Mode' : 'Lock Play Mode'),
           onClick: toggleLock,

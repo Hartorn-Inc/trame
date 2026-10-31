@@ -48,7 +48,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode | null {
       'header',
       { class: 'ds-drawer-header' },
       h('h3', null, 'Compendium'),
-      h('button', { type: 'button', class: 'ds-btn-close', 'data-testid': 'btn-close-compendium', onClick: props.onClose }, '×'),
+      h('button', { type: 'button', class: 'ds-btn-close', 'data-testid': 'btn-close-compendium', 'aria-label': 'Close compendium', onClick: props.onClose }, '×'),
     ),
     h(
       'div',
@@ -57,6 +57,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode | null {
         type: 'text',
         class: 'ds-input-search',
         'data-testid': 'compendium-search-input',
+        'aria-label': 'Search compendium entries',
         placeholder: 'Search items, spells, feats...',
         value: query,
         onInput: (e: Event) => setQuery((e.target as HTMLInputElement).value),

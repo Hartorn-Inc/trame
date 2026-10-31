@@ -2,7 +2,7 @@ import { h, type VNode } from 'preact';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
-export function AttackActionTableWidget(props: WidgetProps): VNode {
+export function AttackActionTableWidget(props: WidgetProps): VNode<any> {
   const rawAttacks = Array.isArray(props.boundValues?.attacks) ? props.boundValues.attacks : [];
   const attacks = rawAttacks.map((item: any) => ({
     id: String(item.id ?? ''),
