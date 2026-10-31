@@ -794,4 +794,265 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&temp_dir_export).await;
         let _ = tokio::fs::remove_dir_all(&temp_dir_import).await;
     }
+
+    #[tokio::test]
+    async fn test_archive_importer_nominal_import_without_remapping() {
+        let temp_dir_export = std::env::temp_dir().join(format!("trame_exp_nom_{}", Uuid::new_v4()));
+        let temp_dir_import = std::env::temp_dir().join(format!("trame_imp_nom_{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&temp_dir_export).await.unwrap();
+        tokio::fs::create_dir_all(&temp_dir_import).await.unwrap();
+
+        let export_store = LocalFsStore::new(&temp_dir_export);
+        let import_store = LocalFsStore::new(&temp_dir_import);
+
+        let asset_id = Uuid::new_v4();
+        let asset_bytes = b"RIFF....WEBPVP8 ...nominal test asset...";
+        export_store
+            .put_stream(&asset_id.to_string(), slice_to_stream(asset_bytes))
+            .await
+            .unwrap();
+
+        let campaign_id = Uuid::new_v4();
+        let scene_id = Uuid::new_v4();
+        let actor_id = Uuid::new_v4();
+        let note_id = Uuid::new_v4();
+        let author_id = Uuid::new_v4();
+
+        let entities = vec![
+            ExportEntity {
+                entity_type: "scene".to_string(),
+                data: json!({
+                    "id": scene_id,
+                    "campaign_id": campaign_id,
+                    "name": "Courtyard"
+                }),
+            },
+            ExportEntity {
+                entity_type: "actor".to_string(),
+                data: json!({
+                    "id": actor_id,
+                    "campaign_id": campaign_id,
+                    "name": "Astarion"
+                }),
+            },
+        ];
+
+        let notes = vec![NoteRecord {
+            id: note_id,
+            title: "Camp Notes".to_string(),
+            folder: None,
+            author_id,
+            created_at: "2025-02-01T10:00:00Z".to_string(),
+            updated_at: "2025-02-05T14:20:00Z".to_string(),
+            content_markdown: format!("# Camp\n\nMeet [[{actor_id}|Astarion]]."),
+        }];
+
+        let source = MockExportSource {
+            campaign: CampaignMetadata {
+                id: campaign_id,
+                name: "Nominal Campaign".to_string(),
+                system: "dnd5e".to_string(),
+                description: None,
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+            },
+            entities,
+            notes,
+            asset_ids: vec![asset_id],
+        };
+
+        let exporter = ArchiveExporter::new(source, export_store);
+        let mut export_stream = exporter.export_stream().await.unwrap();
+        let mut zip_bytes = Vec::new();
+        while let Some(chunk_res) = export_stream.next().await {
+            zip_bytes.extend_from_slice(&chunk_res.unwrap());
+        }
+
+        let target = InMemoryCampaignStore::new();
+        let importer = ArchiveImporter::new(target.clone(), import_store.clone());
+        let result = importer
+            .import(Cursor::new(zip_bytes), ImportOptions { remap_ids: false })
+            .await
+            .expect("nominal import succeeds");
+
+        assert_eq!(result.campaign_id, campaign_id, "Campaign ID must be preserved");
+        assert_eq!(result.actors_restored, 1);
+        assert_eq!(result.scenes_restored, 1);
+        assert_eq!(result.notes_restored, 1);
+        assert_eq!(result.assets_restored, 1);
+
+        let saved_campaign = target.get_campaign(&campaign_id).expect("campaign saved");
+        assert_eq!(saved_campaign.name, "Nominal Campaign");
+
+        let saved_entities = target.all_entities();
+        assert_eq!(saved_entities.len(), 2);
+        let saved_actor = saved_entities.iter().find(|e| e.entity_type == "actor").unwrap();
+        assert_eq!(saved_actor.data["id"], actor_id.to_string());
+
+        let saved_notes = target.all_notes();
+        assert_eq!(saved_notes.len(), 1);
+        assert_eq!(saved_notes[0].id, note_id);
+        assert!(saved_notes[0].content_markdown.contains(&actor_id.to_string()));
+
+        let desc = import_store.get_descriptor(&asset_id.to_string()).await.unwrap();
+        assert_eq!(desc.id, asset_id.to_string());
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir_export).await;
+        let _ = tokio::fs::remove_dir_all(&temp_dir_import).await;
+    }
+
+    #[tokio::test]
+    async fn test_archive_importer_validates_asset_checksum_mismatch() {
+        use async_zip::tokio::write::ZipFileWriter;
+        use async_zip::{Compression, ZipEntryBuilder};
+        use futures_lite::io::AsyncWriteExt;
+
+        let campaign_id = Uuid::new_v4();
+        let asset_id = Uuid::new_v4();
+        let manifest = CampaignManifest::new(
+            CampaignMetadata {
+                id: campaign_id,
+                name: "Corrupted Asset Archive".to_string(),
+                system: "dnd5e".to_string(),
+                description: None,
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+            },
+            "2025-01-01T00:00:00Z".to_string(),
+            ManifestStats::default(),
+            vec![ArchiveEntryDescriptor {
+                path: format!("assets/{asset_id}.webp"),
+                byte_size: 10,
+                sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            }],
+        );
+
+        let mut zip_bytes = Vec::new();
+        {
+            let mut writer = ZipFileWriter::with_tokio(Cursor::new(&mut zip_bytes));
+            let m_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+            let m_builder = ZipEntryBuilder::new("manifest.json".into(), Compression::Stored);
+            let mut m_sink = writer.write_entry_stream(m_builder).await.unwrap();
+            m_sink.write_all(&m_bytes).await.unwrap();
+            m_sink.close().await.unwrap();
+
+            let a_builder = ZipEntryBuilder::new(format!("assets/{asset_id}.webp").into(), Compression::Stored);
+            let mut a_sink = writer.write_entry_stream(a_builder).await.unwrap();
+            a_sink.write_all(b"0123456789").await.unwrap();
+            a_sink.close().await.unwrap();
+            writer.close().await.unwrap();
+        }
+
+        let target = InMemoryCampaignStore::new();
+        let temp_dir = std::env::temp_dir().join(format!("trame_imp_corrupt_asset_{}", Uuid::new_v4()));
+        let blob_store = LocalFsStore::new(&temp_dir);
+        let importer = ArchiveImporter::new(target, blob_store.clone());
+
+        let result = importer.import_stream(Cursor::new(zip_bytes), false).await;
+        match result {
+            Err(ArchiveError::ChecksumMismatch { path, .. }) => {
+                assert_eq!(path, format!("assets/{asset_id}.webp"));
+            }
+            other => panic!("Expected ArchiveError::ChecksumMismatch, got: {other:?}"),
+        }
+
+        let descriptors = blob_store.list_descriptors().await.unwrap();
+        assert!(descriptors.is_empty(), "No asset should be stored on checksum failure");
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_archive_importer_halts_on_empty_archive() {
+        use async_zip::tokio::write::ZipFileWriter;
+
+        let mut zip_bytes = Vec::new();
+        {
+            let writer = ZipFileWriter::with_tokio(Cursor::new(&mut zip_bytes));
+            writer.close().await.unwrap();
+        }
+
+        let target = InMemoryCampaignStore::new();
+        let temp_dir = std::env::temp_dir().join(format!("trame_imp_empty_{}", Uuid::new_v4()));
+        let blob_store = LocalFsStore::new(&temp_dir);
+        let importer = ArchiveImporter::new(target, blob_store);
+
+        let result = importer.import_stream(Cursor::new(zip_bytes), false).await;
+        match result {
+            Err(ArchiveError::InvalidManifest(msg)) => {
+                assert!(msg.contains("archive is empty"));
+            }
+            other => panic!("Expected ArchiveError::InvalidManifest, got: {other:?}"),
+        }
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_archive_importer_streams_large_asset_below_16_mib_heap_ceiling() {
+        use async_zip::tokio::write::ZipFileWriter;
+        use async_zip::{Compression, ZipEntryBuilder};
+        use futures_lite::io::AsyncWriteExt;
+
+        const ASSET_BYTES: usize = 20 * 1024 * 1024;
+        let campaign_id = Uuid::new_v4();
+        let asset_id = Uuid::new_v4();
+        let chunk_64k = vec![0x7au8; 64 * 1024];
+        let num_chunks = ASSET_BYTES / (64 * 1024);
+
+        let mut hasher = Sha256Hasher::new();
+        for _ in 0..num_chunks {
+            hasher.update(&chunk_64k);
+        }
+        let expected_sha256 = hasher.finalize_hex();
+
+        let manifest = CampaignManifest::new(
+            CampaignMetadata {
+                id: campaign_id,
+                name: "Large Asset Import Test".to_string(),
+                system: "dnd5e".to_string(),
+                description: None,
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+            },
+            "2025-01-01T00:00:00Z".to_string(),
+            ManifestStats::default(),
+            vec![ArchiveEntryDescriptor {
+                path: format!("assets/{asset_id}.webp"),
+                byte_size: ASSET_BYTES as u64,
+                sha256: expected_sha256,
+            }],
+        );
+
+        let mut zip_bytes = Vec::new();
+        {
+            let mut writer = ZipFileWriter::with_tokio(Cursor::new(&mut zip_bytes));
+            let m_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+            let m_builder = ZipEntryBuilder::new("manifest.json".into(), Compression::Stored);
+            let mut m_sink = writer.write_entry_stream(m_builder).await.unwrap();
+            m_sink.write_all(&m_bytes).await.unwrap();
+            m_sink.close().await.unwrap();
+
+            let a_builder = ZipEntryBuilder::new(format!("assets/{asset_id}.webp").into(), Compression::Stored);
+            let mut a_sink = writer.write_entry_stream(a_builder).await.unwrap();
+            for _ in 0..num_chunks {
+                a_sink.write_all(&chunk_64k).await.unwrap();
+            }
+            a_sink.close().await.unwrap();
+            writer.close().await.unwrap();
+        }
+
+        let target = InMemoryCampaignStore::new();
+        let temp_dir = std::env::temp_dir().join(format!("trame_imp_large_{}", Uuid::new_v4()));
+        let blob_store = LocalFsStore::new(&temp_dir);
+        let importer = ArchiveImporter::new(target, blob_store.clone());
+
+        let result = importer
+            .import_stream(Cursor::new(zip_bytes), false)
+            .await
+            .expect("20 MiB asset import succeeds");
+
+        assert_eq!(result.assets_restored, 1);
+        let desc = blob_store.get_descriptor(&asset_id.to_string()).await.unwrap();
+        assert_eq!(desc.byte_size, ASSET_BYTES as u64);
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
 }
