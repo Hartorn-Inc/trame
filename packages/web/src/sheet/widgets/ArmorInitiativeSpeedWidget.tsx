@@ -6,7 +6,6 @@ export function ArmorInitiativeSpeedWidget(props: WidgetProps): VNode<any> {
   const armorClass = Number(props.boundValues?.armorClass ?? props.boundValues?.effectiveAc ?? 10);
   const initiative = Number(props.boundValues?.initiative ?? props.boundValues?.initiativeBonus ?? 0);
   const speed = props.boundValues?.speed ?? props.boundValues?.effectiveSpeedFeet ?? 30;
-  const isLocked = props.isLocked !== false;
 
   const handleInitiativeClick = () => {
     const sign = initiative >= 0 ? `+ ${initiative}` : `- ${Math.abs(initiative)}`;
@@ -23,6 +22,13 @@ export function ArmorInitiativeSpeedWidget(props: WidgetProps): VNode<any> {
     );
   };
 
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleInitiativeClick();
+    }
+  };
+
   return h(
     'div',
     { class: 'ds-ais-widget', 'data-testid': 'armor-initiative-speed-widget' },
@@ -30,7 +36,7 @@ export function ArmorInitiativeSpeedWidget(props: WidgetProps): VNode<any> {
       'div',
       { class: 'ds-ais-tile', 'data-testid': 'armor-class-tile' },
       h('span', { class: 'ds-tile-title' }, 'Armor Class'),
-      h('span', { class: 'ds-tile-val', 'data-testid': 'armor-class-val' }, armorClass),
+      h('span', { class: 'ds-tile-val atlas-tabular-nums', 'data-testid': 'armor-class-val' }, armorClass),
     ),
     h(
       'div',
@@ -39,19 +45,14 @@ export function ArmorInitiativeSpeedWidget(props: WidgetProps): VNode<any> {
         'data-testid': 'initiative-tile',
         role: 'button',
         tabIndex: 0,
-        'aria-label': 'Roll Initiative check',
+        'aria-label': 'Roll initiative check',
         onClick: handleInitiativeClick,
-        onKeyDown: (e: KeyboardEvent) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            handleInitiativeClick();
-          }
-        },
+        onKeyDown: handleKeyDown,
       },
       h('span', { class: 'ds-tile-title' }, 'Initiative'),
       h(
         'span',
-        { class: 'ds-tile-val', 'data-testid': 'initiative-val' },
+        { class: 'ds-tile-val atlas-tabular-nums', 'data-testid': 'initiative-val' },
         initiative >= 0 ? `+${initiative}` : initiative,
       ),
     ),
@@ -59,7 +60,7 @@ export function ArmorInitiativeSpeedWidget(props: WidgetProps): VNode<any> {
       'div',
       { class: 'ds-ais-tile', 'data-testid': 'speed-tile' },
       h('span', { class: 'ds-tile-title' }, 'Speed'),
-      h('span', { class: 'ds-tile-val', 'data-testid': 'speed-val' }, `${speed} ft`),
+      h('span', { class: 'ds-tile-val atlas-tabular-nums', 'data-testid': 'speed-val' }, `${speed} ft`),
     ),
   );
 }

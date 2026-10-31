@@ -34,26 +34,32 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
         { class: 'ds-resource-values' },
         h('input', {
           type: 'number',
-          class: 'ds-resource-input-current',
+          class: 'ds-resource-input-current atlas-tabular-nums',
           'data-testid': 'resource-input-current',
-          'aria-label': `Current ${label}`,
+          'aria-label': `${label} Current`,
           value: current,
           onChange: (e: Event) => handleHpChange('hp.current', Number((e.target as HTMLInputElement).value)),
         }),
         h('span', { class: 'ds-resource-separator' }, '/'),
         isLocked
-          ? h('span', { class: 'ds-resource-max-locked', 'data-testid': 'resource-max-val' }, max)
+          ? h('span', { class: 'ds-resource-max-locked atlas-tabular-nums', 'data-testid': 'resource-max-val' }, max)
           : h('input', {
               type: 'number',
-              class: 'ds-resource-input-max',
+              class: 'ds-resource-input-max atlas-tabular-nums',
               'data-testid': 'resource-input-max',
-              'aria-label': `Maximum ${label}`,
+              'aria-label': `${label} Maximum`,
               value: max,
               onChange: (e: Event) => handleHpChange('hp.max', Number((e.target as HTMLInputElement).value)),
             }),
-        temp > 0
-          ? h('span', { class: 'ds-resource-temp', 'data-testid': 'resource-temp-val' }, ` (+${temp} Temp)`)
-          : null,
+        h('span', { class: 'ds-resource-temp-label' }, ' Temp: '),
+        h('input', {
+          type: 'number',
+          class: 'ds-resource-input-temp atlas-tabular-nums',
+          'data-testid': 'resource-input-temp',
+          'aria-label': `${label} Temporary`,
+          value: temp,
+          onChange: (e: Event) => handleHpChange('hp.temp', Number((e.target as HTMLInputElement).value)),
+        }),
       ),
     ),
     h(

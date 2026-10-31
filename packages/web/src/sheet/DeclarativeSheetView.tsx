@@ -1,6 +1,6 @@
 import { h, type VNode } from 'preact';
-import { useMemo, useState } from 'preact/hooks';
-import { DND5E_SHEET_LAYOUT } from '../../../game-systems/dnd5e/src/index.ts';
+import { useState } from 'preact/hooks';
+import { DND5E_SHEET_LAYOUT } from '../../../game-systems/dnd5e/src/sheetLayout.ts';
 import { BindingResolver } from './binding.ts';
 import { WidgetRegistry } from './WidgetRegistry.ts';
 import type { CommandDispatcher, SheetLayoutNode, SheetLayoutTree, ViewerContext } from './types.ts';
@@ -95,7 +95,7 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
       const currentTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
       return h(
         'div',
-        { key: node.id, id: node.id, class: 'ds-layout-tabs' },
+        {\n          key: node.id,\n          id: node.id,\n          class: 'ds-layout-tabs',\n        },
         h(
           'div',
           { class: 'ds-tabs-header' },
@@ -154,12 +154,10 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
           type: 'button',
           class: `ds-lock-toggle ${effectiveLocked ? 'is-locked' : 'is-unlocked'}`,
           'data-testid': 'sheet-padlock-toggle',
-          'aria-pressed': effectiveLocked ? 'false' : 'true',
+          'aria-pressed': String(!effectiveLocked),
           'aria-label': isGmLocked
             ? 'Character sheet locked by GM'
-            : effectiveLocked
-            ? 'Character sheet locked in roll mode. Activate to enter edit mode.'
-            : 'Character sheet unlocked in edit mode. Activate to enter roll mode.',
+            : (effectiveLocked ? 'Unlock character build mode' : 'Lock character build mode'),
           disabled: isGmLocked,
           title: isGmLocked ? 'Locked by GM' : (effectiveLocked ? 'Unlock Build Mode' : 'Lock Play Mode'),
           onClick: toggleLock,

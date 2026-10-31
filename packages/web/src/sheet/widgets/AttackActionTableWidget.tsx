@@ -96,8 +96,8 @@ export function AttackActionTableWidget(props: WidgetProps): VNode<any> {
                 ? h('span', { class: 'ds-depleted-badge', 'data-testid': `depleted-badge-${atk.id}` }, ' [Depleted]')
                 : null,
             ),
-            h('td', null, bonusDisplay),
-            h('td', null, `${atk.damageFormula} ${atk.damageType ?? ''}`),
+            h('td', { class: 'atlas-tabular-nums' }, bonusDisplay),
+            h('td', { class: 'atlas-tabular-nums' }, `${atk.damageFormula} ${atk.damageType ?? ''}`),
             h(
               'td',
               null,
