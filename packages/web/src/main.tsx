@@ -21,7 +21,4 @@ import { render } from 'preact';
 import './styles/tokens.css';
 import { App } from './App.tsx';
 
-const container = document.getElementById('app');
-if (container) {
-  render(<App />, container);
-}
+render(<App />, document.getElementById('app')!);
