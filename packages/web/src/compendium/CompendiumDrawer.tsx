@@ -19,6 +19,7 @@ export interface CompendiumDrawerProps {
   systemId?: string;
   dispatchCommand?: CommandDispatcher;
   actorId?: string;
+  targetContainerId?: string | null;
   onDragStart?: (entry: CompendiumEntry, event: DragEvent) => void;
 }
 
@@ -44,22 +45,26 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
   });
 
   const handleAddEntry = (entry: CompendiumEntry) => {
+    const targetContainerId = props.targetContainerId ?? null;
     dragManager.handleDrop({
       systemId: props.systemId ?? 'dnd5e',
       entryRef: entry.id || entry.slug,
       entryType: entry.entityType,
       data: entry.data,
       actorId: props.actorId,
-    }, null, props.actorId);
+      targetContainerId,
+    }, targetContainerId, props.actorId);
   };
 
   const handleDragStart = (entry: CompendiumEntry, e: DragEvent) => {
+    const targetContainerId = props.targetContainerId ?? null;
     const payload = {
       systemId: props.systemId ?? 'dnd5e',
       entryRef: entry.id || entry.slug,
       entryType: entry.entityType,
       data: entry.data,
       actorId: props.actorId,
+      targetContainerId,
     };
     if (e.dataTransfer) {
       e.dataTransfer.setData('application/json', dragManager.createDragData(payload));
