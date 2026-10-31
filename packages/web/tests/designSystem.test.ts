@@ -491,7 +491,7 @@ describe("TRAME ATLAS v1.1 & Impeccable Design System Suite", () => {
     it("verifies surface contracts for table-operate.md and campaign-read.md exist and specify required modes", () => {
       const tableOperate = fs.readFileSync(tableOperatePath, "utf8");
       assert.match(tableOperate, /# Surface Contract: Live Tabletop & Tactical HUD \(`Operate` Mode\)/);
-      assert.match(tableOperate, />= 75% Viewport/);
+      assert.match(tableOperate, />= 75%`?\s*Viewport/);
       assert.match(tableOperate, /PadlockEditMode/);
 
       const campaignRead = fs.readFileSync(campaignReadPath, "utf8");
