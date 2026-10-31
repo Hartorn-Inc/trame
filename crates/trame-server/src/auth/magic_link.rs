@@ -75,10 +75,16 @@ impl MagicLinkService {
 
     /// Creates a service reading `JWT_SECRET` from environment with a fallback secret.
     pub fn from_env_or_secret(default_secret: &[u8]) -> Self {
-        let secret = std::env::var("JWT_SECRET")
+        let secret = std::env::var("TRAME_JWT_SECRET")
+            .or_else(|_| std::env::var("JWT_SECRET"))
             .map(|s| s.into_bytes())
             .unwrap_or_else(|_| default_secret.to_vec());
         Self::new(secret, "trame-server")
+    }
+
+    /// Exposes the server HMAC-SHA256 signing secret for token and URL signature verification.
+    pub fn secret(&self) -> &[u8] {
+        &self.jwt_secret
     }
 
     /// Generates a signed HS256 JWT for inviting a player into a campaign.

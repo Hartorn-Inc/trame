@@ -149,6 +149,7 @@ mod tests {
 
         let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
             token: token.clone(),
+            ..Default::default()
         })
         .unwrap();
         let req = Request::builder()
@@ -212,7 +213,11 @@ mod tests {
                 .expect("create invite token");
             assert_eq!(claims.role, custom_role);
 
-            let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+            let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
+                token,
+                ..Default::default()
+            })
+            .unwrap();
             let req = Request::builder()
                 .method("POST")
                 .uri("/api/v1/auth/magic-link")
@@ -260,7 +265,11 @@ mod tests {
 
         session_store.revoke_invite(claims.jti).await.unwrap();
 
-        let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+        let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
+            token,
+            ..Default::default()
+        })
+        .unwrap();
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/magic-link")
@@ -299,7 +308,11 @@ mod tests {
         };
         let token = magic_service.sign_claims(&expired_claims).unwrap();
 
-        let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+        let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
+            token,
+            ..Default::default()
+        })
+        .unwrap();
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/magic-link")
@@ -342,6 +355,7 @@ mod tests {
             character_id: Some(character_id),
             role: Some("PLAYER".to_string()),
             ttl_seconds: Some(1800),
+            ..Default::default()
         })
         .unwrap();
 

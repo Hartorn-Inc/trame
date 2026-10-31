@@ -4,32 +4,13 @@
 //!
 //! PURPOSE:
 //! --------
-//! Bootstraps the standalone `trame-server` Tokio async runtime, initializes the
-//! Write-Ahead Log (`InMemoryWalStorage`) and `RoomLeaseManager` with a
-//! 25-command write-behind snapshot interval and 15-minute (`900,000` ms)
-//! `Idle-Lease` hibernation threshold, binds the Axum HTTP/WebSocket listener,
-//! and coordinates Cloud Run scale-to-zero graceful shutdown upon SIGTERM or SIGINT.
-//!
-//! INVARIANTS & SAFETY BOUNDARIES:
-//! -------------------------------
-//!   1. `Configurable Port Fallback`:
-//!      - Reads `TRAME_PORT` from the process environment and falls back cleanly
-//!        to TCP port `4000` on missing or unparseable values.
-//!   2. `Cloud Run SIGTERM / SIGINT Lifecycle`:
-//!      - Registers Unix signal handlers for SIGTERM and SIGINT.
-//!      - Sets `IS_SHUTTING_DOWN` to reject incoming HTTP/WebSocket connections.
-//!      - Invokes `RoomLeaseManager::hibernate_all` with a 10-second timeout.
-//!      - Flushes uncommitted state and sends WebSocket Close frame 1001 Going Away.
-//!      - Terminates cleanly with exit code 0.
-//!
-//! EXECUTION LIFECYCLE:
-//! --------------------
-//!   `main()`
-//!     ├── 1. Initialize `InMemoryWalStorage` & `RoomLeaseManager(wal, 25, 900_000)`.
-//!     ├── 2. Construct Axum `Router` via `build_router(lease_manager)`.
-//!     ├── 3. Resolve `TRAME_PORT` (default `4000`) & bind `TcpListener` on `0.0.0.0`.
-//!     ├── 4. Serve HTTP and WebSocket requests with `with_graceful_shutdown`.
-//!     └── 5. On signal, execute `shutdown_handler` and terminate with exit code 0.
+//! Bootstraps the standalone `trame-server` Tokio async runtime, connects to
+//! PostgreSQL 18 via `SqlxPostgresStore::connect_and_migrate` when `DATABASE_URL`
+//! is configured (or falls back to in-memory stores for local zero-config runs),
+//! initializes `RoomLeaseManager` with a 50-command write-behind snapshot interval
+//! and 15-minute (`900,000` ms) `Idle-Lease` hibernation threshold, binds the Axum
+//! HTTP/WebSocket listener, and coordinates Cloud Run scale-to-zero graceful
+//! shutdown upon SIGTERM or SIGINT.
 //! ============================================================================
 
 use std::net::SocketAddr;
@@ -37,8 +18,11 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use trame_server::assets::store::InMemoryAssetStore;
-use trame_server::http::{InMemoryMembershipValidator, build_router};
+use trame_server::http::{
+    InMemoryMembershipValidator, build_postgres_app_state, build_router, build_router_with_state,
+};
 use trame_server::room::{IS_SHUTTING_DOWN, RoomLeaseManager};
+use trame_server::storage::postgres::SqlxPostgresStore;
 use trame_server::wal::InMemoryWalStorage;
 use uuid::Uuid;
 
@@ -47,14 +31,11 @@ pub const SHUTDOWN_TIMEOUT_SECONDS: u64 = 10;
 
 /// Coordinates graceful termination upon receiving SIGTERM or SIGINT.
 pub async fn shutdown_handler(lease_manager: Arc<RoomLeaseManager>) {
-    // 1. Wait for termination signal
     wait_for_signal().await;
 
-    // 2. Set IS_SHUTTING_DOWN flag to reject new incoming connections
     IS_SHUTTING_DOWN.store(true, Ordering::Release);
     println!("Shutdown signal received: IS_SHUTTING_DOWN set to true");
 
-    // 3. Command all active rooms to hibernate within the 10-second timeout
     let timeout = Duration::from_secs(SHUTDOWN_TIMEOUT_SECONDS);
     match lease_manager.hibernate_all(timeout).await {
         Ok(hibernated) => {
@@ -99,15 +80,50 @@ async fn wait_for_signal() {
 
 #[tokio::main]
 async fn main() {
-    let wal = Arc::new(InMemoryWalStorage::new());
-    let lease_manager = Arc::new(RoomLeaseManager::new(wal, 25, 900_000));
-    let asset_store = Arc::new(InMemoryAssetStore::new());
-    let membership = Arc::new(InMemoryMembershipValidator::new());
     let instance_id = Uuid::new_v4();
+    let database_url = std::env::var("DATABASE_URL")
+        .or_else(|_| std::env::var("TRAME_DATABASE_URL"))
+        .ok()
+        .filter(|s| !s.trim().is_empty());
 
-    let app = build_router(lease_manager.clone(), asset_store, membership, instance_id);
+    let (app, lease_manager) = if let Some(db_url) = database_url {
+        let base_url =
+            std::env::var("TRAME_PUBLIC_URL").unwrap_or_else(|_| "/assets/download".to_string());
+        match SqlxPostgresStore::connect_and_migrate(&db_url, base_url).await {
+            Ok(pg_store) => {
+                println!("Connected to PostgreSQL 18 and applied sqlx migrations");
+                let state = build_postgres_app_state(pg_store, instance_id);
+                let lm = state.lease_manager.clone();
+                (build_router_with_state(state), lm)
+            }
+            Err(err) => {
+                eprintln!(
+                    "Warning: PostgreSQL connection failed ({err}); falling back to in-memory storage"
+                );
+                let wal = Arc::new(InMemoryWalStorage::new());
+                let lm = Arc::new(RoomLeaseManager::new(wal, 50, 900_000));
+                let asset_store = Arc::new(InMemoryAssetStore::with_base_url("/assets/download"));
+                let membership = Arc::new(InMemoryMembershipValidator::new());
+                (
+                    build_router(lm.clone(), asset_store, membership, instance_id),
+                    lm,
+                )
+            }
+        }
+    } else {
+        println!("No DATABASE_URL set; running with in-memory storage");
+        let wal = Arc::new(InMemoryWalStorage::new());
+        let lm = Arc::new(RoomLeaseManager::new(wal, 50, 900_000));
+        let asset_store = Arc::new(InMemoryAssetStore::with_base_url("/assets/download"));
+        let membership = Arc::new(InMemoryMembershipValidator::new());
+        (
+            build_router(lm.clone(), asset_store, membership, instance_id),
+            lm,
+        )
+    };
 
     let port: u16 = std::env::var("TRAME_PORT")
+        .or_else(|_| std::env::var("PORT"))
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(4000);

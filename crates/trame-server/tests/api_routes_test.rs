@@ -62,14 +62,15 @@ use uuid::Uuid;
 fn create_test_app_state() -> (AppState, Arc<InMemoryMembershipValidator>) {
     let wal = Arc::new(InMemoryWalStorage::new());
     let lease_manager = Arc::new(RoomLeaseManager::new(wal, 25, 900_000));
-    let asset_store = Arc::new(InMemoryAssetStore::new());
+    let signing_secret = b"test-hmac-sha256-secret-key-for-api-routes";
+    let asset_store = Arc::new(InMemoryAssetStore::with_base_url_and_secret(
+        "/assets/download",
+        signing_secret.to_vec(),
+    ));
     let membership = Arc::new(InMemoryMembershipValidator::new());
     let timeline_storage = Arc::new(InMemoryTimelineStorage::new());
     let session_store = Arc::new(InMemorySessionStore::new());
-    let magic_link_service = Arc::new(MagicLinkService::new(
-        b"test-hmac-sha256-secret-key-for-api-routes",
-        "trame-test",
-    ));
+    let magic_link_service = Arc::new(MagicLinkService::new(signing_secret, "trame-test"));
     let auth_state = AuthState {
         magic_link_service,
         session_store,
@@ -82,9 +83,11 @@ fn create_test_app_state() -> (AppState, Arc<InMemoryMembershipValidator>) {
         membership: membership.clone(),
         instance_id: Uuid::new_v4(),
         timeline_storage,
+        journal_storage: Arc::new(trame_server::notes::InMemoryPartyJournalStorage::new()),
         campaign_store: InMemoryCampaignStore::new(),
         blob_store: InMemoryBlobStore::new(),
         auth_state,
+        pg_store: None,
         db_healthy: Arc::new(AtomicBool::new(true)),
     };
 
@@ -311,7 +314,7 @@ async fn test_campaign_invites_gm_authorization_and_magic_link_onboarding_flow()
     membership.add_gm(campaign_id, gm_id);
     membership.add_player(campaign_id, player_id);
 
-    let app = build_router_with_state(state);
+    let app = build_router_with_state(state.clone());
 
     // 1. Parameterized RBAC checks on POST /api/v1/campaigns/:id/invites
     let rbac_cases = [
@@ -332,6 +335,7 @@ async fn test_campaign_invites_gm_authorization_and_magic_link_onboarding_flow()
             role: Some("PLAYER".to_string()),
             ttl_seconds: Some(3600),
             user_id: caller_uid,
+            ..Default::default()
         };
         let req = Request::builder()
             .method("POST")
@@ -367,6 +371,7 @@ async fn test_campaign_invites_gm_authorization_and_magic_link_onboarding_flow()
         .body(Body::from(
             serde_json::to_vec(&MagicLinkLoginRequest {
                 token: invite.token,
+                ..Default::default()
             })
             .unwrap(),
         ))
@@ -431,6 +436,55 @@ async fn test_campaign_invites_gm_authorization_and_magic_link_onboarding_flow()
         .header(AUTHORIZATION, format!("Bearer {raw_pat}"))
         .body(Body::empty())
         .unwrap();
-    let pat_export_resp = app.oneshot(pat_export_req).await.unwrap();
+    let pat_export_resp = app.clone().oneshot(pat_export_req).await.unwrap();
     assert_eq!(pat_export_resp.status(), StatusCode::OK);
+
+    // 5. Test download_asset_handler authorization with and without signature
+    let asset_id = Uuid::new_v4();
+    let asset_key = format!(
+        "instances/{}/campaigns/{}/assets/{}.webp",
+        state.instance_id, campaign_id, asset_id
+    );
+    state
+        .asset_store
+        .put_asset(
+            &asset_key,
+            bytes::Bytes::from_static(b"FAKE_IMAGE"),
+            "image/webp",
+        )
+        .await
+        .unwrap();
+
+    // Unauthenticated and unsigned download request -> 403 Forbidden
+    let unauth_dl = Request::builder()
+        .method("GET")
+        .uri(format!("/assets/download/{asset_key}"))
+        .body(Body::empty())
+        .unwrap();
+    let unauth_dl_resp = app.clone().oneshot(unauth_dl).await.unwrap();
+    assert_eq!(unauth_dl_resp.status(), StatusCode::FORBIDDEN);
+
+    // Presigned download URL with valid exp and sig -> 200 OK
+    let presigned_url = state
+        .asset_store
+        .mint_presigned_get_url(&asset_key, std::time::Duration::from_secs(900))
+        .await
+        .unwrap();
+    let presigned_dl = Request::builder()
+        .method("GET")
+        .uri(&presigned_url)
+        .body(Body::empty())
+        .unwrap();
+    let presigned_dl_resp = app.clone().oneshot(presigned_dl).await.unwrap();
+    assert_eq!(presigned_dl_resp.status(), StatusCode::OK);
+
+    // Authenticated campaign member download without signature -> 200 OK
+    let member_dl = Request::builder()
+        .method("GET")
+        .uri(format!("/assets/download/{asset_key}"))
+        .header(COOKIE, cookie_pair)
+        .body(Body::empty())
+        .unwrap();
+    let member_dl_resp = app.oneshot(member_dl).await.unwrap();
+    assert_eq!(member_dl_resp.status(), StatusCode::OK);
 }

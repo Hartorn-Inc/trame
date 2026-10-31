@@ -145,6 +145,24 @@ pub enum RoomActorMessage {
         /// Oneshot channel receiving the current `RoomMetrics`.
         reply: oneshot::Sender<RoomMetrics>,
     },
+    /// Retrieves a clone of the current authoritative in-memory `TableState`.
+    GetTableState {
+        /// Oneshot channel receiving the current `TableState`.
+        reply: oneshot::Sender<TableState>,
+    },
+    /// Broadcasts a `ServerEnvelope::HandoutRevealed` frame to all connected clients in the room.
+    BroadcastHandout {
+        /// Revealed handout payload.
+        broadcast: crate::notes::HandoutRevealedBroadcast,
+    },
+    /// Replaces the room's `TableState` (e.g. after importing a starter dungeon or `.uvtt` map),
+    /// increments `seq_id`, flushes a snapshot to `WalStorage`, and broadcasts `StateSnapshot` to all connected clients.
+    ReplaceTableState {
+        /// New authoritative `TableState`.
+        new_state: Box<TableState>,
+        /// Oneshot channel receiving the updated `seq_id`.
+        reply: oneshot::Sender<Result<u64, RoomError>>,
+    },
     /// Flushes a final `TableStateSnapshot` to `WalStorage`, sends close code 1001 to all clients, and stops.
     Hibernate {
         /// Oneshot channel receiving the final persisted `seq_id`.
@@ -224,6 +242,40 @@ impl TableRoomHandle {
             .await
             .map_err(|_| RoomError::ActorClosed)?;
         reply_rx.await.map_err(|_| RoomError::ActorClosed)
+    }
+
+    /// Retrieves a clone of the live in-memory `TableState` from the room actor.
+    pub async fn get_table_state(&self) -> Result<TableState, RoomError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(RoomActorMessage::GetTableState { reply: reply_tx })
+            .await
+            .map_err(|_| RoomError::ActorClosed)?;
+        reply_rx.await.map_err(|_| RoomError::ActorClosed)
+    }
+
+    /// Broadcasts a `ServerEnvelope::HandoutRevealed` frame to all connected clients in the room.
+    pub async fn broadcast_handout(
+        &self,
+        broadcast: crate::notes::HandoutRevealedBroadcast,
+    ) -> Result<(), RoomError> {
+        self.tx
+            .send(RoomActorMessage::BroadcastHandout { broadcast })
+            .await
+            .map_err(|_| RoomError::ActorClosed)
+    }
+
+    /// Commands the room actor to replace its `TableState`, persist a snapshot, and broadcast `StateSnapshot` to all clients.
+    pub async fn replace_state(&self, new_state: TableState) -> Result<u64, RoomError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(RoomActorMessage::ReplaceTableState {
+                new_state: Box::new(new_state),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RoomError::ActorClosed)?;
+        reply_rx.await.map_err(|_| RoomError::ActorClosed)?
     }
 
     /// Commands the room actor to flush state, broadcast WebSocket Close 1001 to all clients, and terminate.
@@ -318,6 +370,45 @@ impl TableRoomActor {
                         active_connections: self.clients.len(),
                         last_activity_ms: self.last_activity_ms,
                     });
+                }
+                RoomActorMessage::GetTableState { reply } => {
+                    let _ = reply.send(self.state.clone());
+                }
+                RoomActorMessage::BroadcastHandout { broadcast } => {
+                    self.last_activity_ms = now_ms();
+                    let env = ServerEnvelope::HandoutRevealed(broadcast);
+                    if let Ok(bytes) = encode_server_envelope(&env) {
+                        for client in self.clients.values() {
+                            let _ = client.tx.send(OutboundClientFrame::Binary(bytes.clone()));
+                        }
+                    }
+                }
+                RoomActorMessage::ReplaceTableState { new_state, reply } => {
+                    self.last_activity_ms = now_ms();
+                    self.state = *new_state;
+                    self.seq_id += 1;
+                    let res = self
+                        .flush_snapshot()
+                        .map(|()| self.seq_id)
+                        .map_err(RoomError::Wal);
+                    if res.is_ok() {
+                        for client in self.clients.values() {
+                            let projected = project_state_for_recipient(
+                                self.campaign_id,
+                                &self.state,
+                                client.user_id,
+                                client.role,
+                            );
+                            let snapshot_env = ServerEnvelope::StateSnapshot {
+                                seq_id: self.seq_id,
+                                state: projected,
+                            };
+                            if let Ok(bytes) = encode_server_envelope(&snapshot_env) {
+                                let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
+                            }
+                        }
+                    }
+                    let _ = reply.send(res);
                 }
                 RoomActorMessage::Hibernate { reply } => {
                     // 1. Broadcast Close frame 1001 Going Away to all connected clients
@@ -531,6 +622,11 @@ impl RoomLeaseManager {
     /// Returns the number of campaign rooms currently awake in memory.
     pub async fn active_room_count(&self) -> usize {
         self.rooms.read().await.len()
+    }
+
+    /// Provides access to the underlying Write-Ahead Log storage.
+    pub fn wal(&self) -> &Arc<dyn WalStorage> {
+        &self.wal
     }
 
     /// Commands all active `TableRoomHandle` actors to hibernate within a timeout (default 10 seconds),

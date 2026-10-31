@@ -4,9 +4,10 @@
 Accepted
 
 ## Context
-Character creation and sheet population require two workflows:
-1. A 5-step guided wizard (`Ancestry` -> `Class` -> `Ability Scores` -> `Background & Skills` -> `Starting Equipment`) and fast NPC creation.
-2. Interactive drag-and-drop of items, spells, and feats from the SRD 5.1 compendium onto character sheets, including nested container hierarchies.
+Character creation, progression, and sheet population require three distinct workflows:
+1. A 5-step guided creation wizard (`CharacterBuilderWizard`: `Ancestry` -> `Class` -> `Ability Scores` -> `Background & Skills` -> `Starting Equipment`) located in the `CampaignWorkspace` (`Characters & Party` tab, outside the Live Table HUD so the live tabletop remains uncluttered), alongside quick Game Master monster/NPC templates for table spawning.
+2. Direct character sheet editing protected by `CoreBuildLock` (client padlock toggle `coreStatsLocked` + optional server-enforced `gm_core_locked`) and a focused 4-step `LevelUpModal` (`Class & Subclass` -> `HP Gain` -> `Class Features & ASI/Feat` -> `New Spells & Slots`) accessible on the sheet both outside and inside the Live Table.
+3. Interactive drag-and-drop of items, spells, and feats from the SRD 5.1 compendium onto character sheets, including nested container hierarchies.
 
 Transient wizard edits must not flood the WebSocket network channel or persist incomplete actors until finalized. Container drag-and-drop operations must reject circular nesting and calculate container tare and multiplier weights deterministically.
 
