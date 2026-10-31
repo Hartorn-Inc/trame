@@ -413,9 +413,9 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### UserRole
 
-- **Definition**: Security and access role assigned to a campaign user (`GameMaster`, `Player`, or `Spectator`) governing table permissions and note visibility.
-- **Allowed Context**: Campaign authentication, WebSocket authorization, and role-based access control.
-- **_Avoid_**: `PlayerRole`, `AccountType`, `PermissionLevel`.
+- **Definition**: Campaign-level authorization role assigned to a user (`GameMaster`, `Player`, or `Spectator`) governing permissions and data filtering.
+- **Allowed Context**: Access control, note visibility filtering, and WebSocket upgrade validation.
+- **_Avoid_**: CampaignRole, UserPermission, AccessLevel.
 
 ## Domain Terminology / Terminologie Métier
 
