@@ -299,6 +299,8 @@ export interface Dnd5eActorData {
   /** Core combat vitality, level progression, armor, and spellcasting attributes. */
   /** Primary class identifier (e.g., `'wizard'`, `'cleric'`, `'fighter'`). */
   classId?: string;
+  /** Legacy or alternate primary class identifier alias. */
+  class?: string;
   /** Archetype or subclass identifier (e.g., `'school-of-evocation'`, `'champion'`). */
   subclassId?: string;
   /** Acquired feature and feat identifiers. */
@@ -307,6 +309,8 @@ export interface Dnd5eActorData {
   spellIds?: string[];
   /** Recalculated proficiency bonus (+2 to +6). */
   proficiencyBonus?: number;
+  /** Recalculated derived sheet statistics snapshot. */
+  derived?: unknown;
   attributes: {
     /** Character or monster challenge/caster level clamped to `1..=20` for proficiency math. */
     level: number;
@@ -314,6 +318,8 @@ export interface Dnd5eActorData {
     proficiencyBonus?: number;
     /** Primary class identifier. */
     classId?: string;
+    /** Legacy or alternate primary class identifier alias. */
+    class?: string;
     /** Archetype or subclass identifier. */
     subclassId?: string;
     /** Spellcasting progression category. */

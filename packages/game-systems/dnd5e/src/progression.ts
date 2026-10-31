@@ -331,9 +331,9 @@ export function applyLevelUp(
   const classId = (
     options.classId ??
     actor.classId ??
-    (actor as Record<string, unknown>).class ??
+    actor.class ??
     actor.attributes.classId ??
-    (actor.attributes as Record<string, unknown>).class
+    actor.attributes.class
   )?.toString();
 
   const subclassUnlockLevel = getSubclassUnlockLevel(classId);
@@ -477,7 +477,7 @@ export function applyLevelUp(
   const pb = calculateProficiencyBonus(targetLevel);
   clone.attributes.proficiencyBonus = pb;
   clone.proficiencyBonus = pb;
-  (clone as Record<string, unknown>).derived = computeDnd5eSheetDerived(clone);
+  clone.derived = computeDnd5eSheetDerived(clone);
 
   return clone;
 }
