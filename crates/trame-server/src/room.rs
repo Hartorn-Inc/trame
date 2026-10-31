@@ -578,6 +578,11 @@ impl RoomLeaseManager {
         self.rooms.read().await.len()
     }
 
+    /// Provides access to the underlying Write-Ahead Log storage.
+    pub fn wal(&self) -> &Arc<dyn WalStorage> {
+        &self.wal
+    }
+
     /// Commands all active `TableRoomHandle` actors to hibernate within a timeout (default 10 seconds),
     /// broadcasting close code 1001 to all clients and flushing uncommitted state to storage.
     pub async fn hibernate_all(&self, timeout: Duration) -> Result<Vec<Uuid>, RoomError> {

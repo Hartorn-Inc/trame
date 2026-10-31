@@ -286,6 +286,21 @@ pub enum TrameCommand {
         /// New ambient lighting preset.
         preset: AmbientLightingPreset,
     },
+    /// Loads a new scene map, dimensions, and walls (GM only).
+    LoadScene {
+        /// Target scene ID.
+        scene_id: Uuid,
+        /// Map asset hash/ID.
+        map_asset_id: String,
+        /// Canvas width in pixels.
+        width_px: u32,
+        /// Canvas height in pixels.
+        height_px: u32,
+        /// Grid cell size in pixels.
+        pixels_per_grid: f64,
+        /// Map wall segments.
+        walls: Vec<WallSegment>,
+    },
     /// Restores the most recent pre-mutation `TableSnapshotData` from the 50-action ring buffer (GM only).
     UndoLastAction,
 }
@@ -392,6 +407,13 @@ pub enum TrameEvent {
     ActionUndone {
         /// Human-readable description of the undone command.
         description: String,
+    },
+    /// Emitted when a scene is loaded onto the tabletop.
+    SceneLoaded {
+        /// Loaded scene ID.
+        scene_id: Uuid,
+        /// Map asset hash/ID.
+        map_asset_id: String,
     },
 }
 
@@ -951,6 +973,25 @@ impl TableState {
                 self.push_undo("Change ambient lighting");
                 self.data.ambient_lighting = preset;
                 Ok(vec![TrameEvent::AmbientLightingChanged { preset }])
+            }
+
+            TrameCommand::LoadScene {
+                scene_id,
+                map_asset_id,
+                width_px: _,
+                height_px: _,
+                pixels_per_grid,
+                walls,
+            } => {
+                Self::require_gm(actor)?;
+                self.push_undo("Load scene");
+                self.cell_size_px = pixels_per_grid;
+                self.bvh = Bvh2D::build(walls.clone());
+                self.data.walls = walls;
+                Ok(vec![TrameEvent::SceneLoaded {
+                    scene_id,
+                    map_asset_id,
+                }])
             }
 
             TrameCommand::UndoLastAction => {

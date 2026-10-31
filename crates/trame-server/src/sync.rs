@@ -310,7 +310,8 @@ pub fn filter_events_for_recipient(
             | TrameEvent::AoeProjected { .. }
             | TrameEvent::ConcentrationBroken { .. }
             | TrameEvent::AmbientLightingChanged { .. }
-            | TrameEvent::ActionUndone { .. } => true,
+            | TrameEvent::ActionUndone { .. }
+            | TrameEvent::SceneLoaded { .. } => true,
         })
         .cloned()
         .collect()

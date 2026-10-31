@@ -1210,7 +1210,7 @@ pub async fn starter_map_handler(
     let mut table_state = TableState::new(imported.pixels_per_grid, 5.0, imported.walls.clone());
 
     let hero1_id = Uuid::new_v4();
-    let mut hero1 = TokenState::new_default(hero1_id, "Seren Vale (Fighter)", Point2D::new(200.0, 300.0));
+    let mut hero1 = TokenState::new_default(hero1_id, "Valeros", Point2D::new(200.0, 300.0));
     hero1.owner_user_id = Some(user_id);
     hero1.hp = 28;
     hero1.max_hp = 28;
@@ -1220,7 +1220,7 @@ pub async fn starter_map_handler(
     };
 
     let hero2_id = Uuid::new_v4();
-    let mut hero2 = TokenState::new_default(hero2_id, "Lyra Ashwind (Wizard)", Point2D::new(200.0, 500.0));
+    let mut hero2 = TokenState::new_default(hero2_id, "Merisiel", Point2D::new(200.0, 500.0));
     hero2.owner_user_id = Some(user_id);
     hero2.hp = 18;
     hero2.max_hp = 18;
@@ -1247,15 +1247,41 @@ pub async fn starter_map_handler(
     table_state.data.tokens.insert(goblin2_id, goblin2);
     table_state.data.initiative_order = vec![hero1_id, goblin1_id, hero2_id, goblin2_id];
 
+    let scene_id = Uuid::new_v4();
     if let Ok(room) = state.lease_manager.get_or_wake_room(campaign_id).await {
         let _ = room.replace_state(table_state).await;
     }
 
-    // Save scene entity and starter lore note
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let wal_entry = crate::wal::WalEntry {
+        seq_id: 1,
+        campaign_id,
+        timestamp_ms: now_ms,
+        actor_user_id: user_id,
+        role: CampaignRole::Gm,
+        command: trame_engine::commands::TrameCommand::LoadScene {
+            scene_id,
+            map_asset_id: imported.sha256_hash.clone(),
+            width_px: imported.width_px,
+            height_px: imported.height_px,
+            pixels_per_grid: imported.pixels_per_grid,
+            walls: imported.walls.clone(),
+        },
+        events: vec![trame_engine::commands::TrameEvent::SceneLoaded {
+            scene_id,
+            map_asset_id: imported.sha256_hash.clone(),
+        }],
+    };
+    let _ = state.lease_manager.wal().append_entry(wal_entry);
+
+    // Save scene entity, 4 required actor entities, and starter lore note
     let scene_entity = ExportEntity {
         entity_type: "scene".to_string(),
         data: serde_json::json!({
-            "id": Uuid::new_v4(),
+            "id": scene_id,
             "campaign_id": campaign_id,
             "name": "Obsidian Vault Antechamber",
             "sha256_hash": imported.sha256_hash,
@@ -1264,12 +1290,79 @@ pub async fn starter_map_handler(
             "pixels_per_grid": imported.pixels_per_grid,
         }),
     };
+
+    let valeros_entity = ExportEntity {
+        entity_type: "actor".to_string(),
+        data: serde_json::json!({
+            "id": hero1_id,
+            "campaign_id": campaign_id,
+            "owner_user_id": user_id,
+            "name": "Valeros",
+            "kind": "character",
+            "hp": 28,
+            "max_hp": 28,
+            "attributes": {},
+            "sheet": { "class": "Fighter", "level": 1 }
+        }),
+    };
+
+    let merisiel_entity = ExportEntity {
+        entity_type: "actor".to_string(),
+        data: serde_json::json!({
+            "id": hero2_id,
+            "campaign_id": campaign_id,
+            "owner_user_id": user_id,
+            "name": "Merisiel",
+            "kind": "character",
+            "hp": 18,
+            "max_hp": 18,
+            "attributes": {},
+            "sheet": { "class": "Rogue", "level": 1 }
+        }),
+    };
+
+    let goblin_sneak_entity = ExportEntity {
+        entity_type: "actor".to_string(),
+        data: serde_json::json!({
+            "id": goblin1_id,
+            "campaign_id": campaign_id,
+            "name": "Goblin Sneak",
+            "kind": "monster",
+            "hp": 12,
+            "max_hp": 12,
+            "attributes": {},
+            "sheet": {}
+        }),
+    };
+
+    let goblin_archer_entity = ExportEntity {
+        entity_type: "actor".to_string(),
+        data: serde_json::json!({
+            "id": goblin2_id,
+            "campaign_id": campaign_id,
+            "name": "Goblin Archer",
+            "kind": "monster",
+            "hp": 10,
+            "max_hp": 10,
+            "attributes": {},
+            "sheet": {}
+        }),
+    };
+
+    let entities_to_save = vec![
+        scene_entity,
+        valeros_entity,
+        merisiel_entity,
+        goblin_sneak_entity,
+        goblin_archer_entity,
+    ];
+
     let _ = state
         .campaign_store
-        .save_entities(&[scene_entity.clone()])
+        .save_entities(&entities_to_save)
         .await;
     if let Some(ref pg) = state.pg_store {
-        let _ = pg.save_entities(&[scene_entity]).await;
+        let _ = pg.save_entities(&entities_to_save).await;
     }
 
     let starter_note = NoteRecord {
@@ -1687,6 +1780,8 @@ pub async fn reveal_handout_handler(
 /// Query parameters for `GET /assets/download/{*key}`.
 #[derive(Debug, Default, Deserialize)]
 pub struct AssetDownloadQuery {
+    pub exp: Option<u64>,
+    pub sig: Option<String>,
     pub token: Option<String>,
     pub expires: Option<u64>,
     pub expires_in: Option<u64>,
@@ -1695,15 +1790,56 @@ pub struct AssetDownloadQuery {
 /// Serves binary WebP/PNG map assets from `AssetStore` (`GET /assets/download/{*key}`).
 pub async fn download_asset_handler(
     Path(key): Path<String>,
-    Query(_query): Query<AssetDownloadQuery>,
+    Query(query): Query<AssetDownloadQuery>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
     let clean_key = key.trim_start_matches('/');
+    let now = crate::auth::magic_link::now_epoch_seconds();
+    let mut authorized = false;
+
+    if let (Some(exp), Some(ref sig_hex)) = (query.exp, query.sig.as_ref()) {
+        if now <= exp {
+            let signing_input = format!("{clean_key}:{exp}");
+            let server_secret = state.auth_state.magic_link_service.secret();
+            let expected_sig = crate::auth::magic_link::hmac_sha256(server_secret, signing_input.as_bytes());
+            let mut expected_hex = String::with_capacity(64);
+            for b in expected_sig {
+                use std::fmt::Write;
+                let _ = write!(&mut expected_hex, "{:02x}", b);
+            }
+            if crate::auth::magic_link::constant_time_eq(sig_hex.as_bytes(), expected_hex.as_bytes()) {
+                authorized = true;
+            }
+        }
+    }
+
+    if !authorized {
+        if let Ok(user_id) = resolve_authenticated_user(&state, &headers, None).await {
+            if let Some(campaign_id) = crate::storage::postgres::extract_campaign_id_from_asset_key(clean_key) {
+                if is_authorized_campaign_member(&state, campaign_id, user_id).await {
+                    authorized = true;
+                }
+            }
+        }
+    }
+
+    if !authorized {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                code: Some("FORBIDDEN".to_string()),
+                error: "valid signature or campaign membership required to download asset".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     match state.asset_store.get_asset(clean_key).await {
         Ok(Some(bytes)) => {
-            let mut headers = HeaderMap::new();
-            headers.insert(CONTENT_TYPE, HeaderValue::from_static("image/webp"));
-            (StatusCode::OK, headers, bytes).into_response()
+            let mut resp_headers = HeaderMap::new();
+            resp_headers.insert(CONTENT_TYPE, HeaderValue::from_static("image/webp"));
+            (StatusCode::OK, resp_headers, bytes).into_response()
         }
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -1858,40 +1994,55 @@ pub async fn export_campaign_handler(
             .into_response();
     }
 
-    let metadata = state
-        .campaign_store
-        .get_campaign(&campaign_id)
-        .unwrap_or_else(|| CampaignMetadata {
-            id: campaign_id,
-            name: format!("Campaign {campaign_id}"),
-            system: "dnd5e".to_string(),
-            description: None,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-        });
+    let metadata = if let Some(ref pg) = state.pg_store {
+        pg.get_campaign_async(campaign_id).await.ok().flatten()
+    } else {
+        None
+    }
+    .or_else(|| state.campaign_store.get_campaign(&campaign_id))
+    .unwrap_or_else(|| CampaignMetadata {
+        id: campaign_id,
+        name: format!("Campaign {campaign_id}"),
+        system: "dnd5e".to_string(),
+        description: None,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+    });
 
     let cid_str = campaign_id.to_string();
-    let entities: Vec<ExportEntity> = state
-        .campaign_store
-        .all_entities()
-        .into_iter()
-        .filter(|e| {
-            let matches_campaign_id = e
-                .data
-                .get("campaign_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s == cid_str)
-                .unwrap_or(false);
-            let matches_self = e.entity_type == "campaign"
-                && e.data
-                    .get("id")
+    let entities: Vec<ExportEntity> = if let Some(ref pg) = state.pg_store {
+        pg.list_entities_for_campaign_async(campaign_id)
+            .await
+            .unwrap_or_default()
+    } else {
+        state
+            .campaign_store
+            .all_entities()
+            .into_iter()
+            .filter(|e| {
+                let matches_campaign_id = e
+                    .data
+                    .get("campaign_id")
                     .and_then(|v| v.as_str())
                     .map(|s| s == cid_str)
                     .unwrap_or(false);
-            matches_campaign_id || matches_self
-        })
-        .collect();
+                let matches_self = e.entity_type == "campaign"
+                    && e.data
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == cid_str)
+                        .unwrap_or(false);
+                matches_campaign_id || matches_self
+            })
+            .collect()
+    };
 
-    let notes = state.campaign_store.all_notes();
+    let notes = if let Some(ref pg) = state.pg_store {
+        pg.list_notes_for_campaign_async(campaign_id)
+            .await
+            .unwrap_or_default()
+    } else {
+        state.campaign_store.all_notes()
+    };
     let asset_ids: Vec<Uuid> = state
         .blob_store
         .list_descriptors()

@@ -97,9 +97,10 @@ pub struct SqlxPostgresStore {
 impl SqlxPostgresStore {
     /// Creates a new `SqlxPostgresStore` bound to an active `PgPool`.
     pub fn new(pool: PgPool) -> Self {
-        let signing_secret = std::env::var("JWT_SECRET")
+        let signing_secret = std::env::var("TRAME_JWT_SECRET")
+            .or_else(|_| std::env::var("JWT_SECRET"))
             .map(|s| s.into_bytes())
-            .unwrap_or_else(|_| b"trame-default-hmac-secret-key-32b".to_vec());
+            .unwrap_or_else(|_| b"trame-default-hmac-sha256-signing-secret-key".to_vec());
         Self {
             pool,
             pending_oauth: Arc::new(RwLock::new(HashMap::new())),
@@ -550,6 +551,15 @@ impl WalStorage for SqlxPostgresStore {
             let payload_json = serde_json::to_value(&entry)
                 .map_err(|e| WalError::Serialization(e.to_string()))?;
 
+            let event_type = entry
+                .events
+                .first()
+                .map(|e| match e {
+                    trame_engine::commands::TrameEvent::SceneLoaded { .. } => "SceneLoaded",
+                    _ => "TrameCommand",
+                })
+                .unwrap_or("TrameCommand");
+
             sqlx::query(
                 "INSERT INTO wal_entries (campaign_id, sequence_num, event_type, payload)
                  VALUES ($1, $2, $3, $4)
@@ -559,7 +569,7 @@ impl WalStorage for SqlxPostgresStore {
             )
             .bind(entry.campaign_id)
             .bind(entry.seq_id as i64)
-            .bind("TrameCommand")
+            .bind(event_type)
             .bind(payload_json)
             .execute(&pool)
             .await

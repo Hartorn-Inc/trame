@@ -971,9 +971,11 @@ mod tests {
             membership,
             instance_id: Uuid::new_v4(),
             timeline_storage,
+            journal_storage: Arc::new(trame_server::notes::InMemoryPartyJournalStorage::new()),
             campaign_store: InMemoryCampaignStore::new(),
             blob_store: InMemoryBlobStore::new(),
             auth_state,
+            pg_store: None,
             db_healthy: Arc::new(AtomicBool::new(true)),
         };
 

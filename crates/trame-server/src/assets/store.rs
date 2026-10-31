@@ -70,22 +70,39 @@ pub struct InMemoryAssetStore {
     assets: Arc<RwLock<HashMap<String, StoredAssetEntry>>>,
     grants: Arc<RwLock<HashMap<String, PresignedGrant>>>,
     base_url: String,
+    signing_secret: Vec<u8>,
 }
 
 impl InMemoryAssetStore {
     pub fn new() -> Self {
-        Self {
-            assets: Arc::new(RwLock::new(HashMap::new())),
-            grants: Arc::new(RwLock::new(HashMap::new())),
-            base_url: "http://localhost:8080/assets/download".to_string(),
-        }
+        Self::with_base_url_and_secret(
+            "http://localhost:8080/assets/download",
+            std::env::var("TRAME_JWT_SECRET")
+                .or_else(|_| std::env::var("JWT_SECRET"))
+                .map(|s| s.into_bytes())
+                .unwrap_or_else(|_| b"trame-default-hmac-sha256-signing-secret-key".to_vec()),
+        )
     }
 
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
+        Self::with_base_url_and_secret(
+            base_url,
+            std::env::var("TRAME_JWT_SECRET")
+                .or_else(|_| std::env::var("JWT_SECRET"))
+                .map(|s| s.into_bytes())
+                .unwrap_or_else(|_| b"trame-default-hmac-sha256-signing-secret-key".to_vec()),
+        )
+    }
+
+    pub fn with_base_url_and_secret(
+        base_url: impl Into<String>,
+        signing_secret: impl Into<Vec<u8>>,
+    ) -> Self {
         Self {
             assets: Arc::new(RwLock::new(HashMap::new())),
             grants: Arc::new(RwLock::new(HashMap::new())),
             base_url: base_url.into(),
+            signing_secret: signing_secret.into(),
         }
     }
 
@@ -167,12 +184,26 @@ impl AssetStore for InMemoryAssetStore {
             guard.insert(token.clone(), PresignedGrant { expires_at });
 
             let sanitized_key = key.trim_start_matches('/');
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let exp = now.saturating_add(ttl.as_secs());
+            let signing_input = format!("{sanitized_key}:{exp}");
+            let sig = crate::auth::magic_link::hmac_sha256(&self.signing_secret, signing_input.as_bytes());
+            let mut sig_hex = String::with_capacity(64);
+            for b in sig {
+                use std::fmt::Write;
+                let _ = write!(&mut sig_hex, "{:02x}", b);
+            }
             let url = format!(
-                "{}/{}?token={}&expires_in={}",
+                "{}/{}?token={}&expires_in={}&exp={}&sig={}",
                 self.base_url.trim_end_matches('/'),
                 sanitized_key,
                 token,
-                ttl.as_secs()
+                ttl.as_secs(),
+                exp,
+                sig_hex
             );
             Ok(url)
         })
