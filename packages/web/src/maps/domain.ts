@@ -1,3 +1,4 @@
+import { DARK_CANVAS_PALETTE } from '../canvas/CanvasThemePalette.ts';
 import type {
   ActiveTableRoomState,
   AudioEmitterConfig,
@@ -141,7 +142,7 @@ export function createStarterDungeonScene(campaignId: string): CampaignMapScene 
       origin: { x: 210, y: 770 },
       brightRadiusFt: 10,
       dimRadiusFt: 20,
-      colorHex: '#FFAA33',
+      colorHex: DARK_CANVAS_PALETTE.actionCss,
       intensity: 1.0,
       elevationFt: 0,
     },
@@ -150,7 +151,7 @@ export function createStarterDungeonScene(campaignId: string): CampaignMapScene 
       origin: { x: 210, y: 1330 },
       brightRadiusFt: 10,
       dimRadiusFt: 20,
-      colorHex: '#FFAA33',
+      colorHex: DARK_CANVAS_PALETTE.actionCss,
       intensity: 1.0,
       elevationFt: 0,
     },
@@ -159,7 +160,7 @@ export function createStarterDungeonScene(campaignId: string): CampaignMapScene 
       origin: { x: 2170, y: 1050 },
       brightRadiusFt: 20,
       dimRadiusFt: 40,
-      colorHex: '#FF5500',
+      colorHex: DARK_CANVAS_PALETTE.dangerCss,
       intensity: 1.2,
       elevationFt: 0,
     },
