@@ -122,6 +122,21 @@ function setupMockDom() {
       return false;
     }
 
+    closest(selector: string): MockNode | null {
+      let cur: MockNode | null = this;
+      while (cur && cur.nodeType === 1) {
+        if (selector.startsWith("#")) {
+          if (cur.id === selector.slice(1) || cur.getAttribute("id") === selector.slice(1)) return cur;
+        } else if (selector.startsWith(".")) {
+          if (cur.classList.contains(selector.slice(1))) return cur;
+        } else if (cur.nodeName.toLowerCase() === selector.toLowerCase()) {
+          return cur;
+        }
+        cur = cur.parentNode;
+      }
+      return null;
+    }
+
     setAttribute(name: string, value: any) {
       const strVal = String(value);
       this.attributes[name] = strVal;
