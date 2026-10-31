@@ -2,7 +2,7 @@ import { h, type VNode } from 'preact';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
-export function ResourceBarWidget(props: WidgetProps): VNode {
+export function ResourceBarWidget(props: WidgetProps): VNode<any> {
   const current = Number(props.boundValues?.current ?? props.boundValues?.hpCurrent ?? 0);
   const max = Number(props.boundValues?.max ?? props.boundValues?.hpMax ?? 0);
   const temp = Number(props.boundValues?.temp ?? props.boundValues?.hpTemp ?? 0);
@@ -36,6 +36,7 @@ export function ResourceBarWidget(props: WidgetProps): VNode {
           type: 'number',
           class: 'ds-resource-input-current',
           'data-testid': 'resource-input-current',
+          'aria-label': `Current ${label}`,
           value: current,
           onChange: (e: Event) => handleHpChange('hp.current', Number((e.target as HTMLInputElement).value)),
         }),
@@ -46,6 +47,7 @@ export function ResourceBarWidget(props: WidgetProps): VNode {
               type: 'number',
               class: 'ds-resource-input-max',
               'data-testid': 'resource-input-max',
+              'aria-label': `Maximum ${label}`,
               value: max,
               onChange: (e: Event) => handleHpChange('hp.max', Number((e.target as HTMLInputElement).value)),
             }),

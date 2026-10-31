@@ -2,7 +2,7 @@ import { h, type VNode } from 'preact';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
-export function SavingThrowListWidget(props: WidgetProps): VNode {
+export function SavingThrowListWidget(props: WidgetProps): VNode<any> {
   const rawSaves = (props.boundValues?.saves as Record<string, any>) ?? {};
   const isLocked = props.isLocked !== false;
 
@@ -58,18 +58,35 @@ export function SavingThrowListWidget(props: WidgetProps): VNode {
             key,
             class: `ds-save-row ${isLocked ? 'is-rollable' : 'is-editable'}`,
             'data-testid': `save-row-${key}`,
+            role: isLocked ? 'button' : undefined,
+            tabIndex: isLocked ? 0 : undefined,
+            'aria-label': isLocked ? `Roll ${key.toUpperCase()} saving throw` : undefined,
             onClick: () => isLocked && handleSaveClick(key, mod),
+            onKeyDown: isLocked
+              ? (e: KeyboardEvent) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleSaveClick(key, mod);
+                  }
+                }
+              : undefined,
           },
-          h('button', {
-            type: 'button',
-            class: `ds-prof-pip ${proficient ? 'is-proficient' : ''}`,
-            'data-testid': `save-prof-toggle-${key}`,
-            disabled: isLocked,
-            onClick: (e: Event) => {
-              e.stopPropagation();
-              if (!isLocked) handleToggleProficiency(key, proficient);
+          h(
+            'button',
+            {
+              type: 'button',
+              class: `ds-prof-pip ${proficient ? 'is-proficient' : ''}`,
+              'data-testid': `save-prof-toggle-${key}`,
+              'aria-label': `Toggle ${key.toUpperCase()} saving throw proficiency`,
+              'aria-pressed': proficient ? 'true' : 'false',
+              disabled: isLocked,
+              onClick: (e: Event) => {
+                e.stopPropagation();
+                if (!isLocked) handleToggleProficiency(key, proficient);
+              },
             },
-          }),
+            proficient ? '●' : '○',
+          ),
           h('span', { class: 'ds-save-name' }, key.toUpperCase()),
           h('span', { class: 'ds-save-mod', 'data-testid': `save-mod-${key}` }, modDisplay),
         );

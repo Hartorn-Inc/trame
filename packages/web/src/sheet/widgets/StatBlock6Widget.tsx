@@ -4,7 +4,7 @@ import type { WidgetProps } from '../WidgetRegistry.ts';
 
 const DEFAULT_ORDER = ['str', 'dex', 'con', 'int', 'wis', 'cha'] as const;
 
-export function StatBlock6Widget(props: WidgetProps): VNode {
+export function StatBlock6Widget(props: WidgetProps): VNode<any> {
   const displayOrder = (props.options?.displayOrder as string[]) ?? DEFAULT_ORDER;
   const rawAbilities = (props.boundValues?.abilities as Record<string, any>) ?? {};
   const isLocked = props.isLocked !== false;
@@ -63,7 +63,18 @@ export function StatBlock6Widget(props: WidgetProps): VNode {
             key,
             class: `ds-ability-card ${isLocked ? 'is-rollable' : 'is-editable'}`,
             'data-testid': `ability-card-${key}`,
+            role: isLocked ? 'button' : undefined,
+            tabIndex: isLocked ? 0 : undefined,
+            'aria-label': isLocked ? `Roll ${key.toUpperCase()} check` : undefined,
             onClick: () => isLocked && handleAbilityClick(key, mod),
+            onKeyDown: isLocked
+              ? (e: KeyboardEvent) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleAbilityClick(key, mod);
+                  }
+                }
+              : undefined,
           },
           h('span', { class: 'ds-ability-name' }, key.toUpperCase()),
           h('span', { class: 'ds-ability-mod', 'data-testid': `ability-mod-${key}` }, modDisplay),
@@ -78,6 +89,7 @@ export function StatBlock6Widget(props: WidgetProps): VNode {
                     type: 'button',
                     class: 'ds-stepper-btn ds-stepper-dec',
                     'data-testid': `ability-dec-${key}`,
+                    'aria-label': `Decrease ${key.toUpperCase()} score`,
                     onClick: (e: Event) => {
                       e.stopPropagation();
                       handleScoreChange(key, score, -1);
@@ -92,6 +104,7 @@ export function StatBlock6Widget(props: WidgetProps): VNode {
                     type: 'button',
                     class: 'ds-stepper-btn ds-stepper-inc',
                     'data-testid': `ability-inc-${key}`,
+                    'aria-label': `Increase ${key.toUpperCase()} score`,
                     onClick: (e: Event) => {
                       e.stopPropagation();
                       handleScoreChange(key, score, 1);

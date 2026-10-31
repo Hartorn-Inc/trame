@@ -4,7 +4,7 @@ import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 import { sanitizeHtml } from './NotesMarkdownPane.ts';
 
-export function NotesMarkdownPaneWidget(props: WidgetProps): VNode {
+export function NotesMarkdownPaneWidget(props: WidgetProps): VNode<any> {
   const initialNotes = String(props.boundValues?.notes ?? props.boundValues?.markdownContent ?? '');
   const [text, setText] = useState(initialNotes);
   const timerRef = useRef<any>(null);
@@ -38,6 +38,7 @@ export function NotesMarkdownPaneWidget(props: WidgetProps): VNode {
     h('textarea', {
       class: 'ds-notes-textarea',
       'data-testid': 'notes-textarea',
+      'aria-label': 'Character Notes and Biography',
       rows: 8,
       value: text,
       onInput: (e: Event) => handleChange((e.target as HTMLTextAreaElement).value),

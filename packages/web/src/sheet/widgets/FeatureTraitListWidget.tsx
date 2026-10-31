@@ -2,7 +2,7 @@ import { h, type VNode } from 'preact';
 import { useState } from 'preact/hooks';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
-export function FeatureTraitListWidget(props: WidgetProps): VNode {
+export function FeatureTraitListWidget(props: WidgetProps): VNode<any> {
   const rawFeatures = Array.isArray(props.boundValues?.features) ? props.boundValues.features : [];
   const [expandedIds, setExpandedIds] = useState<string[]>([]);
 
@@ -28,7 +28,17 @@ export function FeatureTraitListWidget(props: WidgetProps): VNode {
             {
               class: 'ds-feature-header',
               'data-testid': `feature-header-${id}`,
+              role: 'button',
+              tabIndex: 0,
+              'aria-expanded': isExpanded ? 'true' : 'false',
+              'aria-label': `Toggle details for ${feat.name ?? 'Feature'}`,
               onClick: () => toggle(id),
+              onKeyDown: (e: KeyboardEvent) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  toggle(id);
+                }
+              },
             },
             h('strong', null, feat.name ?? 'Feature'),
             h('span', { class: 'ds-feature-source' }, ` (${feat.source ?? 'General'})`),

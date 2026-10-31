@@ -469,6 +469,21 @@ export class CompendiumDragDropManager {
     }
   }
 
+  public static validateAttunement(items: InventoryContainerItem[]): { allowed: boolean; warning?: string } {
+    const attunedCount = (items || []).filter((item) => Boolean(item.isAttuned)).length;
+    if (attunedCount >= 3) {
+      return {
+        allowed: false,
+        warning: "Cannot attune more than 3 items.",
+      };
+    }
+    return { allowed: true };
+  }
+
+  public validateAttunement(items?: InventoryContainerItem[]): { allowed: boolean; warning?: string } {
+    return CompendiumDragDropManager.validateAttunement(items ?? this.items ?? []);
+  }
+
   public handleDragOver(event: { preventDefault?: () => void }): void {
     event?.preventDefault?.();
   }

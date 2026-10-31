@@ -2,7 +2,7 @@ import { h, type VNode } from 'preact';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
-export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode {
+export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
   const hitDiceCurrent = Number(props.boundValues?.hitDiceCurrent ?? 0);
   const hitDiceMax = Number(props.boundValues?.hitDiceMax ?? 0);
   const hitDieSides = Number(props.boundValues?.hitDieSides ?? 8);

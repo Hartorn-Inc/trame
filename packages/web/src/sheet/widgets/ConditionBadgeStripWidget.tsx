@@ -2,7 +2,7 @@ import { h, type VNode } from 'preact';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
-export function ConditionBadgeStripWidget(props: WidgetProps): VNode {
+export function ConditionBadgeStripWidget(props: WidgetProps): VNode<any> {
   const rawConditions = Array.isArray(props.boundValues?.conditions)
     ? props.boundValues.conditions
     : [];
@@ -41,6 +41,7 @@ export function ConditionBadgeStripWidget(props: WidgetProps): VNode {
                 type: 'button',
                 class: 'ds-btn-remove-cond',
                 'data-testid': `btn-remove-condition-${cond.id}`,
+                'aria-label': `Remove condition ${cond.name}`,
                 onClick: () => handleRemove(cond.id),
               },
               '×',

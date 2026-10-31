@@ -2,7 +2,7 @@ import { h, type VNode } from 'preact';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
-export function ArmorInitiativeSpeedWidget(props: WidgetProps): VNode {
+export function ArmorInitiativeSpeedWidget(props: WidgetProps): VNode<any> {
   const armorClass = Number(props.boundValues?.armorClass ?? props.boundValues?.effectiveAc ?? 10);
   const initiative = Number(props.boundValues?.initiative ?? props.boundValues?.initiativeBonus ?? 0);
   const speed = props.boundValues?.speed ?? props.boundValues?.effectiveSpeedFeet ?? 30;
@@ -37,7 +37,16 @@ export function ArmorInitiativeSpeedWidget(props: WidgetProps): VNode {
       {
         class: 'ds-ais-tile is-clickable',
         'data-testid': 'initiative-tile',
+        role: 'button',
+        tabIndex: 0,
+        'aria-label': 'Roll Initiative check',
         onClick: handleInitiativeClick,
+        onKeyDown: (e: KeyboardEvent) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleInitiativeClick();
+          }
+        },
       },
       h('span', { class: 'ds-tile-title' }, 'Initiative'),
       h(

@@ -2,7 +2,7 @@ import { h, type VNode } from 'preact';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
-export function SkillCheckListWidget(props: WidgetProps): VNode {
+export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
   const rawSkills = (props.boundValues?.skills as Record<string, any>) ?? {};
   const isLocked = props.isLocked !== false;
 
@@ -62,25 +62,42 @@ export function SkillCheckListWidget(props: WidgetProps): VNode {
         }
         const modDisplay = mod >= 0 ? `+${mod}` : `${mod}`;
 
+        const rankGlyph = rank === 2 ? '★' : rank === 1 ? '●' : '○';
         return h(
           'li',
           {
             key,
             class: `ds-skill-row ${isLocked ? 'is-rollable' : 'is-editable'}`,
             'data-testid': `skill-row-${key}`,
+            role: isLocked ? 'button' : undefined,
+            tabIndex: isLocked ? 0 : undefined,
+            'aria-label': isLocked ? `Roll ${key} skill check` : undefined,
             onClick: () => isLocked && handleSkillClick(key, mod),
+            onKeyDown: isLocked
+              ? (e: KeyboardEvent) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleSkillClick(key, mod);
+                  }
+                }
+              : undefined,
           },
-          h('button', {
-            type: 'button',
-            class: `ds-prof-pip rank-${rank}`,
-            'data-testid': `skill-prof-cycle-${key}`,
-            'data-rank': rank,
-            disabled: isLocked,
-            onClick: (e: Event) => {
-              e.stopPropagation();
-              if (!isLocked) handleCycleRank(key, rank);
+          h(
+            'button',
+            {
+              type: 'button',
+              class: `ds-prof-pip rank-${rank}`,
+              'data-testid': `skill-prof-cycle-${key}`,
+              'data-rank': rank,
+              'aria-label': `Cycle proficiency rank for ${key}, current rank: ${rank}`,
+              disabled: isLocked,
+              onClick: (e: Event) => {
+                e.stopPropagation();
+                if (!isLocked) handleCycleRank(key, rank);
+              },
             },
-          }),
+            rankGlyph,
+          ),
           h('span', { class: 'ds-skill-name' }, key),
           h('span', { class: 'ds-skill-passive', 'data-testid': `skill-passive-${key}` }, `(${passive})`),
           h('span', { class: 'ds-skill-mod', 'data-testid': `skill-mod-${key}` }, modDisplay),

@@ -37,7 +37,7 @@ export function HudDrawers(props: HudDrawersProps): VNode {
             'header',
             { class: 'ds-drawer-header' },
             h('h2', null, 'Character Sheet'),
-            h('button', { type: 'button', 'data-testid': 'btn-close-sheet-drawer', onClick: closeSheet }, '×'),
+            h('button', { type: 'button', 'data-testid': 'btn-close-sheet-drawer', 'aria-label': 'Close character sheet drawer', onClick: closeSheet }, '×'),
           ),
           h(DeclarativeSheetView, {
             actorState: props.actorState ?? {},
