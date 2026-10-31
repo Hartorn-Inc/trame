@@ -186,6 +186,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_magic_link_preserves_custom_roles_such_as_spectator_and_assistant_gm() {
+        let session_store = Arc::new(InMemorySessionStore::new());
+        let magic_service = Arc::new(MagicLinkService::new(
+            b"test_jwt_secret_1234567890",
+            "trame-test",
+        ));
+        let auth_state = AuthState {
+            magic_link_service: magic_service.clone(),
+            session_store: session_store.clone(),
+        };
+        let router = build_auth_router(auth_state);
+
+        for custom_role in ["SPECTATOR", "ASSISTANT_GM"] {
+            let gm_id = Uuid::new_v4();
+            let campaign_id = Uuid::new_v4();
+
+            let (token, claims) = magic_service
+                .create_invite_token(gm_id, campaign_id, None, custom_role, 3600)
+                .expect("create invite token");
+            assert_eq!(claims.role, custom_role);
+
+            let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/magic-link")
+                .header("content-type", "application/json")
+                .body(Body::from(req_body))
+                .unwrap();
+
+            let resp = router.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let login_resp: MagicLinkLoginResponse = serde_json::from_slice(&body_bytes).unwrap();
+            assert_eq!(login_resp.role, custom_role);
+
+            let member = session_store
+                .get_campaign_member(campaign_id, login_resp.user_id)
+                .await
+                .unwrap()
+                .expect("member record exists");
+            assert_eq!(member.role, custom_role);
+        }
+    }
+
+    #[tokio::test]
     async fn test_magic_link_revoked_invite_returns_401() {
         let session_store = Arc::new(InMemorySessionStore::new());
         let magic_service = Arc::new(MagicLinkService::new(

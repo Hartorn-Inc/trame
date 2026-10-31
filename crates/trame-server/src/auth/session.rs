@@ -308,7 +308,7 @@ pub async fn magic_link_login_handler(
         }
     };
 
-    let guest_user = match state.session_store.create_guest_user("PLAYER").await {
+    let guest_user = match state.session_store.create_guest_user(&claims.role).await {
         Ok(u) => u,
         Err(e) => {
             return (
@@ -327,7 +327,7 @@ pub async fn magic_link_login_handler(
             claims.campaign_id,
             guest_user.id,
             claims.character_id,
-            "PLAYER",
+            &claims.role,
         )
         .await
     {
