@@ -483,8 +483,9 @@ describe("TableCanvas, WasmSpatialEngine & GmOverrideToolbar suite", () => {
     mockClient.sendEnvelope = (envelope) => {
       if ("type" in envelope && envelope.type === "PointerPing") {
         pingEnvelopeSent = true;
-        assert.equal(envelope.pos.x, 600);
-        assert.equal(envelope.pos.y, 400);
+        assert.ok(envelope.pos);
+        assert.equal(envelope.pos?.x, 600);
+        assert.equal(envelope.pos?.y, 400);
       }
       return new Uint8Array();
     };
