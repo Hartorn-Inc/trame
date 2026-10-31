@@ -536,9 +536,18 @@ export function HudDrawers() {
                     return (
                       <div
                         key={tokenId}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Select combatant ${tok?.name ?? tokenId}`}
                         data-testid={`initiative-row-${tokenId}`}
                         onClick={() => {
                           selectedTokenIdSignal.value = tokenId;
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            selectedTokenIdSignal.value = tokenId;
+                          }
                         }}
                         style={{
                           padding: '0.55rem 0.75rem',
