@@ -153,6 +153,13 @@ export const TrameCommand = {
       ...payload,
     };
   },
+  UpdateActorField(payload: Record<string, unknown>): UpdateActorSheetCommand {
+    return {
+      cmd: "UPDATE_ACTOR_SHEET",
+      type: "UPDATE_ACTOR_SHEET",
+      ...payload,
+    };
+  },
   ProjectAoE(payload: Record<string, unknown>): ProjectAoECommand {
     return {
       cmd: "PROJECT_AOE",
