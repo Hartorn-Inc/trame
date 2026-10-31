@@ -5,44 +5,45 @@ Accepted
 
 ## Context
 TRAME provides collaborative campaign Markdown notes supporting `[[Entity]]` wikilink cross-references and Game Master `DirectiveBlock` segments (`:::dm` and `:::handout{id="..." title="..." revealed="false"}`).
-Previously, players could not create or edit campaign notes because the Markdown editor was restricted to Game Masters (`{isGm && ...}`). Furthermore, campaign notes lacked strict authorization boundaries separating private player notes, shared party documentation, and Game Master secrets.
+If player or spectator clients receive raw unstripped Markdown containing `:::dm` secret blocks or unrevealed `:::handout` blocks, secret campaign lore leaks over the network and into browser memory.
 
-To support player agency without compromising secret lore:
-1. Players must keep private campaign notes (`PRIVATE`) invisible to other players and the Game Master (zero-trust security).
-2. The party requires a shared collaboration space (`PARTY`) editable by players and the Game Master.
-3. The Game Master requires confidential notes (`DM_ONLY`) and inline secret directives (`:::dm` and unrevealed `:::handout`) embedded within shared notes.
-4. When a player edits a shared note containing server-filtered GM directives, saving the note (`PUT /api/v1/campaigns/{id}/notes/{note_id}`) must never overwrite or delete the hidden directives.
-5. Handout documents revealed to the party must persist durably in `PartyJournalStorage` (`party_journal_entries`) independently of future edits or deletions of the source note.
+Furthermore, campaign collaboration requires strict role isolation:
+1. Players must draft private notes hermetic from other players and the Game Master (zero-trust).
+2. Players and Game Masters must collaborate on shared team notes (`PARTY`).
+3. Game Masters must maintain private lore notes (`DM_ONLY`) and embed inline secret directives (`:::dm`) or revealable documents (`:::handout`).
+4. When a player edits a shared `PARTY` note containing Game Master confidential blocks stripped on the client by `FilteredNoteDocument`, submitting `PUT` mutations must not delete or overwrite the hidden directives.
 
 ## Decision
-1. **3-Scope Note Visibility Model (`NoteVisibility`)**:
-   - `PRIVATE`: Bound strictly to `owner_user_id`. The server enforces zero-trust access: unauthorized queries return `HTTP 404 Not Found` to prevent entity enumeration.
-   - `PARTY`: Read and write access for `UserRole::GameMaster` and `UserRole::Player`. `UserRole::Spectator` has strict read-only access.
-   - `DM_ONLY`: Accessible exclusively by `UserRole::GameMaster`. Non-GM access returns `HTTP 403 Forbidden`.
-2. **Zero-Trust Server-Side Role Filtering (`FilteredNoteDocument`)**:
-   - Before returning any note over HTTP or broadcasting over WebSocket to `UserRole::Player` or `UserRole::Spectator`, `trame-server` parses all fenced `DirectiveBlock` ranges (`:::dm` and `:::handout`) using quote-aware attribute parsing (`parse_handout_revealed_attr`).
+1. **Zero-Trust Server-Side Role Filtering (`FilteredNoteDocument`)**:
+   - Before any campaign note is returned over HTTP or broadcast over WebSocket to a recipient with `UserRole::Player` or `UserRole::Spectator`, `trame-server` parses all fenced `DirectiveBlock` ranges (`:::dm` and `:::handout`) using quote-aware attribute parsing (`parse_handout_revealed_attr`).
    - All `:::dm` blocks and all `:::handout` blocks where `revealed != "true"` are completely stripped on the server prior to serialization.
    - Recipients with `UserRole::GameMaster` receive the complete, unstripped Markdown source.
-3. **Canonical Handout Directive Grammar**:
-   - Handout blocks follow the normalized syntax: `:::handout{id="<id>" title="<string>" revealed="<true|false>"}`.
-4. **Structural Preservation of Hidden Directives on Player Mutations (AST Merge)**:
-   - When a non-GM user submits `PUT /api/v1/campaigns/{id}/notes/{note_id}` for a `PARTY` note, `trame-server` loads the stored database document.
-   - If the stored document contains hidden `:::dm` or unrevealed `:::handout` directives absent from the submitted text, `trame-server` executes a structural AST merge, restoring the confidential blocks to their original positions before persisting changes.
+2. **Canonical Handout Directive Grammar**:
+   - Handout blocks follow the normalized key-value syntax: `:::handout{id="<id>" title="<string>" revealed="<true|false>"}`.
+3. **3-Tier Note Visibility Model (`NoteVisibility`)**:
+   - `PRIVATE`: Bound strictly to `owner_user_id`. The server verifies user identity: requests by non-owners return `HTTP 404 Not Found` (zero-trust policy preventing entity enumeration).
+   - `PARTY`: Accessible in read and write mode for `UserRole::GameMaster` and `UserRole::Player`. Users with `UserRole::Spectator` retain strict read-only access (`HTTP 403 Forbidden` on mutation).
+   - `DM_ONLY`: Accessible exclusively to `UserRole::GameMaster`. Any non-GM access returns `HTTP 403 Forbidden`.
+4. **Structural AST Preservation during Player Mutations**:
+   - When a user with `role != UserRole::GameMaster` submits `PUT /api/v1/campaigns/{id}/notes/{note_id}` on a `PARTY` note, `trame-server` loads the stored database record.
+   - If the stored document contains confidential directives (`:::dm` or `:::handout` with `revealed="false"`) stripped from the client payload, `trame-server` executes an AST structural merge preserving the hidden blocks at their original positions before database persistence.
 5. **Transactional Handout Reveal Lifecycle (`TrameCommand::RevealHandout`)**:
-   - Handout reveal triggers via `TrameCommand::RevealHandout { campaign_id, note_id, handout_id }` over WebSocket or `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout`.
-   - In a single atomic SQL transaction, `trame-server`:
-     1. Updates `revealed="true"` in the note Markdown source.
-     2. Inserts or updates the entry in `party_journal_entries` (`ON CONFLICT (handout_id) DO UPDATE`).
+   - Handout reveals execute via WebSocket `TrameCommand::RevealHandout { campaign_id, note_id, handout_id }` or REST endpoint `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout`.
+   - Within an atomic SQL transaction, `trame-server`:
+     1. Updates the directive attribute to `revealed="true"` in the note Markdown source.
+     2. Inserts or updates the autonomous entry in `party_journal_entries` (`ON CONFLICT (handout_id) DO UPDATE SET title = EXCLUDED.title, content = EXCLUDED.content, revealed_at = EXCLUDED.revealed_at`).
      3. Appends a `handout_revealed` event to `session_events` with the current monotonic `seq_id`.
-   - `trame-server` broadcasts `ServerEnvelope::HandoutRevealed` to all connected clients, causing `HandoutRevealModal` (`[data-testid="handout-reveal-modal"]`) to mount.
-   - The `party_journal_entries` record is autonomous: subsequent edits or deletions of the source note do not affect the revealed handout.
+   - `trame-server` broadcasts `ServerEnvelope::HandoutRevealed` to all connected campaign clients so the client mounts `HandoutRevealModal`.
+   - The entry in `party_journal_entries` is autonomous: subsequent edits or deletion of the parent note do not delete the revealed document from the Party Journal.
 
 ## Consequences
 ### Positive
-- Zero-trust security: private notes and unrevealed GM secrets never cross the wire to unauthorized clients.
-- Structural AST merge prevents accidental loss of GM secrets during collaborative party note editing.
-- Revealed handouts persist durably and independently in the Party Journal and Session Timeline.
+- Zero-trust information security: unrevealed secrets never cross the wire to non-GM clients.
+- Player personal notes remain hermetic even from the Game Master.
+- AST structural merge prevents accidental secret deletion during collaborative player edits.
+- Quote-aware attribute parsing prevents injection traps inside handout titles.
+- Revealed handouts are durably archived in both `party_journal_entries` and `session_events`.
 
 ### Negative
-- Server must parse and filter note documents per recipient role before transmission.
-- Server must perform AST reconciliation when non-GM users update `PARTY` notes containing hidden blocks.
+- Server must execute AST parsing and merge during player `PUT` requests on `PARTY` notes containing secret blocks.
+- Strict HTTP status code enforcement (`404 Not Found` for foreign `PRIVATE` notes, `403 Forbidden` for `DM_ONLY`).

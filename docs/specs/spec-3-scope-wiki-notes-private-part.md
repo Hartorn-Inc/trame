@@ -3,7 +3,7 @@
 - **Identifiant** : `spec-3-scope-wiki-notes-private-part`
 - **Date** : 2025-05-18
 - **Statut** : Prêt pour implémentation
-- **Références** : Issue #80, ADR-0004, ADR-0009, ADR-0031, ADR-0034, ADR-0035, GLOSSARY.md
+- **Références** : Issue #80, ADR-0004, ADR-0009, ADR-0031, GLOSSARY.md
 
 ---
 
