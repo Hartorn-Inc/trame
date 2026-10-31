@@ -1,0 +1,41 @@
+services:
+  trame-server:
+    image: ${TRAME_IMAGE:-trame-server:latest}
+    restart: unless-stopped
+    stop_grace_period: 15s
+    ports:
+      - "${TRAME_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://trame:${POSTGRES_PASSWORD:-trame_password}@postgres:5432/${POSTGRES_DB:-trame}}
+      TRAME_PORT: "8080"
+      RUST_LOG: ${RUST_LOG:-info}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    stop_grace_period: 15s
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-trame}
+      POSTGRES_USER: ${POSTGRES_USER:-trame}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trame_password}
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trame} -d ${POSTGRES_DB:-trame}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  postgres_prod_data:
