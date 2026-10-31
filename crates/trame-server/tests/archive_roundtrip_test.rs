@@ -121,9 +121,7 @@ async fn archive_export_import_roundtrip_and_remap_ids_integration() {
             author_id,
             created_at: "2026-10-31T00:00:00Z".to_string(),
             updated_at: "2026-10-31T00:00:00Z".to_string(),
-            content_markdown: format!(
-                "Find [[{actor_id}]] inside [[{scene_id}|Cragmaw Hideout]]."
-            ),
+            content_markdown: format!("Find [[{actor_id}]] inside [[{scene_id}|Cragmaw Hideout]]."),
         }],
         asset_ids: vec![asset_id],
     };
@@ -174,9 +172,21 @@ async fn archive_export_import_roundtrip_and_remap_ids_integration() {
     assert_eq!(notes.len(), 2);
     let remapped_note = &notes[1];
     assert_ne!(remapped_note.id, note_id);
-    assert!(!remapped_note.content_markdown.contains(&actor_id.to_string()));
-    assert!(!remapped_note.content_markdown.contains(&scene_id.to_string()));
-    assert!(remapped_note.content_markdown.contains("|Cragmaw Hideout]]"));
+    assert!(
+        !remapped_note
+            .content_markdown
+            .contains(&actor_id.to_string())
+    );
+    assert!(
+        !remapped_note
+            .content_markdown
+            .contains(&scene_id.to_string())
+    );
+    assert!(
+        remapped_note
+            .content_markdown
+            .contains("|Cragmaw Hideout]]")
+    );
 
     let _ = tokio::fs::remove_dir_all(&src_dir).await;
     let _ = tokio::fs::remove_dir_all(&dst_dir).await;

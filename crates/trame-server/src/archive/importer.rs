@@ -1,4 +1,34 @@
-//! Campaign archive (.trame) importer with cryptographic verification and UUID remapping.
+//! ============================================================================
+//! PURPOSE:
+//!   Implements `ArchiveImporter` for streaming extraction, cryptographic
+//!   SHA-256 integrity verification, collision handling (`FAIL_IF_EXISTS`), and
+//!   referential UUID remapping (`remap_ids: true`) of portable `.trame`
+//!   PKWARE ZIP campaign archives.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//!   - Entry 0 MUST be `manifest.json`; missing or displaced manifests fail
+//!     immediately with `ArchiveError::InvalidManifest`.
+//!   - Every archive entry outside `manifest.json` MUST be declared in
+//!     `manifest.entries` with a matching byte size and lowercase hex SHA-256
+//!     digest; unlisted entries fail with `ArchiveError::UnlistedEntry` and
+//!     corrupted entries fail with `ArchiveError::ChecksumMismatch`.
+//!   - Archive paths containing `..`, `\`, or leading `/` are rejected to
+//!     prevent Zip Slip path traversal.
+//!   - Asset entries (`assets/<uuid>.webp`) stream in bounded 64 KiB chunks to
+//!     `BlobStore::put_stream` so memory stays strictly below the 16 MiB RAM
+//!     ceiling; partial uploads are rolled back on any subsequent error.
+//!
+//! EXECUTION LIFECYCLE:
+//!   1. Validate entry 0 (`manifest.json`), parse `CampaignManifest`, and check
+//!      `FAIL_IF_EXISTS` against `CampaignImportTarget::campaign_exists`.
+//!   2. Verify all archive entries against `manifest.entries`, rejecting any
+//!      unlisted or missing entry before mutating persistent state.
+//!   3. Stream and verify `database.jsonl` and `notes/<uuid>.md`, optionally
+//!      remapping all entity/note/asset UUIDs and rewriting `[[<uuid>]]` /
+//!      `[[<uuid>|<label>]]` wikilinks.
+//!   4. Stream and verify each `assets/<uuid>.webp` entry into `BlobStore`,
+//!      then persist the campaign metadata, entities, and notes.
+//! ============================================================================
 
 use super::exporter::{ExportEntity, NoteRecord};
 use super::manifest::{CampaignManifest, CampaignMetadata};
@@ -168,8 +198,7 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
         reader: R,
         remap_ids: bool,
     ) -> Result<ImportResult, ArchiveError> {
-        self.execute_import(BufReader::new(reader), remap_ids)
-            .await
+        self.execute_import(BufReader::new(reader), remap_ids).await
     }
 
     async fn execute_import<R: AsyncBufRead + AsyncSeek + Unpin + Send>(
@@ -203,7 +232,9 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
         // Invariant 2: Read and parse manifest.json
         let mut manifest_reader = zip_reader.reader_with_entry(0).await?;
         let mut manifest_raw = String::new();
-        manifest_reader.read_to_string_checked(&mut manifest_raw).await?;
+        manifest_reader
+            .read_to_string_checked(&mut manifest_raw)
+            .await?;
         let manifest: CampaignManifest = serde_json::from_str(&manifest_raw)
             .map_err(|e| ArchiveError::InvalidManifest(e.to_string()))?;
 
@@ -218,7 +249,7 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
             manifest_map.insert(entry_desc.path.clone(), entry_desc.clone());
         }
 
-        // Invariant 3: Reject unlisted entries
+        // Invariant 3: Reject unlisted entries and path traversal sequences
         let mut zip_entry_names = Vec::with_capacity(entry_count);
         for (idx, entry) in zip_reader.file().entries().iter().enumerate() {
             let filename = entry
@@ -226,6 +257,11 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                 .as_str()
                 .map_err(|e| ArchiveError::InvalidManifest(e.to_string()))?
                 .to_string();
+            if filename.contains("..") || filename.contains('\\') || filename.starts_with('/') {
+                return Err(ArchiveError::InvalidManifest(format!(
+                    "unsafe archive entry path '{filename}'"
+                )));
+            }
             if idx > 0 && !manifest_map.contains_key(&filename) {
                 return Err(ArchiveError::UnlistedEntry(filename));
             }

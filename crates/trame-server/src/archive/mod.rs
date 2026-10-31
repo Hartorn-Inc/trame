@@ -797,8 +797,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_archive_importer_nominal_import_without_remapping() {
-        let temp_dir_export = std::env::temp_dir().join(format!("trame_exp_nom_{}", Uuid::new_v4()));
-        let temp_dir_import = std::env::temp_dir().join(format!("trame_imp_nom_{}", Uuid::new_v4()));
+        let temp_dir_export =
+            std::env::temp_dir().join(format!("trame_exp_nom_{}", Uuid::new_v4()));
+        let temp_dir_import =
+            std::env::temp_dir().join(format!("trame_imp_nom_{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir_export).await.unwrap();
         tokio::fs::create_dir_all(&temp_dir_import).await.unwrap();
 
@@ -874,7 +876,10 @@ mod tests {
             .await
             .expect("nominal import succeeds");
 
-        assert_eq!(result.campaign_id, campaign_id, "Campaign ID must be preserved");
+        assert_eq!(
+            result.campaign_id, campaign_id,
+            "Campaign ID must be preserved"
+        );
         assert_eq!(result.actors_restored, 1);
         assert_eq!(result.scenes_restored, 1);
         assert_eq!(result.notes_restored, 1);
@@ -885,15 +890,25 @@ mod tests {
 
         let saved_entities = target.all_entities();
         assert_eq!(saved_entities.len(), 2);
-        let saved_actor = saved_entities.iter().find(|e| e.entity_type == "actor").unwrap();
+        let saved_actor = saved_entities
+            .iter()
+            .find(|e| e.entity_type == "actor")
+            .unwrap();
         assert_eq!(saved_actor.data["id"], actor_id.to_string());
 
         let saved_notes = target.all_notes();
         assert_eq!(saved_notes.len(), 1);
         assert_eq!(saved_notes[0].id, note_id);
-        assert!(saved_notes[0].content_markdown.contains(&actor_id.to_string()));
+        assert!(
+            saved_notes[0]
+                .content_markdown
+                .contains(&actor_id.to_string())
+        );
 
-        let desc = import_store.get_descriptor(&asset_id.to_string()).await.unwrap();
+        let desc = import_store
+            .get_descriptor(&asset_id.to_string())
+            .await
+            .unwrap();
         assert_eq!(desc.id, asset_id.to_string());
 
         let _ = tokio::fs::remove_dir_all(&temp_dir_export).await;
@@ -921,7 +936,8 @@ mod tests {
             vec![ArchiveEntryDescriptor {
                 path: format!("assets/{asset_id}.webp"),
                 byte_size: 10,
-                sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
             }],
         );
 
@@ -934,7 +950,10 @@ mod tests {
             m_sink.write_all(&m_bytes).await.unwrap();
             m_sink.close().await.unwrap();
 
-            let a_builder = ZipEntryBuilder::new(format!("assets/{asset_id}.webp").into(), Compression::Stored);
+            let a_builder = ZipEntryBuilder::new(
+                format!("assets/{asset_id}.webp").into(),
+                Compression::Stored,
+            );
             let mut a_sink = writer.write_entry_stream(a_builder).await.unwrap();
             a_sink.write_all(b"0123456789").await.unwrap();
             a_sink.close().await.unwrap();
@@ -942,7 +961,8 @@ mod tests {
         }
 
         let target = InMemoryCampaignStore::new();
-        let temp_dir = std::env::temp_dir().join(format!("trame_imp_corrupt_asset_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("trame_imp_corrupt_asset_{}", Uuid::new_v4()));
         let blob_store = LocalFsStore::new(&temp_dir);
         let importer = ArchiveImporter::new(target, blob_store.clone());
 
@@ -955,7 +975,10 @@ mod tests {
         }
 
         let descriptors = blob_store.list_descriptors().await.unwrap();
-        assert!(descriptors.is_empty(), "No asset should be stored on checksum failure");
+        assert!(
+            descriptors.is_empty(),
+            "No asset should be stored on checksum failure"
+        );
 
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
@@ -1030,7 +1053,10 @@ mod tests {
             m_sink.write_all(&m_bytes).await.unwrap();
             m_sink.close().await.unwrap();
 
-            let a_builder = ZipEntryBuilder::new(format!("assets/{asset_id}.webp").into(), Compression::Stored);
+            let a_builder = ZipEntryBuilder::new(
+                format!("assets/{asset_id}.webp").into(),
+                Compression::Stored,
+            );
             let mut a_sink = writer.write_entry_stream(a_builder).await.unwrap();
             for _ in 0..num_chunks {
                 a_sink.write_all(&chunk_64k).await.unwrap();
@@ -1050,7 +1076,10 @@ mod tests {
             .expect("20 MiB asset import succeeds");
 
         assert_eq!(result.assets_restored, 1);
-        let desc = blob_store.get_descriptor(&asset_id.to_string()).await.unwrap();
+        let desc = blob_store
+            .get_descriptor(&asset_id.to_string())
+            .await
+            .unwrap();
         assert_eq!(desc.byte_size, ASSET_BYTES as u64);
 
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
