@@ -410,7 +410,7 @@ describe("TableCanvas, WasmSpatialEngine & GmOverrideToolbar suite", () => {
     tokenNode.click();
     await new Promise((r) => setTimeout(r, 20));
 
-    assert.equal(tokenNode.style.border, "3px solid #f59e0b");
+    assert.equal(tokenNode.style.border, "3px solid var(--atlas-action)");
 
     const canvasMock = container.querySelector('[data-testid="headless-canvas-mock"]') || container.querySelector('[data-testid="pixi-canvas-element"]');
     assert.ok(canvasMock);
@@ -673,13 +673,13 @@ describe("TableCanvas, WasmSpatialEngine & GmOverrideToolbar suite", () => {
     const tokenButton = canvasContainer.querySelector('[data-testid="token-tok-fighter"]');
     assert.ok(tokenButton);
     assert.equal(tokenButton.getAttribute("aria-pressed"), "false");
-    assert.equal(tokenButton.style.backgroundColor, "#0369a1");
-    assert.equal(tokenButton.style.color, "#ffffff");
+    assert.equal(tokenButton.style.backgroundColor, "var(--atlas-info)");
+    assert.equal(tokenButton.style.color, "var(--atlas-text)");
 
     tokenButton.click();
     assert.equal(tokenButton.getAttribute("aria-pressed"), "true");
-    assert.equal(tokenButton.style.backgroundColor, "#d97706");
-    assert.equal(tokenButton.style.color, "#0f172a");
+    assert.equal(tokenButton.style.backgroundColor, "var(--atlas-action)");
+    assert.equal(tokenButton.style.color, "var(--atlas-bg)");
 
     const toolbarContainer = new SimpleDomNode(1, "div");
     render(

@@ -202,8 +202,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
       aria-label="Campaign Lobby"
       style={{
         minHeight: "100vh",
-        backgroundColor: "#0b0f19",
-        color: "#f8fafc",
+        backgroundColor: "var(--atlas-bg)",
+        color: "var(--atlas-text)",
         fontFamily: "system-ui, -apple-system, sans-serif",
         padding: "1.5rem",
       }}
@@ -213,15 +213,15 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          borderBottom: "1px solid #1e293b",
+          borderBottom: "1px solid var(--atlas-surface)",
           paddingBottom: "1rem",
           marginBottom: "1.5rem",
         }}
       >
         <div>
-          <h1 style={{ margin: 0, fontSize: "1.5rem", color: "#f59e0b" }}>TRAME VTT Campaign Lobby</h1>
+          <h1 style={{ margin: 0, fontSize: "1.5rem", color: "var(--atlas-action)" }}>TRAME VTT Campaign Lobby</h1>
           {user && (
-            <div style={{ marginTop: "0.25rem", fontSize: "0.875rem", color: "#94a3b8" }}>
+            <div style={{ marginTop: "0.25rem", fontSize: "0.875rem", color: "var(--atlas-text-muted)" }}>
               Logged in as <strong>{user.displayName}</strong> ({user.role})
               {user.isGuest && (
                 <span
@@ -229,8 +229,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   style={{
                     marginLeft: "0.5rem",
                     padding: "0.125rem 0.375rem",
-                    backgroundColor: "#334155",
-                    color: "#38bdf8",
+                    backgroundColor: "var(--atlas-border)",
+                    color: "var(--atlas-info)",
                     borderRadius: "4px",
                     fontSize: "0.75rem",
                   }}
@@ -249,9 +249,9 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
             data-testid="open-pat-modal-btn"
             style={{
               padding: "0.5rem 0.875rem",
-              backgroundColor: "#1e293b",
-              color: "#cbd5e1",
-              border: "1px solid #334155",
+              backgroundColor: "var(--atlas-surface)",
+              color: "var(--atlas-text-muted)",
+              border: "1px solid var(--atlas-border)",
               borderRadius: "4px",
               cursor: "pointer",
             }}
@@ -267,8 +267,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
             data-testid="logout-btn"
             style={{
               padding: "0.5rem 0.875rem",
-              backgroundColor: "#334155",
-              color: "#f8fafc",
+              backgroundColor: "var(--atlas-border)",
+              color: "var(--atlas-text)",
               border: "none",
               borderRadius: "4px",
               cursor: "pointer",
@@ -285,8 +285,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
           aria-live="polite"
           data-testid="status-banner"
           style={{
-            backgroundColor: "#064e3b",
-            color: "#6ee7b7",
+            backgroundColor: "var(--atlas-success)",
+            color: "var(--atlas-success)",
             padding: "0.75rem 1rem",
             borderRadius: "4px",
             marginBottom: "1rem",
@@ -302,8 +302,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
           aria-live="polite"
           data-testid="error-banner"
           style={{
-            backgroundColor: "#450a0a",
-            color: "#fca5a5",
+            backgroundColor: "var(--atlas-info)",
+            color: "var(--atlas-info)",
             padding: "0.75rem 1rem",
             borderRadius: "4px",
             marginBottom: "1rem",
@@ -323,8 +323,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
           data-testid="create-campaign-btn"
           style={{
             padding: "0.625rem 1.25rem",
-            backgroundColor: "#f59e0b",
-            color: "#0f172a",
+            backgroundColor: "var(--atlas-action)",
+            color: "var(--atlas-bg)",
             fontWeight: 600,
             border: "none",
             borderRadius: "4px",
@@ -348,9 +348,9 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
             position: "relative",
             overflow: "hidden",
             padding: "0.625rem 1.25rem",
-            backgroundColor: "#1e293b",
-            color: "#38bdf8",
-            border: "1px solid #38bdf8",
+            backgroundColor: "var(--atlas-surface)",
+            color: "var(--atlas-info)",
+            border: "1px solid var(--atlas-info)",
             borderRadius: "4px",
             cursor: "pointer",
             display: "inline-block",
@@ -381,12 +381,12 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
       </section>
 
       <section aria-labelledby="campaigns-heading">
-        <h2 id="campaigns-heading" style={{ fontSize: "1.25rem", marginBottom: "1rem", color: "#cbd5e1" }}>
+        <h2 id="campaigns-heading" style={{ fontSize: "1.25rem", marginBottom: "1rem", color: "var(--atlas-text-muted)" }}>
           Active Campaigns
         </h2>
 
         {campaigns.length === 0 ? (
-          <p data-testid="empty-campaigns-msg" style={{ color: "#94a3b8" }}>
+          <p data-testid="empty-campaigns-msg" style={{ color: "var(--atlas-text-muted)" }}>
             No campaigns available. Click "Create Campaign" to bootstrap your adventure.
           </p>
         ) : (
@@ -401,8 +401,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   aria-labelledby={`camp-title-${camp.id}`}
                   data-testid={`campaign-card-${camp.id}`}
                 style={{
-                  backgroundColor: "#131a2a",
-                  border: "1px solid #1e293b",
+                  backgroundColor: "var(--atlas-surface)",
+                  border: "1px solid var(--atlas-surface)",
                   borderRadius: "6px",
                   padding: "1.25rem",
                   display: "flex",
@@ -414,9 +414,9 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   <h3 id={`camp-title-${camp.id}`} style={{ margin: "0 0 0.5rem 0", fontSize: "1.125rem" }}>
                     {camp.name}
                   </h3>
-                  <div style={{ fontSize: "0.75rem", color: "#94a3b8", marginBottom: "0.75rem" }}>
-                    System: <span style={{ color: "#f59e0b" }}>{camp.system}</span> | Role:{" "}
-                    <span style={{ color: "#38bdf8" }}>{camp.role}</span>
+                  <div style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)", marginBottom: "0.75rem" }}>
+                    System: <span style={{ color: "var(--atlas-action)" }}>{camp.system}</span> | Role:{" "}
+                    <span style={{ color: "var(--atlas-info)" }}>{camp.role}</span>
                   </div>
                 </div>
 
@@ -430,8 +430,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                     data-testid={`enter-campaign-${camp.id}`}
                     style={{
                       padding: "0.375rem 0.75rem",
-                      backgroundColor: "#0369a1",
-                      color: "#ffffff",
+                      backgroundColor: "var(--atlas-info)",
+                      color: "var(--atlas-text)",
                       border: "none",
                       borderRadius: "4px",
                       cursor: "pointer",
@@ -445,9 +445,9 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                     data-testid="export-archive-btn"
                     style={{
                       padding: "0.375rem 0.75rem",
-                      backgroundColor: "#1e293b",
-                      color: "#cbd5e1",
-                      border: "1px solid #334155",
+                      backgroundColor: "var(--atlas-surface)",
+                      color: "var(--atlas-text-muted)",
+                      border: "1px solid var(--atlas-border)",
                       borderRadius: "4px",
                       cursor: "pointer",
                     }}
@@ -465,9 +465,9 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                       data-testid={`invite-btn-${camp.id}`}
                       style={{
                         padding: "0.375rem 0.75rem",
-                        backgroundColor: "#1e293b",
-                        color: "#c084fc",
-                        border: "1px solid #c084fc",
+                        backgroundColor: "var(--atlas-surface)",
+                        color: "var(--atlas-info)",
+                        border: "1px solid var(--atlas-info)",
                         borderRadius: "4px",
                         cursor: "pointer",
                       }}
@@ -494,7 +494,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
             left: 0,
             right: 0,
             bottom: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.75)",
+            backgroundColor: "var(--atlas-surface-raised)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -503,8 +503,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
         >
           <div
             style={{
-              backgroundColor: "#131a2a",
-              border: "1px solid #334155",
+              backgroundColor: "var(--atlas-surface)",
+              border: "1px solid var(--atlas-border)",
               borderRadius: "8px",
               padding: "1.5rem",
               maxWidth: "440px",
@@ -517,7 +517,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
             <form onSubmit={handleCreateCampaignSubmit} data-testid="create-campaign-form">
               <div style={{ marginBottom: "1rem" }}>
                 <label htmlFor="new-camp-name" style={{ display: "block", marginBottom: "0.25rem" }}>
-                  Campaign Name <span aria-hidden="true" style={{ color: "#ef4444" }}>*</span>
+                  Campaign Name <span aria-hidden="true" style={{ color: "var(--atlas-danger)" }}>*</span>
                 </label>
                 <input
                   id="new-camp-name"
@@ -530,10 +530,10 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   style={{
                     width: "100%",
                     padding: "0.5rem",
-                    backgroundColor: "#0f172a",
-                    border: "1px solid #334155",
+                    backgroundColor: "var(--atlas-bg)",
+                    border: "1px solid var(--atlas-border)",
                     borderRadius: "4px",
-                    color: "#f8fafc",
+                    color: "var(--atlas-text)",
                     boxSizing: "border-box",
                   }}
                 />
@@ -550,10 +550,10 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   style={{
                     width: "100%",
                     padding: "0.5rem",
-                    backgroundColor: "#0f172a",
-                    border: "1px solid #334155",
+                    backgroundColor: "var(--atlas-bg)",
+                    border: "1px solid var(--atlas-border)",
                     borderRadius: "4px",
-                    color: "#f8fafc",
+                    color: "var(--atlas-text)",
                     boxSizing: "border-box",
                   }}
                 >
@@ -566,8 +566,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   onClick={() => setIsCreateModalOpen(false)}
                   style={{
                     padding: "0.5rem 1rem",
-                    backgroundColor: "#334155",
-                    color: "#f8fafc",
+                    backgroundColor: "var(--atlas-border)",
+                    color: "var(--atlas-text)",
                     border: "none",
                     borderRadius: "4px",
                     cursor: "pointer",
@@ -581,8 +581,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   data-testid="submit-create-campaign-btn"
                   style={{
                     padding: "0.5rem 1rem",
-                    backgroundColor: "#f59e0b",
-                    color: "#0f172a",
+                    backgroundColor: "var(--atlas-action)",
+                    color: "var(--atlas-bg)",
                     fontWeight: 600,
                     border: "none",
                     borderRadius: "4px",
@@ -608,7 +608,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
             left: 0,
             right: 0,
             bottom: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.75)",
+            backgroundColor: "var(--atlas-surface-raised)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -617,8 +617,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
         >
           <div
             style={{
-              backgroundColor: "#131a2a",
-              border: "1px solid #334155",
+              backgroundColor: "var(--atlas-surface)",
+              border: "1px solid var(--atlas-border)",
               borderRadius: "8px",
               padding: "1.5rem",
               maxWidth: "440px",
@@ -641,10 +641,10 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   style={{
                     width: "100%",
                     padding: "0.5rem",
-                    backgroundColor: "#0f172a",
-                    border: "1px solid #334155",
+                    backgroundColor: "var(--atlas-bg)",
+                    border: "1px solid var(--atlas-border)",
                     borderRadius: "4px",
-                    color: "#f8fafc",
+                    color: "var(--atlas-text)",
                   }}
                 >
                   <option value="PLAYER">PLAYER</option>
@@ -658,8 +658,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   onClick={() => setIsInviteModalOpen(false)}
                   style={{
                     padding: "0.5rem 1rem",
-                    backgroundColor: "#334155",
-                    color: "#f8fafc",
+                    backgroundColor: "var(--atlas-border)",
+                    color: "var(--atlas-text)",
                     border: "none",
                     borderRadius: "4px",
                     cursor: "pointer",
@@ -673,8 +673,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   data-testid="generate-invite-btn"
                   style={{
                     padding: "0.5rem 1rem",
-                    backgroundColor: "#7e22ce",
-                    color: "#ffffff",
+                    backgroundColor: "var(--atlas-info)",
+                    color: "var(--atlas-text)",
                     fontWeight: 600,
                     border: "none",
                     borderRadius: "4px",
@@ -686,10 +686,10 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
               </div>
             </form>
             {mintedInviteUrl && (
-              <div style={{ marginTop: "1rem", padding: "0.75rem", backgroundColor: "#0f172a", borderRadius: "4px" }}>
+              <div style={{ marginTop: "1rem", padding: "0.75rem", backgroundColor: "var(--atlas-bg)", borderRadius: "4px" }}>
                 <label
                   htmlFor="minted-invite-url-input"
-                  style={{ fontSize: "0.75rem", color: "#94a3b8", display: "block" }}
+                  style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)", display: "block" }}
                 >
                   Shareable Magic Link:
                 </label>
@@ -703,9 +703,9 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   style={{
                     width: "100%",
                     padding: "0.375rem",
-                    backgroundColor: "#1e293b",
-                    color: "#38bdf8",
-                    border: "1px solid #334155",
+                    backgroundColor: "var(--atlas-surface)",
+                    color: "var(--atlas-info)",
+                    border: "1px solid var(--atlas-border)",
                     borderRadius: "4px",
                     fontSize: "0.75rem",
                     marginTop: "0.25rem",
@@ -729,7 +729,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
             left: 0,
             right: 0,
             bottom: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.75)",
+            backgroundColor: "var(--atlas-surface-raised)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -738,8 +738,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
         >
           <div
             style={{
-              backgroundColor: "#131a2a",
-              border: "1px solid #334155",
+              backgroundColor: "var(--atlas-surface)",
+              border: "1px solid var(--atlas-border)",
               borderRadius: "8px",
               padding: "1.5rem",
               maxWidth: "500px",
@@ -752,7 +752,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
             <form onSubmit={handleCreatePatSubmit} data-testid="create-pat-form" style={{ marginBottom: "1.5rem" }}>
               <label
                 htmlFor="pat-name-input"
-                style={{ display: "block", fontSize: "0.75rem", color: "#94a3b8", marginBottom: "0.25rem" }}
+                style={{ display: "block", fontSize: "0.75rem", color: "var(--atlas-text-muted)", marginBottom: "0.25rem" }}
               >
                 Token Label
               </label>
@@ -768,10 +768,10 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   style={{
                     flex: 1,
                     padding: "0.5rem",
-                    backgroundColor: "#0f172a",
-                    border: "1px solid #334155",
+                    backgroundColor: "var(--atlas-bg)",
+                    border: "1px solid var(--atlas-border)",
                     borderRadius: "4px",
-                    color: "#f8fafc",
+                    color: "var(--atlas-text)",
                   }}
                 />
                 <button
@@ -779,8 +779,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   data-testid="create-pat-btn"
                   style={{
                     padding: "0.5rem 1rem",
-                    backgroundColor: "#38bdf8",
-                    color: "#0f172a",
+                    backgroundColor: "var(--atlas-info)",
+                    color: "var(--atlas-bg)",
                     fontWeight: 600,
                     border: "none",
                     borderRadius: "4px",
@@ -797,8 +797,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                 role="status"
                 data-testid="pat-created-alert"
                 style={{
-                  backgroundColor: "#064e3b",
-                  color: "#a7f3d0",
+                  backgroundColor: "var(--atlas-success)",
+                  color: "var(--atlas-info)",
                   padding: "0.75rem",
                   borderRadius: "4px",
                   marginBottom: "1rem",
@@ -816,7 +816,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
 
             <div style={{ maxHeight: "200px", overflowY: "auto", marginBottom: "1rem" }}>
               {patList.length === 0 ? (
-                <p style={{ color: "#94a3b8", fontSize: "0.875rem" }}>No active access tokens.</p>
+                <p style={{ color: "var(--atlas-text-muted)", fontSize: "0.875rem" }}>No active access tokens.</p>
               ) : (
                 <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
                   {patList.map((pat) => (
@@ -824,14 +824,14 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                       key={pat.id}
                       style={{
                         padding: "0.5rem",
-                        borderBottom: "1px solid #1e293b",
+                        borderBottom: "1px solid var(--atlas-surface)",
                         fontSize: "0.875rem",
                         display: "flex",
                         justifyContent: "space-between",
                       }}
                     >
                       <span>{pat.name || "Token"}</span>
-                      <span style={{ color: "#94a3b8" }}>Scopes: {pat.scopes.join(", ")}</span>
+                      <span style={{ color: "var(--atlas-text-muted)" }}>Scopes: {pat.scopes.join(", ")}</span>
                     </li>
                   ))}
                 </ul>
@@ -844,8 +844,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                 onClick={() => setIsPatModalOpen(false)}
                 style={{
                   padding: "0.5rem 1rem",
-                  backgroundColor: "#334155",
-                  color: "#f8fafc",
+                  backgroundColor: "var(--atlas-border)",
+                  color: "var(--atlas-text)",
                   border: "none",
                   borderRadius: "4px",
                   cursor: "pointer",

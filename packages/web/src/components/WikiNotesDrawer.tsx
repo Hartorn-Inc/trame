@@ -1,0 +1,167 @@
+import { useEffect, useState } from "preact/hooks";
+import type { ComponentChildren, JSX } from "preact";
+import { client as defaultClient, type ApiClient } from "../api/client.ts";
+import { appSignals } from "../state/appSignals.ts";
+import type { NoteDto } from "../types/index.ts";
+
+export interface WikiNotesDrawerProps {
+  children?: ComponentChildren;
+  client?: ApiClient;
+  campaignId?: string;
+  isGm?: boolean;
+  embedded?: boolean;
+  onClose?: () => void;
+}
+
+export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
+  const activeClient = props.client || defaultClient;
+  const user = appSignals.authUserSignal.value;
+  const activeCampaign = appSignals.activeCampaignSignal.value;
+  const campaignId = props.campaignId || activeCampaign?.id || "";
+  const isGm = Boolean(props.isGm || user?.role === "GM" || activeCampaign?.role === "GM");
+
+  const notes = appSignals.notesSignal.value;
+  const [selectedNote, setSelectedNote] = useState<NoteDto | null>(notes[0] || null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (campaignId && notes.length === 0) {
+      activeClient.listNotes(campaignId).catch(() => {});
+    }
+  }, [campaignId]);
+
+  useEffect(() => {
+    if (!selectedNote && notes.length > 0) {
+      setSelectedNote(notes[0]);
+    }
+  }, [notes]);
+
+  const handleRevealHandout = async (handoutId: string, title: string, content: string) => {
+    if (!campaignId) return;
+    try {
+      const broadcast = await activeClient.revealHandout(campaignId, {
+        handoutId,
+        title,
+        content,
+      });
+      appSignals.revealedHandoutSignal.value = broadcast;
+      setStatusMessage(`Handout "${title}" revealed to party.`);
+    } catch (err: unknown) {
+      setStatusMessage(err instanceof Error ? err.message : "Failed to reveal handout");
+    }
+  };
+
+  return (
+    <aside
+      role="complementary"
+      aria-label="Campaign Wiki and Handouts"
+      data-testid="wiki-notes-drawer"
+      style={{
+        position: props.embedded ? "relative" : "fixed",
+        top: props.embedded ? undefined : 0,
+        right: props.embedded ? undefined : 0,
+        bottom: props.embedded ? undefined : 0,
+        width: props.embedded ? "100%" : "440px",
+        height: props.embedded ? "100%" : undefined,
+        maxWidth: "100vw",
+        backgroundColor: "var(--atlas-bg)",
+        borderLeft: props.embedded ? "none" : "1px solid var(--atlas-surface)",
+        zIndex: props.embedded ? 1 : 50,
+        display: "flex",
+        flexDirection: "column",
+        boxShadow: props.embedded ? "none" : undefined,
+        color: "var(--atlas-text)",
+      }}
+    >
+      <header style={{ padding: "1rem", borderBottom: "1px solid var(--atlas-surface)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: "1.125rem", color: "var(--atlas-action)" }}>Wiki Notes & Handouts</h2>
+          <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>Role-Filtered Markdown</span>
+        </div>
+        {!props.embedded && (
+          <button
+            type="button"
+            data-testid="close-wiki-btn"
+            onClick={() => {
+              appSignals.activeDrawerSignal.value = null;
+              props.onClose?.();
+            }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-border)", color: "var(--atlas-text)", border: "none", borderRadius: "4px", cursor: "pointer" }}
+          >
+            Close
+          </button>
+        )}
+      </header>
+
+      {statusMessage && (
+        <div role="status" style={{ backgroundColor: "var(--atlas-success)", color: "var(--atlas-success)", padding: "0.5rem 1rem", fontSize: "0.75rem" }}>
+          {statusMessage}
+        </div>
+      )}
+
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        <div style={{ width: "140px", borderRight: "1px solid var(--atlas-surface)", overflowY: "auto", padding: "0.5rem" }}>
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {notes.map((note) => (
+              <li key={note.slug}>
+                <button
+                  type="button"
+                  data-testid={`note-tab-${note.slug}`}
+                  onClick={() => setSelectedNote(note)}
+                  style={{
+                    width: "100%",
+                    textAlign: "left",
+                    padding: "0.5rem",
+                    backgroundColor: selectedNote?.slug === note.slug ? "var(--atlas-surface)" : "transparent",
+                    color: selectedNote?.slug === note.slug ? "var(--atlas-info)" : "var(--atlas-text-muted)",
+                    border: "none",
+                    borderRadius: "4px",
+                    fontSize: "0.75rem",
+                    cursor: "pointer",
+                  }}
+                >
+                  {note.title}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: "1rem" }}>
+          {selectedNote ? (
+            <div>
+              <h3 style={{ margin: "0 0 0.5rem 0", color: "var(--atlas-action)" }}>{selectedNote.title}</h3>
+              <div
+                data-testid="note-content-display"
+                style={{ backgroundColor: "var(--atlas-bg)", padding: "0.75rem", borderRadius: "4px", border: "1px solid var(--atlas-surface)", marginBottom: "1rem", whiteSpace: "pre-wrap", fontSize: "0.875rem" }}
+              >
+                {selectedNote.contentMarkdown}
+              </div>
+
+              {isGm && (
+                <button
+                  type="button"
+                  data-testid="reveal-handout-btn"
+                  onClick={() => handleRevealHandout(`handout-${selectedNote.slug}`, selectedNote.title, selectedNote.contentMarkdown)}
+                  style={{
+                    padding: "0.5rem 1rem",
+                    backgroundColor: "var(--atlas-info)",
+                    color: "var(--atlas-text)",
+                    border: "none",
+                    borderRadius: "4px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  Reveal Handout
+                </button>
+              )}
+            </div>
+          ) : (
+            <p style={{ color: "var(--atlas-text-muted)", fontSize: "0.875rem" }}>No note selected.</p>
+          )}
+        </div>
+      </div>
+    </aside>
+  );
+}

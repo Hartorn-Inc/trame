@@ -274,7 +274,7 @@ export function normalizeServerEnvelopeObject(raw: Record<string, unknown>): Ser
       type: "PointerPingBroadcast",
       senderUserId: String(payload.sender_user_id || payload.senderUserId || ""),
       pos: (payload.pos || { x: 0, y: 0 }) as { x: number; y: number },
-      colorHex: String(payload.color_hex || payload.colorHex || "#ffffff"),
+      colorHex: String(payload.color_hex || payload.colorHex || "var(--atlas-text)"),
     };
   }
   if (raw.Pong || raw.type === "Pong") {
@@ -625,7 +625,7 @@ export class ApiClient {
     return buffer;
   }
 
-  public sendPointerPing(pos: Point2D, colorHex = "#38bdf8"): Uint8Array {
+  public sendPointerPing(pos: Point2D, colorHex = "var(--atlas-info)"): Uint8Array {
     return this.sendEnvelope({
       type: "PointerPing",
       pos,

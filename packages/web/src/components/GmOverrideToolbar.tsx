@@ -133,20 +133,20 @@ export function GmOverrideToolbar(props: GmOverrideToolbarProps): JSX.Element | 
       aria-label="Game Master Omnipotent Override Toolbar"
       data-testid="gm-override-toolbar"
       style={{
-        backgroundColor: "#0f172a",
-        border: "1px solid #1e293b",
+        backgroundColor: "var(--atlas-bg)",
+        border: "1px solid var(--atlas-surface)",
         borderRadius: "6px",
         padding: "0.75rem 1rem",
-        color: "#f8fafc",
+        color: "var(--atlas-text)",
         display: "flex",
         flexWrap: "wrap",
         alignItems: "center",
         gap: "0.75rem",
-        boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.4)",
+        boxShadow: "0 4px 6px -1px var(--atlas-surface-raised)",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-        <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "#f59e0b", textTransform: "uppercase" }}>
+        <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--atlas-action)", textTransform: "uppercase" }}>
           GM Mode
         </span>
         <div role="group" aria-label="Table Play Mode" style={{ display: "flex", borderRadius: "4px", overflow: "hidden" }}>
@@ -157,8 +157,8 @@ export function GmOverrideToolbar(props: GmOverrideToolbarProps): JSX.Element | 
             onClick={() => handleModeToggle("EXPLORATION")}
             style={{
               padding: "0.375rem 0.75rem",
-              backgroundColor: currentMode === "EXPLORATION" ? "#f59e0b" : "#1e293b",
-              color: currentMode === "EXPLORATION" ? "#0f172a" : "#cbd5e1",
+              backgroundColor: currentMode === "EXPLORATION" ? "var(--atlas-action)" : "var(--atlas-surface)",
+              color: currentMode === "EXPLORATION" ? "var(--atlas-bg)" : "var(--atlas-text-muted)",
               border: "none",
               fontWeight: 600,
               fontSize: "0.75rem",
@@ -174,8 +174,8 @@ export function GmOverrideToolbar(props: GmOverrideToolbarProps): JSX.Element | 
             onClick={() => handleModeToggle("TURN_BY_TURN")}
             style={{
               padding: "0.375rem 0.75rem",
-              backgroundColor: currentMode === "TURN_BY_TURN" ? "#f59e0b" : "#1e293b",
-              color: currentMode === "TURN_BY_TURN" ? "#0f172a" : "#cbd5e1",
+              backgroundColor: currentMode === "TURN_BY_TURN" ? "var(--atlas-action)" : "var(--atlas-surface)",
+              color: currentMode === "TURN_BY_TURN" ? "var(--atlas-bg)" : "var(--atlas-text-muted)",
               border: "none",
               fontWeight: 600,
               fontSize: "0.75rem",
@@ -188,7 +188,7 @@ export function GmOverrideToolbar(props: GmOverrideToolbarProps): JSX.Element | 
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}>
-        <label htmlFor="ambient-preset-select" style={{ fontSize: "0.75rem", color: "#94a3b8" }}>
+        <label htmlFor="ambient-preset-select" style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
           Lighting:
         </label>
         <select
@@ -197,9 +197,9 @@ export function GmOverrideToolbar(props: GmOverrideToolbarProps): JSX.Element | 
           value={currentAmbient}
           onChange={(e) => handleAmbientChange((e.target as HTMLSelectElement).value as AmbientPreset)}
           style={{
-            backgroundColor: "#1e293b",
-            color: "#f8fafc",
-            border: "1px solid #334155",
+            backgroundColor: "var(--atlas-surface)",
+            color: "var(--atlas-text)",
+            border: "1px solid var(--atlas-border)",
             borderRadius: "4px",
             padding: "0.375rem 0.5rem",
             fontSize: "0.75rem",
@@ -221,8 +221,8 @@ export function GmOverrideToolbar(props: GmOverrideToolbarProps): JSX.Element | 
           onClick={handleLoadStarterDungeon}
           style={{
             padding: "0.375rem 0.75rem",
-            backgroundColor: "#0369a1",
-            color: "#ffffff",
+            backgroundColor: "var(--atlas-info)",
+            color: "var(--atlas-text)",
             border: "none",
             borderRadius: "4px",
             fontSize: "0.75rem",
@@ -246,9 +246,9 @@ export function GmOverrideToolbar(props: GmOverrideToolbarProps): JSX.Element | 
           style={{
             position: "relative",
             padding: "0.375rem 0.75rem",
-            backgroundColor: "#1e293b",
-            color: "#38bdf8",
-            border: "1px solid #38bdf8",
+            backgroundColor: "var(--atlas-surface)",
+            color: "var(--atlas-info)",
+            border: "1px solid var(--atlas-info)",
             borderRadius: "4px",
             fontSize: "0.75rem",
             fontWeight: 600,
@@ -289,10 +289,10 @@ export function GmOverrideToolbar(props: GmOverrideToolbarProps): JSX.Element | 
           aria-label="ActiveEffect Description"
           style={{
             padding: "0.375rem 0.5rem",
-            backgroundColor: "#1e293b",
-            border: "1px solid #334155",
+            backgroundColor: "var(--atlas-surface)",
+            border: "1px solid var(--atlas-border)",
             borderRadius: "4px",
-            color: "#f8fafc",
+            color: "var(--atlas-text)",
             fontSize: "0.75rem",
           }}
         />
@@ -302,8 +302,8 @@ export function GmOverrideToolbar(props: GmOverrideToolbarProps): JSX.Element | 
           onClick={handleApplyActiveEffect}
           style={{
             padding: "0.375rem 0.625rem",
-            backgroundColor: "#7c3aed",
-            color: "#ffffff",
+            backgroundColor: "var(--atlas-info)",
+            color: "var(--atlas-text)",
             border: "none",
             borderRadius: "4px",
             fontSize: "0.75rem",
@@ -322,9 +322,9 @@ export function GmOverrideToolbar(props: GmOverrideToolbarProps): JSX.Element | 
           onClick={handleUndo}
           style={{
             padding: "0.375rem 0.75rem",
-            backgroundColor: "#334155",
-            color: "#f8fafc",
-            border: "1px solid #475569",
+            backgroundColor: "var(--atlas-border)",
+            color: "var(--atlas-text)",
+            border: "1px solid var(--atlas-border)",
             borderRadius: "4px",
             fontSize: "0.75rem",
             cursor: "pointer",
@@ -339,7 +339,7 @@ export function GmOverrideToolbar(props: GmOverrideToolbarProps): JSX.Element | 
           role="status"
           aria-live="polite"
           data-testid="gm-toolbar-status"
-          style={{ width: "100%", fontSize: "0.75rem", color: "#34d399", marginTop: "0.25rem" }}
+          style={{ width: "100%", fontSize: "0.75rem", color: "var(--atlas-success)", marginTop: "0.25rem" }}
         >
           {statusMessage}
         </div>
@@ -350,7 +350,7 @@ export function GmOverrideToolbar(props: GmOverrideToolbarProps): JSX.Element | 
           role="alert"
           aria-live="polite"
           data-testid="gm-toolbar-error"
-          style={{ width: "100%", fontSize: "0.75rem", color: "#f87171", marginTop: "0.25rem" }}
+          style={{ width: "100%", fontSize: "0.75rem", color: "var(--atlas-danger)", marginTop: "0.25rem" }}
         >
           {errorMessage}
         </div>
