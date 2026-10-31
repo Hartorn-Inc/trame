@@ -306,7 +306,7 @@ L'onglet `MapsStudioTab` offre au meneur de jeu :
 Pour les joueurs, l'onglet `MapsStudioTab` affiche exclusivement la galerie `SceneAtlas` :
 1. Affichage sous forme de grille de vignettes représentant les scènes publiées (`revealed_to_players == true`).
 2. Clic sur une vignette ouvrant la scène en plein écran avec contrôles fluides de zoom et de déplacement panoramique (pan/zoom).
-3. Rendu sécurisé conforme à l'ADR-0035 : portes secrètes affichées comme des murs ordinaires, absence de tokens masqués, et affichage exclusif du brouillard de guerre exploré.
+3. Rendu sécurisé conforme à l'ADR 0035 : portes secrètes affichées comme des murs ordinaires, absence de tokens masqués, et affichage exclusif du brouillard de guerre exploré.
 
 ---
 
