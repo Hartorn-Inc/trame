@@ -1,3 +1,4 @@
+// Headless widget controllers (committed in base branch under packages/web/src/sheet/widgets/*.ts)
 import { ArmorInitiativeSpeed } from "./ArmorInitiativeSpeed.ts";
 import { AttackActionTable } from "./AttackActionTable.ts";
 import { ConditionBadgeStrip } from "./ConditionBadgeStrip.ts";
@@ -11,13 +12,14 @@ import { SkillCheckList } from "./SkillCheckList.ts";
 import { SpellbookAccordion } from "./SpellbookAccordion.ts";
 import { StatBlock6 } from "./StatBlock6.ts";
 
+// Preact JSX/VNode widget views (packages/web/src/sheet/widgets/*Widget.tsx)
 import { ArmorInitiativeSpeedWidget } from "./ArmorInitiativeSpeedWidget.tsx";
 import { AttackActionTableWidget } from "./AttackActionTableWidget.tsx";
 import { ConditionBadgeStripWidget } from "./ConditionBadgeStripWidget.tsx";
 import { FeatureTraitListWidget } from "./FeatureTraitListWidget.tsx";
 import { HitDiceAndDeathSavesWidget } from "./HitDiceAndDeathSavesWidget.tsx";
 import { InventoryContainerTreeWidget } from "./InventoryContainerTreeWidget.tsx";
-import { NotesMarkdownPaneWidget, sanitizeHtml } from "./NotesMarkdownPaneWidget.tsx";
+import { NotesMarkdownPaneWidget } from "./NotesMarkdownPaneWidget.tsx";
 import { ResourceBarWidget } from "./ResourceBarWidget.tsx";
 import { SavingThrowListWidget } from "./SavingThrowListWidget.tsx";
 import { SkillCheckListWidget } from "./SkillCheckListWidget.tsx";

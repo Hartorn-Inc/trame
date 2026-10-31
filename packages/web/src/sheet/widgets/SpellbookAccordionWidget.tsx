@@ -168,9 +168,6 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
                           e.stopPropagation();
                           handleToggleSlotPip(slotKey, lvl, currentSlots, idx);
                         },
-                        onKeyDown: (e: KeyboardEvent) => {
-                          e.stopPropagation();
-                        },
                       },
                       isFilled ? '[*]' : '[ ]',
                     );

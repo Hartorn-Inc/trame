@@ -17,12 +17,16 @@ export function NotesMarkdownPaneWidget(props: WidgetProps): VNode<any> {
   const initialNotes = String(props.boundValues?.notes ?? props.boundValues?.markdownContent ?? '');
   const [text, setText] = useSafeState(initialNotes);
   const timerRef = useSafeRef<any>(null);
+  const pendingValueRef = useSafeRef<string | null>(null);
 
-  const handleChange = (newVal: string) => {
-    setText(newVal);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => {
-      const sanitized = sanitizeHtml(newVal);
+  const flushPendingUpdate = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (pendingValueRef.current !== null) {
+      const sanitized = sanitizeHtml(pendingValueRef.current);
+      pendingValueRef.current = null;
       props.dispatchCommand?.(
         TrameCommand.UpdateActorSheet({
           path: 'notes',
@@ -31,12 +35,21 @@ export function NotesMarkdownPaneWidget(props: WidgetProps): VNode<any> {
           value: sanitized,
         }),
       );
+    }
+  };
+
+  const handleChange = (newVal: string) => {
+    setText(newVal);
+    pendingValueRef.current = newVal;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      flushPendingUpdate();
     }, 500);
   };
 
   useSafeEffect(() => {
     return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
+      flushPendingUpdate();
     };
   }, []);
 
@@ -51,6 +64,7 @@ export function NotesMarkdownPaneWidget(props: WidgetProps): VNode<any> {
       rows: 8,
       value: text,
       onInput: (e: Event) => handleChange((e.target as HTMLTextAreaElement).value),
+      onBlur: () => flushPendingUpdate(),
     }),
   );
 }

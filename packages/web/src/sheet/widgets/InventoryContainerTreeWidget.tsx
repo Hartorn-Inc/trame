@@ -135,6 +135,83 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
     }
   };
 
+  const containerIds = new Set(items.filter((it) => it.isContainer).map((it) => it.id));
+  const rootItems = items.filter((it) => !it.containerId || !containerIds.has(it.containerId));
+
+  const renderItemRow = (item: (typeof items)[0], depth: number): VNode<any> => {
+    const isContainer = Boolean(item.isContainer);
+    const childItems = isContainer ? items.filter((child) => child.containerId === item.id) : [];
+    const dropTargetContainerId = isContainer ? item.id : item.containerId;
+
+    return h(
+      'li',
+      {
+        key: item.id,
+        class: `ds-inv-item-row ${isContainer ? 'is-container' : ''} ${depth > 0 ? 'is-nested' : ''}`,
+        'data-testid': `inv-item-${item.id}`,
+        'data-container-id': item.containerId ?? 'root',
+        'data-depth': String(depth),
+        draggable: true,
+        onDragStart: (e: DragEvent) => handleItemDragStart(item, e),
+        onDragOver: (e: DragEvent) => e.preventDefault(),
+        onDrop: (e: DragEvent) => handleDropItem(e, dropTargetContainerId),
+      },
+      h(
+        'span',
+        { class: 'ds-item-name atlas-tabular-nums' },
+        `${depth > 0 ? '↳ ' : ''}${item.name} (x${item.quantity}) - ${item.unitWeight} lb`,
+      ),
+      item.containerId
+        ? h(
+            'button',
+            {
+              type: 'button',
+              class: 'ds-btn-unpack-item',
+              'data-testid': `btn-unpack-${item.id}`,
+              'aria-label': `Move ${item.name} to top-level inventory`,
+              onClick: () => handleMoveItem(item.id, null),
+            },
+            'Unpack',
+          )
+        : null,
+      (item.requiresAttunement || item.isAttuned)
+        ? h(
+            'button',
+            {
+              type: 'button',
+              class: `ds-btn-attune ${item.isAttuned ? 'is-attuned' : ''}`,
+              'data-testid': `btn-attune-${item.id}`,
+              'aria-label': `Toggle attunement for ${item.name}`,
+              'aria-pressed': item.isAttuned ? 'true' : 'false',
+              onClick: () => handleToggleAttunement(item),
+            },
+            item.isAttuned ? 'Attuned' : 'Attune',
+          )
+        : null,
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'ds-btn-del-item',
+          'data-testid': `btn-del-item-${item.id}`,
+          'aria-label': `Delete ${item.name}`,
+          onClick: () => handleDeleteItem(item.id),
+        },
+        'Del',
+      ),
+      isContainer && childItems.length > 0
+        ? h(
+            'ul',
+            {
+              class: 'ds-container-children-list',
+              'data-testid': `container-children-${item.id}`,
+            },
+            childItems.map((child) => renderItemRow(child, depth + 1)),
+          )
+        : null,
+    );
+  };
+
   return h(
     'div',
     { class: 'ds-inventory-widget', 'data-testid': 'inventory-container-tree-widget' },
@@ -194,47 +271,7 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
       h(
         'ul',
         { class: 'ds-inventory-list' },
-        items.map((item) => {
-          const isContainer = Boolean(item.isContainer);
-          return h(
-            'li',
-            {
-              key: item.id,
-              class: `ds-inv-item-row ${isContainer ? 'is-container' : ''}`,
-              'data-testid': `inv-item-${item.id}`,
-              draggable: true,
-              onDragStart: (e: DragEvent) => handleItemDragStart(item, e),
-              onDragOver: isContainer ? (e: DragEvent) => e.preventDefault() : undefined,
-              onDrop: isContainer ? (e: DragEvent) => handleDropItem(e, item.id) : undefined,
-            },
-            h('span', { class: 'ds-item-name atlas-tabular-nums' }, `${item.name} (x${item.quantity}) - ${item.unitWeight} lb`),
-            (item.requiresAttunement || item.isAttuned)
-              ? h(
-                  'button',
-                  {
-                    type: 'button',
-                    class: `ds-btn-attune ${item.isAttuned ? 'is-attuned' : ''}`,
-                    'data-testid': `btn-attune-${item.id}`,
-                    'aria-label': `Toggle attunement for ${item.name}`,
-                    'aria-pressed': item.isAttuned ? 'true' : 'false',
-                    onClick: () => handleToggleAttunement(item),
-                  },
-                  item.isAttuned ? 'Attuned' : 'Attune',
-                )
-              : null,
-            h(
-              'button',
-              {
-                type: 'button',
-                class: 'ds-btn-del-item',
-                'data-testid': `btn-del-item-${item.id}`,
-                'aria-label': `Delete ${item.name}`,
-                onClick: () => handleDeleteItem(item.id),
-              },
-              'Del',
-            ),
-          );
-        }),
+        rootItems.map((item) => renderItemRow(item, 0)),
       ),
     ),
   );
