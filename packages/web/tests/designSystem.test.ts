@@ -176,6 +176,49 @@ describe("TRAME ATLAS v1.1 & Impeccable Design System Suite", () => {
         signatures.add(nonColorSig);
       }
     });
+
+    it("verifies Ticket #105 acceptance criteria for tokenDispositions, wallKinds and mcpStagingGhost", () => {
+      for (const palette of [DARK_CANVAS_PALETTE, LIGHT_CANVAS_PALETTE]) {
+        assert.equal(palette.mapArtFilter, "none");
+        assert.equal(palette.fogUnexploredHex, 0x0f1a25);
+
+        assert.equal(palette.tokenDispositions.ally.ringStrokeStyle, "solid");
+        assert.equal(palette.tokenDispositions.ally.badgeShape, "shield");
+
+        assert.equal(palette.tokenDispositions.hostile.ringStrokeStyle, "dashed");
+        assert.equal(palette.tokenDispositions.hostile.badgeShape, "diamond");
+        assert.equal(palette.tokenDispositions.hostile.badgeGlyph, "!");
+
+        assert.equal(palette.tokenDispositions.selected.ringStrokeStyle, "double");
+        assert.equal(palette.tokenDispositions.selected.badgeShape, "corner-chevrons");
+
+        assert.equal(palette.tokenDispositions.activeTurn.ringColorHex, 0xf59e0b);
+        assert.equal(palette.tokenDispositions.activeTurn.badgeShape, "chevron-beacon");
+        assert.equal(palette.tokenDispositions.activeTurn.badgeGlyph, "›");
+
+        assert.equal(palette.mcpStagingGhost.fillAlpha, 0.55);
+        assert.deepEqual(palette.mcpStagingGhost.dashPatternPx, [4, 4]);
+        assert.equal(palette.mcpStagingGhost.badgeText, "STAGED");
+
+        const wallTuples = new Set<string>();
+        const kinds: CanonicalWallKind[] = [
+          "Normal",
+          "Window",
+          "Terrain",
+          "OneWay",
+          "SecretDoor",
+          "Door",
+          "Illusion",
+        ];
+        for (const k of kinds) {
+          const w = palette.wallKinds[k];
+          const tuple = `${JSON.stringify(w.dashPatternPx)}|${w.endpointMarker}`;
+          assert.ok(!wallTuples.has(tuple), `Duplicate wall tuple for ${k}`);
+          wallTuples.add(tuple);
+        }
+        assert.equal(wallTuples.size, 7);
+      }
+    });
   });
 
   describe("3. In-House SVG Asset Suite (TrameLogo, AtlasIcons, AtlasEmptyStates)", () => {
