@@ -7,8 +7,9 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
   const hitDiceMax = Number(props.boundValues?.hitDiceMax ?? 0);
   const hitDieSides = Number(props.boundValues?.hitDieSides ?? 8);
   const conModifier = Number(props.boundValues?.conModifier ?? 0);
-  const deathSuccesses = Number(props.boundValues?.deathSuccesses ?? 0);
-  const deathFailures = Number(props.boundValues?.deathFailures ?? 0);
+  const nestedDeathSaves = (props.boundValues?.deathSaves as Record<string, any>) ?? {};
+  const deathSuccesses = Number(props.boundValues?.deathSuccesses ?? nestedDeathSaves.successes ?? 0);
+  const deathFailures = Number(props.boundValues?.deathFailures ?? nestedDeathSaves.failures ?? 0);
   const hpCurrent = Number(props.boundValues?.hpCurrent ?? 0);
 
   const handleSpendHitDie = () => {
@@ -79,7 +80,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
       'div',
       { class: 'ds-hitdice-pane', 'data-testid': 'hitdice-pane' },
       h('span', { class: 'ds-pane-label' }, 'Hit Dice'),
-      h('span', { class: 'ds-hitdice-val', 'data-testid': 'hitdice-count' }, `${hitDiceCurrent} / ${hitDiceMax} (d${hitDieSides})`),
+      h('span', { class: 'ds-hitdice-val atlas-tabular-nums', 'data-testid': 'hitdice-count' }, `${hitDiceCurrent} / ${hitDiceMax} (d${hitDieSides})`),
       h(
         'button',
         {
@@ -112,13 +113,13 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
                 {
                   key: `succ-${idx}`,
                   type: 'button',
-                  class: `ds-pip ds-pip-btn ${isFilled ? 'is-filled' : ''}`,
+                  class: `ds-pip ds-pip-btn atlas-tabular-nums ${isFilled ? 'is-filled' : ''}`,
                   'data-testid': `death-success-pip-${idx}`,
                   'aria-label': `Death save success ${idx + 1}, currently ${isFilled ? 'marked' : 'empty'}`,
                   'aria-pressed': isFilled ? 'true' : 'false',
                   onClick: () => handleToggleDeathSuccess(idx),
                 },
-                isFilled ? '●' : '○',
+                isFilled ? '[+]' : '[ ]',
               );
             }),
           ),
@@ -137,13 +138,13 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
                 {
                   key: `fail-${idx}`,
                   type: 'button',
-                  class: `ds-pip ds-pip-btn ${isFilled ? 'is-filled' : ''}`,
+                  class: `ds-pip ds-pip-btn atlas-tabular-nums ${isFilled ? 'is-filled' : ''}`,
                   'data-testid': `death-failure-pip-${idx}`,
                   'aria-label': `Death save failure ${idx + 1}, currently ${isFilled ? 'marked' : 'empty'}`,
                   'aria-pressed': isFilled ? 'true' : 'false',
                   onClick: () => handleToggleDeathFailure(idx),
                 },
-                isFilled ? '●' : '○',
+                isFilled ? '[-]' : '[ ]',
               );
             }),
           ),

@@ -62,7 +62,7 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
         }
         const modDisplay = mod >= 0 ? `+${mod}` : `${mod}`;
 
-        const rankGlyph = rank === 2 ? '★' : rank === 1 ? '●' : '○';
+        const rankGlyph = rank === 2 ? '[E]' : rank === 1 ? '[P]' : '[ ]';
         return h(
           'li',
           {
@@ -100,8 +100,8 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
                 rankGlyph,
               ),
           h('span', { class: 'ds-skill-name' }, key),
-          h('span', { class: 'ds-skill-passive', 'data-testid': `skill-passive-${key}` }, `(${passive})`),
-          h('span', { class: 'ds-skill-mod', 'data-testid': `skill-mod-${key}` }, modDisplay),
+          h('span', { class: 'ds-skill-passive atlas-tabular-nums', 'data-testid': `skill-passive-${key}` }, `(${passive})`),
+          h('span', { class: 'ds-skill-mod atlas-tabular-nums', 'data-testid': `skill-mod-${key}` }, modDisplay),
         );
       }),
     ),

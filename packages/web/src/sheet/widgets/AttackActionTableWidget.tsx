@@ -63,71 +63,73 @@ export function AttackActionTableWidget(props: WidgetProps): VNode<any> {
     'div',
     { class: 'ds-attack-table-widget', 'data-testid': 'attack-action-table-widget' },
     h('h4', { class: 'ds-widget-title' }, 'Attacks & Spellcasting'),
-    h(
-      'table',
-      { class: 'ds-attack-table' },
-      h(
-        'thead',
-        null,
-        h(
-          'tr',
-          null,
-          h('th', null, 'Name'),
-          h('th', null, 'To Hit'),
-          h('th', null, 'Damage/Type'),
-          h('th', null, 'Action'),
-        ),
-      ),
-      h(
-        'tbody',
-        null,
-        attacks.map((atk) => {
-          const isDepleted = atk.ammunitionItemId !== undefined && atk.ammunitionQuantity !== undefined && atk.ammunitionQuantity <= 0;
-          const bonusDisplay = atk.attackBonus >= 0 ? `+${atk.attackBonus}` : `${atk.attackBonus}`;
+    attacks.length === 0
+      ? h('p', { class: 'ds-empty-state', 'data-testid': 'attacks-empty-state' }, 'No attacks configured. Equip a weapon from Inventory or add one from Compendium.')
+      : h(
+          'table',
+          { class: 'ds-attack-table' },
+          h(
+            'thead',
+            null,
+            h(
+              'tr',
+              null,
+              h('th', null, 'Name'),
+              h('th', null, 'To Hit'),
+              h('th', null, 'Damage/Type'),
+              h('th', null, 'Action'),
+            ),
+          ),
+          h(
+            'tbody',
+            null,
+            attacks.map((atk) => {
+              const isDepleted = atk.ammunitionItemId !== undefined && atk.ammunitionQuantity !== undefined && atk.ammunitionQuantity <= 0;
+              const bonusDisplay = atk.attackBonus >= 0 ? `+${atk.attackBonus}` : `${atk.attackBonus}`;
 
-          return h(
-            'tr',
-            { key: atk.id, class: 'ds-attack-row', 'data-testid': `attack-row-${atk.id}` },
-            h(
-              'td',
-              null,
-              h('span', { class: 'ds-atk-name' }, atk.name),
-              isDepleted
-                ? h('span', { class: 'ds-depleted-badge', 'data-testid': `depleted-badge-${atk.id}` }, ' [Depleted]')
-                : null,
-            ),
-            h('td', null, bonusDisplay),
-            h('td', null, `${atk.damageFormula} ${atk.damageType ?? ''}`),
-            h(
-              'td',
-              null,
-              h(
-                'button',
-                {
-                  type: 'button',
-                  class: 'ds-btn-atk-roll',
-                  'data-testid': `btn-atk-roll-${atk.id}`,
-                  'aria-label': `Roll attack with ${atk.name}`,
-                  disabled: isDepleted,
-                  onClick: () => handleAttackRoll(atk),
-                },
-                'Atk',
-              ),
-              h(
-                'button',
-                {
-                  type: 'button',
-                  class: 'ds-btn-dmg-roll',
-                  'data-testid': `btn-dmg-roll-${atk.id}`,
-                  'aria-label': `Roll damage for ${atk.name}`,
-                  onClick: () => handleDamageRoll(atk),
-                },
-                'Dmg',
-              ),
-            ),
-          );
-        }),
-      ),
-    ),
+              return h(
+                'tr',
+                { key: atk.id, class: 'ds-attack-row', 'data-testid': `attack-row-${atk.id}` },
+                h(
+                  'td',
+                  null,
+                  h('span', { class: 'ds-atk-name' }, atk.name),
+                  isDepleted
+                    ? h('span', { class: 'ds-depleted-badge', 'data-testid': `depleted-badge-${atk.id}` }, ' [Depleted]')
+                    : null,
+                ),
+                h('td', { class: 'atlas-tabular-nums' }, bonusDisplay),
+                h('td', { class: 'atlas-tabular-nums' }, `${atk.damageFormula} ${atk.damageType ?? ''}`),
+                h(
+                  'td',
+                  null,
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      class: 'ds-btn-atk-roll',
+                      'data-testid': `btn-atk-roll-${atk.id}`,
+                      'aria-label': `Roll attack with ${atk.name}`,
+                      disabled: isDepleted,
+                      onClick: () => handleAttackRoll(atk),
+                    },
+                    'Atk',
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      class: 'ds-btn-dmg-roll',
+                      'data-testid': `btn-dmg-roll-${atk.id}`,
+                      'aria-label': `Roll damage for ${atk.name}`,
+                      onClick: () => handleDamageRoll(atk),
+                    },
+                    'Dmg',
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
   );
 }

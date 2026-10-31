@@ -1,8 +1,7 @@
 import { h, type VNode } from 'preact';
+import { useState } from 'preact/hooks';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
-
-import { useState } from 'preact/hooks';
 import { CompendiumDragDropManager } from '../../compendium/CompendiumDragDropManager.ts';
 
 export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
@@ -20,7 +19,7 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
 
   const handleCast = (spell: (typeof spells)[0]) => {
     if (spell.isAoE) {
-      if (props.isTableCanvasMounted === false) {
+      if (!props.isTableCanvasMounted) {
         // Canvas not mounted
         props.dispatchCommand?.({
           cmd: 'NOTIFICATION',
@@ -145,6 +144,7 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
                 class: 'ds-spell-level-header',
                 'data-testid': `spell-level-header-${lvl}`,
                 'aria-expanded': isExpanded ? 'true' : 'false',
+                'aria-controls': `spell-level-body-${lvl}`,
                 onClick: () => toggleLevel(lvl),
               },
               h('span', { class: 'ds-level-title' }, lvl === 0 ? 'Cantrips' : `Level ${lvl}`),
@@ -152,7 +152,7 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
             lvl > 0 && maxSlots > 0
               ? h(
                   'div',
-                  { class: 'ds-slot-pips-container', 'data-testid': `slot-pips-lvl-${lvl}` },
+                  { class: 'ds-slot-pips-container atlas-tabular-nums', 'data-testid': `slot-pips-lvl-${lvl}` },
                   Array.from({ length: maxSlots }, (_, idx) => {
                     const isFilled = idx < currentSlots;
                     return h(
@@ -160,7 +160,7 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
                       {
                         key: `pip-${idx}`,
                         type: 'button',
-                        class: `ds-slot-pip ${isFilled ? 'is-filled' : 'is-expended'}`,
+                        class: `ds-slot-pip atlas-tabular-nums ${isFilled ? 'is-filled' : 'is-expended'}`,
                         'data-testid': `slot-pip-${lvl}-${idx}`,
                         'aria-label': `Toggle level ${lvl} spell slot ${idx + 1}, currently ${isFilled ? 'available' : 'expended'}`,
                         'aria-pressed': isFilled ? 'true' : 'false',
@@ -172,7 +172,7 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
                           e.stopPropagation();
                         },
                       },
-                      isFilled ? '●' : '○',
+                      isFilled ? '[*]' : '[ ]',
                     );
                   }),
                 )
@@ -181,20 +181,21 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
           isExpanded
             ? h(
                 'div',
-                { class: 'ds-spell-level-body' },
+                { id: `spell-level-body-${lvl}`, class: 'ds-spell-level-body' },
                 levelSpells.length === 0
                   ? h('span', { class: 'ds-no-spells' }, 'No spells learned')
                   : levelSpells.map((spell) =>
                       h(
                         'div',
                         { key: spell.id, class: 'ds-spell-item', 'data-testid': `spell-item-${spell.id}` },
-                        h('span', { class: 'ds-spell-title' }, `${spell.name} (Lvl ${spell.level})`),
+                        h('span', { class: 'ds-spell-title atlas-tabular-nums' }, `${spell.name} (Lvl ${spell.level})`),
                         h(
                           'button',
                           {
                             type: 'button',
                             class: 'ds-btn-cast-spell',
                             'data-testid': `btn-cast-spell-${spell.id}`,
+                            'aria-label': spell.isAoE ? `Cast ${spell.name} and project AoE` : `Cast ${spell.name}`,
                             onClick: () => handleCast(spell),
                           },
                           spell.isAoE ? 'Cast / Project AoE' : 'Cast',

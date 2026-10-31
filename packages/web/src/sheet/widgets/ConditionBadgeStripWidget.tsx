@@ -44,7 +44,7 @@ export function ConditionBadgeStripWidget(props: WidgetProps): VNode<any> {
                 'aria-label': `Remove condition ${cond.name}`,
                 onClick: () => handleRemove(cond.id),
               },
-              '×',
+              'Remove',
             ),
           ),
         ),

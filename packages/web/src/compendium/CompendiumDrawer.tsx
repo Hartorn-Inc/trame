@@ -61,12 +61,12 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
 
   return h(
     'aside',
-    { class: 'ds-compendium-drawer', 'data-testid': 'compendium-drawer' },
+    { class: 'ds-compendium-drawer', 'data-testid': 'compendium-drawer', 'aria-label': 'Compendium Drawer' },
     h(
       'header',
       { class: 'ds-drawer-header' },
       h('h3', null, 'Compendium'),
-      h('button', { type: 'button', class: 'ds-btn-close', 'data-testid': 'btn-close-compendium', 'aria-label': 'Close compendium', onClick: props.onClose }, '×'),
+      h('button', { type: 'button', class: 'ds-btn-close', 'data-testid': 'btn-close-compendium', 'aria-label': 'Close compendium', onClick: props.onClose }, 'Close'),
     ),
     h(
       'div',

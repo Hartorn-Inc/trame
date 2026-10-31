@@ -1,7 +1,6 @@
 import { h, type VNode } from 'preact';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
-
 import { CompendiumDragDropManager, calculateTotalInventoryWeight } from '../../compendium/CompendiumDragDropManager.ts';
 
 export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
@@ -22,7 +21,12 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
     weightMultiplier: it.weightMultiplier ?? it.contentWeightMultiplier ?? 1.0,
   }));
 
-  const dragManager = new CompendiumDragDropManager((props as any).systemId ?? 'dnd5e');
+  const dragManager = new CompendiumDragDropManager({
+    systemId: (props as any).systemId ?? 'dnd5e',
+    dispatchCommand: props.dispatchCommand,
+    actorId: props.actorId,
+    items,
+  });
   const totalCarriedWeight = calculateTotalInventoryWeight(items);
   const attunedCount = items.filter((it) => it.isAttuned).length;
   const rawStr = props.boundValues?.strength ?? props.boundValues?.str ?? (props.boundValues?.abilities as any)?.str;
@@ -73,6 +77,19 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
     );
   };
 
+  const handleItemDragStart = (item: (typeof items)[0], e: DragEvent) => {
+    const payload = {
+      type: 'item_move',
+      sourceItemId: item.id,
+      id: item.id,
+      sourceContainerId: item.containerId,
+      systemId: (props as any).systemId ?? 'dnd5e',
+    };
+    if (e.dataTransfer) {
+      e.dataTransfer.setData('application/json', JSON.stringify(payload));
+    }
+  };
+
   const handleDropItem = (e: DragEvent, targetContainerId: string | null) => {
     e.preventDefault();
     e.stopPropagation();
@@ -102,22 +119,22 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
     h('h4', { class: 'ds-widget-title' }, 'Inventory & Containers'),
     h(
       'div',
-      { class: 'ds-currency-strip', 'data-testid': 'currency-strip' },
-      h('span', null, `PP: ${rawCurrency.pp ?? 0} `),
-      h('span', null, `GP: ${rawCurrency.gp ?? 0} `),
-      h('span', null, `EP: ${rawCurrency.ep ?? 0} `),
-      h('span', null, `SP: ${rawCurrency.sp ?? 0} `),
-      h('span', null, `CP: ${rawCurrency.cp ?? 0}`),
+      { class: 'ds-currency-strip atlas-tabular-nums', 'data-testid': 'currency-strip' },
+      h('span', { class: 'atlas-tabular-nums' }, `PP: ${rawCurrency.pp ?? 0} `),
+      h('span', { class: 'atlas-tabular-nums' }, `GP: ${rawCurrency.gp ?? 0} `),
+      h('span', { class: 'atlas-tabular-nums' }, `EP: ${rawCurrency.ep ?? 0} `),
+      h('span', { class: 'atlas-tabular-nums' }, `SP: ${rawCurrency.sp ?? 0} `),
+      h('span', { class: 'atlas-tabular-nums' }, `CP: ${rawCurrency.cp ?? 0}`),
     ),
     h(
       'div',
       { class: 'ds-encumbrance-bar-container', 'data-testid': 'encumbrance-bar' },
       h(
         'div',
-        { class: 'ds-encumbrance-labels' },
-        h('span', null, `Weight: ${totalCarriedWeight.toFixed(1)} / ${maxCapacity} lb `),
-        h('span', null, `(Enc: ${regularEncumbrance} lb, Heavy: ${heavyEncumbrance} lb)`),
-        h('span', { class: 'ds-attunement-label' }, ` | Attuned: ${attunedCount}/3`),
+        { class: 'ds-encumbrance-labels atlas-tabular-nums' },
+        h('span', { class: 'atlas-tabular-nums' }, `Weight: ${totalCarriedWeight.toFixed(1)} / ${maxCapacity} lb `),
+        h('span', { class: 'atlas-tabular-nums' }, `(Enc: ${regularEncumbrance} lb, Heavy: ${heavyEncumbrance} lb)`),
+        h('span', { class: 'ds-attunement-label atlas-tabular-nums' }, ` | Attuned: ${attunedCount}/3`),
       ),
       h(
         'div',
@@ -151,10 +168,12 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
               key: item.id,
               class: `ds-inv-item-row ${isContainer ? 'is-container' : ''}`,
               'data-testid': `inv-item-${item.id}`,
+              draggable: true,
+              onDragStart: (e: DragEvent) => handleItemDragStart(item, e),
               onDragOver: isContainer ? (e: DragEvent) => e.preventDefault() : undefined,
               onDrop: isContainer ? (e: DragEvent) => handleDropItem(e, item.id) : undefined,
             },
-            h('span', { class: 'ds-item-name' }, `${item.name} (x${item.quantity}) - ${item.unitWeight} lb`),
+            h('span', { class: 'ds-item-name atlas-tabular-nums' }, `${item.name} (x${item.quantity}) - ${item.unitWeight} lb`),
             (item.requiresAttunement || item.isAttuned)
               ? h(
                   'button',

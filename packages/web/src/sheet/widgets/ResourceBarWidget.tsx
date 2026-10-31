@@ -31,10 +31,10 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
       h('span', { class: 'ds-resource-label' }, label),
       h(
         'div',
-        { class: 'ds-resource-values' },
+        { class: 'ds-resource-values atlas-tabular-nums' },
         h('input', {
           type: 'number',
-          class: 'ds-resource-input-current',
+          class: 'ds-resource-input-current atlas-tabular-nums',
           'data-testid': 'resource-input-current',
           'aria-label': `Current ${label}`,
           value: current,
@@ -42,10 +42,10 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
         }),
         h('span', { class: 'ds-resource-separator' }, '/'),
         isLocked
-          ? h('span', { class: 'ds-resource-max-locked', 'data-testid': 'resource-max-val' }, max)
+          ? h('span', { class: 'ds-resource-max-locked atlas-tabular-nums', 'data-testid': 'resource-max-val' }, max)
           : h('input', {
               type: 'number',
-              class: 'ds-resource-input-max',
+              class: 'ds-resource-input-max atlas-tabular-nums',
               'data-testid': 'resource-input-max',
               'aria-label': `Maximum ${label}`,
               value: max,
@@ -54,14 +54,14 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
         h('span', { class: 'ds-resource-separator' }, '+'),
         h('input', {
           type: 'number',
-          class: 'ds-resource-input-temp',
+          class: 'ds-resource-input-temp atlas-tabular-nums',
           'data-testid': 'resource-input-temp',
           'aria-label': `Temporary ${label}`,
           value: temp,
           onChange: (e: Event) => handleHpChange('hp.temp', Number((e.target as HTMLInputElement).value)),
         }),
         temp > 0
-          ? h('span', { class: 'ds-resource-temp', 'data-testid': 'resource-temp-val' }, ` (${temp} Temp)`)
+          ? h('span', { class: 'ds-resource-temp atlas-tabular-nums', 'data-testid': 'resource-temp-val' }, ` (${temp} Temp)`)
           : null,
       ),
     ),

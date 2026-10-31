@@ -72,7 +72,7 @@ export function SavingThrowListWidget(props: WidgetProps): VNode<any> {
               : undefined,
           },
           isLocked
-            ? h('span', { class: `ds-prof-pip ${proficient ? 'is-proficient' : ''}`, 'aria-hidden': 'true' }, proficient ? '●' : '○')
+            ? h('span', { class: `ds-prof-pip ${proficient ? 'is-proficient' : ''}`, 'aria-hidden': 'true' }, proficient ? '[P]' : '[ ]')
             : h(
                 'button',
                 {
@@ -86,10 +86,10 @@ export function SavingThrowListWidget(props: WidgetProps): VNode<any> {
                     handleToggleProficiency(key, proficient);
                   },
                 },
-                proficient ? '●' : '○',
+                proficient ? '[P]' : '[ ]',
               ),
           h('span', { class: 'ds-save-name' }, key.toUpperCase()),
-          h('span', { class: 'ds-save-mod', 'data-testid': `save-mod-${key}` }, modDisplay),
+          h('span', { class: 'ds-save-mod atlas-tabular-nums', 'data-testid': `save-mod-${key}` }, modDisplay),
         );
       }),
     ),

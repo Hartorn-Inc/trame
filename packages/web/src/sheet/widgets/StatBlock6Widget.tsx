@@ -77,9 +77,9 @@ export function StatBlock6Widget(props: WidgetProps): VNode<any> {
               : undefined,
           },
           h('span', { class: 'ds-ability-name' }, key.toUpperCase()),
-          h('span', { class: 'ds-ability-mod', 'data-testid': `ability-mod-${key}` }, modDisplay),
+          h('span', { class: 'ds-ability-mod atlas-tabular-nums', 'data-testid': `ability-mod-${key}` }, modDisplay),
           isLocked
-            ? h('span', { class: 'ds-ability-score', 'data-testid': `ability-score-${key}` }, score)
+            ? h('span', { class: 'ds-ability-score atlas-tabular-nums', 'data-testid': `ability-score-${key}` }, score)
             : h(
                 'div',
                 { class: 'ds-ability-stepper', 'data-testid': `ability-stepper-${key}` },
@@ -97,7 +97,7 @@ export function StatBlock6Widget(props: WidgetProps): VNode<any> {
                   },
                   '-',
                 ),
-                h('span', { class: 'ds-ability-score-val' }, score),
+                h('span', { class: 'ds-ability-score-val atlas-tabular-nums' }, score),
                 h(
                   'button',
                   {

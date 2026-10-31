@@ -1,15 +1,10 @@
 import { h, type VNode } from 'preact';
-import { useMemo, useState } from 'preact/hooks';
-import { DND5E_SHEET_LAYOUT } from '../../../../packages/game-systems/dnd5e/src/sheetLayout.ts';
+import { useState } from 'preact/hooks';
+import { DND5E_SHEET_LAYOUT } from '../../../game-systems/dnd5e/sheetLayout.ts';
+import { PadlockLockedIcon, PadlockUnlockedIcon } from '../components/icons/AtlasIcons.tsx';
 import { BindingResolver } from './binding.ts';
 import { WidgetRegistry } from './WidgetRegistry.ts';
 import type { CommandDispatcher, SheetLayoutNode, SheetLayoutTree, ViewerContext } from './types.ts';
-
-const DEFAULT_FALLBACK_LAYOUT: SheetLayoutTree = {
-  systemId: 'dnd5e',
-  version: '1.0.0',
-  root: null,
-};
 import {
   StatBlock6Widget,
   ResourceBarWidget,
@@ -24,6 +19,12 @@ import {
   FeatureTraitListWidget,
   NotesMarkdownPaneWidget,
 } from './widgets/index.ts';
+
+const DEFAULT_FALLBACK_LAYOUT: SheetLayoutTree = {
+  systemId: 'dnd5e',
+  version: '1.0.0',
+  root: null,
+};
 
 const WIDGET_COMPONENT_MAP: Record<string, any> = {
   StatBlock6: StatBlock6Widget,
@@ -66,7 +67,7 @@ export interface DeclarativeSheetViewProps {
 }
 
 export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<any> {
-  const layout: SheetLayoutTree = props.sheetLayout ?? DND5E_SHEET_LAYOUT ?? DEFAULT_FALLBACK_LAYOUT;
+  const layout: SheetLayoutTree = props.sheetLayout ?? (DND5E_SHEET_LAYOUT as unknown as SheetLayoutTree) ?? DEFAULT_FALLBACK_LAYOUT;
   const [localLocked, setLocalLocked] = useState(props.coreStatsLocked ?? true);
   const [activeTabId, setActiveTabId] = useState<string>('tab-combat');
 
@@ -164,6 +165,12 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
     return null;
   };
 
+  const lockLabel = isGmLocked
+    ? 'GM Locked'
+    : effectiveLocked
+    ? 'Play Mode'
+    : 'Edit Mode';
+
   return h(
     'div',
     { class: 'ds-declarative-sheet-view', 'data-testid': 'declarative-sheet-view' },
@@ -178,15 +185,16 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
           'data-testid': 'sheet-padlock-toggle',
           'aria-pressed': effectiveLocked ? 'false' : 'true',
           'aria-label': isGmLocked
-            ? 'Character sheet locked by GM'
+            ? 'GM Locked — Character sheet locked by GM'
             : effectiveLocked
-            ? 'Character sheet locked in roll mode. Activate to enter edit mode.'
-            : 'Character sheet unlocked in edit mode. Activate to enter roll mode.',
+            ? 'Play Mode — Character sheet locked in roll mode. Activate to enter edit mode.'
+            : 'Edit Mode — Character sheet unlocked in edit mode. Activate to enter roll mode.',
           disabled: isGmLocked,
           title: isGmLocked ? 'Locked by GM' : (effectiveLocked ? 'Unlock Build Mode' : 'Lock Play Mode'),
           onClick: toggleLock,
         },
-        isGmLocked ? '🔒 GM Locked' : (effectiveLocked ? '🔒 Play Mode' : '🔓 Edit Mode'),
+        effectiveLocked ? h(PadlockLockedIcon, { size: 20 }) : h(PadlockUnlockedIcon, { size: 20 }),
+        h('span', { class: 'ds-lock-toggle-label' }, lockLabel),
       ),
     ),
     layout && layout.root ? renderNode(layout.root) : null,

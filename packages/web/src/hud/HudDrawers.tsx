@@ -36,12 +36,12 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
     isSheetDrawerOpenSignal.value
       ? h(
           'aside',
-          { class: 'ds-hud-sheet-drawer', 'data-testid': 'hud-sheet-drawer' },
+          { class: 'ds-hud-sheet-drawer', 'data-testid': 'hud-sheet-drawer', 'aria-label': 'Character Sheet Drawer' },
           h(
             'header',
             { class: 'ds-drawer-header' },
             h('h2', null, 'Character Sheet'),
-            h('button', { type: 'button', 'data-testid': 'btn-close-sheet-drawer', 'aria-label': 'Close character sheet drawer', onClick: closeSheet }, '×'),
+            h('button', { type: 'button', 'data-testid': 'btn-close-sheet-drawer', 'aria-label': 'Close character sheet drawer', onClick: closeSheet }, 'Close'),
           ),
           h(DeclarativeSheetView, {
             actorState: props.actorState ?? {},
