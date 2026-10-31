@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import module from "node:module";
+import { register } from "node:module";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
-import ts from "typescript";
 import { ApiClient } from "../src/api/client.ts";
 import {
   activeCampaignSignal,
@@ -23,8 +20,8 @@ import {
 } from "../src/state/appSignals.ts";
 import type { CampaignRoomState } from "../src/types/index.ts";
 
-if (typeof module.register === "function") {
-  module.register("./tsx-loader.mjs", import.meta.url);
+if (typeof register === "function") {
+  register("./tsx-loader.mjs", import.meta.url);
 }
 
 import { h, render } from "preact";
