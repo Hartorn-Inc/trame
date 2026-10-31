@@ -18,6 +18,7 @@ export interface ActorSheetDrawerProps {
   layoutTree?: SheetLayoutTree;
   isGm?: boolean;
   userId?: string;
+  embedded?: boolean;
   onClose?: () => void;
 }
 
@@ -122,15 +123,6 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
         reason,
         visibility: "PUBLIC",
       } as unknown as TrameCommand);
-      const rollEntry: ClientDiceLogEntry = {
-        rollId: `roll-${Date.now()}`,
-        rollerUserId: user?.id || "local",
-        expression,
-        reason,
-        blindMasked: false,
-        total: 15,
-      };
-      appSignals.diceLogSignal.value = [...appSignals.diceLogSignal.value, rollEntry];
       return;
     }
     if (command && (command.cmd === "DROP_COMPENDIUM_ENTRY" || command.cmd === "DropCompendiumEntry")) {
@@ -442,6 +434,231 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
           </div>
         );
       }
+      case "SavingThrowList":
+      case "SavingThrowsList": {
+        const savesList = Array.isArray(output?.saves)
+          ? (output?.saves as Array<{ key: string; modifier: number; proficient: boolean }>)
+          : ['str', 'dex', 'con', 'int', 'wis', 'cha'].map((k) => {
+              const mod = Number(((sheetData.abilities as Record<string, { mod?: number }>)?.[k]?.mod) ?? 0);
+              return { key: k, modifier: mod, proficient: false };
+            });
+        return (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0.375rem" }} data-testid="saving-throws-container">
+            {savesList.map((save) => {
+              const sign = save.modifier >= 0 ? `+${save.modifier}` : `${save.modifier}`;
+              return (
+                <button
+                  key={save.key}
+                  type="button"
+                  data-testid={`save-${save.key}-btn`}
+                  onClick={() => {
+                    if (typeof output?.clickSave === "function") {
+                      (output.clickSave as (k: string) => void)(save.key);
+                    } else {
+                      dispatcher({
+                        cmd: "ROLL_DICE",
+                        expression: `1d20${sign}`,
+                        reason: `Saving Throw: ${save.key.toUpperCase()}`,
+                      });
+                    }
+                  }}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    padding: "0.375rem 0.5rem",
+                    backgroundColor: save.proficient ? "#1e293b" : "#0f172a",
+                    border: "1px solid #334155",
+                    borderRadius: "4px",
+                    color: "#f8fafc",
+                    cursor: "pointer",
+                    fontSize: "0.75rem",
+                  }}
+                >
+                  <span style={{ textTransform: "uppercase", fontWeight: save.proficient ? 700 : 400 }}>{save.key}</span>
+                  <span style={{ color: "#38bdf8" }}>{sign}</span>
+                </button>
+              );
+            })}
+          </div>
+        );
+      }
+      case "SkillCheckList":
+      case "SkillList":
+      case "SkillsList": {
+        const skillsList = Array.isArray(output?.skills)
+          ? (output?.skills as Array<{ key: string; modifier: number; proficiencyLevel: string; passive: number }>)
+          : [
+              { key: "acrobatics", modifier: 0, proficiencyLevel: "none", passive: 10 },
+              { key: "athletics", modifier: 0, proficiencyLevel: "none", passive: 10 },
+              { key: "stealth", modifier: 0, proficiencyLevel: "none", passive: 10 },
+              { key: "perception", modifier: 0, proficiencyLevel: "none", passive: 10 },
+            ];
+        return (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0.375rem" }} data-testid="skills-container">
+            {skillsList.map((sk) => {
+              const sign = sk.modifier >= 0 ? `+${sk.modifier}` : `${sk.modifier}`;
+              return (
+                <button
+                  key={sk.key}
+                  type="button"
+                  data-testid={`skill-${sk.key}-btn`}
+                  onClick={() => {
+                    if (typeof output?.clickSkill === "function") {
+                      (output.clickSkill as (k: string) => void)(sk.key);
+                    } else {
+                      dispatcher({
+                        cmd: "ROLL_DICE",
+                        expression: `1d20${sign}`,
+                        reason: `Skill Check: ${sk.key}`,
+                      });
+                    }
+                  }}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    padding: "0.375rem 0.5rem",
+                    backgroundColor: sk.proficiencyLevel !== "none" ? "#1e293b" : "#0f172a",
+                    border: "1px solid #334155",
+                    borderRadius: "4px",
+                    color: "#f8fafc",
+                    cursor: "pointer",
+                    fontSize: "0.75rem",
+                  }}
+                >
+                  <span style={{ textTransform: "capitalize" }}>{sk.key}</span>
+                  <span style={{ color: "#38bdf8" }}>{sign}</span>
+                </button>
+              );
+            })}
+          </div>
+        );
+      }
+      case "HitDiceAndDeathSaves":
+      case "DeathSavesTracker":
+      case "HitDiceTracker":
+      case "RestDeathSaves": {
+        const currentHD = Number(output?.hitDiceCurrent ?? (sheetData as any).attributes?.hitDiceCurrent ?? 1);
+        const maxHD = Number(output?.hitDiceMax ?? (sheetData as any).attributes?.hitDiceMax ?? 1);
+        const dieSides = Number(output?.hitDieSides ?? (sheetData as any).attributes?.hitDieSize ?? 10);
+        const successes = Number(output?.deathSuccesses ?? (sheetData as any).attributes?.deathSaves?.successes ?? 0);
+        const failures = Number(output?.deathFailures ?? (sheetData as any).attributes?.deathSaves?.failures ?? 0);
+        return (
+          <div data-testid="death-saves-hit-dice-display" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <span style={{ fontSize: "0.75rem", color: "#94a3b8" }}>Hit Dice: </span>
+                <strong style={{ fontSize: "0.875rem", color: "#38bdf8" }}>{currentHD}/{maxHD} d{dieSides}</strong>
+              </div>
+              <button
+                type="button"
+                data-testid="spend-hit-die-btn"
+                onClick={() => {
+                  if (typeof output?.spendHitDie === "function") {
+                    (output.spendHitDie as () => void)();
+                  } else {
+                    dispatcher({ cmd: "ROLL_DICE", expression: `1d${dieSides}`, reason: "Spend Hit Die" });
+                  }
+                }}
+                style={{ padding: "0.25rem 0.5rem", backgroundColor: "#1e293b", color: "#38bdf8", border: "1px solid #0284c7", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+              >
+                Spend Die
+              </button>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: "0.75rem" }}>
+                <span style={{ color: "#10b981", marginRight: "0.5rem" }}>Successes: {successes}/3</span>
+                <span style={{ color: "#ef4444" }}>Failures: {failures}/3</span>
+              </div>
+              <button
+                type="button"
+                data-testid="death-save-btn"
+                onClick={() => {
+                  if (typeof output?.rollDeathSave === "function") {
+                    (output.rollDeathSave as () => void)();
+                  } else {
+                    dispatcher({ cmd: "ROLL_DICE", expression: "1d20", reason: "Death Saving Throw" });
+                  }
+                }}
+                style={{ padding: "0.25rem 0.5rem", backgroundColor: "#450a0a", color: "#fca5a5", border: "1px solid #b91c1c", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+              >
+                Death Save
+              </button>
+            </div>
+          </div>
+        );
+      }
+      case "FeatureTraitList":
+      case "FeaturesTraits":
+      case "FeaturesTraitsList": {
+        const rawFeatures = Array.isArray(output?.features)
+          ? (output?.features as Array<{ id: string; name: string; source: string; description: string }>)
+          : [];
+        return (
+          <div data-testid="features-traits-display">
+            {rawFeatures.length === 0 ? (
+              <div style={{ fontSize: "0.75rem", color: "#94a3b8" }}>No features recorded.</div>
+            ) : (
+              <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                {rawFeatures.map((feat) => (
+                  <li key={feat.id} data-testid={`feature-${feat.id}`} style={{ marginBottom: "0.5rem", padding: "0.5rem", backgroundColor: "#0f172a", borderRadius: "4px", border: "1px solid #334155" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.875rem", fontWeight: 600, color: "#38bdf8" }}>
+                      <span>{feat.name}</span>
+                      <span style={{ fontSize: "0.625rem", color: "#94a3b8" }}>{feat.source}</span>
+                    </div>
+                    {feat.description && (
+                      <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.75rem", color: "#cbd5e1" }}>{feat.description}</p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      }
+      case "ConditionBadgeStrip":
+      case "PassiveSenses":
+      case "SensesVision": {
+        const conds = Array.isArray(output?.conditions)
+          ? (output?.conditions as Array<{ id: string; name: string }>)
+          : [];
+        return (
+          <div data-testid="conditions-senses-display">
+            <div style={{ display: "flex", gap: "0.375rem", flexWrap: "wrap" }}>
+              {conds.length === 0 ? (
+                <span style={{ fontSize: "0.75rem", color: "#64748b" }}>Normal (No conditions)</span>
+              ) : (
+                conds.map((c) => (
+                  <span
+                    key={c.id}
+                    data-testid={`condition-badge-${c.id}`}
+                    style={{ fontSize: "0.625rem", padding: "0.125rem 0.375rem", backgroundColor: "#450a0a", color: "#fca5a5", borderRadius: "4px", border: "1px solid #7f1d1d" }}
+                  >
+                    {c.name}
+                  </span>
+                ))
+              )}
+            </div>
+          </div>
+        );
+      }
+      case "NotesMarkdownPane": {
+        const bio = String(output?.bio ?? (sheetData as any).bio ?? "");
+        const notes = String(output?.notes ?? (sheetData as any).notes ?? "");
+        return (
+          <div data-testid="notes-pane-content" style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+            {bio && (
+              <div>
+                <span style={{ fontSize: "0.75rem", color: "#94a3b8", fontWeight: 700 }}>Biography</span>
+                <div style={{ fontSize: "0.75rem", color: "#cbd5e1", backgroundColor: "#0f172a", padding: "0.5rem", borderRadius: "4px", marginTop: "0.25rem" }}>{bio}</div>
+              </div>
+            )}
+            <div>
+              <span style={{ fontSize: "0.75rem", color: "#94a3b8", fontWeight: 700 }}>Notes</span>
+              <div style={{ fontSize: "0.75rem", color: "#cbd5e1", backgroundColor: "#0f172a", padding: "0.5rem", borderRadius: "4px", marginTop: "0.25rem", whiteSpace: "pre-wrap" }}>{notes || "No campaign notes recorded."}</div>
+            </div>
+          </div>
+        );
+      }
       default:
         return (
           <div style={{ fontSize: "0.875rem", color: "#cbd5e1" }}>
@@ -463,18 +680,19 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
       onDragLeave={() => setIsDragOver(false)}
       onDrop={handleDropPayload}
       style={{
-        position: "fixed",
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: "480px",
+        position: props.embedded ? "relative" : "fixed",
+        top: props.embedded ? undefined : 0,
+        right: props.embedded ? undefined : 0,
+        bottom: props.embedded ? undefined : 0,
+        width: props.embedded ? "100%" : "480px",
+        height: props.embedded ? "100%" : undefined,
         maxWidth: "100vw",
         backgroundColor: "#0b0f19",
-        borderLeft: isDragOver ? "2px dashed #f59e0b" : "1px solid #1e293b",
-        zIndex: 50,
+        borderLeft: isDragOver ? "2px dashed #f59e0b" : props.embedded ? "none" : "1px solid #1e293b",
+        zIndex: props.embedded ? 1 : 50,
         display: "flex",
         flexDirection: "column",
-        boxShadow: "-4px 0 16px rgba(0,0,0,0.5)",
+        boxShadow: props.embedded ? "none" : "-4px 0 16px rgba(0,0,0,0.5)",
         color: "#f8fafc",
       }}
     >

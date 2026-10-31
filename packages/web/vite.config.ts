@@ -27,6 +27,7 @@
  */
 
 import { defineConfig } from 'vite';
+import path from 'node:path';
 
 export default defineConfig({
   esbuild: {
@@ -49,6 +50,11 @@ export default defineConfig({
         target: process.env.TRAME_API_ORIGIN ?? 'http://localhost:3000',
         changeOrigin: true,
       },
+    },
+  },
+  resolve: {
+    alias: {
+      '@trame/game-system-dnd5e': path.resolve(__dirname, '../game-systems/dnd5e'),
     },
   },
   build: {

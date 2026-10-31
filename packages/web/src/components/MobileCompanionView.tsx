@@ -36,17 +36,17 @@ export function MobileCompanionView(_props: MobileCompanionViewProps): JSX.Eleme
       <div style={{ flex: 1, overflowY: "auto", position: "relative" }}>
         {activeTab === "sheet" && (
           <div style={{ position: "relative", height: "100%" }}>
-            <ActorSheetDrawer actor={actor} />
+            <ActorSheetDrawer actor={actor} embedded={true} />
           </div>
         )}
         {activeTab === "dice" && (
           <div style={{ position: "relative", height: "100%" }}>
-            <DiceTrayDrawer />
+            <DiceTrayDrawer embedded={true} />
           </div>
         )}
         {activeTab === "notes" && (
           <div style={{ position: "relative", height: "100%" }}>
-            <WikiNotesDrawer />
+            <WikiNotesDrawer embedded={true} />
           </div>
         )}
       </div>

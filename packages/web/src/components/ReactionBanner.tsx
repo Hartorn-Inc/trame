@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { ComponentChildren, JSX } from "preact";
 import { client as defaultClient, type ApiClient } from "../api/client.ts";
 
@@ -23,6 +23,7 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
   const totalDuration = props.durationSeconds || 5;
 
   const [secondsRemaining, setSecondsRemaining] = useState(totalDuration);
+  const reactBtnRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!prompt) return;
@@ -39,6 +40,12 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
     }, 1000);
 
     return () => clearInterval(interval);
+  }, [prompt]);
+
+  useEffect(() => {
+    if (prompt && reactBtnRef.current) {
+      reactBtnRef.current.focus();
+    }
   }, [prompt]);
 
   if (!prompt) {
@@ -58,6 +65,7 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
     <div
       role="alert"
       aria-live="assertive"
+      aria-atomic="true"
       data-testid="reaction-banner"
       style={{
         position: "fixed",
@@ -99,7 +107,9 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
 
       <div style={{ display: "flex", gap: "0.5rem" }}>
         <button
+          ref={reactBtnRef}
           type="button"
+          aria-label="React"
           data-testid="accept-reaction-btn"
           onClick={() => handleDecision(true)}
           style={{
@@ -116,6 +126,7 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
         </button>
         <button
           type="button"
+          aria-label="Pass"
           data-testid="decline-reaction-btn"
           onClick={() => handleDecision(false)}
           style={{

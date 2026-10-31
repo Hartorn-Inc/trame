@@ -10,6 +10,7 @@ export interface WikiNotesDrawerProps {
   client?: ApiClient;
   campaignId?: string;
   isGm?: boolean;
+  embedded?: boolean;
   onClose?: () => void;
 }
 
@@ -57,17 +58,19 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
       aria-label="Campaign Wiki and Handouts"
       data-testid="wiki-notes-drawer"
       style={{
-        position: "fixed",
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: "440px",
+        position: props.embedded ? "relative" : "fixed",
+        top: props.embedded ? undefined : 0,
+        right: props.embedded ? undefined : 0,
+        bottom: props.embedded ? undefined : 0,
+        width: props.embedded ? "100%" : "440px",
+        height: props.embedded ? "100%" : undefined,
         maxWidth: "100vw",
         backgroundColor: "#0b0f19",
-        borderLeft: "1px solid #1e293b",
-        zIndex: 50,
+        borderLeft: props.embedded ? "none" : "1px solid #1e293b",
+        zIndex: props.embedded ? 1 : 50,
         display: "flex",
         flexDirection: "column",
+        boxShadow: props.embedded ? "none" : undefined,
         color: "#f8fafc",
       }}
     >
@@ -78,17 +81,19 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
           <h2 style={{ margin: 0, fontSize: "1.125rem", color: "#f59e0b" }}>Wiki Notes & Handouts</h2>
           <span style={{ fontSize: "0.75rem", color: "#94a3b8" }}>Role-Filtered Markdown</span>
         </div>
-        <button
-          type="button"
-          data-testid="close-wiki-btn"
-          onClick={() => {
-            appSignals.activeDrawerSignal.value = null;
-            props.onClose?.();
-          }}
-          style={{ padding: "0.375rem 0.625rem", backgroundColor: "#334155", color: "#f8fafc", border: "none", borderRadius: "4px", cursor: "pointer" }}
-        >
-          Close
-        </button>
+        {!props.embedded && (
+          <button
+            type="button"
+            data-testid="close-wiki-btn"
+            onClick={() => {
+              appSignals.activeDrawerSignal.value = null;
+              props.onClose?.();
+            }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "#334155", color: "#f8fafc", border: "none", borderRadius: "4px", cursor: "pointer" }}
+          >
+            Close
+          </button>
+        )}
       </header>
 
       {statusMessage && (

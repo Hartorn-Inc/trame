@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import type { ComponentChildren, JSX } from "preact";
 import { client as defaultClient, type ApiClient } from "../api/client.ts";
 import { CharacterBuilderWizard } from "../builder/CharacterBuilderWizard.ts";
@@ -37,6 +37,16 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const currentStep = wizard.currentStep;
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        props.onClose?.();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [props.onClose]);
 
   const syncDraft = () => {
     wizard.draftStore.initDraft({
@@ -146,6 +156,11 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
       aria-modal="true"
       aria-labelledby="builder-modal-title"
       data-testid="actor-builder-modal"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          props.onClose?.();
+        }
+      }}
       style={{
         position: "fixed",
         top: 0,

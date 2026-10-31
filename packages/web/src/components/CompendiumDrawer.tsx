@@ -85,6 +85,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
       <div style={{ padding: "0.75rem 1rem", borderBottom: "1px solid #1e293b" }}>
         <input
           type="text"
+          aria-label="Search SRD compendium"
           placeholder="Search SRD compendium..."
           value={query}
           onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
@@ -138,6 +139,37 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
               </span>
             </div>
             <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.75rem", color: "#94a3b8" }}>{item.description}</p>
+            <div style={{ marginTop: "0.5rem", display: "flex", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                aria-label={`Add ${item.name} to Actor Sheet`}
+                data-testid={`add-to-sheet-${item.id}-btn`}
+                onClick={() => {
+                  const actor = appSignals.actorsSignal.value[0];
+                  if (!actor) return;
+                  const currentActors = [...appSignals.actorsSignal.value];
+                  const idx = currentActors.findIndex((a) => a.id === actor.id);
+                  if (idx !== -1) {
+                    const sheet = (currentActors[idx].sheet as Record<string, unknown>) || {};
+                    const items = Array.isArray(sheet.items) ? [...sheet.items] : [];
+                    items.push({ id: item.id, name: item.name, entityType: item.entityType, description: item.description });
+                    currentActors[idx] = { ...currentActors[idx], sheet: { ...sheet, items } };
+                    appSignals.actorsSignal.value = currentActors;
+                  }
+                }}
+                style={{
+                  padding: "0.25rem 0.5rem",
+                  backgroundColor: "#1e293b",
+                  color: "#38bdf8",
+                  border: "1px solid #0284c7",
+                  borderRadius: "4px",
+                  fontSize: "0.75rem",
+                  cursor: "pointer",
+                }}
+              >
+                Add to Sheet
+              </button>
+            </div>
           </div>
         ))}
       </div>

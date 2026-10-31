@@ -7,6 +7,7 @@ import type { ClientDiceLogEntry } from "../types/index.ts";
 export interface DiceTrayDrawerProps {
   children?: ComponentChildren;
   client?: ApiClient;
+  embedded?: boolean;
   onClose?: () => void;
 }
 
@@ -61,15 +62,7 @@ export function DiceTrayDrawer(props: DiceTrayDrawerProps): JSX.Element {
       reason,
       visibility: "PUBLIC",
     });
-    const syntheticRoll: ClientDiceLogEntry = {
-      rollId: `roll-${Date.now()}`,
-      rollerUserId: appSignals.authUserSignal.value?.id || "local",
-      expression: formula,
-      reason,
-      blindMasked: false,
-      total: 18,
-    };
-    appSignals.diceLogSignal.value = [...appSignals.diceLogSignal.value, syntheticRoll];
+
   };
 
   return (
@@ -78,33 +71,37 @@ export function DiceTrayDrawer(props: DiceTrayDrawerProps): JSX.Element {
       aria-label="3D Dice Tray & History"
       data-testid="dice-tray-drawer"
       style={{
-        position: "fixed",
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: "360px",
+        position: props.embedded ? "relative" : "fixed",
+        top: props.embedded ? undefined : 0,
+        right: props.embedded ? undefined : 0,
+        bottom: props.embedded ? undefined : 0,
+        width: props.embedded ? "100%" : "360px",
+        height: props.embedded ? "100%" : undefined,
         maxWidth: "100vw",
         backgroundColor: "#0b0f19",
-        borderLeft: "1px solid #1e293b",
-        zIndex: 50,
+        borderLeft: props.embedded ? "none" : "1px solid #1e293b",
+        zIndex: props.embedded ? 1 : 50,
         display: "flex",
         flexDirection: "column",
+        boxShadow: props.embedded ? "none" : undefined,
         color: "#f8fafc",
       }}
     >
       <header style={{ padding: "1rem", borderBottom: "1px solid #1e293b", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2 style={{ margin: 0, fontSize: "1.125rem", color: "#f59e0b" }}>Dice Tray</h2>
-        <button
-          type="button"
-          data-testid="close-dice-tray-btn"
-          onClick={() => {
-            appSignals.activeDrawerSignal.value = null;
-            props.onClose?.();
-          }}
-          style={{ padding: "0.375rem 0.625rem", backgroundColor: "#334155", color: "#f8fafc", border: "none", borderRadius: "4px", cursor: "pointer" }}
-        >
-          Close
-        </button>
+        {!props.embedded && (
+          <button
+            type="button"
+            data-testid="close-dice-tray-btn"
+            onClick={() => {
+              appSignals.activeDrawerSignal.value = null;
+              props.onClose?.();
+            }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "#334155", color: "#f8fafc", border: "none", borderRadius: "4px", cursor: "pointer" }}
+          >
+            Close
+          </button>
+        )}
       </header>
 
       <div style={{ padding: "1rem", borderBottom: "1px solid #1e293b" }}>

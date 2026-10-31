@@ -36,16 +36,16 @@ export function App(): import("preact").JSX.Element {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  if (companionMode || viewportWidth < 768) {
-    return <MobileCompanionView />;
-  }
-
   if (!user) {
     return <AuthScreen />;
   }
 
   if (!activeCampaign) {
     return <CampaignLobby />;
+  }
+
+  if (companionMode || viewportWidth < 768) {
+    return <MobileCompanionView />;
   }
 
   return (

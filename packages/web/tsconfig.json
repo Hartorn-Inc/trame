@@ -12,7 +12,12 @@
     "skipLibCheck": true,
     "jsx": "react-jsx",
     "jsxImportSource": "preact",
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@trame/game-system-dnd5e/*": ["../game-systems/dnd5e/*"],
+      "@trame/game-system-dnd5e": ["../game-systems/dnd5e/src/index.ts"]
+    }
   },
   "include": [
     "src/**/*.ts",
