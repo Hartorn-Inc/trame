@@ -24,6 +24,8 @@ export interface PartyJournalItem {
   timestamp: number;
 }
 
+export type PartyJournalEntry = PartyJournalItem;
+
 /**
  * Determines whether a given window/screen width activates the Mobile Companion Mode.
  */

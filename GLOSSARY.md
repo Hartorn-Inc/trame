@@ -339,87 +339,80 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: Game Master HUD, action history inspection, and rollback execution.
 - **_Avoid_**: HistorySidebar, RollbackPanel.
 
-## Termes Métier & Domaine VTT
+### Campaign
 
-- **Définition** : Entité active du jeu (personnage-joueur, PNJ, monstre) instanciée sur la table avec des caractéristiques (PV, CA, vitesse, initiative).
+- **Definition**: Persistent gaming table workspace aggregating scenes, actors, wiki notes, party journals, and rule settings.
+- **Allowed Context**: `Campaign`, `campaign_id`.
+- **_Avoid_**: Room, SessionWorkspace, GameState.
 
-- **Identifiant** : `actor_id` (UUID v4 / string hex).
+### DocumentsWorkspaceTab
 
-### Campagne
-
-- **Définition** : Espace persistant de jeu qui regroupe les scènes, acteurs, notes de wiki, journaux et paramètres de règles pour une table de jeu donnée.
-
-- **Identifiant** : `campaign_id`.
-
-### DirectiveBlock
-
-- **Définition** : Bloc Markdown syntaxique enrichi préfixé par `:::` délimitant une section contextuelle au sein d'une note.
-
-- **Directives reconnues** :
-  - `:::dm` : Bloc secret réservé exclusivement au Maître de Jeu (`UserRole::GameMaster`).
-  - `:::handout{id="..." title="..." revealed="true|false"}` : Bloc de document distribuable ou d'indice destiné à être révélé aux joueurs.
-
-- **Règle de sécurité** : Tout bloc secret non autorisé est purgé côté serveur avant diffusion par `FilteredNoteDocument`.
+- **Definition**: Third navigation tab inside `CampaignWorkspace` (`[data-testid="tab-documents"]`) rendering folder note hierarchy, revealed handouts gallery, and session timeline feed.
+- **Allowed Context**: `DocumentsWorkspaceTab`, `documents tab`.
+- **_Avoid_**: NotesPanel, DocumentsDrawer.
 
 ### FilteredNoteDocument
 
-- **Définition** : Module d'assainissement et de projection AST côté serveur (`trame-server`) qui parse le Markdown source et purge les blocs confidentiels (`:::dm` et `:::handout` non révélés) avant toute sérialisation HTTP ou WebSocket destinée à un utilisateur non-MJ.
+- **Definition**: Server-side AST projection and sanitization module in `trame-server` stripping confidential blocks (`:::dm` and unrevealed `:::handout`) prior to serialization for non-GM users.
+- **Allowed Context**: Note queries, Markdown processing, role filtering.
+- **_Avoid_**: NoteSanitizer, CleanMarkdown.
 
 ### Handout
 
-- **Définition** : Document visuel, texte, lettre ou carte destiné à être partagé avec les joueurs de la table. Un handout est initialement masqué (`revealed="false"`), puis rendu visible (`revealed="true"`) par une action explicite du Maître de Jeu.
+- **Definition**: Textual or visual artifact shared with players, hidden initially until explicitly revealed by the Game Master.
+- **Allowed Context**: `Handout`, `handout_id`.
+- **_Avoid_**: SecretClue, DistributableDocument.
 
 ### HandoutRevealModal
 
-- **Définition** : Composant modal Preact de premier plan (`[data-testid="handout-reveal-modal"]`) déclenché automatiquement chez tous les clients connectés lors de la réception d'un événement `ServerEnvelope::HandoutRevealed`.
+- **Definition**: Foreground Preact modal component (`[data-testid="handout-reveal-modal"]`) mounted on connected clients upon receiving a `ServerEnvelope::HandoutRevealed` broadcast.
+- **Allowed Context**: Handout broadcasts, reveal notifications.
+- **_Avoid_**: CluePopup, HandoutDialog.
 
 ### Note
 
-- **Définition** : Document textuel au format Markdown stocké au sein d'une campagne, classé dans un dossier optionnel et soumis à un périmètre de visibilité (`NoteVisibility`).
-
-- **Identifiant** : `note_id`.
+- **Definition**: Markdown document stored in a campaign, organized in optional folder paths and governed by a 3-tier `NoteVisibility` scope.
+- **Allowed Context**: `Note`, `note_id`.
+- **_Avoid_**: WikiPage, DocumentEntry.
 
 ### NoteVisibility
 
-- **Définition** : Énumération stricte à 3 niveaux définissant le périmètre d'accès et d'autorisation d'une note de campagne :
-  - `PRIVATE` : Note personnelle appartenant à un utilisateur unique (`owner_user_id`). Invisible et inaccessible pour tous les autres membres, y compris le Maître de Jeu.
-  - `PARTY` : Note collaborative partagée entre tous les joueurs et le Maître de Jeu de la campagne. Lisible et modifiable par les rôles `GameMaster` et `Player`.
-  - `DM_ONLY` : Note secrète réservée exclusivement aux utilisateurs détenant le rôle `GameMaster`.
+- **Definition**: Three-tier access control enumeration (`PRIVATE`, `PARTY`, `DM_ONLY`) governing read and write permissions for campaign notes.
+- **Allowed Context**: Note permissions, campaign wiki RBAC.
+- **_Avoid_**: NoteScope, VisibilityLevel.
 
 ### MobileCompanionView
 
-- **Définition** : Vue Preact tactile dédiée aux périphériques mobiles (largeur d'écran `< 768px`) ou activée manuellement via `mobileCompanionOverrideSignal`. Cette vue désactive l'allocation WebGL de `TableCanvas` et présente 5 onglets dédiés (`Sheet`, `Dice`, `Inventory`, `Tracker`, `Journal`).
+- **Definition**: Touch-optimized Preact view mounted on mobile viewports (`< 768px`) or via `mobileCompanionOverrideSignal`, bypassing WebGL canvas allocation.
+- **Allowed Context**: Responsive UI shell, mobile tablet and phone interface.
+- **_Avoid_**: MobileMode, PhoneLayout.
 
 ### PartyJournalEntry
 
-- **Définition** : Entrée persistante et immuable dans la table SQL `party_journal_entries` représentant un handout formellement révélé au groupe de jeu, découplée du cycle de vie de la note source.
+- **Definition**: Immutable persistent record in `party_journal_entries` representing a revealed handout decoupled from the source note lifecycle.
+- **Allowed Context**: Party journal, revealed handouts gallery.
+- **_Avoid_**: JournalNote, SavedClue.
 
 ### SessionTimelineEvent
 
-- **Définition** : Enregistrement append-only dans la table SQL `session_events` représentant un fait marquant de la session (début de combat, attaque, créature vaincue, porte ouverte, handout révélé) indexé par un `seq_id` monotone.
-
-### TrameCommand
-
-- **Définition** : Commande unitaire et typée émise par un client vers `trame-server` via WebSocket ou REST pour exécuter une mutation avec validation du rôle de l'émetteur (`UserRole`).
-  - Exemple : `TrameCommand::RevealHandout { campaign_id, note_id, handout_id }`.
+- **Definition**: Append-only event in `session_events` recording significant session occurrences indexed by a monotonic sequence identifier.
+- **Allowed Context**: Session timeline, event auditing, MCP timeline querying.
+- **_Avoid_**: SessionHistoryLog, GameLogEntry.
 
 ### UserRole
 
-- **Définition** : Rôle d'un utilisateur au sein d'une campagne :
-  - `GameMaster` : Maître de Jeu disposant de tous les privilèges d'administration et de révélation.
-  - `Player` : Joueur disposant d'un accès à ses notes privées, aux notes de groupe et aux acteurs assignés.
-  - `Spectator` : Observateur en lecture seule n'ayant aucun droit de mutation sur les notes ou les documents.
-
----
-
-## Termes Techniques Frontend & Architecture
-
-- **Définition** : Troisième onglet de navigation au sein de `CampaignWorkspace` (`[data-testid="tab-documents"]`) regroupant l'explorateur de notes par dossiers, la galerie des handouts révélés et la chronologie des événements de session.
+- **Definition**: Campaign participant authorization role (`GameMaster`, `Player`, or `Spectator`) governing note visibility and table mutations.
+- **Allowed Context**: RBAC checks, session tokens.
+- **_Avoid_**: MemberRole, PlayerPrivilege.
 
 ### localeSignal
 
-- **Définition** : Signal réactif Preact (`@preact/signals`) stockant la langue active de l'interface (`'en' | 'fr'`), initialisé depuis `localStorage` avec repli sur `navigator.language`.
+- **Definition**: Global reactive Preact signal holding the active interface language (`'en' | 'fr'`), initialized from `localStorage` with fallback to `navigator.language`.
+- **Allowed Context**: UI localization, i18n presentation layer.
+- **_Avoid_**: currentLocale, langSignal.
 
 ### unitSystemSignal
 
-- **Définition** : Signal réactif Preact stockant le système d'unités actif pour les mesures tactiques (`'imperial_ft' | 'metric_m'`).
+- **Definition**: Global reactive Preact signal holding the active tactical measurement system (`'imperial_ft' | 'metric_m'`).
+- **Allowed Context**: Distance formatting, tactical measurement display.
+- **_Avoid_**: measurementSignal, unitsSignal.
