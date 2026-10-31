@@ -413,9 +413,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### UserRole
 
-- **Definition**: Campaign-level authorization role assigned to a user (`GameMaster`, `Player`, or `Spectator`) governing permissions and data filtering.
-- **Allowed Context**: Access control, note visibility filtering, and WebSocket upgrade validation.
-- **_Avoid_**: CampaignRole, UserPermission, AccessLevel.
+- **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
+- **Allowed Context**: `AbilityModifier`, `ability modifier`, derived attribute evaluation.
+- **_Avoid_**: `stat mod`, `ability bonus`.
+
+### AbilityScore
 
 ## Domain Terminology / Terminologie Métier
 

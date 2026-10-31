@@ -8,6 +8,53 @@ use trame_engine::commands::CampaignRole;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum NoteVisibility {
+    Private,
+    Party,
+    DmOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteAccessDecision {
+    Ok,
+    Forbidden,
+    NotFound,
+}
+
+pub fn evaluate_note_access(
+    visibility: NoteVisibility,
+    owner_user_id: &str,
+    requesting_user_id: &str,
+    requesting_role: UserRole,
+    is_write: bool,
+) -> NoteAccessDecision {
+    match visibility {
+        NoteVisibility::Private => {
+            if owner_user_id == requesting_user_id {
+                NoteAccessDecision::Ok
+            } else {
+                NoteAccessDecision::NotFound
+            }
+        }
+        NoteVisibility::DmOnly => {
+            if requesting_role == UserRole::GameMaster {
+                NoteAccessDecision::Ok
+            } else {
+                NoteAccessDecision::Forbidden
+            }
+        }
+        NoteVisibility::Party => {
+            if is_write && requesting_role == UserRole::Spectator {
+                NoteAccessDecision::Forbidden
+            } else {
+                NoteAccessDecision::Ok
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum UserRole {
     GameMaster,
     Player,
@@ -117,6 +164,200 @@ impl PartyJournalStorage for InMemoryPartyJournalStorage {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectiveAstNode {
+    Text(String),
+    DmDirective {
+        raw: String,
+        content: String,
+    },
+    HandoutDirective {
+        raw: String,
+        id: String,
+        title: String,
+        revealed: bool,
+        content: String,
+    },
+}
+
+impl DirectiveAstNode {
+    pub fn is_confidential(&self) -> bool {
+        match self {
+            DirectiveAstNode::DmDirective { .. } => true,
+            DirectiveAstNode::HandoutDirective { revealed, .. } => !*revealed,
+            DirectiveAstNode::Text(_) => false,
+        }
+    }
+
+    pub fn raw_string(&self) -> &str {
+        match self {
+            DirectiveAstNode::Text(t) => t.as_str(),
+            DirectiveAstNode::DmDirective { raw, .. } => raw.as_str(),
+            DirectiveAstNode::HandoutDirective { raw, .. } => raw.as_str(),
+        }
+    }
+}
+
+pub fn parse_markdown_ast(markdown: &str) -> Vec<DirectiveAstNode> {
+    let lines: Vec<&str> = markdown.split('\n').collect();
+    let mut nodes = Vec::new();
+    let mut text_lines: Vec<&str> = Vec::new();
+    let mut idx = 0;
+
+    let flush_text = |nodes: &mut Vec<DirectiveAstNode>, text_lines: &mut Vec<&str>| {
+        if !text_lines.is_empty() {
+            nodes.push(DirectiveAstNode::Text(text_lines.join("\n")));
+            text_lines.clear();
+        }
+    };
+
+    while idx < lines.len() {
+        let line = lines[idx];
+        let trimmed = line.trim();
+
+        if trimmed == ":::dm" {
+            flush_text(&mut nodes, &mut text_lines);
+            let mut raw_lines = vec![line];
+            let mut content_lines = Vec::new();
+            idx += 1;
+            while idx < lines.len() {
+                let inner = lines[idx];
+                raw_lines.push(inner);
+                if inner.trim() == ":::" {
+                    idx += 1;
+                    break;
+                }
+                content_lines.push(inner);
+                idx += 1;
+            }
+            nodes.push(DirectiveAstNode::DmDirective {
+                raw: raw_lines.join("\n"),
+                content: content_lines.join("\n"),
+            });
+            continue;
+        }
+
+        if trimmed.starts_with(":::handout") {
+            flush_text(&mut nodes, &mut text_lines);
+            let revealed = parse_handout_revealed_attr(trimmed);
+            let mut raw_lines = vec![line];
+            let mut content_lines = Vec::new();
+            idx += 1;
+            while idx < lines.len() {
+                let inner = lines[idx];
+                raw_lines.push(inner);
+                if inner.trim() == ":::" {
+                    idx += 1;
+                    break;
+                }
+                content_lines.push(inner);
+                idx += 1;
+            }
+            nodes.push(DirectiveAstNode::HandoutDirective {
+                raw: raw_lines.join("\n"),
+                id: String::new(),
+                title: String::new(),
+                revealed,
+                content: content_lines.join("\n"),
+            });
+            continue;
+        }
+
+        text_lines.push(line);
+        idx += 1;
+    }
+
+    flush_text(&mut nodes, &mut text_lines);
+    nodes
+}
+
+/// Merges player-submitted Markdown mutations with stored note Markdown preserving confidential directives.
+/// Reinserts stripped `:::dm` and unrevealed `:::handout` directive blocks into player-submitted Markdown.
+pub fn merge_party_note_ast(stored_content: &str, player_content: &str) -> String {
+    let stored_ast = parse_markdown_ast(stored_content);
+    let confidential_nodes: Vec<(usize, &DirectiveAstNode)> = stored_ast
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.is_confidential())
+        .collect();
+
+    if confidential_nodes.is_empty() {
+        return player_content.to_string();
+    }
+
+    let mut player_lines: Vec<String> = player_content
+        .split('\n')
+        .map(ToString::to_string)
+        .collect();
+    let mut last_insert_idx = 0usize;
+
+    for (ast_idx, node) in confidential_nodes {
+        let raw_block = node.raw_string();
+        if player_content.contains(raw_block) {
+            continue;
+        }
+
+        // Determine preceding and following public anchor lines from stored AST
+        let next_anchor_lines: Vec<&str> = stored_ast[ast_idx + 1..]
+            .iter()
+            .filter(|n| !n.is_confidential())
+            .flat_map(|n| n.raw_string().split('\n'))
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        let prev_anchor_lines: Vec<&str> = stored_ast[..ast_idx]
+            .iter()
+            .filter(|n| !n.is_confidential())
+            .rev()
+            .flat_map(|n| n.raw_string().split('\n').rev())
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        let mut target_line_idx = None;
+
+        if let Some(target_line) = next_anchor_lines.first() {
+            for (i, p_line) in player_lines.iter().enumerate().skip(last_insert_idx) {
+                if p_line.trim() == *target_line {
+                    target_line_idx = Some(i);
+                    break;
+                }
+            }
+        }
+
+        if target_line_idx.is_none()
+            && let Some(prev_line) = prev_anchor_lines.first()
+        {
+            for (i, p_line) in player_lines.iter().enumerate().skip(last_insert_idx) {
+                if p_line.trim() == *prev_line {
+                    target_line_idx = Some(i + 1);
+                    break;
+                }
+            }
+        }
+
+        let insert_at = target_line_idx.unwrap_or(player_lines.len());
+        let mut block_lines_to_insert: Vec<String> =
+            raw_block.split('\n').map(ToString::to_string).collect();
+
+        if insert_at > 0 && !player_lines[insert_at - 1].trim().is_empty() {
+            block_lines_to_insert.insert(0, String::new());
+        }
+        if insert_at < player_lines.len() && !player_lines[insert_at].trim().is_empty() {
+            block_lines_to_insert.push(String::new());
+        }
+
+        let inserted_len = block_lines_to_insert.len();
+        for (offset, line) in block_lines_to_insert.into_iter().enumerate() {
+            player_lines.insert(insert_at + offset, line);
+        }
+        last_insert_idx = insert_at + inserted_len;
+    }
+
+    player_lines.join("\n")
+}
+
 pub struct FilteredNoteDocument;
 
 impl FilteredNoteDocument {
@@ -168,6 +409,16 @@ impl FilteredNoteDocument {
         }
 
         output_lines.join("\n")
+    }
+
+    /// Merges player mutations into a stored note document preserving confidential directives.
+    pub fn merge_party_note_ast(stored_content: &str, player_content: &str) -> String {
+        merge_party_note_ast(stored_content, player_content)
+    }
+
+    /// Canonical spec alias for `filter_for_role` (Section 3.2 of spec-3-scope-wiki-notes).
+    pub fn filter_for_user(raw_content: &str, role: UserRole) -> String {
+        Self::filter_for_role(raw_content, role)
     }
 }
 
@@ -291,7 +542,7 @@ pub fn reveal_handout(
         &cmd.campaign_id,
         cmd.session_num,
         AppendEventInput {
-            event_type: "HandoutRevealed".to_string(),
+            event_type: "handout_revealed".to_string(),
             actor_id: Some(actor_user_id.to_string()),
             payload: event_payload,
             timestamp: Some(timestamp),
