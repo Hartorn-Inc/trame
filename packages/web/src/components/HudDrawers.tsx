@@ -401,16 +401,18 @@ export function HudDrawers() {
       >
         {(
           [
-            { id: 'combat', label: '', title: 'Combat Tracker' },
-            { id: 'dice', label: '', title: 'Dice Tray' },
-            { id: 'sheet', label: '', title: 'Character Sheet (Padlock Protected)' },
-            { id: 'notes', label: '', title: 'Wiki Notes & Handouts' },
+            { id: 'combat', label: 'Combat', title: 'Combat Tracker' },
+            { id: 'dice', label: 'Dice', title: 'Dice Tray' },
+            { id: 'sheet', label: 'Sheet', title: 'Character Sheet (Padlock Protected)' },
+            { id: 'notes', label: 'Notes', title: 'Wiki Notes & Handouts' },
           ] as const
         ).map((item) => (
           <button
             key={item.id}
             type="button"
             title={item.title}
+            aria-label={item.title}
+            aria-expanded={activeDrawer === item.id}
             data-testid={`drawer-tab-${item.id}`}
             onClick={() => handleSelectDrawer(item.id)}
             style={{
@@ -420,7 +422,8 @@ export function HudDrawers() {
               border: activeDrawer === item.id ? '1px solid #6366f1' : '1px solid transparent',
               background: activeDrawer === item.id ? 'rgba(99, 102, 241, 0.25)' : 'transparent',
               color: '#f8fafc',
-              fontSize: '1.15rem',
+              fontSize: '0.68rem',
+              fontWeight: 700,
               cursor: 'pointer',
             }}
           >
@@ -622,6 +625,7 @@ export function HudDrawers() {
               >
                 <input
                   type="text"
+                  aria-label="Dice roll formula"
                   data-testid="dice-expression-input"
                   value={diceExpr}
                   onInput={(e) => setDiceExpr((e.currentTarget as HTMLInputElement).value)}
@@ -822,13 +826,18 @@ export function HudDrawers() {
                         gap: '0.25rem',
                       }}
                     >
-                      <span style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', color: '#94a3b8' }}>
+                      <label
+                        htmlFor={`sheet-ability-input-${ab}`}
+                        style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', color: '#94a3b8' }}
+                      >
                         {ab}
-                      </span>
+                      </label>
                       <input
+                        id={`sheet-ability-input-${ab}`}
                         type="number"
                         min={1}
                         max={30}
+                        aria-label={`${ab.toUpperCase()} ability score`}
                         disabled={coreStatsLocked}
                         readOnly={coreStatsLocked}
                         data-testid={`sheet-ability-input-${ab}`}
@@ -1016,11 +1025,18 @@ export function HudDrawers() {
                           alignItems: 'center',
                         }}
                       >
-                        <strong style={{ textTransform: 'uppercase', fontSize: '0.8rem' }}>{ab}</strong>
+                        <label
+                          htmlFor={`builder-score-input-${ab}`}
+                          style={{ textTransform: 'uppercase', fontSize: '0.8rem', fontWeight: 700 }}
+                        >
+                          {ab}
+                        </label>
                         <input
+                          id={`builder-score-input-${ab}`}
                           type="number"
                           min={8}
                           max={15}
+                          aria-label={`Point-buy ${ab.toUpperCase()} score`}
                           data-testid={`builder-score-${ab}`}
                           value={builderScores[ab]}
                           onInput={(e) => {
@@ -1228,6 +1244,7 @@ export function HudDrawers() {
 
               <input
                 type="text"
+                aria-label="Note title"
                 data-testid="note-title-input"
                 value={noteTitle}
                 onInput={(e) => setNoteTitle((e.currentTarget as HTMLInputElement).value)}
@@ -1245,6 +1262,7 @@ export function HudDrawers() {
               {isGm && (
                 <textarea
                   rows={5}
+                  aria-label="Note markdown content"
                   data-testid="note-markdown-textarea"
                   value={noteMarkdown}
                   onInput={(e) => setNoteMarkdown((e.currentTarget as HTMLTextAreaElement).value)}

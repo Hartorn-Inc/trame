@@ -94,6 +94,17 @@ export function TableCanvas() {
   const isGm = isGmSignal.value;
 
   useEffect(() => {
+    if (!contextMenu) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setContextMenu(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [contextMenu]);
+
+  useEffect(() => {
     if (!mapUrl) {
       mapImageRef.current = null;
       loadedMapUrlRef.current = null;
@@ -776,8 +787,10 @@ export function TableCanvas() {
 
         {activeTool === 'aoe_sphere' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', marginLeft: '0.4rem' }}>
-            <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Radius (ft):</span>
+            <label htmlFor="aoe-radius-input" style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Radius (ft):</label>
             <input
+              id="aoe-radius-input"
+              aria-label="AoE sphere radius in feet"
               type="number"
               min={5}
               max={120}
@@ -823,7 +836,16 @@ export function TableCanvas() {
         {isGm && (
           <label
             data-testid="upload-uvtt-label"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                (e.currentTarget.querySelector('input[type="file"]') as HTMLInputElement | null)?.click();
+              }
+            }}
             style={{
+              position: 'relative',
+              overflow: 'hidden',
               padding: '0.35rem 0.7rem',
               borderRadius: '6px',
               border: '1px solid #475569',
@@ -836,10 +858,21 @@ export function TableCanvas() {
             Upload .uvtt Map
             <input
               type="file"
+              aria-label="Upload .uvtt Map"
               data-testid="upload-uvtt-input"
               accept=".uvtt,.dd2vtt,application/json"
               onChange={handleUploadUvtt}
-              style={{ display: 'none' }}
+              style={{
+                position: 'absolute',
+                width: '1px',
+                height: '1px',
+                padding: 0,
+                margin: '-1px',
+                overflow: 'hidden',
+                clip: 'rect(0, 0, 0, 0)',
+                whiteSpace: 'nowrap',
+                border: 0,
+              }}
             />
           </label>
         )}
@@ -847,6 +880,7 @@ export function TableCanvas() {
         <form onSubmit={handleSpawnToken} style={{ display: 'flex', gap: '0.3rem', marginLeft: '0.25rem' }}>
           <input
             type="text"
+            aria-label="New token name"
             data-testid="spawn-token-name-input"
             value={spawnTokenName}
             onInput={(e) => setSpawnTokenName((e.currentTarget as HTMLInputElement).value)}
@@ -1060,6 +1094,8 @@ export function TableCanvas() {
       {/* Desktop Right-Click Context Menu */}
       {contextMenu && (
         <div
+          role="menu"
+          aria-label="Tabletop context menu"
           data-testid="table-context-menu"
           style={{
             position: 'absolute',

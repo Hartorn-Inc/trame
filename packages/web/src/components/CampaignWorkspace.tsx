@@ -1377,7 +1377,16 @@ export function CampaignWorkspace() {
                 </button>
 
                 <label
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      (e.currentTarget.querySelector('input[type="file"]') as HTMLInputElement | null)?.click();
+                    }
+                  }}
                   style={{
+                    position: 'relative',
+                    overflow: 'hidden',
                     padding: '0.45rem 0.85rem',
                     borderRadius: '6px',
                     border: '1px solid #475569',
@@ -1390,6 +1399,7 @@ export function CampaignWorkspace() {
                   Import .uvtt Battlemap
                   <input
                     type="file"
+                    aria-label="Import .uvtt Battlemap"
                     accept=".uvtt,.dd2vtt,application/json"
                     onChange={async (e) => {
                       const file = (e.currentTarget as HTMLInputElement).files?.[0];
@@ -1400,7 +1410,17 @@ export function CampaignWorkspace() {
                       preparedMapsSignal.value = updated.maps;
                       activeWorkspaceTabSignal.value = 'table';
                     }}
-                    style={{ display: 'none' }}
+                    style={{
+                      position: 'absolute',
+                      width: '1px',
+                      height: '1px',
+                      padding: 0,
+                      margin: '-1px',
+                      overflow: 'hidden',
+                      clip: 'rect(0, 0, 0, 0)',
+                      whiteSpace: 'nowrap',
+                      border: 0,
+                    }}
                   />
                 </label>
               </div>
