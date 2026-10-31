@@ -332,7 +332,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
         </button>
 
         <label
-          role={"button" as any}
+          role={"button" as unknown as undefined}
           data-testid="import-archive-btn"
           tabIndex={0}
           onKeyDown={(e) => {
