@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 trame-engine = { path = "../trame-engine" }
+argon2 = "0.5"
 axum.workspace = true
 async_zip = { version = "0.0.17", features = ["tokio", "deflate"] }
 base64 = "0.22"

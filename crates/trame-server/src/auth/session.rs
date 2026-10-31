@@ -1,6 +1,7 @@
 //! Session management, guest user provisioning, and cookie issuance.
 
 use super::magic_link::{MagicLinkClaims, MagicLinkError, MagicLinkService, now_epoch_seconds};
+use super::password::{IdentityStore, bind_account_handler};
 use crate::storage::blob::Sha256Hasher;
 use axum::Router;
 use axum::extract::State;
@@ -46,6 +47,10 @@ pub struct UserRecord {
     pub role: String,
     pub is_guest: bool,
     pub created_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password_hash: Option<String>,
 }
 
 /// Association of a user to a campaign with optional assigned character.
@@ -98,12 +103,17 @@ pub trait SessionStore: Send + Sync {
         campaign_id: Uuid,
         user_id: Uuid,
     ) -> BoxFuture<'_, Result<Option<CampaignMemberRecord>, SessionError>>;
+    fn get_campaign_members_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> BoxFuture<'_, Result<Vec<CampaignMemberRecord>, SessionError>>;
 }
 
-/// In-memory implementation of `SessionStore`.
+/// In-memory implementation of `SessionStore` and `IdentityStore`.
 #[derive(Default, Clone)]
 pub struct InMemorySessionStore {
     users: Arc<RwLock<HashMap<Uuid, UserRecord>>>,
+    emails: Arc<RwLock<HashMap<String, Uuid>>>,
     campaign_members: Arc<RwLock<HashMap<(Uuid, Uuid), CampaignMemberRecord>>>,
     sessions: Arc<RwLock<HashMap<String, SessionRecord>>>,
     revoked_invites: Arc<RwLock<HashSet<Uuid>>>,
@@ -128,6 +138,8 @@ impl SessionStore for InMemorySessionStore {
                 role: role.to_string(),
                 is_guest: true,
                 created_at: now_epoch_seconds(),
+                email: None,
+                password_hash: None,
             };
             self.users.write().await.insert(user_id, user.clone());
             Ok(user)
@@ -211,6 +223,149 @@ impl SessionStore for InMemorySessionStore {
             Ok(map.get(&(campaign_id, user_id)).cloned())
         })
     }
+
+    fn get_campaign_members_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> BoxFuture<'_, Result<Vec<CampaignMemberRecord>, SessionError>> {
+        Box::pin(async move {
+            let map = self.campaign_members.read().await;
+            let list = map
+                .values()
+                .filter(|m| m.user_id == user_id)
+                .cloned()
+                .collect();
+            Ok(list)
+        })
+    }
+}
+
+impl IdentityStore for InMemorySessionStore {
+    fn get_user_by_email<'a>(
+        &'a self,
+        email: &'a str,
+    ) -> BoxFuture<'a, Result<Option<UserRecord>, SessionError>> {
+        Box::pin(async move {
+            let emails = self.emails.read().await;
+            if let Some(user_id) = emails.get(email) {
+                let users = self.users.read().await;
+                Ok(users.get(user_id).cloned())
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    fn get_user_by_id(
+        &self,
+        user_id: Uuid,
+    ) -> BoxFuture<'_, Result<Option<UserRecord>, SessionError>> {
+        Box::pin(async move {
+            let users = self.users.read().await;
+            Ok(users.get(&user_id).cloned())
+        })
+    }
+
+    fn bind_guest_credentials<'a>(
+        &'a self,
+        user_id: Uuid,
+        email: &'a str,
+        password_hash: &'a str,
+    ) -> BoxFuture<'a, Result<UserRecord, SessionError>> {
+        Box::pin(async move {
+            let mut users = self.users.write().await;
+            let user = users.get_mut(&user_id).ok_or(SessionError::NotFound)?;
+            user.is_guest = false;
+            user.email = Some(email.to_string());
+            user.password_hash = Some(password_hash.to_string());
+            let updated = user.clone();
+            self.emails.write().await.insert(email.to_string(), user_id);
+            Ok(updated)
+        })
+    }
+}
+
+impl<T: IdentityStore> IdentityStore for Arc<T> {
+    fn get_user_by_email<'a>(
+        &'a self,
+        email: &'a str,
+    ) -> BoxFuture<'a, Result<Option<UserRecord>, SessionError>> {
+        (**self).get_user_by_email(email)
+    }
+
+    fn get_user_by_id(
+        &self,
+        user_id: Uuid,
+    ) -> BoxFuture<'_, Result<Option<UserRecord>, SessionError>> {
+        (**self).get_user_by_id(user_id)
+    }
+
+    fn bind_guest_credentials<'a>(
+        &'a self,
+        user_id: Uuid,
+        email: &'a str,
+        password_hash: &'a str,
+    ) -> BoxFuture<'a, Result<UserRecord, SessionError>> {
+        (**self).bind_guest_credentials(user_id, email, password_hash)
+    }
+}
+
+impl<T: SessionStore + ?Sized> SessionStore for Arc<T> {
+    fn create_guest_user<'a>(
+        &'a self,
+        role: &'a str,
+    ) -> BoxFuture<'a, Result<UserRecord, SessionError>> {
+        (**self).create_guest_user(role)
+    }
+
+    fn assign_campaign_member<'a>(
+        &'a self,
+        campaign_id: Uuid,
+        user_id: Uuid,
+        character_id: Option<Uuid>,
+        role: &'a str,
+    ) -> BoxFuture<'a, Result<CampaignMemberRecord, SessionError>> {
+        (**self).assign_campaign_member(campaign_id, user_id, character_id, role)
+    }
+
+    fn create_session<'a>(
+        &'a self,
+        user_id: Uuid,
+        token_hash: &'a str,
+        ttl_seconds: u64,
+    ) -> BoxFuture<'a, Result<SessionRecord, SessionError>> {
+        (**self).create_session(user_id, token_hash, ttl_seconds)
+    }
+
+    fn get_session_by_token_hash<'a>(
+        &'a self,
+        token_hash: &'a str,
+    ) -> BoxFuture<'a, Result<Option<SessionRecord>, SessionError>> {
+        (**self).get_session_by_token_hash(token_hash)
+    }
+
+    fn is_invite_revoked(&self, jti: Uuid) -> BoxFuture<'_, bool> {
+        (**self).is_invite_revoked(jti)
+    }
+
+    fn revoke_invite(&self, jti: Uuid) -> BoxFuture<'_, Result<(), SessionError>> {
+        (**self).revoke_invite(jti)
+    }
+
+    fn get_campaign_member(
+        &self,
+        campaign_id: Uuid,
+        user_id: Uuid,
+    ) -> BoxFuture<'_, Result<Option<CampaignMemberRecord>, SessionError>> {
+        (**self).get_campaign_member(campaign_id, user_id)
+    }
+
+    fn get_campaign_members_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> BoxFuture<'_, Result<Vec<CampaignMemberRecord>, SessionError>> {
+        (**self).get_campaign_members_for_user(user_id)
+    }
 }
 
 /// Generates a cryptographically random 256-bit session token encoded as hex.
@@ -242,7 +397,7 @@ pub fn build_session_cookie_header(token: &str, ttl_seconds: u64) -> String {
 #[derive(Clone)]
 pub struct AuthState {
     pub magic_link_service: Arc<MagicLinkService>,
-    pub session_store: Arc<dyn SessionStore>,
+    pub session_store: Arc<InMemorySessionStore>,
 }
 
 /// Request payload submitted to POST /api/v1/auth/magic-link.
@@ -429,5 +584,6 @@ pub fn build_auth_router(state: AuthState) -> Router {
     Router::new()
         .route("/api/v1/auth/magic-link", post(magic_link_login_handler))
         .route("/api/v1/auth/invites", post(create_invite_link_handler))
+        .route("/api/v1/auth/bind-account", post(bind_account_handler))
         .with_state(state)
 }
