@@ -1,6 +1,7 @@
 import { h, type VNode } from 'preact';
 import { useState } from 'preact/hooks';
 import type { CompendiumEntry } from '../../../game-systems/dnd5e/src/compendium.ts';
+import type { CommandDispatcher } from '../sheet/types.ts';
 import { CompendiumDragDropManager } from './CompendiumDragDropManager.ts';
 
 export interface CompendiumDrawerProps {
@@ -8,18 +9,24 @@ export interface CompendiumDrawerProps {
   onClose: () => void;
   entries?: CompendiumEntry[];
   systemId?: string;
+  dispatchCommand?: CommandDispatcher;
+  actorId?: string;
   onDragStart?: (entry: CompendiumEntry, event: DragEvent) => void;
 }
 
 const CATEGORIES = ['all', 'item', 'spell', 'feat', 'monster'] as const;
 
-export function CompendiumDrawer(props: CompendiumDrawerProps): VNode | null {
+export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | null {
   if (!props.isOpen) return null;
 
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<string>('all');
   const entries = props.entries ?? [];
-  const dragManager = new CompendiumDragDropManager(props.systemId ?? 'dnd5e');
+  const dragManager = new CompendiumDragDropManager({
+    systemId: props.systemId ?? 'dnd5e',
+    dispatchCommand: props.dispatchCommand,
+    actorId: props.actorId,
+  });
 
   const filtered = entries.filter((entry) => {
     if (category !== 'all' && entry.entityType !== category) return false;
@@ -34,7 +41,8 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode | null {
       entryRef: entry.id || entry.slug,
       entryType: entry.entityType,
       data: entry.data,
-    });
+      actorId: props.actorId,
+    }, null, props.actorId);
   };
 
   const handleDragStart = (entry: CompendiumEntry, e: DragEvent) => {
@@ -43,6 +51,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode | null {
       entryRef: entry.id || entry.slug,
       entryType: entry.entityType,
       data: entry.data,
+      actorId: props.actorId,
     };
     if (e.dataTransfer) {
       e.dataTransfer.setData('application/json', dragManager.createDragData(payload));
@@ -74,15 +83,18 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode | null {
     ),
     h(
       'div',
-      { class: 'ds-compendium-tabs' },
+      { class: 'ds-compendium-tabs', role: 'tablist', 'aria-label': 'Compendium categories' },
       CATEGORIES.map((cat) =>
         h(
           'button',
           {
             key: cat,
             type: 'button',
+            role: 'tab',
             class: `ds-tab-btn ${category === cat ? 'is-active' : ''}`,
             'data-testid': `compendium-tab-${cat}`,
+            'aria-selected': category === cat ? 'true' : 'false',
+            'aria-pressed': category === cat ? 'true' : 'false',
             onClick: () => setCategory(cat),
           },
           cat.toUpperCase(),

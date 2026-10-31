@@ -10,6 +10,7 @@ export const coreStatsLockedSignal = signal<boolean>(true);
 
 export interface HudDrawersProps {
   actorState?: unknown;
+  actorId?: string;
   gm_core_locked?: boolean;
   coreStatsLocked?: boolean;
   dispatchCommand?: (cmd: any) => void;
@@ -18,7 +19,7 @@ export interface HudDrawersProps {
   isTableCanvasMounted?: boolean;
 }
 
-export function HudDrawers(props: HudDrawersProps): VNode {
+export function HudDrawers(props: HudDrawersProps): VNode<any> {
   const closeSheet = () => {
     isSheetDrawerOpenSignal.value = false;
   };
@@ -26,6 +27,8 @@ export function HudDrawers(props: HudDrawersProps): VNode {
   const closeCompendium = () => {
     isCompendiumDrawerOpenSignal.value = false;
   };
+
+  const actorId = props.actorId ?? (props.actorState as any)?.id ?? (props.actorState as any)?.sheet?.id;
 
   return h(
     'div',
@@ -42,6 +45,7 @@ export function HudDrawers(props: HudDrawersProps): VNode {
           ),
           h(DeclarativeSheetView, {
             actorState: props.actorState ?? {},
+            actorId,
             gm_core_locked: props.gm_core_locked,
             coreStatsLocked: props.coreStatsLocked ?? coreStatsLockedSignal.value,
             onToggleCoreStatsLocked: () => {
@@ -58,6 +62,8 @@ export function HudDrawers(props: HudDrawersProps): VNode {
       onClose: closeCompendium,
       entries: props.compendiumEntries,
       systemId: props.systemId,
+      dispatchCommand: props.dispatchCommand,
+      actorId,
     }),
   );
 }
