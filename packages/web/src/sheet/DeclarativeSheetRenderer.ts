@@ -240,6 +240,8 @@ export class DeclarativeSheetRenderer {
     toggleBtn.textContent = isLocked ? "Locked (Play Mode)" : "Unlocked (Edit Mode)";
     toggleBtn.addEventListener("click", () => {
       this.togglePadlock();
+      toggleBtn.setAttribute("aria-pressed", this.padlockUnlocked ? "true" : "false");
+      toggleBtn.setAttribute("data-locked", this.padlockUnlocked ? "false" : "true");
     });
     header.appendChild(toggleBtn);
     rootEl.appendChild(header);
