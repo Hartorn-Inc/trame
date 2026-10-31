@@ -26,6 +26,18 @@ export function DiceTrayDrawer(props: DiceTrayDrawerProps): JSX.Element {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    const prefersReducedMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (prefersReducedMotion) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "var(--atlas-bg)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = "var(--atlas-action)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(canvas.width / 2 - 25, canvas.height / 2 - 25, 50, 50);
+      setIsRolling(false);
+      return;
+    }
+
     let frame = 0;
     let animId: number;
     const render = () => {

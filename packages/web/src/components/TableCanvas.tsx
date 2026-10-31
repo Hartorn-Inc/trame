@@ -560,7 +560,8 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
                 height: "40px",
                 borderRadius: "50%",
                 border: `3px solid ${p.colorHex}`,
-                backgroundColor: `${p.colorHex}33`,
+                backgroundColor: "var(--atlas-focus)",
+                opacity: 0.35,
                 pointerEvents: "none",
                 animation: "pingPulse 1.2s ease-out forwards",
               }}

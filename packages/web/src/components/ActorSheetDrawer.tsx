@@ -38,6 +38,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
 
   const [activeTabId, setActiveTabId] = useState<string>("tab-combat");
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
+  const [isPadlockUnlocked, setIsPadlockUnlocked] = useState<boolean>(false);
 
   if (!actor) {
     return (
@@ -391,8 +392,8 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                 }}
               >
                 <div style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>{key.toUpperCase()}</div>
-                <div style={{ fontSize: "1.25rem", fontWeight: 700 }}>{val.score}</div>
-                <div style={{ fontSize: "0.75rem", color: "var(--atlas-info)" }}>{val.mod >= 0 ? `+${val.mod}` : val.mod}</div>
+                <div className="atlas-tabular-nums" style={{ fontSize: "1.25rem", fontWeight: 700 }}>{val.score}</div>
+                <div className="atlas-tabular-nums" style={{ fontSize: "0.75rem", color: "var(--atlas-action)" }}>{val.mod >= 0 ? `+${val.mod}` : val.mod}</div>
               </button>
             ))}
           </div>
@@ -401,7 +402,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
       case "ResourceBar": {
         return (
           <div data-testid="resource-bar-display">
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.875rem" }}>
+            <div className="atlas-tabular-nums" style={{ display: "flex", justifyContent: "space-between", fontSize: "0.875rem" }}>
               <span>HP: {actor.hp} / {actor.maxHp}</span>
             </div>
             <div style={{ height: "8px", backgroundColor: "var(--atlas-border)", borderRadius: "4px", overflow: "hidden", marginTop: "0.25rem" }}>
@@ -537,7 +538,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                     {save.proficient && <span aria-hidden="true" style={{ color: "var(--atlas-info)" }}>●</span>}
                     <span>{save.key}</span>
                   </span>
-                  <span style={{ color: "var(--atlas-info)" }}>{sign}</span>
+                  <span className="atlas-tabular-nums" style={{ color: "var(--atlas-action)" }}>{sign}</span>
                 </button>
               );
             })}
@@ -594,7 +595,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                     {isProficient && <span aria-hidden="true" style={{ color: "var(--atlas-info)" }}>●</span>}
                     <span>{sk.key}</span>
                   </span>
-                  <span style={{ color: "var(--atlas-info)" }}>{sign}</span>
+                  <span className="atlas-tabular-nums" style={{ color: "var(--atlas-action)" }}>{sign}</span>
                 </button>
               );
             })}
@@ -615,7 +616,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
                 <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>Hit Dice: </span>
-                <strong style={{ fontSize: "0.875rem", color: "var(--atlas-info)" }}>{currentHD}/{maxHD} d{dieSides}</strong>
+                <strong className="atlas-tabular-nums" style={{ fontSize: "0.875rem", color: "var(--atlas-text)" }}>{currentHD}/{maxHD} d{dieSides}</strong>
               </div>
               <button
                 type="button"
@@ -627,14 +628,14 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                     dispatcher({ cmd: "ROLL_DICE", expression: `1d${dieSides}`, reason: "Spend Hit Die" });
                   }
                 }}
-                style={{ padding: "0.25rem 0.5rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-info)", border: "1px solid var(--atlas-info)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+                style={{ padding: "0.25rem 0.5rem", backgroundColor: "var(--atlas-surface-raised)", color: "var(--atlas-text)", border: "1px solid var(--atlas-border)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
               >
                 Spend Die
               </button>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ fontSize: "0.75rem" }}>
-                <span style={{ color: "var(--atlas-success)", marginRight: "0.5rem" }}>Successes: {successes}/3</span>
+              <div className="atlas-tabular-nums" style={{ fontSize: "0.75rem" }}>
+                <span style={{ color: "var(--atlas-text)", marginRight: "0.5rem" }}>Successes: {successes}/3</span>
                 <span style={{ color: "var(--atlas-danger)" }}>Failures: {failures}/3</span>
               </div>
               <button
@@ -647,7 +648,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                     dispatcher({ cmd: "ROLL_DICE", expression: "1d20", reason: "Death Saving Throw" });
                   }
                 }}
-                style={{ padding: "0.25rem 0.5rem", backgroundColor: "var(--atlas-info)", color: "var(--atlas-info)", border: "1px solid var(--atlas-info)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+                style={{ padding: "0.25rem 0.5rem", backgroundColor: "var(--atlas-surface-raised)", color: "var(--atlas-text)", border: "1px solid var(--atlas-border)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
               >
                 Death Save
               </button>

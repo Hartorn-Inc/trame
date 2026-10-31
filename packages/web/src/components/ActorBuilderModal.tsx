@@ -211,7 +211,7 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
         </header>
 
         {errorMessage && (
-          <div role="alert" style={{ backgroundColor: "var(--atlas-info)", color: "var(--atlas-info)", padding: "0.5rem", borderRadius: "4px", marginBottom: "1rem" }}>
+          <div role="alert" style={{ backgroundColor: "var(--atlas-surface-raised)", color: "var(--atlas-danger)", border: "1px solid var(--atlas-danger)", padding: "0.5rem", borderRadius: "4px", marginBottom: "1rem" }}>
             {errorMessage}
           </div>
         )}

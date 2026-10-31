@@ -9,7 +9,7 @@ export interface MobileCompanionViewProps {
   children?: ComponentChildren;
 }
 
-type MobileTab = "sheet" | "dice" | "notes";
+type MobileTab = "sheet" | "dice" | "inventory" | "journal";
 
 export function MobileCompanionView(_props: MobileCompanionViewProps): JSX.Element {
   const [activeTab, setActiveTab] = useState<MobileTab>("sheet");
@@ -35,17 +35,22 @@ export function MobileCompanionView(_props: MobileCompanionViewProps): JSX.Eleme
 
       <div style={{ flex: 1, overflowY: "auto", position: "relative" }}>
         {activeTab === "sheet" && (
-          <div style={{ position: "relative", height: "100%" }}>
+          <div data-testid="tab-sheet" style={{ position: "relative", height: "100%" }}>
             <ActorSheetDrawer actor={actor} embedded={true} />
           </div>
         )}
         {activeTab === "dice" && (
-          <div style={{ position: "relative", height: "100%" }}>
+          <div data-testid="tab-dice" style={{ position: "relative", height: "100%" }}>
             <DiceTrayDrawer embedded={true} />
           </div>
         )}
-        {activeTab === "notes" && (
-          <div style={{ position: "relative", height: "100%" }}>
+        {activeTab === "inventory" && (
+          <div data-testid="tab-inventory" style={{ position: "relative", height: "100%" }}>
+            <ActorSheetDrawer actor={actor} embedded={true} />
+          </div>
+        )}
+        {activeTab === "journal" && (
+          <div data-testid="tab-journal" style={{ position: "relative", height: "100%" }}>
             <WikiNotesDrawer embedded={true} />
           </div>
         )}
@@ -60,21 +65,23 @@ export function MobileCompanionView(_props: MobileCompanionViewProps): JSX.Eleme
           borderTop: "1px solid var(--atlas-surface)",
         }}
       >
-        {(['sheet', 'dice', 'notes'] as MobileTab[]).map((tab) => (
+        {(['sheet', 'dice', 'inventory', 'journal'] as MobileTab[]).map((tab) => (
           <button
             key={tab}
             type="button"
             role="tab"
             aria-selected={activeTab === tab}
-            data-testid={`mobile-tab-${tab}`}
+            data-testid={`tab-button-${tab}`}
             onClick={() => setActiveTab(tab)}
             style={{
               flex: 1,
-              padding: "0.75rem",
+              minHeight: "44px",
+              minWidth: "44px",
+              padding: "0.75rem 0.5rem",
               backgroundColor: activeTab === tab ? "var(--atlas-surface)" : "transparent",
-              color: activeTab === tab ? "var(--atlas-info)" : "var(--atlas-text-muted)",
+              color: activeTab === tab ? "var(--atlas-action)" : "var(--atlas-text-muted)",
               border: "none",
-              borderTop: activeTab === tab ? "2px solid var(--atlas-info)" : "2px solid transparent",
+              borderTop: activeTab === tab ? "2px solid var(--atlas-action)" : "2px solid transparent",
               fontWeight: 600,
               fontSize: "0.875rem",
               cursor: "pointer",

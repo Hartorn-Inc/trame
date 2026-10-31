@@ -112,9 +112,9 @@ export function AuthScreen(props: AuthScreenProps): JSX.Element {
             aria-live="polite"
             data-testid="auth-error-banner"
             style={{
-              backgroundColor: "var(--atlas-info)",
-              color: "var(--atlas-info)",
-              border: "1px solid var(--atlas-info)",
+              backgroundColor: "var(--atlas-surface-raised)",
+              color: "var(--atlas-danger)",
+              border: "1px solid var(--atlas-danger)",
               borderRadius: "6px",
               padding: "0.75rem 1rem",
               marginBottom: "1.25rem",

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
+import { client } from "./api/client.ts";
 import { appSignals } from "./state/appSignals.ts";
 import { AuthScreen } from "./components/AuthScreen.tsx";
 import { CampaignLobby } from "./components/CampaignLobby.tsx";
@@ -20,9 +21,23 @@ export function App(): import("preact").JSX.Element {
   const companionMode = appSignals.companionModeSignal.value;
 
   const [isBuilderOpen, setIsBuilderOpen] = useState(false);
+  const [isCompendiumOpen, setIsCompendiumOpen] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window !== "undefined" ? window.innerWidth : 1024,
   );
+
+  useEffect(() => {
+    if (!activeCampaign) {
+      return;
+    }
+    client.connectWebSocket(activeCampaign.id, {
+      role: activeCampaign.role,
+      userId: user?.id,
+    });
+    return () => {
+      client.disconnectWebSocket();
+    };
+  }, [activeCampaign?.id, activeCampaign?.role, user?.id]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -111,9 +126,9 @@ export function App(): import("preact").JSX.Element {
           </button>
           <button
             type="button"
-            onClick={() => (appSignals.activeDrawerSignal.value = activeDrawer === "compendium" ? null : "compendium")}
+            onClick={() => setIsCompendiumOpen((open) => !open)}
             data-testid="toggle-compendium-btn"
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-info)", border: "1px solid var(--atlas-info)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-text)", border: "1px solid var(--atlas-border)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
           >
             Compendium
           </button>
@@ -139,20 +154,20 @@ export function App(): import("preact").JSX.Element {
       <GmOverrideToolbar />
       <CombatTrackerBar />
 
-      <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+      <main role="main" aria-label="Tabletop Workspace" style={{ flex: 1, position: "relative", overflow: "hidden" }}>
         <TableCanvas />
+        {isCompendiumOpen && <CompendiumDrawer onClose={() => setIsCompendiumOpen(false)} />}
         {activeDrawer === "sheet" && (
           <ActorSheetDrawer
             onClose={() => (appSignals.activeDrawerSignal.value = null)}
             onOpenBuilder={() => setIsBuilderOpen(true)}
           />
         )}
-        {activeDrawer === "compendium" && <CompendiumDrawer onClose={() => (appSignals.activeDrawerSignal.value = null)} />}
         {activeDrawer === "dice" && <DiceTrayDrawer onClose={() => (appSignals.activeDrawerSignal.value = null)} />}
         {activeDrawer === "wiki" && <WikiNotesDrawer onClose={() => (appSignals.activeDrawerSignal.value = null)} />}
         {isBuilderOpen && <ActorBuilderModal onClose={() => setIsBuilderOpen(false)} />}
         <HandoutPopupModal />
-      </div>
+      </main>
     </div>
   );
 }
