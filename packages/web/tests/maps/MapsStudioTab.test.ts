@@ -741,5 +741,44 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
       assert.equal(remappedFrontend.walls[0].a.x, 0);
       assert.equal(remappedFrontend.walls[0].b.x, 100);
     });
+
+    it("WHEN raw backend scenes from GET are provided, domain normalization protects against missing walls length runtime error", () => {
+      const rawBackendScene = {
+        id: "raw-backend-1",
+        campaign_id: "camp-1",
+        name: "Raw Server Map",
+        revealed_to_players: true,
+        grid_size_px: 70,
+        grid_cell_distance_ft: 5.0,
+        width_px: 1400,
+        height_px: 1400,
+        wall_segments: [
+          {
+            id: "seg-1",
+            p1: { x: 0, y: 0 },
+            p2: { x: 70, y: 0 },
+            wall_type: "Normal",
+            door_state: null,
+            bottom_elevation_ft: 0,
+            top_elevation_ft: 10,
+            blocks_light: true,
+            blocks_movement: true,
+            blocks_sound: true,
+            blocks_vision: true,
+          },
+        ],
+        light_sources: [],
+        spatial_audio_emitters: [],
+        staged_tokens: [],
+        spawn_points: [{ id: "sp-1", name: "Spawn", x: 70, y: 70 }],
+      };
+
+      const filtered = filterScenesForRole([rawBackendScene], "PLAYER");
+      assert.equal(filtered.length, 1);
+      assert.equal(filtered[0].title, "Raw Server Map");
+      assert.equal(filtered[0].walls.length, 1);
+      assert.equal(filtered[0].walls[0].a.x, 0);
+      assert.equal(filtered[0].walls[0].b.x, 70);
+    });
   });
 });

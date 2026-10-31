@@ -35,11 +35,52 @@ pub enum WallType {
     Illusion,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum DoorState {
     Open,
     Closed,
     Locked,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DoorStateRaw {
+    Str(String),
+    Obj {
+        #[serde(default, alias = "isOpen")]
+        is_open: bool,
+        #[serde(default, alias = "isLocked")]
+        is_locked: bool,
+    },
+}
+
+impl<'de> Deserialize<'de> for DoorState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = DoorStateRaw::deserialize(deserializer)?;
+        match raw {
+            DoorStateRaw::Str(s) => match s.to_ascii_lowercase().as_str() {
+                "open" => Ok(DoorState::Open),
+                "closed" => Ok(DoorState::Closed),
+                "locked" => Ok(DoorState::Locked),
+                other => Err(serde::de::Error::unknown_variant(
+                    other,
+                    &["Open", "Closed", "Locked"],
+                )),
+            },
+            DoorStateRaw::Obj { is_open, is_locked } => {
+                if is_locked {
+                    Ok(DoorState::Locked)
+                } else if is_open {
+                    Ok(DoorState::Open)
+                } else {
+                    Ok(DoorState::Closed)
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,9 +106,9 @@ pub struct WallSegment {
     pub wall_type: WallType,
     #[serde(default, alias = "doorState")]
     pub door_state: Option<DoorState>,
-    #[serde(alias = "bottomElevationFt")]
+    #[serde(default, alias = "bottomElevationFt")]
     pub bottom_elevation_ft: f32,
-    #[serde(alias = "topElevationFt")]
+    #[serde(default, alias = "topElevationFt")]
     pub top_elevation_ft: f32,
     #[serde(default, alias = "blocksLight")]
     pub blocks_light: bool,
@@ -82,12 +123,18 @@ pub struct WallSegment {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LightSource {
     pub id: Uuid,
+    #[serde(default)]
     pub x: f32,
+    #[serde(default)]
     pub y: f32,
+    #[serde(default, alias = "origin")]
+    pub origin: Option<Point2D>,
     #[serde(default, alias = "elevationFt")]
     pub elevation_ft: f32,
-    #[serde(default, alias = "radiusFt")]
+    #[serde(default, alias = "radiusFt", alias = "dimRadiusFt")]
     pub radius_ft: f32,
+    #[serde(default, alias = "brightRadiusFt")]
+    pub bright_radius_ft: Option<f32>,
     #[serde(alias = "colorHex")]
     pub color_hex: String,
     #[serde(default)]
@@ -101,11 +148,11 @@ pub struct SpatialAudioEmitter {
     pub y: f32,
     #[serde(default, alias = "elevationFt")]
     pub elevation_ft: f32,
-    #[serde(default, alias = "radiusFt")]
+    #[serde(default, alias = "radiusFt", alias = "maxDistanceFt")]
     pub radius_ft: f32,
     #[serde(default)]
     pub volume: f32,
-    #[serde(default)]
+    #[serde(default, alias = "loopPlayback")]
     pub looping: bool,
     #[serde(default, alias = "gmOnly")]
     pub gm_only: bool,
@@ -174,7 +221,7 @@ pub struct CampaignMapScene {
     pub revealed_to_players: bool,
     #[serde(default, alias = "spawnPoints")]
     pub spawn_points: Vec<SpawnPoint>,
-    #[serde(alias = "walls", alias = "wallSegments")]
+    #[serde(default, alias = "walls", alias = "wallSegments")]
     pub wall_segments: Vec<WallSegment>,
     #[serde(default, alias = "lights", alias = "lightSources")]
     pub light_sources: Vec<LightSource>,
@@ -325,8 +372,17 @@ pub async fn put_campaign_maps_handler(
             .into_response();
     }
 
-    state
-        .map_storage
-        .save_campaign_maps(campaign_id, payload.scenes);
+    let mut scenes = payload.scenes;
+    for scene in &mut scenes {
+        for light in &mut scene.light_sources {
+            if let Some(ref pt) = light.origin {
+                if light.x == 0.0 && light.y == 0.0 {
+                    light.x = pt.x;
+                    light.y = pt.y;
+                }
+            }
+        }
+    }
+    state.map_storage.save_campaign_maps(campaign_id, scenes);
     StatusCode::NO_CONTENT.into_response()
 }

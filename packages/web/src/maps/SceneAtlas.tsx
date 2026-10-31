@@ -10,7 +10,10 @@ export interface SceneAtlasProps {
 }
 
 export function SceneAtlas({ campaignId, scenes, onSelectScene }: SceneAtlasProps) {
-  const filteredScenes = filterScenesForRole(scenes, 'PLAYER');
+  const normalizedScenes = scenes.map((s) =>
+    'walls' in s && Array.isArray((s as any).walls) ? (s as CampaignMapScene) : mapBackendSceneToFrontend(s),
+  );
+  const filteredScenes = filterScenesForRole(normalizedScenes, 'PLAYER');
   let activePreviewSceneSignal: { value: CampaignMapScene | null };
   try {
     activePreviewSceneSignal = useSignal<CampaignMapScene | null>(null);

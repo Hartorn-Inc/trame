@@ -1,6 +1,6 @@
 import { useSignal } from '@preact/signals';
 import type { CampaignMapScene, StudioWallSegment, StagedToken, StudioLightSource, AudioEmitterConfig, UserRole, WallType } from './types.ts';
-import { toggleDoorState } from './domain.ts';
+import { mapBackendSceneToFrontend, toggleDoorState } from './domain.ts';
 import { SceneAtlas } from './SceneAtlas.tsx';
 
 export interface MapsStudioTabProps {
@@ -18,6 +18,10 @@ export function MapsStudioTab({
   onActivateScene,
   onSaveScene,
 }: MapsStudioTabProps) {
+  const normalizedInitialScenes = initialScenes.map((s) =>
+    'walls' in s && Array.isArray((s as any).walls) ? (s as CampaignMapScene) : mapBackendSceneToFrontend(s),
+  );
+
   let scenesSignal: { value: CampaignMapScene[] };
   let selectedSceneIdSignal: { value: string | null };
   let isSavingSignal: { value: boolean };
@@ -37,8 +41,8 @@ export function MapsStudioTab({
   let doorFeedbackSignal: { value: Record<string, string> };
 
   try {
-    scenesSignal = useSignal<CampaignMapScene[]>(initialScenes);
-    selectedSceneIdSignal = useSignal<string | null>(initialScenes[0]?.id ?? null);
+    scenesSignal = useSignal<CampaignMapScene[]>(normalizedInitialScenes);
+    selectedSceneIdSignal = useSignal<string | null>(normalizedInitialScenes[0]?.id ?? null);
     isSavingSignal = useSignal<boolean>(false);
     wallTypeSignal = useSignal<WallType>('Normal');
     wallP1XSignal = useSignal<number>(0);
@@ -55,8 +59,8 @@ export function MapsStudioTab({
     audioClipUrlSignal = useSignal<string>('ambience.ogg');
     doorFeedbackSignal = useSignal<Record<string, string>>({});
   } catch {
-    scenesSignal = { value: initialScenes };
-    selectedSceneIdSignal = { value: initialScenes[0]?.id ?? null };
+    scenesSignal = { value: normalizedInitialScenes };
+    selectedSceneIdSignal = { value: normalizedInitialScenes[0]?.id ?? null };
     isSavingSignal = { value: false };
     wallTypeSignal = { value: 'Normal' };
     wallP1XSignal = { value: 0 };
@@ -257,6 +261,33 @@ export function MapsStudioTab({
     scenesSignal.value = scenesSignal.value.map((s) => (s.id === updatedScene.id ? updatedScene : s));
   };
 
+  const handlePaintFog = () => {
+    if (!selectedScene) return;
+    const currentFog = selectedScene.exploredFogTexture ?? [];
+    const updatedFog = currentFog.length > 0 ? [...currentFog, 255] : [255, 255, 255, 255];
+    const updatedScene: CampaignMapScene = {
+      ...selectedScene,
+      exploredFogTexture: updatedFog,
+    };
+    scenesSignal.value = scenesSignal.value.map((s) => (s.id === updatedScene.id ? updatedScene : s));
+  };
+
+  const handleCanvasClick = (e: MouseEvent) => {
+    if (!selectedScene) return;
+    const svg = e.currentTarget as SVGSVGElement;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      const x = Math.round(((e.clientX - rect.left) / rect.width) * selectedScene.widthPx);
+      const y = Math.round(((e.clientY - rect.top) / rect.height) * selectedScene.heightPx);
+      wallP1XSignal.value = x;
+      wallP1YSignal.value = y;
+      lightXSignal.value = x;
+      lightYSignal.value = y;
+      audioXSignal.value = x;
+      audioYSignal.value = y;
+    }
+  };
+
   const handleSave = async () => {
     if (!selectedScene || !onSaveScene) return;
     isSavingSignal.value = true;
@@ -322,8 +353,35 @@ export function MapsStudioTab({
 
           <ul data-testid="scenes-list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
             {scenesSignal.value.length === 0 ? (
-              <li data-testid="empty-scenes-prompt" style={{ color: 'var(--atlas-text-muted)', fontSize: 'var(--atlas-text-xs)', padding: 'var(--atlas-space-sm)' }}>
-                No scenes available. Click &quot;+ New Scene&quot; to begin.
+              <li
+                data-testid="empty-scenes-prompt"
+                style={{
+                  color: 'var(--atlas-text-muted)',
+                  fontSize: 'var(--atlas-text-xs)',
+                  padding: 'var(--atlas-space-sm)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 'var(--atlas-space-xs)',
+                  alignItems: 'flex-start',
+                }}
+              >
+                <span>No scenes available.</span>
+                <button
+                  type="button"
+                  data-testid="empty-create-scene-btn"
+                  onClick={handleCreateScene}
+                  style={{
+                    padding: 'var(--atlas-space-xs) var(--atlas-space-sm)',
+                    fontSize: 'var(--atlas-text-xs)',
+                    background: 'var(--atlas-action)',
+                    color: 'var(--atlas-on-action)',
+                    border: 'none',
+                    borderRadius: 'var(--atlas-radius-sm)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Create Scene
+                </button>
               </li>
             ) : (
               scenesSignal.value.map((scene) => (
@@ -397,10 +455,17 @@ export function MapsStudioTab({
                   overflow: 'hidden',
                 }}
               >
-                <svg width="100%" height="100%" viewBox={`0 0 ${selectedScene.widthPx} ${selectedScene.heightPx}`} style={{ display: 'block' }}>
+                <svg
+                  width="100%"
+                  height="100%"
+                  viewBox={`0 0 ${selectedScene.widthPx} ${selectedScene.heightPx}`}
+                  onClick={handleCanvasClick}
+                  style={{ display: 'block', cursor: 'crosshair' }}
+                >
                   {selectedScene.walls.map((wall) => (
                     <line
                       key={wall.id}
+                      data-testid={`canvas-wall-${wall.id}`}
                       x1={wall.a.x}
                       y1={wall.a.y}
                       x2={wall.b.x}
@@ -412,6 +477,7 @@ export function MapsStudioTab({
                   {selectedScene.lights.map((light) => (
                     <circle
                       key={light.id}
+                      data-testid={`canvas-light-${light.id}`}
                       cx={light.origin.x}
                       cy={light.origin.y}
                       r={light.dimRadiusFt * 2}
@@ -422,6 +488,7 @@ export function MapsStudioTab({
                   {selectedScene.stagedTokens.map((token) => (
                     <circle
                       key={token.id}
+                      data-testid={`canvas-token-${token.id}`}
                       cx={token.x}
                       cy={token.y}
                       r="15"
@@ -435,14 +502,14 @@ export function MapsStudioTab({
                 data-testid="interactive-authoring-tools"
                 style={{
                   display: 'flex',
-                  flexWrap: 'wrap',
+                  flexDirection: 'column',
                   gap: 'var(--atlas-space-sm)',
                   padding: 'var(--atlas-space-sm)',
                   background: 'var(--atlas-surface-raised)',
                   borderRadius: 'var(--atlas-radius-sm)',
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--atlas-space-xs)' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 'var(--atlas-space-xs)' }}>
                   <label htmlFor="studio-wall-type" style={{ fontSize: 'var(--atlas-text-xs)' }}>Wall:</label>
                   <select
                     id="studio-wall-type"
@@ -459,6 +526,58 @@ export function MapsStudioTab({
                     <option value="SecretDoor">SecretDoor</option>
                     <option value="Illusion">Illusion</option>
                   </select>
+                  <label htmlFor="wall-p1x" style={{ fontSize: 'var(--atlas-text-xs)' }}>P1:</label>
+                  <input
+                    id="wall-p1x"
+                    data-testid="wall-p1x-input"
+                    type="number"
+                    value={wallP1XSignal.value}
+                    onInput={(e) => { wallP1XSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
+                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                  />
+                  <input
+                    id="wall-p1y"
+                    data-testid="wall-p1y-input"
+                    type="number"
+                    value={wallP1YSignal.value}
+                    onInput={(e) => { wallP1YSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
+                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                  />
+                  <label htmlFor="wall-p2x" style={{ fontSize: 'var(--atlas-text-xs)' }}>P2:</label>
+                  <input
+                    id="wall-p2x"
+                    data-testid="wall-p2x-input"
+                    type="number"
+                    value={wallP2XSignal.value}
+                    onInput={(e) => { wallP2XSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
+                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                  />
+                  <input
+                    id="wall-p2y"
+                    data-testid="wall-p2y-input"
+                    type="number"
+                    value={wallP2YSignal.value}
+                    onInput={(e) => { wallP2YSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
+                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                  />
+                  <label htmlFor="wall-bottom-elevation" style={{ fontSize: 'var(--atlas-text-xs)' }}>Bottom(ft):</label>
+                  <input
+                    id="wall-bottom-elevation"
+                    data-testid="wall-bottom-elevation"
+                    type="number"
+                    value={wallBottomFtSignal.value}
+                    onInput={(e) => { wallBottomFtSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
+                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                  />
+                  <label htmlFor="wall-top-elevation" style={{ fontSize: 'var(--atlas-text-xs)' }}>Top(ft):</label>
+                  <input
+                    id="wall-top-elevation"
+                    data-testid="wall-top-elevation"
+                    type="number"
+                    value={wallTopFtSignal.value}
+                    onInput={(e) => { wallTopFtSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
+                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                  />
                   <button
                     type="button"
                     data-testid="add-wall-btn"
@@ -469,15 +588,59 @@ export function MapsStudioTab({
                   </button>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--atlas-space-xs)' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 'var(--atlas-space-xs)' }}>
+                  <label htmlFor="light-x" style={{ fontSize: 'var(--atlas-text-xs)' }}>Light X,Y:</label>
+                  <input
+                    id="light-x"
+                    data-testid="light-x-input"
+                    type="number"
+                    value={lightXSignal.value}
+                    onInput={(e) => { lightXSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
+                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                  />
+                  <input
+                    id="light-y"
+                    data-testid="light-y-input"
+                    type="number"
+                    value={lightYSignal.value}
+                    onInput={(e) => { lightYSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
+                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                  />
+                  <label htmlFor="light-radius" style={{ fontSize: 'var(--atlas-text-xs)' }}>Radius:</label>
+                  <input
+                    id="light-radius"
+                    data-testid="light-radius-input"
+                    type="number"
+                    value={lightRadiusFtSignal.value}
+                    onInput={(e) => { lightRadiusFtSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
+                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                  />
                   <button
                     type="button"
                     data-testid="add-light-btn"
                     onClick={handleAddLight}
                     style={{ padding: '2px 8px', fontSize: 'var(--atlas-text-xs)' }}
                   >
-                    Add Light (30ft)
+                    Add Light
                   </button>
+
+                  <label htmlFor="audio-x" style={{ fontSize: 'var(--atlas-text-xs)', marginLeft: 'var(--atlas-space-sm)' }}>Audio X,Y:</label>
+                  <input
+                    id="audio-x"
+                    data-testid="audio-x-input"
+                    type="number"
+                    value={audioXSignal.value}
+                    onInput={(e) => { audioXSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
+                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                  />
+                  <input
+                    id="audio-y"
+                    data-testid="audio-y-input"
+                    type="number"
+                    value={audioYSignal.value}
+                    onInput={(e) => { audioYSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
+                    style={{ width: '45px', fontSize: 'var(--atlas-text-xs)' }}
+                  />
                   <button
                     type="button"
                     data-testid="add-audio-btn"
@@ -486,8 +649,42 @@ export function MapsStudioTab({
                   >
                     Add Audio Emitter
                   </button>
+
+                  <button
+                    type="button"
+                    data-testid="paint-fog-btn"
+                    onClick={handlePaintFog}
+                    style={{ padding: '2px 8px', fontSize: 'var(--atlas-text-xs)', marginLeft: 'var(--atlas-space-sm)' }}
+                  >
+                    Paint Fog
+                  </button>
                 </div>
               </section>
+
+              <div>
+                <h5 style={{ margin: '0 0 var(--atlas-space-xs) 0' }}>All Wall Segments ({selectedScene.walls.length})</h5>
+                <div data-testid="all-walls-list" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--atlas-space-xs)', maxHeight: '160px', overflowY: 'auto' }}>
+                  {selectedScene.walls.length === 0 ? (
+                    <span style={{ fontSize: 'var(--atlas-text-xs)', color: 'var(--atlas-text-muted)' }}>No wall segments yet.</span>
+                  ) : (
+                    selectedScene.walls.map((w) => (
+                      <div key={w.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--atlas-text-xs)', padding: '2px 4px', background: 'var(--atlas-surface-raised)', borderRadius: 'var(--atlas-radius-sm)' }}>
+                        <span>
+                          <strong>{w.wallType}</strong> ({w.id}): [{w.bottomElevationFt}ft .. {w.topElevationFt}ft] ({w.a.x},{w.a.y}) &rarr; ({w.b.x},{w.b.y})
+                        </span>
+                        <button
+                          type="button"
+                          data-testid={`delete-wall-${w.id}`}
+                          onClick={() => handleDeleteWall(w.id)}
+                          style={{ padding: '1px 6px', fontSize: 'var(--atlas-text-xs)' }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
 
               <div>
                 <h5 style={{ margin: '0 0 var(--atlas-space-xs) 0' }}>Doors &amp; Secret Passages</h5>

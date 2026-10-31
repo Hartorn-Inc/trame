@@ -10,13 +10,16 @@ import type {
 } from './types.ts';
 
 export function filterScenesForRole(
-  scenes: CampaignMapScene[],
+  scenes: (CampaignMapScene | Record<string, any>)[],
   role: UserRole,
 ): CampaignMapScene[] {
+  const normalized = scenes.map((s) =>
+    'walls' in s && Array.isArray((s as any).walls) ? (s as CampaignMapScene) : mapBackendSceneToFrontend(s),
+  );
   if (role === 'GM') {
-    return scenes;
+    return normalized;
   }
-  return scenes
+  return normalized
     .filter((scene) => scene.revealedToPlayers)
     .map((scene) => ({
       ...scene,
@@ -52,24 +55,21 @@ export function activateSceneTransition(
   targetScene: CampaignMapScene,
 ): ActiveTableRoomState {
   const heroTokens = currentTable.tokens.filter((t) => t.ownerUserId !== null);
-  const defaultElevation = targetScene.defaultGroundElevationFt ?? 0;
-  const spawnPoints = targetScene.spawnPoints;
+  const defaultElevation = targetScene.defaultGroundElevationFt ?? targetScene.default_ground_elevation_ft ?? 0;
+  const rawSpawns = targetScene.spawnPoints || targetScene.spawn_points;
+  const spawnPoints = rawSpawns && rawSpawns.length > 0
+    ? rawSpawns
+    : targetScene.spawnPoint
+    ? [{ id: 'sp-default', name: 'Default Spawn', x: targetScene.spawnPoint.x, y: targetScene.spawnPoint.y }]
+    : [];
 
   const preservedHeroes = heroTokens.map((hero, index) => {
     let x = 0;
     let y = 0;
-    if (spawnPoints !== undefined) {
-      if (spawnPoints.length > 0) {
-        const sp = spawnPoints[index % spawnPoints.length];
-        x = sp.x;
-        y = sp.y;
-      } else {
-        x = 0;
-        y = 0;
-      }
-    } else if (targetScene.spawnPoint) {
-      x = targetScene.spawnPoint.x + index * 10;
-      y = targetScene.spawnPoint.y;
+    if (spawnPoints.length > 0) {
+      const sp = spawnPoints[index % spawnPoints.length];
+      x = sp.x;
+      y = sp.y;
     } else {
       x = 0;
       y = 0;
@@ -82,12 +82,13 @@ export function activateSceneTransition(
     };
   });
 
-  const nonHeroStaged = targetScene.stagedTokens.filter((t) => t.ownerUserId === null);
+  const staged = targetScene.stagedTokens || targetScene.staged_tokens || [];
+  const nonHeroStaged = staged.filter((t: any) => t.ownerUserId === null || t.owner_user_id === null);
 
   return {
     activeSceneId: targetScene.id,
-    walls: [...targetScene.walls],
-    lights: [...targetScene.lights],
+    walls: [...(targetScene.walls || targetScene.wall_segments || [])],
+    lights: [...(targetScene.lights || targetScene.light_sources || [])],
     tokens: [...preservedHeroes, ...nonHeroStaged],
   };
 }
@@ -303,6 +304,20 @@ export function mapBackendSceneToFrontend(raw: Record<string, any>): CampaignMap
     audioEmitters,
     stagedTokens,
     exploredFogTexture: raw.explored_fog_texture || raw.exploredFogTexture,
+    name: String(raw.name || raw.title || 'Untitled Scene'),
+    campaign_id: String(raw.campaign_id || raw.campaignId || ''),
+    revealed_to_players: Boolean(raw.revealed_to_players ?? raw.revealedToPlayers ?? false),
+    grid_type: String(raw.grid_type || raw.gridType || 'square'),
+    grid_size_px: Number(raw.grid_size_px ?? raw.gridCellSizePx ?? 70),
+    grid_cell_distance_ft: Number(raw.grid_cell_distance_ft ?? raw.feetPerCell ?? 5),
+    width_px: Number(raw.width_px ?? raw.widthPx ?? 1400),
+    height_px: Number(raw.height_px ?? raw.heightPx ?? 1400),
+    default_ground_elevation_ft: Number(raw.default_ground_elevation_ft ?? raw.defaultGroundElevationFt ?? 0),
+    spawn_points: spawnPoints,
+    wall_segments: walls,
+    light_sources: lights,
+    spatial_audio_emitters: audioEmitters,
+    staged_tokens: stagedTokens,
   };
 }
 

@@ -1,5 +1,6 @@
 import { useSignal } from '@preact/signals';
 import type { CampaignMapScene, UserRole } from '../maps/types.ts';
+import { mapBackendSceneToFrontend } from '../maps/domain.ts';
 import { MapsStudioTab } from '../maps/MapsStudioTab.tsx';
 import { SceneAtlas } from '../maps/SceneAtlas.tsx';
 
@@ -26,6 +27,10 @@ export function CampaignWorkspace({
   } catch {
     activeTabSignal = { value: activeTab };
   }
+
+  const normalizedScenes = scenes.map((s) =>
+    'walls' in s && Array.isArray((s as any).walls) ? (s as CampaignMapScene) : mapBackendSceneToFrontend(s),
+  );
 
   const tabs = [
     { id: 0, label: 'Table' },
@@ -78,14 +83,14 @@ export function CampaignWorkspace({
               <MapsStudioTab
                 campaignId={campaignId}
                 userRole={userRole}
-                initialScenes={scenes}
+                initialScenes={normalizedScenes}
                 onActivateScene={onActivateScene}
                 onSaveScene={onSaveScene}
               />
             ) : (
               <SceneAtlas
                 campaignId={campaignId}
-                scenes={scenes}
+                scenes={normalizedScenes}
               />
             )}
           </div>

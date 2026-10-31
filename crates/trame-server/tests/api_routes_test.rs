@@ -11,10 +11,11 @@ use trame_server::assets::store::InMemoryAssetStore;
 use trame_server::auth::magic_link::MagicLinkService;
 use trame_server::auth::session::{AuthState, InMemorySessionStore};
 use trame_server::auth::totp::TotpService;
-use trame_server::http::{AppState, InMemoryMembershipValidator, build_router_with_state};
+use trame_server::http::{
+    AppState, InMemoryBlobStore, InMemoryMembershipValidator, build_router_with_state,
+};
 use trame_server::maps::InMemoryMapStorage;
 use trame_server::room::RoomLeaseManager;
-use trame_server::storage::blob::InMemoryBlobStore;
 use trame_server::timeline::InMemoryTimelineStorage;
 use trame_server::wal::InMemoryWalStorage;
 
@@ -182,6 +183,80 @@ async fn test_campaign_maps_rbac_and_sanitization() {
     assert_eq!(gm_scenes[0].staged_tokens.len(), 1);
     assert_eq!(gm_scenes[0].spatial_audio_emitters.len(), 1);
 
+    // 5b. Verify camelCase JSON payload deserialization and OneWay WallType persistence
+    let camelcase_payload = serde_json::json!({
+        "scenes": [{
+            "id": Uuid::new_v4(),
+            "campaignId": campaign_id,
+            "title": "CamelCase Catacombs",
+            "gridType": "square",
+            "gridCellSizePx": 70,
+            "feetPerCell": 5.0,
+            "widthPx": 1400,
+            "heightPx": 1400,
+            "revealedToPlayers": true,
+            "defaultGroundElevationFt": 0.0,
+            "walls": [{
+                "id": Uuid::new_v4(),
+                "a": { "x": 10.0, "y": 10.0 },
+                "b": { "x": 90.0, "y": 10.0 },
+                "wallType": "OneWay",
+                "doorState": { "isOpen": false, "isLocked": true },
+                "bottomElevationFt": 0.0,
+                "topElevationFt": 12.0,
+                "blocksLight": true,
+                "blocksMovement": true,
+                "blocksSound": true,
+                "blocksVision": true
+            }],
+            "lights": [{
+                "id": Uuid::new_v4(),
+                "origin": { "x": 100.0, "y": 100.0 },
+                "dimRadiusFt": 40.0,
+                "colorHex": "#ffffff",
+                "intensity": 1.0
+            }],
+            "audioEmitters": [{
+                "id": Uuid::new_v4(),
+                "x": 120.0,
+                "y": 120.0,
+                "maxDistanceFt": 50.0,
+                "loopPlayback": true,
+                "url": "echoes.ogg"
+            }],
+            "stagedTokens": [{
+                "id": Uuid::new_v4(),
+                "name": "Sentry",
+                "templateKey": "Goblin",
+                "x": 50.0,
+                "y": 50.0,
+                "visibilityChannel": "Public"
+            }]
+        }]
+    });
+    let req_camel_put = Request::builder()
+        .method("PUT")
+        .uri(format!(
+            "/api/v1/campaigns/{campaign_id}/maps?user_id={gm_user_id}"
+        ))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&camelcase_payload).unwrap()))
+        .unwrap();
+    let res_camel_put = app.clone().oneshot(req_camel_put).await.unwrap();
+    assert_eq!(res_camel_put.status(), StatusCode::NO_CONTENT);
+
+    // Restore original test scene for subsequent assertions
+    let req_restore_put = Request::builder()
+        .method("PUT")
+        .uri(format!(
+            "/api/v1/campaigns/{campaign_id}/maps?user_id={gm_user_id}"
+        ))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+        .unwrap();
+    let res_restore_put = app.clone().oneshot(req_restore_put).await.unwrap();
+    assert_eq!(res_restore_put.status(), StatusCode::NO_CONTENT);
+
     // 6. Player GET returns sanitized scene
     let req_player_get = Request::builder()
         .uri(format!(
@@ -201,7 +276,7 @@ async fn test_campaign_maps_rbac_and_sanitization() {
         player_scenes[0].wall_segments[0].wall_type,
         trame_server::maps::WallType::Normal
     );
-    assert_eq!(player_scenes[0].wall_segments[0].blocks_vision, true);
+    assert!(player_scenes[0].wall_segments[0].blocks_vision);
     assert_eq!(player_scenes[0].staged_tokens.len(), 0);
     assert_eq!(player_scenes[0].spatial_audio_emitters.len(), 0);
 }
