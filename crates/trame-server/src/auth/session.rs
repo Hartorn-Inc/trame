@@ -17,8 +17,10 @@
 //! ============================================================================
 
 use super::magic_link::{MagicLinkClaims, MagicLinkError, MagicLinkService, now_epoch_seconds};
+pub use super::oauth::{OAuthError, OAuthProvider, OAuthStore, PendingOAuthState};
 pub use super::password::IdentityStore;
 use super::password::bind_account_handler;
+pub use super::pat::{PatError, PatRecord, PatStore, create_pat_handler, list_pats_handler};
 use super::totp::{TotpService, totp_enable_handler, totp_setup_handler, totp_verify_handler};
 use crate::storage::blob::Sha256Hasher;
 use axum::Router;
@@ -141,6 +143,9 @@ pub struct InMemorySessionStore {
     campaign_members: Arc<RwLock<HashMap<(Uuid, Uuid), CampaignMemberRecord>>>,
     sessions: Arc<RwLock<HashMap<String, SessionRecord>>>,
     revoked_invites: Arc<RwLock<HashSet<Uuid>>>,
+    personal_access_tokens: Arc<RwLock<HashMap<Uuid, PatRecord>>>,
+    pending_oauth: Arc<RwLock<HashMap<String, PendingOAuthState>>>,
+    oauth_identities: Arc<RwLock<HashMap<(OAuthProvider, String), Uuid>>>,
 }
 
 impl InMemorySessionStore {
@@ -350,7 +355,137 @@ impl IdentityStore for InMemorySessionStore {
     }
 }
 
-impl<T: IdentityStore> IdentityStore for Arc<T> {
+impl PatStore for InMemorySessionStore {
+    fn save_pat<'a>(&'a self, record: PatRecord) -> BoxFuture<'a, Result<(), PatError>> {
+        Box::pin(async move {
+            self.personal_access_tokens
+                .write()
+                .await
+                .insert(record.id, record);
+            Ok(())
+        })
+    }
+
+    fn find_pat_by_hash<'a>(
+        &'a self,
+        token_hash: &'a str,
+    ) -> BoxFuture<'a, Result<Option<PatRecord>, PatError>> {
+        Box::pin(async move {
+            let pats = self.personal_access_tokens.read().await;
+            let mut matched = None;
+            for record in pats.values() {
+                if super::magic_link::constant_time_eq(
+                    record.token_hash.as_bytes(),
+                    token_hash.as_bytes(),
+                ) {
+                    matched = Some(record.clone());
+                }
+            }
+            Ok(matched)
+        })
+    }
+
+    fn list_pats_for_user<'a>(
+        &'a self,
+        user_id: Uuid,
+    ) -> BoxFuture<'a, Result<Vec<PatRecord>, PatError>> {
+        Box::pin(async move {
+            let pats = self.personal_access_tokens.read().await;
+            let list = pats
+                .values()
+                .filter(|p| p.user_id == user_id)
+                .cloned()
+                .collect();
+            Ok(list)
+        })
+    }
+
+    fn revoke_pat<'a>(
+        &'a self,
+        pat_id: Uuid,
+        user_id: Uuid,
+    ) -> BoxFuture<'a, Result<bool, PatError>> {
+        Box::pin(async move {
+            let mut pats = self.personal_access_tokens.write().await;
+            if let Some(record) = pats.get(&pat_id)
+                && record.user_id == user_id
+            {
+                pats.remove(&pat_id);
+                return Ok(true);
+            }
+            Ok(false)
+        })
+    }
+}
+
+impl OAuthStore for InMemorySessionStore {
+    fn save_pending_oauth<'a>(
+        &'a self,
+        state: PendingOAuthState,
+    ) -> BoxFuture<'a, Result<(), OAuthError>> {
+        Box::pin(async move {
+            self.pending_oauth
+                .write()
+                .await
+                .insert(state.state.clone(), state);
+            Ok(())
+        })
+    }
+
+    fn consume_pending_oauth<'a>(
+        &'a self,
+        state: &'a str,
+    ) -> BoxFuture<'a, Result<Option<PendingOAuthState>, OAuthError>> {
+        Box::pin(async move {
+            let mut map = self.pending_oauth.write().await;
+            Ok(map.remove(state))
+        })
+    }
+
+    fn find_user_by_oauth_identity<'a>(
+        &'a self,
+        provider: OAuthProvider,
+        provider_user_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<UserRecord>, SessionError>> {
+        Box::pin(async move {
+            let identities = self.oauth_identities.read().await;
+            if let Some(user_id) = identities.get(&(provider, provider_user_id.to_string())) {
+                let users = self.users.read().await;
+                Ok(users.get(user_id).cloned())
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    fn bind_oauth_identity<'a>(
+        &'a self,
+        user_id: Uuid,
+        provider: OAuthProvider,
+        provider_user_id: &'a str,
+        email: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<UserRecord, SessionError>> {
+        Box::pin(async move {
+            let mut users = self.users.write().await;
+            let user = users.get_mut(&user_id).ok_or(SessionError::NotFound)?;
+            user.is_guest = false;
+            if user.email.is_none() && email.is_some() {
+                user.email = email.map(ToString::to_string);
+            }
+            let updated = user.clone();
+            self.oauth_identities
+                .write()
+                .await
+                .insert((provider, provider_user_id.to_string()), user_id);
+            if let Some(ref em) = updated.email {
+                self.emails.write().await.insert(em.clone(), user_id);
+            }
+            Ok(updated)
+        })
+    }
+}
+
+impl<T: IdentityStore + ?Sized> IdentityStore for Arc<T> {
     fn get_user_by_email<'a>(
         &'a self,
         email: &'a str,
@@ -674,5 +809,9 @@ pub fn build_auth_router(state: AuthState) -> Router {
         .route("/api/v1/auth/totp/setup", post(totp_setup_handler))
         .route("/api/v1/auth/totp/enable", post(totp_enable_handler))
         .route("/api/v1/auth/totp/verify", post(totp_verify_handler))
+        .route(
+            "/api/v1/auth/pat",
+            post(create_pat_handler).get(list_pats_handler),
+        )
         .with_state(state)
 }

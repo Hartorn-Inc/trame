@@ -1,9 +1,11 @@
 #![allow(
     async_fn_in_trait,
-    clippy::unnecessary_sort_by,
+    clippy::collapsible_else_if,
+    clippy::collapsible_if,
+    clippy::doc_lazy_continuation,
     clippy::too_many_arguments,
     clippy::type_complexity,
-    clippy::doc_lazy_continuation
+    clippy::unnecessary_sort_by
 )]
 
 //! ============================================================================
