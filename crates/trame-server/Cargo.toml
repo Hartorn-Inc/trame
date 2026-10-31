@@ -18,7 +18,6 @@ rand_chacha.workspace = true
 rmp-serde.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
 thiserror.workspace = true
 tokio.workspace = true
 tower = { version = "0.5", features = ["util"] }

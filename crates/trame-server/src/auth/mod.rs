@@ -1,0 +1,7 @@
+//! Authentication and session management module for TRAME.
+
+pub mod magic_link;
+pub mod session;
+
+pub use magic_link::*;
+pub use session::*;
