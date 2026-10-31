@@ -1,4 +1,4 @@
-# ADR-0034: D&D 5e Level-Up (Lvl 1-20), Short/Long Rests, and SRD 5.1 Compendium Expansion Architecture
+# ADR-0036: D&D 5e Level-Up (Lvl 1-20), Short/Long Rests, and SRD 5.1 Compendium Expansion Architecture
 
 - **Status**: Accepted
 - **Date**: 2025-05-20

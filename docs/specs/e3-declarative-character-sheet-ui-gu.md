@@ -97,7 +97,7 @@ export interface SheetLayoutTree {
 ### 3.1 `StatBlock6`
 - **Description**: Displays the six primary ability scores (Strength, Dexterity, Constitution, Intelligence, Wisdom, Charisma) with scores and calculated modifiers.
 - **Required Bindings**:
-  - `abilities`: Path resolving to `Record<string, { score: number; modifier: number }>`.
+  - `abilities`: Path resolving to `Record<string, { score: number; modifier: number }>.
 - **Options**:
   - `displayOrder`: Optional array of ability keys (default: `['str', 'dex', 'con', 'int', 'wis', 'cha']`).
 - **Interactions**:
