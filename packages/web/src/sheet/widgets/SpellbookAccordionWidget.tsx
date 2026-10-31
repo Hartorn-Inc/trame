@@ -137,6 +137,11 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
   const pactMax = Number(rawPactMagic?.max ?? 0);
   const pactCurrent = Number(rawPactMagic?.current ?? pactMax);
   const pactLevel = Number(rawPactMagic?.slotLevel ?? rawPactMagic?.level ?? 1);
+  const rawSpellSaveDc = props.boundValues?.spellSaveDc ?? (props.boundValues?.attributes as any)?.spellSaveDc;
+  const rawSpellAttackBonus = props.boundValues?.spellAttackBonus ?? (props.boundValues?.attributes as any)?.spellAttackBonus;
+  const spellSaveDc = typeof rawSpellSaveDc === 'number' ? rawSpellSaveDc : Number(rawSpellSaveDc ?? 10);
+  const spellAttackBonus = typeof rawSpellAttackBonus === 'number' ? rawSpellAttackBonus : Number(rawSpellAttackBonus ?? 0);
+  const formattedSpellAttack = spellAttackBonus >= 0 ? `+${spellAttackBonus}` : `${spellAttackBonus}`;
 
   return h(
     'div',
@@ -147,6 +152,20 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
       onDrop: handleDrop,
     },
     h('h4', { class: 'ds-widget-title' }, 'Spellbook & Spell Slots'),
+    h(
+      'div',
+      { class: 'ds-spellcasting-metrics atlas-tabular-nums', 'data-testid': 'spellcasting-metrics' },
+      h(
+        'span',
+        { class: 'ds-spell-save-dc atlas-tabular-nums', 'data-testid': 'spell-save-dc-badge' },
+        `Spell Save DC: ${spellSaveDc}`,
+      ),
+      h(
+        'span',
+        { class: 'ds-spell-attack-bonus atlas-tabular-nums', 'data-testid': 'spell-attack-bonus-badge' },
+        ` | Spell Attack Bonus: ${formattedSpellAttack}`,
+      ),
+    ),
     h(
       'div',
       { class: 'ds-pact-magic-section', 'data-testid': 'pact-magic-section' },

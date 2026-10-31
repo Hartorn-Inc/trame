@@ -38,6 +38,7 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
   const totalCarriedWeight = calculateTotalInventoryWeight(items);
   const attunedCount = items.filter((it) => it.isAttuned).length;
   const rawStr = props.boundValues?.strength ?? props.boundValues?.str ?? (props.boundValues?.abilities as any)?.str;
+  const hasResolvedStr = typeof rawStr === 'number' || typeof rawStr?.score === 'number' || typeof props.boundValues?.strengthScore === 'number';
   const strScore = typeof rawStr === 'number' ? rawStr : typeof rawStr?.score === 'number' ? rawStr.score : Number(props.boundValues?.strengthScore ?? 10);
   const regularEncumbrance = strScore * 5;
   const heavyEncumbrance = strScore * 10;
@@ -244,7 +245,7 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
         'div',
         { class: 'ds-encumbrance-labels atlas-tabular-nums' },
         h('span', { class: 'atlas-tabular-nums' }, `Weight: ${totalCarriedWeight.toFixed(1)} / ${maxCapacity} lb `),
-        h('span', { class: 'atlas-tabular-nums' }, `(Enc: ${regularEncumbrance} lb, Heavy: ${heavyEncumbrance} lb)`),
+        h('span', { class: 'atlas-tabular-nums' }, `(Enc: ${regularEncumbrance} lb, Heavy: ${heavyEncumbrance} lb${hasResolvedStr ? '' : ', default STR 10'})`),
         h('span', { class: 'ds-attunement-label atlas-tabular-nums' }, ` | Attuned: ${attunedCount}/3`),
       ),
       h(
