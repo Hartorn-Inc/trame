@@ -19,7 +19,7 @@ Atomic widgets and drag-and-drop handlers do not mutate Actor records directly. 
 - `TrameCommand.CreateActor`: Dispatched when the user finalizes the `CharacterBuilderWizard`.
 
 ### 1.3 Test Framework Contract
-In accordance with ADR-0006 (Declarative Character Sheet UI Architecture and Widget Registry) and the project architecture, `packages/web` uses the native Node 24 test runner (`node:test` and `node:assert/strict`) with native TypeScript support. No browser mock libraries (`@testing-library/react`, Vitest, jsdom) are permitted. All unit and integration tests execute headlessly through `npm test`.
+In accordance with ADR-0037 and the project architecture, `packages/web` uses the native Node 24 test runner (`node:test` and `node:assert/strict`) with native TypeScript support. No browser mock libraries (`@testing-library/react`, Vitest, jsdom) are permitted. All unit and integration tests execute headlessly through `npm test`.
 
 ---
 
@@ -118,14 +118,14 @@ export interface SheetLayoutTree {
 ### 3.3 `SavingThrowList`
 - **Description**: Displays saving throw modifiers and proficiency toggles for each ability.
 - **Required Bindings**:
-  - `saves`: Path resolving to `Record<string, { modifier: number; proficient: boolean }>.
+  - `saves`: Path resolving to `Record<string, { modifier: number; proficient: boolean }>`.
 - **Interactions**:
   - WHEN a user clicks a saving throw row, THEN `SavingThrowList` dispatches a `TrameCommand.RollDice` command for `1d20 + {modifier}`.
 
 ### 3.4 `SkillCheckList`
 - **Description**: Displays skill checks with proficiency level indicators (none, proficient, expertise) and passive scores.
 - **Required Bindings**:
-  - `skills`: Path resolving to `Record<string, { modifier: number; proficiencyLevel: string; passive: number }>.
+  - `skills`: Path resolving to `Record<string, { modifier: number; proficiencyLevel: string; passive: number }>`.
 - **Interactions**:
   - WHEN a user clicks a skill row, THEN `SkillCheckList` dispatches a `TrameCommand.RollDice` command for `1d20 + {modifier}`.
 
@@ -166,7 +166,7 @@ export interface SheetLayoutTree {
 ### 3.8 `SpellbookAccordion`
 - **Description**: Displays spells grouped by spell level, available spell slot pips, spell save DC, and spell attack bonus.
 - **Required Bindings**:
-  - `slots`: Path resolving to `Record<string, { current: number; max: number }>.
+  - `slots`: Path resolving to `Record<string, { current: number; max: number }>`.
   - `spells`: Path resolving to an array of spell objects (`{ id, name, level, school, range, castingTime, requiresAoE, aoeShape }`).
   - `spellSaveDc`: Path resolving to `number`.
   - `spellAttackBonus`: Path resolving to `number`.
@@ -433,3 +433,4 @@ node --test packages/web/tests/**/*.test.ts
 - Do not import `@testing-library/react` or `jsdom`.
 - Do not dispatch `TrameCommand.CreateActor` before step 5 of the wizard.
 - Do not duplicate `ActiveEffect` IDs on client-side inventory items.
+

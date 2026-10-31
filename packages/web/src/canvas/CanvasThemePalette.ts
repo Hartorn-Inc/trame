@@ -117,7 +117,7 @@ export const CANVAS_AMBIENT_TINTS: Record<
   PITCH_DARKNESS: "#0F1A25",
 };
 
-const SHARED_WALL_KINDS: Record<CanonicalWallKind, WallKindVisualStyle> = {
+export const SHARED_WALL_KINDS: Record<CanonicalWallKind, WallKindVisualStyle> = {
   Normal: {
     strokeColorHex: 0xf1f4f3,
     strokeColorCss: "#F1F4F3",

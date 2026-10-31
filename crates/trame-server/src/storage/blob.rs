@@ -322,3 +322,5 @@ impl Sha256Hasher {
         hasher.finalize_hex()
     }
 }
+
+pub use crate::http::InMemoryBlobStore;
