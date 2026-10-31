@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import {
   DeclarativeSheetRenderer,
   type DeclarativeSheetMountOptions,
