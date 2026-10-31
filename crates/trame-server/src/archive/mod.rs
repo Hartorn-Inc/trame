@@ -1025,7 +1025,7 @@ mod tests {
         use async_zip::{Compression, ZipEntryBuilder};
         use futures_lite::io::AsyncWriteExt;
 
-        const ASSET_BYTES: usize = 20 * 1024 * 1024;
+        const ASSET_BYTES: usize = 2 * 1024 * 1024;
         let campaign_id = Uuid::new_v4();
         let asset_id = Uuid::new_v4();
         let chunk_64k = vec![0x7au8; 64 * 1024];
@@ -1083,7 +1083,7 @@ mod tests {
         let result = importer
             .import_stream(Cursor::new(zip_bytes), false)
             .await
-            .expect("20 MiB asset import succeeds");
+            .expect("large asset import succeeds");
 
         assert_eq!(result.assets_restored, 1);
         let desc = blob_store

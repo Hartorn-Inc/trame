@@ -111,6 +111,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: PixiJS v8 `SceneGraph` rendering, tactical overlays, wall segment geometry, and theme synchronization.
 - **_Avoid_**: PixiColorMap, ShaderThemeConfig, CanvasStyleSheet.
 
+### ChaCha20Rng
+
+- **Definition**: Cryptographically secure server-authoritative pseudorandom number generator used for dice rolling, hit point gains, and rest recovery.
+- **Allowed Context**: Server-authoritative dice generation, progression mechanics, and table timeline audit logs.
+- **_Avoid_**: ServerRNG, DiceEngine, RandomService.
+
 ### CombatTracker
 
 - **Definition**: HUD component displaying the combat turn order carousel, initiative values, and action economy badges.
@@ -140,6 +146,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Standardized state affecting an actor (e.g., `blinded`, `charmed`, `unconscious`) paired with a duration in rounds and an expiration trigger.
 - **Allowed Context**: `Condition`, `condition`.
 - **_Avoid_**: `status`, `affliction`.
+
+### CoreBuildLock
+
+- **Definition**: Integrity constraint preventing direct client-side modification of fundamental actor statistics outside authoritative progression workflows (`LevelUpModal`, guided character creation).
+- **Allowed Context**: Character sheet field-level write protection and mutation validation.
+- **_Avoid_**: StatLock, ReadOnlyMode, BuildProtection.
 
 ### CRDTDocument
 
@@ -218,6 +230,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Middle compendium tier storing game entities shared across all campaigns hosted on the same TRAME instance.
 - **Allowed Context**: `InstanceLibrary`, `instance library`.
 - **_Avoid_**: `instance compendium`, `shared library`.
+
+### LevelUpModal
+
+- **Definition**: User interface component guiding a user through step-by-step level advancement, hit point selection, Ability Score Improvement or Feat selection, and spell choices for an actor.
+- **Allowed Context**: Character progression workflows and web client sheet interactions.
+- **_Avoid_**: WizardLevelUp, LevelUpDialog, ProgressionScreen.
 
 ### LongRest
 
