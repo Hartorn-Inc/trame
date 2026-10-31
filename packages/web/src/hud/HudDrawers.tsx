@@ -16,6 +16,7 @@ export interface HudDrawersProps {
   compendiumEntries?: CompendiumEntry[];
   systemId?: string;
   isTableCanvasMounted?: boolean;
+  targetContainerId?: string | null;
 }
 
 export function HudDrawers(props: HudDrawersProps): VNode<any> {
@@ -75,6 +76,7 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
       systemId: props.systemId,
       dispatchCommand: props.dispatchCommand,
       actorId,
+      targetContainerId: props.targetContainerId,
     }),
   );
 }

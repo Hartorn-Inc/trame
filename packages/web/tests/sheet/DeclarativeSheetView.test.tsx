@@ -73,5 +73,39 @@ describe("DeclarativeSheetView Component & CoreBuildLock", () => {
     assert.equal(dispatched[0].cmd, 'DROP_COMPENDIUM_ENTRY');
     assert.equal(dispatched[0].actorId, 'pc-warrior-1');
     assert.equal(dispatched[0].entryRef, 'item-longsword');
+    assert.equal(dispatched[0].targetContainerId, null);
+  });
+
+  it("CompendiumDrawer dispatches DropCompendiumEntry with targetContainerId when targetContainerId prop is provided", () => {
+    const dispatched: any[] = [];
+    const drawer = CompendiumDrawer({
+      isOpen: true,
+      onClose: () => {},
+      systemId: 'dnd5e',
+      actorId: 'pc-warrior-1',
+      targetContainerId: 'backpack-main',
+      dispatchCommand: (cmd) => dispatched.push(cmd),
+      entries: [
+        {
+          id: 'item-longsword',
+          slug: 'longsword',
+          name: 'Longsword',
+          entityType: 'item',
+          tier: 'SYSTEM_SRD',
+          data: { weight: 3 },
+        },
+      ],
+    });
+    assert.ok(drawer);
+    const tabPanel = drawer.props.children[3];
+    const list = tabPanel.props.children;
+    const itemCard = list.props.children[0];
+    const addButton = itemCard.props.children[3];
+    addButton.props.onClick({ stopPropagation: () => {} });
+    assert.equal(dispatched.length, 1);
+    assert.equal(dispatched[0].cmd, 'DROP_COMPENDIUM_ENTRY');
+    assert.equal(dispatched[0].actorId, 'pc-warrior-1');
+    assert.equal(dispatched[0].entryRef, 'item-longsword');
+    assert.equal(dispatched[0].targetContainerId, 'backpack-main');
   });
 });
