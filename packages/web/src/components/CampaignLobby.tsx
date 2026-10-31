@@ -107,6 +107,9 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
         name,
         system: newCampaignSystem,
       });
+      if (!appSignals.campaignsSignal.value.some((c) => c.id === created.id)) {
+        appSignals.campaignsSignal.value = [...appSignals.campaignsSignal.value, created];
+      }
       setIsCreateModalOpen(false);
       setNewCampaignName("");
       setStatusMessage(`Campaign "${created.name}" created successfully.`);
@@ -332,7 +335,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
         </button>
 
         <label
-          role={"button" as unknown as undefined}
+          role={"button" as any}
           data-testid="import-archive-btn"
           tabIndex={0}
           onKeyDown={(e) => {

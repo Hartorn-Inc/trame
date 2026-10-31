@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { register } from "node:module";
+import fs from "node:fs";
+import module from "node:module";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { ApiClient } from "../src/api/client.ts";
 import {
   activeCampaignSignal,
@@ -20,11 +23,19 @@ import {
 } from "../src/state/appSignals.ts";
 import type { CampaignRoomState } from "../src/types/index.ts";
 
-if (typeof register === "function") {
-  register("./tsx-loader.mjs", import.meta.url);
+if (typeof module.register === "function") {
+  module.register("./tsx-loader.mjs", import.meta.url);
 }
 
-import { h, render } from "preact";
+import { h, options, render } from "preact";
+import type { AuthScreenProps } from "../src/components/AuthScreen.tsx";
+import type { CampaignLobbyProps } from "../src/components/CampaignLobby.tsx";
+
+options.debounceRendering = (cb) => cb();
+options.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+(globalThis as unknown as { requestAnimationFrame: unknown }).requestAnimationFrame = (cb: Function) => setTimeout(cb, 0);
+(globalThis as unknown as { cancelAnimationFrame: unknown }).cancelAnimationFrame = (id: NodeJS.Timeout) => clearTimeout(id);
+
 const { AuthScreen } = await import("../src/components/AuthScreen.tsx");
 const { CampaignLobby } = await import("../src/components/CampaignLobby.tsx");
 
@@ -35,13 +46,23 @@ class SimpleDomNode {
   parentNode: SimpleDomNode | null = null;
   attributes: Record<string, string> = {};
   style: Record<string, string> = {};
-  _listeners: Record<string, Function[]> = {};
+  _eventHandlers: Record<string, Function[]> = {};
+  _listeners: Record<string, unknown> = {};
   _value = "";
+  [key: string]: unknown;
 
   constructor(nodeType: number, nodeName: string, text = "") {
     this.nodeType = nodeType;
     this.nodeName = nodeName.toUpperCase();
     this._value = text;
+    return new Proxy(this, {
+      has(target, prop) {
+        if (typeof prop === "string" && prop.startsWith("on")) {
+          return true;
+        }
+        return prop in target;
+      },
+    });
   }
 
   get firstChild(): SimpleDomNode | null {
@@ -57,6 +78,7 @@ class SimpleDomNode {
   }
   set value(v: string) {
     this._value = String(v);
+    this.attributes["value"] = String(v);
   }
   get textContent(): string {
     if (this.nodeType === 3) return this._value;
@@ -90,43 +112,39 @@ class SimpleDomNode {
     }
     return child;
   }
-  remove(): void {
-    if (this.parentNode) {
-      this.parentNode.removeChild(this);
+  setAttribute(k: string, v: string): void {
+    const lower = k.toLowerCase();
+    this.attributes[lower] = String(v);
+    if (lower === "value") {
+      this._value = String(v);
     }
   }
-  setAttribute(k: string, v: string): void {
-    this.attributes[k] = String(v);
-    this.attributes[k.toLowerCase()] = String(v);
-  }
   removeAttribute(k: string): void {
-    delete this.attributes[k];
     delete this.attributes[k.toLowerCase()];
   }
   getAttribute(k: string): string | null {
-    if (k in this.attributes) return this.attributes[k];
-    const lower = k.toLowerCase();
-    if (lower in this.attributes) return this.attributes[lower];
-    const propVal = (this as unknown as Record<string, unknown>)[k];
-    if (propVal !== undefined && propVal !== null) return String(propVal);
-    return null;
+    return this.attributes[k.toLowerCase()] ?? null;
   }
   addEventListener(type: string, fn: Function): void {
-    (this._listeners[type] = this._listeners[type] || []).push(fn);
+    const key = type.toLowerCase();
+    (this._eventHandlers[key] = this._eventHandlers[key] || []).push(fn);
   }
   removeEventListener(type: string, fn: Function): void {
-    if (this._listeners[type]) {
-      this._listeners[type] = this._listeners[type].filter((f) => f !== fn);
+    const key = type.toLowerCase();
+    if (this._eventHandlers[key]) {
+      this._eventHandlers[key] = this._eventHandlers[key].filter((f) => f !== fn);
     }
   }
   dispatchEvent(ev: { type: string; target?: unknown; preventDefault?: () => void; [k: string]: unknown }): boolean {
+    const type = ev.type.toLowerCase();
     const eventObj = {
       ...ev,
+      type,
       target: ev.target || this,
       currentTarget: this,
       preventDefault: ev.preventDefault || (() => {}),
     };
-    for (const h of this._listeners[ev.type] || []) {
+    for (const h of this._eventHandlers[type] || []) {
       h.call(this, eventObj);
     }
     return true;
@@ -153,17 +171,31 @@ class SimpleDomNode {
 }
 
 function matchSelector(node: SimpleDomNode, sel: string): boolean {
-  if (sel.startsWith("[") && sel.endsWith("]")) {
-    const inner = sel.slice(1, -1);
+  if (node.nodeType !== 1) return false;
+  const tagMatch = sel.match(/^([a-z0-9_-]+)/i);
+  let tag = "";
+  let rest = sel;
+  if (tagMatch) {
+    tag = tagMatch[1].toLowerCase();
+    rest = sel.slice(tagMatch[0].length);
+  }
+  if (tag && node.nodeName.toLowerCase() !== tag) {
+    return false;
+  }
+  if (!rest) {
+    return true;
+  }
+  if (rest.startsWith("[") && rest.endsWith("]")) {
+    const inner = rest.slice(1, -1);
     const eqIdx = inner.indexOf("=");
     if (eqIdx !== -1) {
-      const attr = inner.slice(0, eqIdx).trim();
+      const attr = inner.slice(0, eqIdx).trim().toLowerCase();
       const val = inner.slice(eqIdx + 1).replace(/^["']|["']$/g, "").trim();
       return node.attributes[attr] === val;
     }
-    return inner in node.attributes;
+    return inner.toLowerCase() in node.attributes;
   }
-  return node.nodeName.toLowerCase() === sel.toLowerCase();
+  return false;
 }
 
 function setupTestDom() {
@@ -195,6 +227,10 @@ function setupTestDom() {
   };
   (globalThis as unknown as { document: unknown }).document = doc;
   (globalThis as unknown as { window: unknown }).window = win;
+  (globalThis as unknown as { requestAnimationFrame: unknown }).requestAnimationFrame = (cb: Function) => setTimeout(cb, 0);
+  (globalThis as unknown as { cancelAnimationFrame: unknown }).cancelAnimationFrame = (id: NodeJS.Timeout) => clearTimeout(id);
+  options.debounceRendering = (cb) => cb();
+  options.requestAnimationFrame = (cb) => setTimeout(cb, 0);
   return { doc, win };
 }
 
@@ -349,16 +385,14 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
     nameInput.dispatchEvent({ type: "input", target: nameInput });
     passInput.value = "SecurePass2026!";
     passInput.dispatchEvent({ type: "input", target: passInput });
-    await new Promise((r) => setTimeout(r, 15));
 
     form.dispatchEvent({ type: "submit", preventDefault() {} });
-    await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, 20));
 
     assert.equal(registerCalled, true);
     assert.notEqual(appSignals.authUserSignal.value, null);
     assert.equal(appSignals.authUserSignal.value?.email, "adventurer@trame.test");
     assert.equal(transitionedToLobby, true);
-    render(null, container as unknown as Element);
   });
 
   it("WHEN a visitor navigates to the lobby URL with query parameter ?invite=<jwt>, CampaignLobby.tsx executes POST /api/v1/auth/magic-link/redeem, assigns the ephemeral user to appSignals.authUserSignal, and opens the invited campaign.", async () => {
@@ -399,7 +433,7 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
       container as unknown as Element,
     );
 
-    await new Promise((r) => setTimeout(r, 60));
+    await new Promise((r) => setTimeout(r, 30));
 
     assert.equal(redeemCalled, true);
     assert.notEqual(appSignals.authUserSignal.value, null);
@@ -407,7 +441,6 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
     assert.equal(appSignals.authUserSignal.value?.isEphemeral, true);
     assert.equal(openedCampaignId, "campaign-invited-999");
     assert.equal(appSignals.activeCampaignSignal.value?.id, "campaign-invited-999");
-    render(null, container as unknown as Element);
   });
 
   it("WHEN a Game Master clicks the Create Campaign button and submits a campaign name in CampaignLobby.tsx, CampaignLobby.tsx executes POST /api/v1/campaigns and appends the returned campaign summary to appSignals.campaignsSignal.", async () => {
@@ -434,7 +467,6 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
     const createBtn = container.querySelector('[data-testid="create-campaign-btn"]');
     assert.ok(createBtn);
     createBtn.click();
-    await new Promise((r) => setTimeout(r, 15));
 
     const nameInput = container.querySelector('[data-testid="create-campaign-name-input"]');
     const createForm = container.querySelector('[data-testid="create-campaign-form"]');
@@ -443,27 +475,25 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
 
     nameInput.value = "Curse of the Crimson Citadel";
     nameInput.dispatchEvent({ type: "input", target: nameInput });
-    await new Promise((r) => setTimeout(r, 15));
 
     createForm.dispatchEvent({ type: "submit", preventDefault() {} });
-    await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, 20));
 
     assert.equal(createCalled, true);
     assert.equal(appSignals.campaignsSignal.value.length, 1);
     assert.equal(appSignals.campaignsSignal.value[0].name, "Curse of the Crimson Citadel");
-    render(null, container as unknown as Element);
   });
 
   it("enforces WCAG 2.1 AA keyboard and ARIA accessibility roles on AuthScreen and CampaignLobby", () => {
     setupTestDom();
     const authContainer = new SimpleDomNode(1, "div");
-    render(h(AuthScreen, { initialMode: "register" }), authContainer as unknown as Element);
+    render(h<AuthScreenProps>(AuthScreen, {}), authContainer as unknown as Element);
     const authMain = authContainer.querySelector('[role="main"]');
     assert.ok(authMain);
     assert.equal(authMain.getAttribute("aria-labelledby"), "auth-heading");
 
     const lobbyContainer = new SimpleDomNode(1, "div");
-    render(h(CampaignLobby, { client: new ApiClient() }), lobbyContainer as unknown as Element);
+    render(h<CampaignLobbyProps>(CampaignLobby, {}), lobbyContainer as unknown as Element);
     const lobbyMain = lobbyContainer.querySelector('[role="main"]');
     assert.ok(lobbyMain);
     assert.equal(lobbyMain.getAttribute("aria-label"), "Campaign Lobby");
@@ -477,7 +507,5 @@ describe("PreactSignalState, AuthScreen, and CampaignLobby suite", () => {
     assert.ok(importInput);
     assert.equal(importInput.getAttribute("tabindex"), "-1");
     assert.equal(importInput.getAttribute("aria-hidden"), "true");
-    render(null, authContainer as unknown as Element);
-    render(null, lobbyContainer as unknown as Element);
   });
 });
