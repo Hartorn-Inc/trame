@@ -1,7 +1,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -11,7 +11,7 @@ use trame_server::assets::store::InMemoryAssetStore;
 use trame_server::auth::magic_link::MagicLinkService;
 use trame_server::auth::session::{AuthState, InMemorySessionStore};
 use trame_server::auth::totp::TotpService;
-use trame_server::http::{build_router_with_state, AppState, InMemoryMembershipValidator};
+use trame_server::http::{AppState, InMemoryMembershipValidator, build_router_with_state};
 use trame_server::maps::InMemoryMapStorage;
 use trame_server::room::RoomLeaseManager;
 use trame_server::storage::blob::InMemoryBlobStore;
