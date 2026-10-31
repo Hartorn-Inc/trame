@@ -4,7 +4,8 @@ import { client as defaultClient, type ApiClient } from "../api/client.ts";
 import { DeclarativeSheetRenderer } from "../sheet/DeclarativeSheetRenderer.ts";
 import { WidgetRegistry } from "../sheet/WidgetRegistry.ts";
 import { registerAllCanonicalWidgets } from "../sheet/widgets/index.ts";
-import { DND5E_SHEET_LAYOUT, type SheetLayoutTree } from "../../../game-systems/dnd5e/src/sheetLayout.ts";
+import { DND5E_SHEET_LAYOUT, type SheetLayoutTree } from "@trame/game-system-dnd5e";
+import { PadlockLockedIcon, PadlockUnlockedIcon } from "./icons/AtlasIcons.tsx";
 import { appSignals } from "../state/appSignals.ts";
 import { CompendiumDragDropManager } from "../dnd/CompendiumDragDropManager.ts";
 import type { ActorRecord, ClientDiceLogEntry, TrameCommand } from "../types/index.ts";
@@ -203,7 +204,13 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
       appSignals.diceLogSignal.value = [...appSignals.diceLogSignal.value, entry];
       return;
     }
-    if (command && (command.cmd === "DROP_COMPENDIUM_ENTRY" || command.cmd === "DropCompendiumEntry")) {
+    if (
+      command &&
+      (command.cmd === "DROP_COMPENDIUM_ENTRY" ||
+        command.cmd === "DropCompendiumEntry" ||
+        command.type === "DROP_COMPENDIUM_ENTRY" ||
+        command.type === "DropCompendiumEntry")
+    ) {
       const payload = (command.entry || command.data || command) as Record<string, unknown>;
       const spellOrItem = { id: String(payload.id || `item-${Date.now()}`), name: String(payload.name || "Compendium Drop"), type: payload.entityType || "spell" };
       const currentActors = [...appSignals.actorsSignal.value];
@@ -233,10 +240,16 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
     return DeclarativeSheetRenderer.render(
       layout,
       actorState,
-      { isGm, isOwner, userId: user?.id, actorOwnerId: actor.ownerUserId ?? undefined },
+      {
+        isGm,
+        isOwner,
+        userId: user?.id,
+        actorOwnerId: actor.ownerUserId ?? undefined,
+        padlockUnlocked: isPadlockUnlocked,
+      },
       handleDispatch,
     );
-  }, [props.layoutTree, actorState, isGm, isOwner, user?.id, actor.ownerUserId]);
+  }, [props.layoutTree, actorState, isGm, isOwner, user?.id, actor.ownerUserId, isPadlockUnlocked]);
 
   const handleDropPayload = (e: DragEvent) => {
     e.preventDefault();
@@ -700,7 +713,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                   <span
                     key={c.id}
                     data-testid={`condition-badge-${c.id}`}
-                    style={{ fontSize: "0.625rem", padding: "0.125rem 0.375rem", backgroundColor: "var(--atlas-info)", color: "var(--atlas-info)", borderRadius: "4px", border: "1px solid var(--atlas-danger)" }}
+                    style={{ fontSize: "0.625rem", padding: "0.125rem 0.375rem", backgroundColor: "var(--atlas-info)", color: "var(--atlas-bg)", borderRadius: "4px", border: "1px solid var(--atlas-danger)" }}
                   >
                     {c.name}
                   </span>
@@ -783,24 +796,46 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
             {actor.kind || "Character"} | D&D 5e SRD 5.1
           </span>
         </div>
-        <button
-          type="button"
-          data-testid="close-sheet-btn"
-          onClick={() => {
-            appSignals.activeDrawerSignal.value = null;
-            props.onClose?.();
-          }}
-          style={{
-            padding: "0.375rem 0.75rem",
-            backgroundColor: "var(--atlas-border)",
-            color: "var(--atlas-text)",
-            border: "none",
-            borderRadius: "4px",
-            cursor: "pointer",
-          }}
-        >
-          Close
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <button
+            type="button"
+            data-testid="sheet-padlock-toggle"
+            aria-pressed={String(isPadlockUnlocked)}
+            aria-label={isPadlockUnlocked ? "Lock Character Sheet" : "Unlock Character Sheet"}
+            onClick={() => setIsPadlockUnlocked((prev) => !prev)}
+            style={{
+              padding: "0.375rem 0.5rem",
+              backgroundColor: isPadlockUnlocked ? "var(--atlas-action)" : "var(--atlas-surface)",
+              color: isPadlockUnlocked ? "var(--atlas-bg)" : "var(--atlas-text)",
+              border: "1px solid var(--atlas-border)",
+              borderRadius: "4px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            {isPadlockUnlocked ? <PadlockUnlockedIcon size={18} /> : <PadlockLockedIcon size={18} />}
+          </button>
+          <button
+            type="button"
+            data-testid="close-sheet-btn"
+            onClick={() => {
+              appSignals.activeDrawerSignal.value = null;
+              props.onClose?.();
+            }}
+            style={{
+              padding: "0.375rem 0.75rem",
+              backgroundColor: "var(--atlas-border)",
+              color: "var(--atlas-text)",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer",
+            }}
+          >
+            Close
+          </button>
+        </div>
       </header>
 
       <div

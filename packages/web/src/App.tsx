@@ -1,5 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
-import { client } from "./api/client.ts";
+import type { ComponentChildren, JSX } from "preact";
+import { client as defaultClient, type ApiClient } from "./api/client.ts";
 import { appSignals } from "./state/appSignals.ts";
 import { AuthScreen } from "./components/AuthScreen.tsx";
 import { CampaignLobby } from "./components/CampaignLobby.tsx";
@@ -14,7 +15,13 @@ import { WikiNotesDrawer } from "./components/WikiNotesDrawer.tsx";
 import { HandoutPopupModal } from "./components/HandoutPopupModal.tsx";
 import { MobileCompanionView } from "./components/MobileCompanionView.tsx";
 
-export function App(): import("preact").JSX.Element {
+export interface AppProps {
+  children?: ComponentChildren;
+  client?: ApiClient;
+}
+
+export function App(props: AppProps = {}): JSX.Element {
+  const activeClient = props.client || defaultClient;
   const user = appSignals.authUserSignal.value;
   const activeCampaign = appSignals.activeCampaignSignal.value;
   const activeDrawer = appSignals.activeDrawerSignal.value;
@@ -30,14 +37,14 @@ export function App(): import("preact").JSX.Element {
     if (!activeCampaign) {
       return;
     }
-    client.connectWebSocket(activeCampaign.id, {
+    activeClient.connectWebSocket(activeCampaign.id, {
       role: activeCampaign.role,
       userId: user?.id,
     });
     return () => {
-      client.disconnectWebSocket();
+      activeClient.disconnectWebSocket();
     };
-  }, [activeCampaign?.id, activeCampaign?.role, user?.id]);
+  }, [activeClient, activeCampaign?.id, activeCampaign?.role, user?.id]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -52,11 +59,11 @@ export function App(): import("preact").JSX.Element {
   }, []);
 
   if (!user) {
-    return <AuthScreen />;
+    return <AuthScreen client={activeClient} />;
   }
 
   if (!activeCampaign) {
-    return <CampaignLobby />;
+    return <CampaignLobby client={activeClient} />;
   }
 
   if (companionMode || viewportWidth < 768) {
@@ -94,9 +101,10 @@ export function App(): import("preact").JSX.Element {
             onClick={() => (appSignals.activeCampaignSignal.value = null)}
             data-testid="leave-campaign-btn"
             style={{
-              padding: "0.25rem 0.5rem",
-              backgroundColor: "var(--atlas-surface)",
-              color: "var(--atlas-text-muted)",
+              minHeight: "40px",
+              padding: "0.25rem 0.75rem",
+              backgroundColor: "var(--atlas-surface-raised)",
+              color: "var(--atlas-text)",
               border: "1px solid var(--atlas-border)",
               borderRadius: "4px",
               fontSize: "0.75rem",
@@ -110,62 +118,119 @@ export function App(): import("preact").JSX.Element {
         <div style={{ display: "flex", gap: "0.5rem" }}>
           <button
             type="button"
+            aria-expanded={activeDrawer === "sheet"}
             onClick={() => (appSignals.activeDrawerSignal.value = activeDrawer === "sheet" ? null : "sheet")}
             data-testid="toggle-sheet-btn"
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-info)", border: "1px solid var(--atlas-info)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+            style={{
+              minHeight: "40px",
+              padding: "0.375rem 0.75rem",
+              backgroundColor: activeDrawer === "sheet" ? "var(--atlas-action)" : "var(--atlas-surface)",
+              color: activeDrawer === "sheet" ? "var(--atlas-on-action)" : "var(--atlas-text)",
+              border: `1px solid ${activeDrawer === "sheet" ? "var(--atlas-action)" : "var(--atlas-border)"}`,
+              borderRadius: "4px",
+              fontSize: "0.75rem",
+              cursor: "pointer",
+            }}
           >
             Character Sheet
           </button>
           <button
             type="button"
+            aria-expanded={isBuilderOpen}
             onClick={() => setIsBuilderOpen(true)}
             data-testid="open-builder-btn"
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-action)", border: "1px solid var(--atlas-action)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+            style={{
+              minHeight: "40px",
+              padding: "0.375rem 0.75rem",
+              backgroundColor: "var(--atlas-surface)",
+              color: "var(--atlas-action)",
+              border: "1px solid var(--atlas-action)",
+              borderRadius: "4px",
+              fontSize: "0.75rem",
+              cursor: "pointer",
+            }}
           >
             New Character
           </button>
           <button
             type="button"
+            aria-expanded={isCompendiumOpen}
             onClick={() => setIsCompendiumOpen((open) => !open)}
             data-testid="toggle-compendium-btn"
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-text)", border: "1px solid var(--atlas-border)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+            style={{
+              minHeight: "40px",
+              padding: "0.375rem 0.75rem",
+              backgroundColor: isCompendiumOpen ? "var(--atlas-action)" : "var(--atlas-surface)",
+              color: isCompendiumOpen ? "var(--atlas-on-action)" : "var(--atlas-text)",
+              border: `1px solid ${isCompendiumOpen ? "var(--atlas-action)" : "var(--atlas-border)"}`,
+              borderRadius: "4px",
+              fontSize: "0.75rem",
+              cursor: "pointer",
+            }}
           >
             Compendium
           </button>
           <button
             type="button"
+            aria-expanded={activeDrawer === "dice"}
             onClick={() => (appSignals.activeDrawerSignal.value = activeDrawer === "dice" ? null : "dice")}
             data-testid="toggle-dice-btn"
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-success)", border: "1px solid var(--atlas-success)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+            style={{
+              minHeight: "40px",
+              padding: "0.375rem 0.75rem",
+              backgroundColor: activeDrawer === "dice" ? "var(--atlas-action)" : "var(--atlas-surface)",
+              color: activeDrawer === "dice" ? "var(--atlas-on-action)" : "var(--atlas-text)",
+              border: `1px solid ${activeDrawer === "dice" ? "var(--atlas-action)" : "var(--atlas-border)"}`,
+              borderRadius: "4px",
+              fontSize: "0.75rem",
+              cursor: "pointer",
+            }}
           >
             Dice
           </button>
           <button
             type="button"
+            aria-expanded={activeDrawer === "wiki"}
             onClick={() => (appSignals.activeDrawerSignal.value = activeDrawer === "wiki" ? null : "wiki")}
             data-testid="toggle-wiki-btn"
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-action)", border: "1px solid var(--atlas-action)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+            style={{
+              minHeight: "40px",
+              padding: "0.375rem 0.75rem",
+              backgroundColor: activeDrawer === "wiki" ? "var(--atlas-action)" : "var(--atlas-surface)",
+              color: activeDrawer === "wiki" ? "var(--atlas-on-action)" : "var(--atlas-text)",
+              border: `1px solid ${activeDrawer === "wiki" ? "var(--atlas-action)" : "var(--atlas-border)"}`,
+              borderRadius: "4px",
+              fontSize: "0.75rem",
+              cursor: "pointer",
+            }}
           >
             Wiki
           </button>
         </div>
       </header>
 
-      <GmOverrideToolbar />
-      <CombatTrackerBar />
+      <GmOverrideToolbar client={activeClient} />
+      <CombatTrackerBar client={activeClient} />
 
       <main role="main" aria-label="Tabletop Workspace" style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        <TableCanvas />
+        <TableCanvas client={activeClient} />
         {isCompendiumOpen && <CompendiumDrawer onClose={() => setIsCompendiumOpen(false)} />}
         {activeDrawer === "sheet" && (
           <ActorSheetDrawer
+            client={activeClient}
             onClose={() => (appSignals.activeDrawerSignal.value = null)}
             onOpenBuilder={() => setIsBuilderOpen(true)}
           />
         )}
-        {activeDrawer === "dice" && <DiceTrayDrawer onClose={() => (appSignals.activeDrawerSignal.value = null)} />}
-        {activeDrawer === "wiki" && <WikiNotesDrawer onClose={() => (appSignals.activeDrawerSignal.value = null)} />}
-        {isBuilderOpen && <ActorBuilderModal onClose={() => setIsBuilderOpen(false)} />}
+        {activeDrawer === "dice" && (
+          <DiceTrayDrawer client={activeClient} onClose={() => (appSignals.activeDrawerSignal.value = null)} />
+        )}
+        {activeDrawer === "wiki" && (
+          <WikiNotesDrawer client={activeClient} onClose={() => (appSignals.activeDrawerSignal.value = null)} />
+        )}
+        {isBuilderOpen && (
+          <ActorBuilderModal client={activeClient} onClose={() => setIsBuilderOpen(false)} />
+        )}
         <HandoutPopupModal />
       </main>
     </div>

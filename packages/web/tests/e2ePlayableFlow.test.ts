@@ -5,7 +5,7 @@ import { appSignals, resetAppSignals } from "../src/state/appSignals.ts";
 import { ApiClient } from "../src/api/client.ts";
 import { CompendiumDragDropManager } from "../src/dnd/CompendiumDragDropManager.ts";
 import { CharacterBuilderWizard } from "../src/builder/CharacterBuilderWizard.ts";
-import { DND5E_SHEET_LAYOUT } from "../../game-systems/dnd5e/src/sheetLayout.ts";
+import { DND5E_SHEET_LAYOUT } from "@trame/game-system-dnd5e";
 import { DeclarativeSheetRenderer } from "../src/sheet/DeclarativeSheetRenderer.ts";
 import { WidgetRegistry } from "../src/sheet/WidgetRegistry.ts";
 import { registerAllCanonicalWidgets } from "../src/sheet/widgets/index.ts";

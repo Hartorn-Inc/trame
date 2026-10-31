@@ -28,9 +28,20 @@ export function MobileCompanionView(_props: MobileCompanionViewProps): JSX.Eleme
         flexDirection: "column",
       }}
     >
-      <header style={{ padding: "0.75rem 1rem", backgroundColor: "var(--atlas-bg)", borderBottom: "1px solid var(--atlas-surface)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <strong>TRAME Companion</strong>
-        <span style={{ fontSize: "0.75rem", color: "var(--atlas-info)" }}>{actor?.name || "Touch View"}</span>
+      <header
+        style={{
+          padding: "0.75rem 1rem",
+          backgroundColor: "var(--atlas-bg)",
+          borderBottom: "1px solid var(--atlas-surface)",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <strong style={{ color: "var(--atlas-action)" }}>TRAME Companion</strong>
+        <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
+          {actor?.name || "Touch View"}
+        </span>
       </header>
 
       <div style={{ flex: 1, overflowY: "auto", position: "relative" }}>

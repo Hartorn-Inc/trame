@@ -76,7 +76,15 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
             appSignals.activeDrawerSignal.value = null;
             props.onClose?.();
           }}
-          style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-border)", color: "var(--atlas-text)", border: "none", borderRadius: "4px", cursor: "pointer" }}
+          style={{
+            minHeight: "40px",
+            padding: "0.375rem 0.75rem",
+            backgroundColor: "var(--atlas-surface-raised)",
+            color: "var(--atlas-text)",
+            border: "1px solid var(--atlas-border)",
+            borderRadius: "4px",
+            cursor: "pointer",
+          }}
         >
           Close
         </button>
@@ -90,7 +98,16 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
           value={query}
           onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
           data-testid="compendium-search-input"
-          style={{ width: "100%", padding: "0.5rem", backgroundColor: "var(--atlas-bg)", border: "1px solid var(--atlas-border)", borderRadius: "4px", color: "var(--atlas-text)", marginBottom: "0.5rem" }}
+          style={{
+            width: "100%",
+            minHeight: "40px",
+            padding: "0.5rem",
+            backgroundColor: "var(--atlas-bg)",
+            border: "1px solid var(--atlas-border)",
+            borderRadius: "4px",
+            color: "var(--atlas-text)",
+            marginBottom: "0.5rem",
+          }}
         />
         <div style={{ display: "flex", gap: "0.5rem" }}>
           {['all', 'spell', 'item'].map((t) => (
@@ -100,10 +117,11 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
               onClick={() => setFilterType(t)}
               data-testid={`filter-${t}-btn`}
               style={{
-                padding: "0.25rem 0.5rem",
-                backgroundColor: filterType === t ? "var(--atlas-info)" : "var(--atlas-surface)",
-                color: filterType === t ? "var(--atlas-bg)" : "var(--atlas-text-muted)",
-                border: "none",
+                minHeight: "40px",
+                padding: "0.25rem 0.75rem",
+                backgroundColor: filterType === t ? "var(--atlas-action)" : "var(--atlas-surface)",
+                color: filterType === t ? "var(--atlas-on-action)" : "var(--atlas-text-muted)",
+                border: "1px solid var(--atlas-border)",
                 borderRadius: "4px",
                 fontSize: "0.75rem",
                 fontWeight: 600,
@@ -126,15 +144,15 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
             style={{
               padding: "0.75rem",
               backgroundColor: "var(--atlas-surface)",
-              border: "1px solid var(--atlas-surface)",
+              border: "1px solid var(--atlas-border)",
               borderRadius: "6px",
               marginBottom: "0.5rem",
               cursor: "grab",
             }}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <strong style={{ color: item.entityType === "spell" ? "var(--atlas-info)" : "var(--atlas-info)" }}>{item.name}</strong>
-              <span style={{ fontSize: "0.625rem", padding: "0.125rem 0.375rem", backgroundColor: "var(--atlas-surface)", borderRadius: "4px" }}>
+              <strong style={{ color: "var(--atlas-action)" }}>{item.name}</strong>
+              <span style={{ fontSize: "0.625rem", padding: "0.125rem 0.375rem", backgroundColor: "var(--atlas-surface-raised)", color: "var(--atlas-text-muted)", borderRadius: "4px" }}>
                 {item.entityType.toUpperCase()}
               </span>
             </div>
@@ -158,10 +176,11 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
                   }
                 }}
                 style={{
-                  padding: "0.25rem 0.5rem",
+                  minHeight: "40px",
+                  padding: "0.25rem 0.75rem",
                   backgroundColor: "var(--atlas-surface)",
-                  color: "var(--atlas-info)",
-                  border: "1px solid var(--atlas-info)",
+                  color: "var(--atlas-action)",
+                  border: "1px solid var(--atlas-action)",
                   borderRadius: "4px",
                   fontSize: "0.75rem",
                   cursor: "pointer",

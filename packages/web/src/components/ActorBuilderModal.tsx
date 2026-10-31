@@ -19,8 +19,6 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
   const activeCampaign = appSignals.activeCampaignSignal.value;
   const campaignId = props.campaignId || activeCampaign?.id || "";
 
-  const [wizard] = useState(() => new CharacterBuilderWizard());
-  const [, setRevision] = useState(0);
   const [name, setName] = useState("Valeros");
   const [ancestry, setAncestry] = useState("human");
   const [characterClass, setCharacterClass] = useState("fighter");
@@ -32,9 +30,32 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
     wis: 10,
     cha: 8,
   });
-  const [selectedEquipment, setSelectedEquipment] = useState<string[]>(["longsword", "shield"]);
+  const [selectedEquipment, setSelectedEquipment] = useState<string[]>([
+    "longsword",
+    "shield",
+  ]);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const [wizard] = useState(() => {
+    const wiz = new CharacterBuilderWizard();
+    wiz.draftStore.initDraft({
+      name: "Valeros",
+      ancestryId: "human",
+      classId: "fighter",
+      abilityScores: {
+        str: 15,
+        dex: 14,
+        con: 13,
+        int: 12,
+        wis: 10,
+        cha: 8,
+      },
+      equipmentIds: ["longsword", "shield"],
+    });
+    return wiz;
+  });
+  const [, setRevision] = useState(0);
 
   const currentStep = wizard.currentStep;
 
@@ -200,7 +221,7 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
                   padding: "0.125rem 0.5rem",
                   borderRadius: "4px",
                   backgroundColor: currentStep === st ? "var(--atlas-action)" : "var(--atlas-surface)",
-                  color: currentStep === st ? "var(--atlas-bg)" : "var(--atlas-text-muted)",
+                  color: currentStep === st ? "var(--atlas-on-action)" : "var(--atlas-text-muted)",
                   fontWeight: currentStep === st ? 700 : 400,
                 }}
               >
@@ -224,7 +245,11 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
                 id="builder-char-name"
                 type="text"
                 value={name}
-                onInput={(e) => setName((e.target as HTMLInputElement).value)}
+                onInput={(e) => {
+                  const val = (e.target as HTMLInputElement).value;
+                  setName(val);
+                  wizard.setName(val);
+                }}
                 data-testid="builder-name-input"
                 style={{ width: "100%", padding: "0.5rem", backgroundColor: "var(--atlas-bg)", border: "1px solid var(--atlas-border)", borderRadius: "4px", color: "var(--atlas-text)", marginBottom: "1rem" }}
               />
@@ -232,7 +257,11 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
               <select
                 id="builder-ancestry-select"
                 value={ancestry}
-                onChange={(e) => setAncestry((e.target as HTMLSelectElement).value)}
+                onChange={(e) => {
+                  const val = (e.target as HTMLSelectElement).value;
+                  setAncestry(val);
+                  wizard.setAncestry(val);
+                }}
                 data-testid="builder-ancestry-select"
                 style={{ width: "100%", padding: "0.5rem", backgroundColor: "var(--atlas-bg)", border: "1px solid var(--atlas-border)", borderRadius: "4px", color: "var(--atlas-text)" }}
               >
@@ -250,7 +279,11 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
               <select
                 id="builder-class-select"
                 value={characterClass}
-                onChange={(e) => setCharacterClass((e.target as HTMLSelectElement).value)}
+                onChange={(e) => {
+                  const val = (e.target as HTMLSelectElement).value;
+                  setCharacterClass(val);
+                  wizard.setClass(val);
+                }}
                 data-testid="builder-class-select"
                 style={{ width: "100%", padding: "0.5rem", backgroundColor: "var(--atlas-bg)", border: "1px solid var(--atlas-border)", borderRadius: "4px", color: "var(--atlas-text)" }}
               >
@@ -271,7 +304,11 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
                     id={`builder-score-${ab}`}
                     type="number"
                     value={scores[ab]}
-                    onInput={(e) => setScores({ ...scores, [ab]: Number((e.target as HTMLInputElement).value) })}
+                    onInput={(e) => {
+                      const newScores = { ...scores, [ab]: Number((e.target as HTMLInputElement).value) };
+                      setScores(newScores);
+                      wizard.setAbilityScores(newScores);
+                    }}
                     data-testid={`builder-score-${ab}`}
                     style={{ width: "100%", padding: "0.375rem", backgroundColor: "var(--atlas-bg)", border: "1px solid var(--atlas-border)", borderRadius: "4px", color: "var(--atlas-text)" }}
                   />
@@ -330,7 +367,7 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
                 type="button"
                 onClick={handleNext}
                 data-testid="builder-next-btn"
-                style={{ padding: "0.5rem 1rem", backgroundColor: "var(--atlas-action)", color: "var(--atlas-bg)", fontWeight: 600, border: "none", borderRadius: "4px", cursor: "pointer" }}
+                style={{ padding: "0.5rem 1rem", backgroundColor: "var(--atlas-action)", color: "var(--atlas-on-action)", fontWeight: 600, border: "none", borderRadius: "4px", cursor: "pointer" }}
               >
                 Next
               </button>

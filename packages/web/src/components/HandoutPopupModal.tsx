@@ -66,8 +66,18 @@ export function HandoutPopupModal(props: HandoutPopupModalProps): JSX.Element | 
           color: "var(--atlas-text)",
         }}
       >
-        <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-          <h3 id="handout-popup-title" style={{ margin: 0, fontSize: "1.25rem", color: "var(--atlas-action)" }}>
+        <header
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: "1rem",
+          }}
+        >
+          <h3
+            id="handout-popup-title"
+            style={{ margin: 0, fontSize: "1.25rem", color: "var(--atlas-action)" }}
+          >
             {handout.title}
           </h3>
           <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
@@ -84,6 +94,7 @@ export function HandoutPopupModal(props: HandoutPopupModalProps): JSX.Element | 
             border: "1px solid var(--atlas-surface)",
             marginBottom: "1.5rem",
             whiteSpace: "pre-wrap",
+            color: "var(--atlas-text)",
           }}
         >
           {handout.content}
@@ -96,10 +107,11 @@ export function HandoutPopupModal(props: HandoutPopupModalProps): JSX.Element | 
             onClick={handleClose}
             data-testid="close-handout-modal-btn"
             style={{
+              minHeight: "40px",
               padding: "0.5rem 1rem",
-              backgroundColor: "var(--atlas-border)",
+              backgroundColor: "var(--atlas-surface-raised)",
               color: "var(--atlas-text)",
-              border: "none",
+              border: "1px solid var(--atlas-border)",
               borderRadius: "4px",
               cursor: "pointer",
             }}

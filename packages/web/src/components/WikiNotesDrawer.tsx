@@ -73,7 +73,15 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
         color: "var(--atlas-text)",
       }}
     >
-      <header style={{ padding: "1rem", borderBottom: "1px solid var(--atlas-surface)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <header
+        style={{
+          padding: "1rem",
+          borderBottom: "1px solid var(--atlas-surface)",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
         <div>
           <h2 style={{ margin: 0, fontSize: "1.125rem", color: "var(--atlas-action)" }}>Wiki Notes & Handouts</h2>
           <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>Role-Filtered Markdown</span>
@@ -86,7 +94,15 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
               appSignals.activeDrawerSignal.value = null;
               props.onClose?.();
             }}
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-border)", color: "var(--atlas-text)", border: "none", borderRadius: "4px", cursor: "pointer" }}
+            style={{
+              minHeight: "40px",
+              padding: "0.375rem 0.75rem",
+              backgroundColor: "var(--atlas-surface-raised)",
+              color: "var(--atlas-text)",
+              border: "1px solid var(--atlas-border)",
+              borderRadius: "4px",
+              cursor: "pointer",
+            }}
           >
             Close
           </button>
@@ -94,7 +110,16 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
       </header>
 
       {statusMessage && (
-        <div role="status" style={{ backgroundColor: "var(--atlas-success)", color: "var(--atlas-success)", padding: "0.5rem 1rem", fontSize: "0.75rem" }}>
+        <div
+          role="status"
+          style={{
+            backgroundColor: "var(--atlas-surface-raised)",
+            color: "var(--atlas-text)",
+            border: "1px solid var(--atlas-success)",
+            padding: "0.5rem 1rem",
+            fontSize: "0.75rem",
+          }}
+        >
           {statusMessage}
         </div>
       )}
@@ -110,10 +135,11 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
                   onClick={() => setSelectedNote(note)}
                   style={{
                     width: "100%",
+                    minHeight: "40px",
                     textAlign: "left",
                     padding: "0.5rem",
                     backgroundColor: selectedNote?.slug === note.slug ? "var(--atlas-surface)" : "transparent",
-                    color: selectedNote?.slug === note.slug ? "var(--atlas-info)" : "var(--atlas-text-muted)",
+                    color: selectedNote?.slug === note.slug ? "var(--atlas-action)" : "var(--atlas-text-muted)",
                     border: "none",
                     borderRadius: "4px",
                     fontSize: "0.75rem",
@@ -133,7 +159,15 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
               <h3 style={{ margin: "0 0 0.5rem 0", color: "var(--atlas-action)" }}>{selectedNote.title}</h3>
               <div
                 data-testid="note-content-display"
-                style={{ backgroundColor: "var(--atlas-bg)", padding: "0.75rem", borderRadius: "4px", border: "1px solid var(--atlas-surface)", marginBottom: "1rem", whiteSpace: "pre-wrap", fontSize: "0.875rem" }}
+                style={{
+                  backgroundColor: "var(--atlas-bg)",
+                  padding: "0.75rem",
+                  borderRadius: "4px",
+                  border: "1px solid var(--atlas-surface)",
+                  marginBottom: "1rem",
+                  whiteSpace: "pre-wrap",
+                  fontSize: "0.875rem",
+                }}
               >
                 {selectedNote.contentMarkdown}
               </div>
@@ -144,10 +178,11 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
                   data-testid="reveal-handout-btn"
                   onClick={() => handleRevealHandout(`handout-${selectedNote.slug}`, selectedNote.title, selectedNote.contentMarkdown)}
                   style={{
+                    minHeight: "40px",
                     padding: "0.5rem 1rem",
-                    backgroundColor: "var(--atlas-info)",
-                    color: "var(--atlas-text)",
-                    border: "none",
+                    backgroundColor: "var(--atlas-action)",
+                    color: "var(--atlas-on-action)",
+                    border: "1px solid var(--atlas-action)",
                     borderRadius: "4px",
                     fontWeight: 600,
                     cursor: "pointer",

@@ -80,13 +80,13 @@ export function CombatTrackerBar(props: CombatTrackerBarProps): JSX.Element | nu
                   padding: "0.25rem 0.5rem",
                   borderRadius: "4px",
                   backgroundColor: isCurrent ? "var(--atlas-action)" : "var(--atlas-surface)",
-                  color: isCurrent ? "var(--atlas-bg)" : "var(--atlas-text-muted)",
+                  color: isCurrent ? "var(--atlas-on-action)" : "var(--atlas-text-muted)",
                   fontWeight: isCurrent ? 700 : 400,
                   fontSize: "0.75rem",
                   border: isCurrent ? "2px solid var(--atlas-text)" : "1px solid var(--atlas-border)",
                 }}
               >
-                {idx + 1}. {label}
+                {isCurrent ? "› " : ""}{idx + 1}. {label}
               </div>
             );
           })}
@@ -102,10 +102,11 @@ export function CombatTrackerBar(props: CombatTrackerBarProps): JSX.Element | nu
           data-testid="trigger-reaction-test-btn"
           onClick={handleTriggerTestReaction}
           style={{
-            padding: "0.25rem 0.5rem",
-            backgroundColor: "var(--atlas-action)",
+            minHeight: "40px",
+            padding: "0.375rem 0.75rem",
+            backgroundColor: "var(--atlas-surface-raised)",
             color: "var(--atlas-text)",
-            border: "1px solid var(--atlas-action)",
+            border: "1px solid var(--atlas-border)",
             borderRadius: "4px",
             fontSize: "0.75rem",
             cursor: "pointer",
@@ -118,11 +119,12 @@ export function CombatTrackerBar(props: CombatTrackerBarProps): JSX.Element | nu
           data-testid="advance-turn-btn"
           onClick={handleNextTurn}
           style={{
-            padding: "0.25rem 0.75rem",
-            backgroundColor: "var(--atlas-info)",
-            color: "var(--atlas-text)",
+            minHeight: "40px",
+            padding: "0.375rem 0.75rem",
+            backgroundColor: "var(--atlas-action)",
+            color: "var(--atlas-on-action)",
+            border: "1px solid var(--atlas-action)",
             fontWeight: 600,
-            border: "none",
             borderRadius: "4px",
             fontSize: "0.75rem",
             cursor: "pointer",
