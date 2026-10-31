@@ -408,7 +408,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           null,
           h(
             "h2",
-            { id: titleId, class: "text-xl font-bold tracking-tight text-amber-400" },
+            { id: titleId, class: "text-xl font-bold tracking-tight text-[var(--atlas-action)]" },
             `Montée de niveau : Niveau ${currentLevel} → ${targetLevel}`
           ),
           h(
@@ -451,7 +451,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
               "aria-current": isCurrent ? "step" : undefined,
               class: `py-2.5 px-1 border-b-2 transition-colors ${
                 isCurrent
-                  ? "border-amber-500 text-amber-400 bg-amber-500/10"
+                  ? "border-[var(--atlas-action)] text-[var(--atlas-action)] bg-[var(--atlas-surface-raised)]"
                   : isCompleted
                   ? "border-[var(--atlas-border)] text-[var(--atlas-text)]"
                   : "border-transparent text-[var(--atlas-text-muted)]"
@@ -485,7 +485,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 "div",
                 { class: "text-right" },
                 h("span", { class: "text-[var(--atlas-text-muted)] block text-xs uppercase" }, "Niveau cible"),
-                h("span", { class: "text-lg font-bold text-amber-400" }, targetLevel)
+                h("span", { class: "text-lg font-bold text-[var(--atlas-action)]" }, targetLevel)
               )
             ),
             needsSubclass
@@ -494,7 +494,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                   { class: "space-y-2" },
                   h(
                     "label",
-                    { for: "subclass-select", class: "block font-medium text-amber-300 text-sm" },
+                    { for: "subclass-select", class: "block font-medium text-[var(--atlas-text)] text-sm" },
                     "Sélectionnez votre archétype / sous-classe (Requis) :"
                   ),
                   h(
@@ -545,8 +545,8 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 {
                   class: `cursor-pointer p-4 rounded-lg border flex flex-col justify-between ${
                     hpMode === "fixed"
-                      ? "border-amber-500 bg-amber-500/10 text-amber-200"
-                      : "border-[var(--atlas-border)] bg-[var(--atlas-surface-raised)] text-[var(--atlas-text)] hover:border-[var(--atlas-border)]"
+                      ? "border-[var(--atlas-action)] bg-[var(--atlas-surface-raised)] text-[var(--atlas-text)]"
+                      : "border-[var(--atlas-border)] bg-[var(--atlas-surface-raised)] text-[var(--atlas-text-muted)] hover:border-[var(--atlas-border)]"
                   }`,
                 },
                 h(
@@ -566,7 +566,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                   "div",
                   { class: "mt-2 text-xs text-[var(--atlas-text-muted)]" },
                   `floor(${hitDieSize}/2) + 1 + (${conModifier}) = `,
-                  h("strong", { class: "text-base text-amber-400" }, `+${fixedHpGain} PV`)
+                  h("strong", { class: "text-base text-[var(--atlas-action)]" }, `+${fixedHpGain} PV`)
                 )
               ),
               h(
@@ -574,8 +574,8 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 {
                   class: `cursor-pointer p-4 rounded-lg border flex flex-col justify-between ${
                     hpMode === "rolled"
-                      ? "border-amber-500 bg-amber-500/10 text-amber-200"
-                      : "border-[var(--atlas-border)] bg-[var(--atlas-surface-raised)] text-[var(--atlas-text)] hover:border-[var(--atlas-border)]"
+                      ? "border-[var(--atlas-action)] bg-[var(--atlas-surface-raised)] text-[var(--atlas-text)]"
+                      : "border-[var(--atlas-border)] bg-[var(--atlas-surface-raised)] text-[var(--atlas-text-muted)] hover:border-[var(--atlas-border)]"
                   }`,
                 },
                 h(
@@ -622,7 +622,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                       h("span", { class: "text-xs text-[var(--atlas-text-muted)] block" }, `Résultat du dé : ${rolledValue}`),
                       h(
                         "span",
-                        { class: "text-lg font-bold text-amber-400" },
+                        { class: "text-lg font-bold text-[var(--atlas-action)]" },
                         `+${Math.max(1, rolledValue + conModifier)} PV`
                       )
                     )
@@ -632,7 +632,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                   !rollError &&
                   h(
                     "p",
-                    { role: "alert", "aria-live": "polite", class: "text-xs text-amber-300/80 font-medium" },
+                    { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" },
                     "Un tirage validé par le serveur est obligatoire pour continuer en mode dé de vie."
                   )
               ),
@@ -650,13 +650,13 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
             ? h(
                 "div",
                 { class: "space-y-4" },
-                h("h3", { class: "text-base font-semibold text-zinc-200" }, "Étape 3 : Amélioration de Caractéristiques ou Don"),
+                h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, "Étape 3 : Amélioration de Caractéristiques ou Don"),
                 h(
                   "div",
                   {
                     role: "tablist",
                     "aria-label": "Mode de progression",
-                    class: "flex space-x-4 border-b border-zinc-800 pb-2 text-sm",
+                    class: "flex space-x-4 border-b border-[var(--atlas-border)] pb-2 text-sm",
                   },
                   h(
                     "button",
@@ -666,8 +666,8 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                       id: "tab-asi",
                       "aria-selected": asiOrFeatMode === "asi" ? "true" : "false",
                       "aria-controls": "tabpanel-asi-or-feat",
-                      class: `min-h-[40px] px-3 py-2 font-medium border-b-2 rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center gap-1.5 ${
-                        asiOrFeatMode === "asi" ? "border-amber-500 text-amber-400" : "border-transparent text-zinc-400"
+                      class: `min-h-[40px] px-3 py-2 font-medium border-b-2 rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center gap-1.5 ${
+                        asiOrFeatMode === "asi" ? "border-[var(--atlas-action)] text-[var(--atlas-action)]" : "border-transparent text-[var(--atlas-text-muted)]"
                       }`,
                       onClick: () => setAsiOrFeatMode("asi"),
                     },
@@ -682,8 +682,8 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                       id: "tab-feat",
                       "aria-selected": asiOrFeatMode === "feat" ? "true" : "false",
                       "aria-controls": "tabpanel-asi-or-feat",
-                      class: `min-h-[40px] px-3 py-2 font-medium border-b-2 rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center gap-1.5 ${
-                        asiOrFeatMode === "feat" ? "border-amber-500 text-amber-400" : "border-transparent text-zinc-400"
+                      class: `min-h-[40px] px-3 py-2 font-medium border-b-2 rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center gap-1.5 ${
+                        asiOrFeatMode === "feat" ? "border-[var(--atlas-action)] text-[var(--atlas-action)]" : "border-transparent text-[var(--atlas-text-muted)]"
                       }`,
                       onClick: () => setAsiOrFeatMode("feat"),
                     },
@@ -707,25 +707,27 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                           { class: "flex space-x-4 text-xs" },
                           h(
                             "label",
-                            { class: "flex items-center space-x-1.5 cursor-pointer" },
+                            { class: "flex items-center space-x-1.5 cursor-pointer min-h-[40px] px-3 py-2 rounded border border-[var(--atlas-border)] bg-[var(--atlas-surface-raised)]" },
                             h("input", {
                               type: "radio",
                               name: "asiSubMode",
                               value: "plusTwo",
                               checked: asiSubMode === "plusTwo",
                               onChange: () => setAsiSubMode("plusTwo"),
+                              class: "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             }),
                             h("span", null, "+2 à une caractéristique")
                           ),
                           h(
                             "label",
-                            { class: "flex items-center space-x-1.5 cursor-pointer" },
+                            { class: "flex items-center space-x-1.5 cursor-pointer min-h-[40px] px-3 py-2 rounded border border-[var(--atlas-border)] bg-[var(--atlas-surface-raised)]" },
                             h("input", {
                               type: "radio",
                               name: "asiSubMode",
                               value: "plusOneOne",
                               checked: asiSubMode === "plusOneOne",
                               onChange: () => setAsiSubMode("plusOneOne"),
+                              class: "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             }),
                             h("span", null, "+1 à deux caractéristiques")
                           )
@@ -734,13 +736,13 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                           ? h(
                               "div",
                               { class: "space-y-1" },
-                              h("label", { for: "asi-single-ability", class: "block text-xs text-zinc-400" }, "Caractéristique (+2, max 20) :"),
+                              h("label", { for: "asi-single-ability", class: "block text-xs text-[var(--atlas-text-muted)]" }, "Caractéristique (+2, max 20) :"),
                               h(
                                 "select",
                                 {
                                   id: "asi-single-ability",
                                   "aria-label": "Caractéristique à augmenter de +2",
-                                  class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                                  class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded p-2 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                                   value: asiSingleAbility,
                                   onChange: (e: any) => setAsiSingleAbility(e.target.value as AbilityId),
                                 },
@@ -759,13 +761,13 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                               h(
                                 "div",
                                 { class: "space-y-1" },
-                                h("label", { for: "asi-first-ability", class: "block text-xs text-zinc-400" }, "Première caractéristique (+1) :"),
+                                h("label", { for: "asi-first-ability", class: "block text-xs text-[var(--atlas-text-muted)]" }, "Première caractéristique (+1) :"),
                                 h(
                                   "select",
                                   {
                                     id: "asi-first-ability",
                                     "aria-label": "Première caractéristique à augmenter de +1",
-                                    class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                                    class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded p-2 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                                     value: asiFirstAbility,
                                     onChange: (e: any) => setAsiFirstAbility(e.target.value as AbilityId),
                                   },
@@ -781,13 +783,13 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                               h(
                                 "div",
                                 { class: "space-y-1" },
-                                h("label", { for: "asi-second-ability", class: "block text-xs text-zinc-400" }, "Deuxième caractéristique (+1) :"),
+                                h("label", { for: "asi-second-ability", class: "block text-xs text-[var(--atlas-text-muted)]" }, "Deuxième caractéristique (+1) :"),
                                 h(
                                   "select",
                                   {
                                     id: "asi-second-ability",
                                     "aria-label": "Deuxième caractéristique à augmenter de +1",
-                                    class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                                    class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded p-2 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                                     value: asiSecondAbility,
                                     onChange: (e: any) => setAsiSecondAbility(e.target.value as AbilityId),
                                   },
@@ -802,18 +804,18 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                               )
                             ),
                         asiErrorMessage &&
-                          h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-rose-400 font-medium" }, asiErrorMessage)
+                          h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, asiErrorMessage)
                       )
                     : h(
                         "div",
                         { class: "space-y-2 pt-2" },
-                        h("label", { for: "asi-feat-select", class: "block text-xs text-zinc-400" }, "Sélectionner un Don du compendium :"),
+                        h("label", { for: "asi-feat-select", class: "block text-xs text-[var(--atlas-text-muted)]" }, "Sélectionner un Don du compendium :"),
                         h(
                           "select",
                           {
                             id: "asi-feat-select",
                             "aria-label": "Sélectionner un Don du compendium",
-                            class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                            class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded p-2 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             value: selectedFeatId,
                             onChange: (e: any) => setSelectedFeatId(e.target.value),
                           },
@@ -823,13 +825,13 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                           )
                         ),
                         !selectedFeatId &&
-                          h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-amber-300/80 font-medium" }, "Veuillez sélectionner un Don pour valider l'étape.")
+                          h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, "Veuillez sélectionner un Don pour valider l'étape.")
                       )
                 )
               )
             : h(
                 "div",
-                { class: "p-4 bg-zinc-800/30 rounded border border-zinc-800 text-zinc-400 text-xs space-y-2" },
+                { class: "p-4 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-[var(--atlas-text-muted)] text-xs space-y-2" },
                 h("p", null, `Le niveau ${targetLevel} n'est pas un palier d'ASI pour votre classe.`),
                 h("p", null, "Vos aptitudes de classe par défaut seront enregistrées automatiquement.")
               )),
@@ -839,29 +841,29 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           h(
             "div",
             { class: "space-y-4" },
-            h("h3", { class: "text-base font-semibold text-zinc-200" }, isSpellcaster ? "Étape 4 : Emplacements & Sorts appris" : "Étape 4 : Récapitulatif"),
+            h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, isSpellcaster ? "Étape 4 : Emplacements & Sorts appris" : "Étape 4 : Récapitulatif"),
             isSpellcaster &&
               h(
                 "div",
                 { class: "space-y-3" },
-                h("h4", { class: "text-xs font-semibold text-zinc-300 uppercase tracking-wider" }, "Nouveaux emplacements de sorts"),
+                h("h4", { class: "text-xs font-semibold text-[var(--atlas-text-muted)] uppercase tracking-wider" }, "Nouveaux emplacements de sorts"),
                 h(
                   "div",
                   { class: "grid grid-cols-5 gap-2 text-xs" },
                   Object.entries(projectedSlots).map(([slotKey, slotData]) =>
                     h(
                       "div",
-                      { key: slotKey, class: "p-2 bg-zinc-800/80 rounded border border-zinc-700 text-center" },
-                      h("span", { class: "text-zinc-400 block" }, formatSlotLabel(slotKey)),
-                      h("strong", { class: "text-amber-400 text-sm" }, `${(slotData as any).max} slots`)
+                      { key: slotKey, class: "p-2 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-center" },
+                      h("span", { class: "text-[var(--atlas-text-muted)] block" }, formatSlotLabel(slotKey)),
+                      h("strong", { class: "text-[var(--atlas-action)] text-sm" }, `${(slotData as any).max} slots`)
                     )
                   )
                 ),
                 isDivineCaster &&
                   h(
                     "div",
-                    { class: "p-4 bg-zinc-800/40 rounded border border-zinc-700/60 text-zinc-300 text-xs space-y-1.5" },
-                    h("div", { class: "font-semibold text-amber-400" }, "Préparation divine des sorts"),
+                    { class: "p-4 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-[var(--atlas-text)] text-xs space-y-1.5" },
+                    h("div", { class: "font-semibold text-[var(--atlas-action)]" }, "Préparation divine des sorts"),
                     h(
                       "p",
                       null,
@@ -871,7 +873,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 !isDivineCaster && isKnownCaster && knownAllowance === 0 &&
                   h(
                     "div",
-                    { class: "p-3 bg-zinc-800/30 rounded border border-zinc-800 text-zinc-400 text-xs" },
+                    { class: "p-3 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-[var(--atlas-text-muted)] text-xs" },
                     `Aucun nouveau sort supplémentaire accordé au niveau ${targetLevel} selon la progression de votre classe.`
                   ),
                 !isDivineCaster && availableSpellsForLevel.length > 0 && (!isKnownCaster || knownAllowance > 0) &&
@@ -880,7 +882,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     { class: "space-y-2 pt-2" },
                     h(
                       "h4",
-                      { class: "text-xs font-semibold text-zinc-300 uppercase tracking-wider" },
+                      { class: "text-xs font-semibold text-[var(--atlas-text-muted)] uppercase tracking-wider" },
                       isWizard
                         ? `Ajouter des sorts au grimoire (Requis : ${selectedSpellIds.length}/${requiredWizardCount})`
                         : isKnownCaster
@@ -889,7 +891,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     ),
                     h(
                       "div",
-                      { class: "max-h-48 overflow-y-auto border border-zinc-800 rounded p-2 space-y-1 bg-zinc-950/30 text-xs" },
+                      { class: "max-h-48 overflow-y-auto border border-[var(--atlas-border)] rounded p-2 space-y-1 bg-[var(--atlas-surface-raised)] text-xs" },
                       availableSpellsForLevel.map((spell) => {
                         const isChecked = selectedSpellIds.includes(spell.id);
                         const isMaxReached = isWizard
@@ -902,10 +904,10 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                           "label",
                           {
                             key: spell.id,
-                            class: `flex items-center justify-between p-1.5 rounded ${
-                              isDisabled ? "opacity-50 cursor-not-allowed text-zinc-500" : "cursor-pointer"
+                            class: `flex items-center justify-between min-h-[40px] px-3 py-2 rounded ${
+                              isDisabled ? "opacity-50 cursor-not-allowed text-[var(--atlas-text-muted)]" : "cursor-pointer"
                             } ${
-                              isChecked ? "bg-amber-500/15 text-amber-200" : "hover:bg-zinc-800/50 text-zinc-300"
+                              isChecked ? "bg-[var(--atlas-surface)] text-[var(--atlas-text)] border border-[var(--atlas-border)] font-medium" : "hover:bg-[var(--atlas-surface)] text-[var(--atlas-text)]"
                             }`,
                           },
                           h(
@@ -916,22 +918,22 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                               checked: isChecked,
                               disabled: isDisabled,
                               onChange: () => toggleSpellSelection(spell.id),
-                              class: "text-amber-500 focus:ring-amber-500 rounded",
+                              class: "rounded text-[var(--atlas-action)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             }),
                             h("span", null, spell.i18n?.fr?.name || spell.name)
                           ),
-                          h("span", { class: "text-zinc-500 text-[10px]" }, `Niv. ${spell.data.level}`)
+                          h("span", { class: "text-[var(--atlas-text-muted)] text-[10px]" }, `Niv. ${spell.data.level}`)
                         );
                       })
                     ),
                     spellErrorMessage &&
-                      h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-rose-400 font-medium" }, spellErrorMessage)
+                      h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, spellErrorMessage)
                   )
               ),
             h(
               "div",
-              { class: "p-3 bg-zinc-800/40 rounded border border-zinc-700/60 space-y-1 text-xs text-zinc-300" },
-              h("div", { class: "font-semibold text-amber-400 mb-1" }, "Résumé de l'avancement :"),
+              { class: "p-3 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] space-y-1 text-xs text-[var(--atlas-text)]" },
+              h("div", { class: "font-semibold text-[var(--atlas-action)] mb-1" }, "Résumé de l'avancement :"),
               h("div", null, `• Niveau : ${currentLevel} → ${targetLevel}`),
               h("div", null, `• PV Max : ${actor.attributes.hp.max} → ${actor.attributes.hp.max + currentHpGain} (+${currentHpGain})`),
               subclassId && needsSubclass && h("div", null, `• Sous-classe : ${subclassId}`),
@@ -940,19 +942,19 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
               isAsi && asiOrFeatMode === "feat" && h("div", null, `• Don : ${selectedFeatId}`),
               selectedSpellIds.length > 0 && h("div", null, `• Nouveaux sorts sélectionnés : ${selectedSpellIds.length}`)
             ),
-            saveError && h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-rose-400 font-medium" }, saveError)
+            saveError && h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, saveError)
           )
       ),
 
       // Modal Footer
       h(
         "footer",
-        { class: "px-6 py-4 border-t border-zinc-800 flex items-center justify-between bg-zinc-950/40" },
+        { class: "px-6 py-4 border-t border-[var(--atlas-border)] flex items-center justify-between bg-[var(--atlas-surface-raised)]" },
         h(
           "button",
           {
             type: "button",
-            class: "min-h-[40px] px-4 py-2 border border-zinc-700 hover:bg-zinc-800 text-zinc-300 rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:opacity-30 inline-flex items-center justify-center",
+            class: "min-h-[40px] px-4 py-2 border border-[var(--atlas-border)] hover:bg-[var(--atlas-surface)] text-[var(--atlas-text)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] disabled:opacity-30 inline-flex items-center justify-center",
             onClick: () => setCurrentStep((s) => Math.max(1, s - 1)),
             disabled: currentStep === 1 || isSubmitting,
           },
@@ -965,7 +967,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
             "button",
             {
               type: "button",
-              class: "min-h-[40px] px-4 py-2 text-zinc-400 hover:text-zinc-200 text-xs font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:opacity-30 inline-flex items-center justify-center",
+              class: "min-h-[40px] px-4 py-2 text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)] text-xs font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] disabled:opacity-30 inline-flex items-center justify-center",
               onClick: onClose,
               disabled: isSubmitting,
             },
@@ -976,7 +978,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 "button",
                 {
                   type: "button",
-                  class: "min-h-[40px] px-4 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center justify-center",
+                  class: "min-h-[40px] px-4 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
                   onClick: () => setCurrentStep((s) => Math.min(4, s + 1)),
                   disabled: !canProceed() || isSubmitting,
                 },
@@ -986,7 +988,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 "button",
                 {
                   type: "button",
-                  class: "min-h-[40px] px-5 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center justify-center",
+                  class: "min-h-[40px] px-5 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
                   onClick: handleConfirmLevelUp,
                   disabled: !canProceed() || isSubmitting,
                 },

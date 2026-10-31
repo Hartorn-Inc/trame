@@ -897,4 +897,77 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
 
     unmount();
   });
+
+  it("WHEN Step 4 spell checkboxes render, their labels meet >= 40px desktop hit targets with compliant focus rings (WCAG 2.5.8 & 2.4.7)", async () => {
+    const actor = createDefaultActorData("actor-wizard", "Galdor");
+    actor.classId = "wizard";
+    actor.attributes.level = 2;
+    actor.attributes.casterType = "full";
+
+    const { container, getNextButton, unmount } = await renderModal({
+      isOpen: true,
+      actor,
+      onClose: () => {},
+      onSave: () => {},
+    });
+
+    const nextBtn = getNextButton();
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+
+    const checkboxes = container.querySelectorAll("input[type='checkbox']");
+    assert.ok(checkboxes.length > 0, "Spell checkboxes must exist in step 4");
+    for (const cb of checkboxes) {
+      const cbCls = cb.getAttribute("class") || "";
+      assert.ok(cbCls.includes("focus-visible:ring-[var(--atlas-focus)]"), "Spell checkbox must use atlas-focus ring");
+      assert.ok(cbCls.includes("focus-visible:ring-offset-[var(--atlas-surface)]"), "Spell checkbox offset must match surface");
+      assert.ok(cbCls.includes("text-[var(--atlas-action)]"), "Spell checkbox must use atlas-action text token");
+
+      const parentLabel = cb.closest("label");
+      assert.ok(parentLabel, "Checkbox must have a parent label");
+      const labelCls = parentLabel.getAttribute("class") || "";
+      assert.ok(labelCls.includes("min-h-[40px]"), "Spell item label must satisfy min-h-[40px]");
+      assert.ok(labelCls.includes("px-3"), "Spell item label must include horizontal padding px-3");
+      assert.ok(labelCls.includes("py-2"), "Spell item label must include vertical padding py-2");
+    }
+
+    unmount();
+  });
+
+  it("WHEN Steps 3, 4, and footer render, they use semantic ATLAS design tokens without hardcoded zinc or rose classes (WCAG 1.4.3)", async () => {
+    const actor = createDefaultActorData("actor-wizard", "Galdor");
+    actor.classId = "wizard";
+    actor.attributes.level = 3;
+    actor.attributes.casterType = "full";
+
+    const { container, getNextButton, unmount } = await renderModal({
+      isOpen: true,
+      actor,
+      onClose: () => {},
+      onSave: () => {},
+    });
+
+    const nextBtn = getNextButton();
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+
+    const step3Buttons = container.querySelectorAll("button");
+    for (const btn of step3Buttons) {
+      const cls = btn.getAttribute("class") || "";
+      assert.ok(!cls.includes("zinc-"), `Step 3 button must not use hardcoded zinc: ${cls}`);
+      assert.ok(!cls.includes("rose-"), `Step 3 button must not use hardcoded rose: ${cls}`);
+    }
+
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+
+    const step4Buttons = container.querySelectorAll("button");
+    for (const btn of step4Buttons) {
+      const cls = btn.getAttribute("class") || "";
+      assert.ok(!cls.includes("zinc-"), `Step 4 button must not use hardcoded zinc: ${cls}`);
+      assert.ok(!cls.includes("rose-"), `Step 4 button must not use hardcoded rose: ${cls}`);
+    }
+
+    unmount();
+  });
 });
