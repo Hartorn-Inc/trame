@@ -317,8 +317,8 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### UndoDrawer
 
-- **Definition**: Attenuation of sound high frequencies calculated via raycasting through walls with `blocks_sound: true`.
-- **Allowed Context**: Spatial audio raycasting, emitter attenuation, and WebAudio filter updates.
-- **_Avoid_**: SoundMuffling, WallAudioDamping.
+- **Definition**: Integer value representing an actor's base or effective score for one of `str`, `dex`, `con`, `int`, `wis`, `cha`.
+- **Allowed Context**: `AbilityScore`, `ability score`.
+- **_Avoid_**: `stat`, `raw stat`.
 
-### ActionEconomyType
+### AcousticOcclusion
