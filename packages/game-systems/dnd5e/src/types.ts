@@ -167,6 +167,84 @@ export interface ActiveConditionState {
 }
 
 /**
+ * Spellcasting progression archetype used to allocate spell slots upon level-up:
+ * - `"full"` / `"FULL_CASTER"`: 9-level progression (Bard, Cleric, Druid, Sorcerer, Wizard)
+ * - `"half"` / `"HALF_CASTER"`: 5-level progression starting at level 2 (Paladin, Ranger)
+ * - `"pact"` / `"PACT_MAGIC"`: Warlock Pact Magic progression (uniform slot level, short-rest recovery)
+ * - `"none"`: Non-spellcasting martial progression
+ */
+export type CasterType =
+  | "full"
+  | "half"
+  | "pact"
+  | "none"
+  | "FULL_CASTER"
+  | "HALF_CASTER"
+  | "PACT_MAGIC";
+
+/**
+ * Hit point calculation mode selector when advancing character level:
+ * - `"fixed"`: Deterministic average die roll `floor(hitDieSize / 2) + 1 + conModifier`.
+ * - `"rolled"`: Authoritative die roll result `rolledHp + conModifier`.
+ */
+export type HitPointsMode = "fixed" | "rolled";
+
+/**
+ * Ability Score Improvement selection granting +2 to one ability or +1 to two abilities (capped at 20).
+ */
+export interface AsiSelection {
+  mode: "asi";
+  bonuses: Partial<Record<AbilityId, number>>;
+}
+
+/**
+ * Feat acquisition selection referencing a canonical compendium feat identifier.
+ */
+export interface FeatSelection {
+  mode: "feat";
+  featId: string;
+}
+
+/**
+ * Discriminated union of progression choices at an ASI tier level.
+ */
+export type AsiOrFeatSelection = AsiSelection | FeatSelection;
+
+/**
+ * Configuration options passed to `applyLevelUp`.
+ */
+export interface LevelUpOptions {
+  /** Target character level (must equal current level + 1, bounded to 20). */
+  targetLevel?: number;
+  /** Hit Point calculation mode: `"fixed"` takes average die, `"rolled"` uses `rolledHp`. */
+  hitPointsMode?: HitPointsMode;
+  /** Backward-compatible alias for `hitPointsMode`. */
+  hpIncreaseMode?: "fixed" | "roll";
+  /** Certified Hit Die roll (`1..=hitDieSize`) required when `hitPointsMode === "rolled"`. */
+  rolledHp?: number;
+  /** Archetype/subclass identifier required when `targetLevel` hits the class unlock tier. */
+  subclassId?: string;
+  /** ASI score bonuses (+2 or +1/+1 up to 20) or Feat selection at an ASI level. */
+  asiOrFeat?: AsiOrFeatSelection;
+  /** Canonical spell identifiers to register on the actor upon leveling up. */
+  newSpellIds?: string[];
+  /** Explicit spellcaster progression table to apply for slot reconciliation. */
+  casterType?: CasterType;
+  /** Primary class identifier override or assertion (e.g., `'wizard'`, `'cleric'`). */
+  classId?: string;
+}
+
+/**
+ * Warlock Pact Magic slot quantity and spell level at a given character level.
+ */
+export interface PactMagicProgression {
+  /** Total number of Pact Magic slots (`1..=4`). */
+  slots: number;
+  /** Spell level at which Pact Magic slots are cast (`1..=5`). */
+  slotLevel: number;
+}
+
+/**
  * Available and maximum spell slots for a single spell level or Pact Magic pool.
  */
 export interface SpellSlotTier {
@@ -174,6 +252,8 @@ export interface SpellSlotTier {
   current: number;
   /** Total spell slots granted at the actor's current caster level (`>= 0`). */
   max: number;
+  /** Optional spell level at which slots cast (e.g. Pact Magic 1..=5). */
+  slotLevel?: number;
 }
 
 /**
@@ -217,9 +297,27 @@ export interface Dnd5eActorData {
   /** Map of the eighteen canonical skills with their governing ability and proficiency rank. */
   skills: Record<SkillId, { ability: AbilityId; proficiencyRank: ProficiencyRank }>;
   /** Core combat vitality, level progression, armor, and spellcasting attributes. */
+  /** Primary class identifier (e.g., `'wizard'`, `'cleric'`, `'fighter'`). */
+  classId?: string;
+  /** Archetype or subclass identifier (e.g., `'school-of-evocation'`, `'champion'`). */
+  subclassId?: string;
+  /** Acquired feature and feat identifiers. */
+  features?: string[];
+  /** Learned and prepared spell identifiers. */
+  spellIds?: string[];
+  /** Recalculated proficiency bonus (+2 to +6). */
+  proficiencyBonus?: number;
   attributes: {
     /** Character or monster challenge/caster level clamped to `1..=20` for proficiency math. */
     level: number;
+    /** Recalculated proficiency bonus (+2 to +6). */
+    proficiencyBonus?: number;
+    /** Primary class identifier. */
+    classId?: string;
+    /** Archetype or subclass identifier. */
+    subclassId?: string;
+    /** Spellcasting progression category. */
+    casterType?: CasterType;
     /** Hit Point vitality pools. */
     hp: {
       /** Current Hit Points in the range `0..=max`. */

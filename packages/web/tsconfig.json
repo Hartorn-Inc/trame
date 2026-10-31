@@ -18,6 +18,7 @@
     "src/**/*.ts",
     "src/**/*.tsx",
     "tests/**/*.ts",
-    "../game-systems/dnd5e/src/**/*.ts"
+    "../game-systems/dnd5e/src/**/*.ts",
+    "../game-systems/dnd5e/tests/**/*.ts"
   ]
 }
