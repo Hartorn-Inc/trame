@@ -50,6 +50,51 @@ const ABILITY_LABELS: Record<AbilityId, string> = {
 
 const ABILITY_KEYS: AbilityId[] = ["str", "dex", "con", "int", "wis", "cha"];
 
+const BARD_SPELLS_KNOWN: Record<number, number> = {
+  1: 4, 2: 5, 3: 6, 4: 7, 5: 8, 6: 9, 7: 10, 8: 11, 9: 12, 10: 14,
+  11: 15, 12: 15, 13: 16, 14: 18, 15: 19, 16: 19, 17: 20, 18: 22, 19: 22, 20: 22,
+};
+
+const SORCERER_SPELLS_KNOWN: Record<number, number> = {
+  1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7, 7: 8, 8: 9, 9: 10, 10: 11,
+  11: 12, 12: 12, 13: 13, 14: 13, 15: 14, 16: 14, 17: 15, 18: 15, 19: 15, 20: 15,
+};
+
+const WARLOCK_SPELLS_KNOWN: Record<number, number> = {
+  1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7, 7: 8, 8: 9, 9: 10, 10: 10,
+  11: 11, 12: 11, 13: 12, 14: 12, 15: 13, 16: 13, 17: 14, 18: 14, 19: 15, 20: 15,
+};
+
+function getNewSpellsAllowance(cleanClass: string, targetLevel: number): number {
+  if (targetLevel < 1 || targetLevel > 20) return 0;
+  if (cleanClass === "wizard") {
+    return 2;
+  }
+  if (cleanClass === "bard") {
+    const current = BARD_SPELLS_KNOWN[targetLevel] ?? 0;
+    const previous = BARD_SPELLS_KNOWN[targetLevel - 1] ?? 0;
+    return Math.max(0, current - previous);
+  }
+  if (cleanClass === "sorcerer") {
+    const current = SORCERER_SPELLS_KNOWN[targetLevel] ?? 0;
+    const previous = SORCERER_SPELLS_KNOWN[targetLevel - 1] ?? 0;
+    return Math.max(0, current - previous);
+  }
+  if (cleanClass === "warlock") {
+    const current = WARLOCK_SPELLS_KNOWN[targetLevel] ?? 0;
+    const previous = WARLOCK_SPELLS_KNOWN[targetLevel - 1] ?? 0;
+    return Math.max(0, current - previous);
+  }
+  return 0;
+}
+
+function formatSlotLabel(slotKey: string): string {
+  if (slotKey.toLowerCase().startsWith("level")) {
+    return `LVL ${slotKey.slice(5)}`;
+  }
+  return slotKey.toUpperCase();
+}
+
 export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
   if (!props.isOpen) return null;
 
@@ -60,6 +105,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
   const currentLevel = actor.attributes.level;
   const targetLevel = currentLevel + 1;
   const classId = (actor.classId ?? actor.class ?? actor.attributes.classId ?? actor.attributes.class ?? "").toString();
+  const cleanClassId = classId.replace(/^srd:class:/, "").toLowerCase();
   const hitDieSize = actor.attributes.hitDieSize || 8;
   const conModifier = Math.floor((actor.abilities.con.score - 10) / 2);
   const subclassUnlockTier = getSubclassUnlockLevel(classId);
@@ -67,6 +113,9 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
   const isAsi = isAsiLevel(targetLevel, classId);
   const casterType: CasterType = actor.attributes.casterType || getCasterTypeForClass(classId);
   const isSpellcaster = casterType !== "none";
+  const isDivineCaster = cleanClassId === "cleric" || cleanClassId === "druid" || cleanClassId === "paladin";
+  const isWizard = cleanClassId === "wizard";
+  const isKnownCaster = cleanClassId === "sorcerer" || cleanClassId === "bard" || cleanClassId === "warlock";
 
   // Modal Wizard Step State
   const [currentStep, setCurrentStep] = useState<number>(1);
@@ -100,7 +149,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
   const availableSubclasses = needsSubclass ? getSubclasses(classId) : [];
   const availableFeats = isAsi ? getFeats() : [];
   const maxSpellCircle = casterType === "pact" ? Math.min(5, Math.ceil(targetLevel / 2)) : casterType === "half" ? Math.ceil(targetLevel / 4) : Math.ceil(targetLevel / 2);
-  const availableSpellsForLevel = isSpellcaster
+  const availableSpellsForLevel = isSpellcaster && !isDivineCaster
     ? Array.from({ length: Math.min(9, Math.max(1, maxSpellCircle)) }, (_, i) => i + 1)
         .flatMap((lvl) => getSpellsByLevel(lvl, classId))
         .filter((sp) => !(actor.spellIds || []).includes(sp.id))
@@ -141,7 +190,26 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
     }
   }
 
-  const isStep4Valid = true; // Spell selection is optional or bounded
+  let isStep4Valid = true;
+  let spellErrorMessage: string | null = null;
+  const knownAllowance = isKnownCaster ? getNewSpellsAllowance(cleanClassId, targetLevel) : 0;
+  const requiredWizardCount = isWizard ? Math.min(2, availableSpellsForLevel.length) : 0;
+
+  if (isSpellcaster) {
+    if (isDivineCaster) {
+      isStep4Valid = true;
+    } else if (isWizard) {
+      if (selectedSpellIds.length !== requiredWizardCount) {
+        isStep4Valid = false;
+        spellErrorMessage = `Le Magicien doit sélectionner exactement ${requiredWizardCount} nouveau(x) sort(s) pour son grimoire (actuellement : ${selectedSpellIds.length}/${requiredWizardCount}).`;
+      }
+    } else if (isKnownCaster) {
+      if (selectedSpellIds.length > knownAllowance) {
+        isStep4Valid = false;
+        spellErrorMessage = `Votre classe n'autorise que ${knownAllowance} nouveau(x) sort(s) au niveau ${targetLevel} (actuellement : ${selectedSpellIds.length}).`;
+      }
+    }
+  }
 
   const canProceed = () => {
     if (currentStep === 1) return isStep1Valid;
@@ -235,9 +303,18 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
   };
 
   const toggleSpellSelection = (spellId: string) => {
-    setSelectedSpellIds((prev) =>
-      prev.includes(spellId) ? prev.filter((id) => id !== spellId) : [...prev, spellId]
-    );
+    setSelectedSpellIds((prev) => {
+      if (prev.includes(spellId)) {
+        return prev.filter((id) => id !== spellId);
+      }
+      if (isWizard && prev.length >= requiredWizardCount) {
+        return prev;
+      }
+      if (isKnownCaster && prev.length >= knownAllowance) {
+        return prev;
+      }
+      return [...prev, spellId];
+    });
   };
 
   const projectedSlots: SpellSlotsState = isSpellcaster
@@ -281,7 +358,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           "button",
           {
             type: "button",
-            class: "text-zinc-400 hover:text-zinc-100 text-lg px-2 py-1 rounded focus:outline-none focus:ring-2 focus:ring-amber-500",
+            class: "inline-flex items-center justify-center min-w-[40px] min-h-[40px] p-2 text-zinc-400 hover:text-zinc-100 text-lg rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
             onClick: onClose,
             "aria-label": "Fermer la fenêtre de montée de niveau",
           },
@@ -370,7 +447,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                   !subclassId &&
                     h(
                       "p",
-                      { class: "text-xs text-rose-400 font-medium" },
+                      { role: "alert", "aria-live": "polite", class: "text-xs text-rose-400 font-medium" },
                       "Le choix d'un archétype est obligatoire pour ce niveau."
                     )
                 )
@@ -466,7 +543,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     "button",
                     {
                       type: "button",
-                      class: "px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white rounded font-medium text-xs focus:ring-2 focus:ring-amber-400",
+                      class: "px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white rounded font-medium text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
                       onClick: handleRollDice,
                       disabled: rollLoading,
                     },
@@ -484,12 +561,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                       )
                     )
                 ),
-                rollError && h("p", { class: "text-xs text-rose-400" }, rollError),
+                rollError && h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-rose-400 font-medium" }, rollError),
                 rolledValue === null &&
                   !rollError &&
                   h(
                     "p",
-                    { class: "text-xs text-amber-300/80 font-medium" },
+                    { role: "alert", "aria-live": "polite", class: "text-xs text-amber-300/80 font-medium" },
                     "Un tirage validé par le serveur est obligatoire pour continuer en mode dé de vie."
                   )
               ),
@@ -570,10 +647,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                         ? h(
                             "div",
                             { class: "space-y-1" },
-                            h("label", { class: "block text-xs text-zinc-400" }, "Caractéristique (+2, max 20) :"),
+                            h("label", { for: "asi-single-ability", class: "block text-xs text-zinc-400" }, "Caractéristique (+2, max 20) :"),
                             h(
                               "select",
                               {
+                                id: "asi-single-ability",
+                                "aria-label": "Caractéristique à augmenter de +2",
                                 class: "w-full bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100",
                                 value: asiSingleAbility,
                                 onChange: (e: any) => setAsiSingleAbility(e.target.value as AbilityId),
@@ -593,10 +672,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                             h(
                               "div",
                               { class: "space-y-1" },
-                              h("label", { class: "block text-xs text-zinc-400" }, "Première caractéristique (+1) :"),
+                              h("label", { for: "asi-first-ability", class: "block text-xs text-zinc-400" }, "Première caractéristique (+1) :"),
                               h(
                                 "select",
                                 {
+                                  id: "asi-first-ability",
+                                  "aria-label": "Première caractéristique à augmenter de +1",
                                   class: "w-full bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100",
                                   value: asiFirstAbility,
                                   onChange: (e: any) => setAsiFirstAbility(e.target.value as AbilityId),
@@ -613,10 +694,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                             h(
                               "div",
                               { class: "space-y-1" },
-                              h("label", { class: "block text-xs text-zinc-400" }, "Deuxième caractéristique (+1) :"),
+                              h("label", { for: "asi-second-ability", class: "block text-xs text-zinc-400" }, "Deuxième caractéristique (+1) :"),
                               h(
                                 "select",
                                 {
+                                  id: "asi-second-ability",
+                                  "aria-label": "Deuxième caractéristique à augmenter de +1",
                                   class: "w-full bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100",
                                   value: asiSecondAbility,
                                   onChange: (e: any) => setAsiSecondAbility(e.target.value as AbilityId),
@@ -632,15 +715,17 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                             )
                           ),
                       asiErrorMessage &&
-                        h("p", { class: "text-xs text-rose-400 font-medium" }, asiErrorMessage)
+                        h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-rose-400 font-medium" }, asiErrorMessage)
                     )
                   : h(
                       "div",
                       { class: "space-y-2 pt-2" },
-                      h("label", { class: "block text-xs text-zinc-400" }, "Sélectionner un Don du compendium :"),
+                      h("label", { for: "asi-feat-select", class: "block text-xs text-zinc-400" }, "Sélectionner un Don du compendium :"),
                       h(
                         "select",
                         {
+                          id: "asi-feat-select",
+                          "aria-label": "Sélectionner un Don du compendium",
                           class: "w-full bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100",
                           value: selectedFeatId,
                           onChange: (e: any) => setSelectedFeatId(e.target.value),
@@ -651,7 +736,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                         )
                       ),
                       !selectedFeatId &&
-                        h("p", { class: "text-xs text-amber-300/80" }, "Veuillez sélectionner un Don pour valider l'étape.")
+                        h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-amber-300/80 font-medium" }, "Veuillez sélectionner un Don pour valider l'étape.")
                     )
               )
             : h(
@@ -679,26 +764,59 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     h(
                       "div",
                       { key: slotKey, class: "p-2 bg-zinc-800/80 rounded border border-zinc-700 text-center" },
-                      h("span", { class: "text-zinc-400 block" }, slotKey.toUpperCase()),
+                      h("span", { class: "text-zinc-400 block" }, formatSlotLabel(slotKey)),
                       h("strong", { class: "text-amber-400 text-sm" }, `${(slotData as any).max} slots`)
                     )
                   )
                 ),
-                availableSpellsForLevel.length > 0 &&
+                isDivineCaster &&
+                  h(
+                    "div",
+                    { class: "p-4 bg-zinc-800/40 rounded border border-zinc-700/60 text-zinc-300 text-xs space-y-1.5" },
+                    h("div", { class: "font-semibold text-amber-400" }, "Préparation divine des sorts"),
+                    h(
+                      "p",
+                      null,
+                      "En tant que lanceur divin, l'ensemble des sorts de votre liste de classe correspondant à vos cercles d'emplacements disponibles est débloqué pour votre préparation quotidienne lors d'un long repos."
+                    )
+                  ),
+                !isDivineCaster && isKnownCaster && knownAllowance === 0 &&
+                  h(
+                    "div",
+                    { class: "p-3 bg-zinc-800/30 rounded border border-zinc-800 text-zinc-400 text-xs" },
+                    `Aucun nouveau sort supplémentaire accordé au niveau ${targetLevel} selon la progression de votre classe.`
+                  ),
+                !isDivineCaster && availableSpellsForLevel.length > 0 && (!isKnownCaster || knownAllowance > 0) &&
                   h(
                     "div",
                     { class: "space-y-2 pt-2" },
-                    h("h4", { class: "text-xs font-semibold text-zinc-300 uppercase tracking-wider" }, "Ajouter de nouveaux sorts (Optionnel)"),
+                    h(
+                      "h4",
+                      { class: "text-xs font-semibold text-zinc-300 uppercase tracking-wider" },
+                      isWizard
+                        ? `Ajouter des sorts au grimoire (Requis : ${selectedSpellIds.length}/${requiredWizardCount})`
+                        : isKnownCaster
+                        ? `Ajouter de nouveaux sorts (Limite : ${selectedSpellIds.length}/${knownAllowance})`
+                        : `Ajouter de nouveaux sorts (Optionnel : ${selectedSpellIds.length})`
+                    ),
                     h(
                       "div",
                       { class: "max-h-48 overflow-y-auto border border-zinc-800 rounded p-2 space-y-1 bg-zinc-950/30 text-xs" },
                       availableSpellsForLevel.map((spell) => {
                         const isChecked = selectedSpellIds.includes(spell.id);
+                        const isMaxReached = isWizard
+                          ? selectedSpellIds.length >= requiredWizardCount
+                          : isKnownCaster
+                          ? selectedSpellIds.length >= knownAllowance
+                          : false;
+                        const isDisabled = !isChecked && isMaxReached;
                         return h(
                           "label",
                           {
                             key: spell.id,
-                            class: `flex items-center justify-between p-1.5 rounded cursor-pointer ${
+                            class: `flex items-center justify-between p-1.5 rounded ${
+                              isDisabled ? "opacity-50 cursor-not-allowed text-zinc-500" : "cursor-pointer"
+                            } ${
                               isChecked ? "bg-amber-500/15 text-amber-200" : "hover:bg-zinc-800/50 text-zinc-300"
                             }`,
                           },
@@ -708,6 +826,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                             h("input", {
                               type: "checkbox",
                               checked: isChecked,
+                              disabled: isDisabled,
                               onChange: () => toggleSpellSelection(spell.id),
                               class: "text-amber-500 focus:ring-amber-500 rounded",
                             }),
@@ -716,7 +835,9 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                           h("span", { class: "text-zinc-500 text-[10px]" }, `Niv. ${spell.data.level}`)
                         );
                       })
-                    )
+                    ),
+                    spellErrorMessage &&
+                      h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-rose-400 font-medium" }, spellErrorMessage)
                   )
               ),
             h(
@@ -731,7 +852,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
               isAsi && asiOrFeatMode === "feat" && h("div", null, `• Don : ${selectedFeatId}`),
               selectedSpellIds.length > 0 && h("div", null, `• Nouveaux sorts sélectionnés : ${selectedSpellIds.length}`)
             ),
-            saveError && h("p", { class: "text-xs text-rose-400 font-medium" }, saveError)
+            saveError && h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-rose-400 font-medium" }, saveError)
           )
       ),
 
@@ -743,7 +864,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           "button",
           {
             type: "button",
-            class: "px-4 py-2 border border-zinc-700 hover:bg-zinc-800 text-zinc-300 rounded text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-zinc-600 disabled:opacity-30",
+            class: "px-4 py-2 border border-zinc-700 hover:bg-zinc-800 text-zinc-300 rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:opacity-30",
             onClick: () => setCurrentStep((s) => Math.max(1, s - 1)),
             disabled: currentStep === 1 || isSubmitting,
           },
@@ -756,7 +877,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
             "button",
             {
               type: "button",
-              class: "px-4 py-2 text-zinc-400 hover:text-zinc-200 text-xs font-semibold focus:outline-none",
+              class: "px-4 py-2 text-zinc-400 hover:text-zinc-200 text-xs font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:opacity-30",
               onClick: onClose,
               disabled: isSubmitting,
             },
@@ -767,7 +888,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 "button",
                 {
                   type: "button",
-                  class: "px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white rounded text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-400",
+                  class: "px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
                   onClick: () => setCurrentStep((s) => Math.min(4, s + 1)),
                   disabled: !canProceed() || isSubmitting,
                 },
@@ -777,7 +898,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 "button",
                 {
                   type: "button",
-                  class: "px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-400",
+                  class: "px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
                   onClick: handleConfirmLevelUp,
                   disabled: !canProceed() || isSubmitting,
                 },
