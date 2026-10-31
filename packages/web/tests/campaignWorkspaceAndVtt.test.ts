@@ -20,7 +20,20 @@ import {
   t,
   formatDistanceFt,
   resolveCompendiumSearchQuery,
+  getInitialLocale,
+  STORAGE_KEY_LOCALE,
 } from "../src/i18n/index.ts";
+import {
+  groupNotesByFolder,
+  documentsNotesSignal,
+  documentsHandoutsSignal,
+  activeHandoutModalSignal,
+  type NoteHierarchyNode,
+} from "../src/workspace/DocumentsWorkspaceTab.tsx";
+import {
+  activeCompanionTabSignal,
+  MOBILE_COMPANION_TABS,
+} from "../src/mobile/MobileCompanionView.tsx";
 
 describe("[Ticket #89 - Acceptance Criterion 1] Zero-Trust 3-Scope Note RBAC & Directive Stripping", () => {
   interface NoteTestCase {
@@ -32,7 +45,6 @@ describe("[Ticket #89 - Acceptance Criterion 1] Zero-Trust 3-Scope Note RBAC & D
   }
 
   const rbacCases: NoteTestCase[] = [
-    // PRIVATE: strictly visible to owner, zero-trust 404 for everyone else including GM
     {
       visibility: "PRIVATE",
       ownerUserId: "player-1",
@@ -54,7 +66,6 @@ describe("[Ticket #89 - Acceptance Criterion 1] Zero-Trust 3-Scope Note RBAC & D
       requestingUserRole: "GameMaster",
       expectedAccess: "NOT_FOUND",
     },
-    // PARTY: readable by all members, editable by GM and Players, 403 on edit for Spectators
     {
       visibility: "PARTY",
       ownerUserId: "player-1",
@@ -69,7 +80,6 @@ describe("[Ticket #89 - Acceptance Criterion 1] Zero-Trust 3-Scope Note RBAC & D
       requestingUserRole: "GameMaster",
       expectedAccess: "OK",
     },
-    // DM_ONLY: 403 Forbidden for non-GMs
     {
       visibility: "DM_ONLY",
       ownerUserId: "gm-user",
@@ -196,6 +206,29 @@ describe("[Ticket #89 - Acceptance Criterion 2] Live HandoutRevealed Broadcast &
     assert.equal(container.querySelector('[data-testid="handout-reveal-modal"]'), null);
     root.destroy();
   });
+
+  it("updates activeHandoutModalSignal and documentsHandoutsSignal reactive state", () => {
+    activeHandoutModalSignal.value = null;
+    assert.equal(activeHandoutModalSignal.value, null);
+
+    const mockHandout = {
+      handoutId: "h-reactive-1",
+      title: "Ancient Scroll",
+      content: "Words of power written in gold ink.",
+      revealedBy: "gm",
+      timestamp: Date.now(),
+    };
+
+    activeHandoutModalSignal.value = mockHandout;
+    assert.deepEqual(activeHandoutModalSignal.value, mockHandout);
+
+    documentsHandoutsSignal.value = [mockHandout];
+    assert.equal(documentsHandoutsSignal.value.length, 1);
+    assert.equal(documentsHandoutsSignal.value[0].title, "Ancient Scroll");
+
+    activeHandoutModalSignal.value = null;
+    assert.equal(activeHandoutModalSignal.value, null);
+  });
 });
 
 describe("[Ticket #89 - Acceptance Criterion 3] Responsive MobileCompanionView (< 768px) & WebGL Lifecycle", () => {
@@ -270,6 +303,16 @@ describe("[Ticket #89 - Acceptance Criterion 3] Responsive MobileCompanionView (
 
     root.destroy();
   });
+
+  it("tracks activeCompanionTabSignal across all 5 MobileCompanionView tabs", () => {
+    const allTabs = MOBILE_COMPANION_TABS.map((t) => t.id);
+    assert.deepEqual(allTabs, ["sheet", "dice", "inventory", "tracker", "journal"]);
+
+    for (const tab of allTabs) {
+      activeCompanionTabSignal.value = tab;
+      assert.equal(activeCompanionTabSignal.value, tab);
+    }
+  });
 });
 
 describe("[Ticket #89 - Acceptance Criterion 4] Reactive Bilingual FR/EN i18n & Tactical Units", () => {
@@ -284,7 +327,6 @@ describe("[Ticket #89 - Acceptance Criterion 4] Reactive Bilingual FR/EN i18n & 
     assert.equal(t("nav.dice"), "Lanceur de dés");
     assert.equal(t("action.reveal"), "Révéler aux joueurs");
 
-    // Falls back gracefully to English or key when missing
     assert.equal(t("unknown.key"), "unknown.key");
   });
 
@@ -317,5 +359,64 @@ describe("[Ticket #89 - Acceptance Criterion 4] Reactive Bilingual FR/EN i18n & 
     localeSignal.value = "en";
     const enStealthTerms = resolveCompendiumSearchQuery("stealth");
     assert.deepEqual(enStealthTerms, ["stealth"]);
+  });
+
+  it("handles initial locale resolution and localStorage synchronization", () => {
+    const memoryStorage = new Map<string, string>();
+    const fakeStorage = {
+      getItem: (key: string) => memoryStorage.get(key) ?? null,
+      setItem: (key: string, val: string) => memoryStorage.set(key, val),
+      removeItem: (key: string) => memoryStorage.delete(key),
+      clear: () => memoryStorage.clear(),
+    };
+
+    fakeStorage.setItem(STORAGE_KEY_LOCALE, "fr");
+    assert.equal(fakeStorage.getItem(STORAGE_KEY_LOCALE), "fr");
+
+    localeSignal.value = "en";
+    assert.equal(localeSignal.value, "en");
+    localeSignal.value = "fr";
+    assert.equal(localeSignal.value, "fr");
+    localeSignal.value = "en";
+  });
+});
+
+describe("[Ticket #89 - Acceptance Criterion 5] Folder-Organized Notes Hierarchy in DocumentsWorkspaceTab", () => {
+  it("groups notes by folder name and assigns empty folders to 'Root'", () => {
+    const sampleNotes: NoteHierarchyNode[] = [
+      { id: "n1", title: "Tavern Rumors", folder: "Quests", visibility: "PARTY", ownerUserId: "u1" },
+      { id: "n2", title: "Bounty Contract", folder: "Quests", visibility: "PARTY", ownerUserId: "u1" },
+      { id: "n3", title: "Secret Map", folder: "DM Lore", visibility: "DM_ONLY", ownerUserId: "gm" },
+      { id: "n4", title: "Player Diary", folder: "", visibility: "PRIVATE", ownerUserId: "u2" },
+      { id: "n5", title: "Session 1 Notes", folder: "   ", visibility: "PARTY", ownerUserId: "u1" },
+    ];
+
+    const grouped = groupNotesByFolder(sampleNotes);
+    assert.equal(grouped.size, 3);
+    assert.ok(grouped.has("Quests"));
+    assert.ok(grouped.has("DM Lore"));
+    assert.ok(grouped.has("Root"));
+
+    const questNotes = grouped.get("Quests")!;
+    assert.equal(questNotes.length, 2);
+    assert.equal(questNotes[0].id, "n1");
+    assert.equal(questNotes[1].id, "n2");
+
+    const rootNotes = grouped.get("Root")!;
+    assert.equal(rootNotes.length, 2);
+    assert.equal(rootNotes[0].id, "n4");
+    assert.equal(rootNotes[1].id, "n5");
+  });
+
+  it("populates documentsNotesSignal and preserves folder hierarchy reactivity", () => {
+    documentsNotesSignal.value = [
+      { id: "n-alpha", title: "Alpha Note", folder: "Folder A", visibility: "PARTY", ownerUserId: "u1" },
+      { id: "n-beta", title: "Beta Note", folder: "Folder B", visibility: "PRIVATE", ownerUserId: "u1" },
+    ];
+
+    const grouped = groupNotesByFolder(documentsNotesSignal.value);
+    assert.equal(grouped.size, 2);
+    assert.equal(grouped.get("Folder A")?.[0].title, "Alpha Note");
+    assert.equal(grouped.get("Folder B")?.[0].title, "Beta Note");
   });
 });

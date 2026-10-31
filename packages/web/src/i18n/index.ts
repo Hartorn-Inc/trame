@@ -3,9 +3,53 @@ import { signal } from "@preact/signals";
 export type LocaleCode = "en" | "fr";
 export type UnitSystem = "imperial_ft" | "metric_m";
 
-export const localeSignal = signal<LocaleCode>("en");
+export const STORAGE_KEY_LOCALE = "trame_locale";
+
+export function getInitialLocale(): LocaleCode {
+  try {
+    const storage =
+      typeof window !== "undefined"
+        ? window.localStorage
+        : typeof localStorage !== "undefined"
+          ? localStorage
+          : null;
+    const stored = storage?.getItem(STORAGE_KEY_LOCALE);
+    if (stored === "en" || stored === "fr") {
+      return stored;
+    }
+  } catch {
+    // Fall back to navigator language when localStorage is restricted
+  }
+
+  try {
+    const nav = typeof navigator !== "undefined" ? navigator : null;
+    if (nav?.language && nav.language.toLowerCase().startsWith("fr")) {
+      return "fr";
+    }
+  } catch {
+    // Fall back to default English when navigator is unavailable
+  }
+
+  return "en";
+}
+
+export const localeSignal = signal<LocaleCode>(getInitialLocale());
 export const unitSystemSignal = signal<UnitSystem>("imperial_ft");
 export const mobileCompanionOverrideSignal = signal<boolean>(false);
+
+localeSignal.subscribe((val) => {
+  try {
+    const storage =
+      typeof window !== "undefined"
+        ? window.localStorage
+        : typeof localStorage !== "undefined"
+          ? localStorage
+          : null;
+    storage?.setItem(STORAGE_KEY_LOCALE, val);
+  } catch {
+    // Silently ignore storage errors in environments without write access
+  }
+});
 
 export const I18N_DICTIONARY: Record<LocaleCode, Record<string, string>> = {
   en: {
