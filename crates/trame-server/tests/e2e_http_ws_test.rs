@@ -127,6 +127,29 @@ async fn test_end_to_end_playable_http_and_tabletop_lifecycle() {
     assert_eq!(starter_json["height_px"], 800);
     assert!(!starter_json["walls"].as_array().unwrap().is_empty());
 
+    // Verify GET /api/v1/campaigns/{id} returns the 4 starter actors (Valeros, Merisiel, Goblin Sneak, Goblin Archer)
+    let get_camp_req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/campaigns/{campaign_id}"))
+        .header(COOKIE, &gm_cookie)
+        .body(Body::empty())
+        .unwrap();
+    let get_camp_resp = app.clone().oneshot(get_camp_req).await.unwrap();
+    assert_eq!(get_camp_resp.status(), StatusCode::OK);
+    let get_camp_json: Value = serde_json::from_slice(
+        &axum::body::to_bytes(get_camp_resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let actors = get_camp_json["campaign"]["actors"].as_array().unwrap();
+    assert_eq!(actors.len(), 4);
+    let actor_names: Vec<&str> = actors.iter().filter_map(|a| a["name"].as_str()).collect();
+    assert!(actor_names.contains(&"Valeros"));
+    assert!(actor_names.contains(&"Merisiel"));
+    assert!(actor_names.contains(&"Goblin Sneak"));
+    assert!(actor_names.contains(&"Goblin Archer"));
+
     // 5. Presign and download the generated WebP map asset
     let presign_req = Request::builder()
         .method("GET")

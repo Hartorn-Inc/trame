@@ -443,9 +443,8 @@ pub fn build_full_router(
     timeline_storage: Arc<dyn TimelineStorage>,
 ) -> Router {
     let session_store = Arc::new(InMemorySessionStore::new());
-    let magic_link_service = Arc::new(MagicLinkService::new(
+    let magic_link_service = Arc::new(MagicLinkService::from_env_or_secret(
         b"trame-default-hmac-sha256-signing-secret-key",
-        "trame-server",
     ));
     let auth_state = AuthState {
         magic_link_service,
@@ -2491,7 +2490,7 @@ pub async fn export_campaign_handler(
             .await
             .unwrap_or_default()
     } else {
-        state.campaign_store.all_notes()
+        state.campaign_store.all_notes().into_iter().collect()
     };
     let asset_ids: Vec<Uuid> = state
         .blob_store
