@@ -27,6 +27,10 @@ const ALLOWED_COMPENDIUM_TYPES = new Set([
   "loot",
   "compendium",
   "compendium_entry",
+  "monster",
+  "monsters",
+  "class",
+  "classes",
 ]);
 
 function checkIsDescendant(

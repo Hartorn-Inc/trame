@@ -1,9 +1,15 @@
 import { h, type VNode } from 'preact';
 import { useMemo, useState } from 'preact/hooks';
-import { DND5E_SHEET_LAYOUT } from '../../../game-systems/dnd5e/src/index.ts';
+import { DND5E_SHEET_LAYOUT } from '../../../game-systems/dnd5e/src/sheetLayout.ts';
 import { BindingResolver } from './binding.ts';
 import { WidgetRegistry } from './WidgetRegistry.ts';
 import type { CommandDispatcher, SheetLayoutNode, SheetLayoutTree, ViewerContext } from './types.ts';
+
+const DEFAULT_FALLBACK_LAYOUT: SheetLayoutTree = {
+  systemId: 'dnd5e',
+  version: '1.0.0',
+  root: null,
+};
 import {
   StatBlock6Widget,
   ResourceBarWidget,
@@ -49,6 +55,7 @@ const WIDGET_COMPONENT_MAP: Record<string, any> = {
 export interface DeclarativeSheetViewProps {
   sheetLayout?: SheetLayoutTree;
   actorState: unknown;
+  actorId?: string;
   gm_core_locked?: boolean;
   coreStatsLocked?: boolean;
   dispatchCommand?: CommandDispatcher;
@@ -58,8 +65,8 @@ export interface DeclarativeSheetViewProps {
   onToggleCoreStatsLocked?: () => void;
 }
 
-export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode {
-  const layout = props.sheetLayout ?? DND5E_SHEET_LAYOUT;
+export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<any> {
+  const layout: SheetLayoutTree = props.sheetLayout ?? DND5E_SHEET_LAYOUT ?? DEFAULT_FALLBACK_LAYOUT;
   const [localLocked, setLocalLocked] = useState(props.coreStatsLocked ?? true);
   const [activeTabId, setActiveTabId] = useState<string>('tab-combat');
 
@@ -79,7 +86,7 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode {
     }
   };
 
-  const renderNode = (node: SheetLayoutNode): VNode | null => {
+  const renderNode = (node: SheetLayoutNode): VNode<any> | null => {
     if (node.kind === 'section' || node.kind === 'column' || node.kind === 'row') {
       const children = (node.children || []).map((child) => renderNode(child)).filter(Boolean);
       return h(
@@ -147,6 +154,7 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode {
           options: node.options,
           isLocked: effectiveLocked,
           dispatchCommand: props.dispatchCommand,
+          actorId: props.actorId,
           onCloseDrawer: props.onCloseDrawer,
           isTableCanvasMounted: props.isTableCanvasMounted,
         });
@@ -181,6 +189,6 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode {
         isGmLocked ? '🔒 GM Locked' : (effectiveLocked ? '🔒 Play Mode' : '🔓 Edit Mode'),
       ),
     ),
-    layout.root ? renderNode(layout.root) : null,
+    layout && layout.root ? renderNode(layout.root) : null,
   );
 }

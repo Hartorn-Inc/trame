@@ -2,9 +2,16 @@ import { h, type VNode } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
-import { sanitizeHtml } from './NotesMarkdownPane.ts';
 
-export { sanitizeHtml };
+export function sanitizeHtml(input: string): string {
+  if (typeof input !== 'string') {
+    return '';
+  }
+  return input
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+    .replace(/<[^>]+>/g, '');
+}
 
 export function NotesMarkdownPaneWidget(props: WidgetProps): VNode<any> {
   const initialNotes = String(props.boundValues?.notes ?? props.boundValues?.markdownContent ?? '');

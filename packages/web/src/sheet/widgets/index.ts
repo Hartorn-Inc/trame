@@ -17,7 +17,7 @@ import { ConditionBadgeStripWidget } from "./ConditionBadgeStripWidget.tsx";
 import { FeatureTraitListWidget } from "./FeatureTraitListWidget.tsx";
 import { HitDiceAndDeathSavesWidget } from "./HitDiceAndDeathSavesWidget.tsx";
 import { InventoryContainerTreeWidget } from "./InventoryContainerTreeWidget.tsx";
-import { NotesMarkdownPaneWidget } from "./NotesMarkdownPaneWidget.tsx";
+import { NotesMarkdownPaneWidget, sanitizeHtml } from "./NotesMarkdownPaneWidget.tsx";
 import { ResourceBarWidget } from "./ResourceBarWidget.tsx";
 import { SavingThrowListWidget } from "./SavingThrowListWidget.tsx";
 import { SkillCheckListWidget } from "./SkillCheckListWidget.tsx";
