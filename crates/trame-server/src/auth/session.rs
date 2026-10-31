@@ -1,7 +1,11 @@
 //! Session management, guest user provisioning, and cookie issuance.
 
 use super::magic_link::{MagicLinkClaims, MagicLinkError, MagicLinkService, now_epoch_seconds};
-use super::password::{IdentityStore, bind_account_handler};
+pub use super::password::IdentityStore;
+use super::password::bind_account_handler;
+use super::totp::{
+    TotpService, totp_enable_handler, totp_setup_handler, totp_verify_handler,
+};
 use crate::storage::blob::Sha256Hasher;
 use axum::Router;
 use axum::extract::State;
@@ -51,6 +55,12 @@ pub struct UserRecord {
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_hash: Option<String>,
+    #[serde(default)]
+    pub mfa_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub totp_secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_totp_secret: Option<String>,
 }
 
 /// Association of a user to a campaign with optional assigned character.
@@ -140,6 +150,9 @@ impl SessionStore for InMemorySessionStore {
                 created_at: now_epoch_seconds(),
                 email: None,
                 password_hash: None,
+                mfa_enabled: false,
+                totp_secret: None,
+                pending_totp_secret: None,
             };
             self.users.write().await.insert(user_id, user.clone());
             Ok(user)
@@ -283,6 +296,47 @@ impl IdentityStore for InMemorySessionStore {
             Ok(updated)
         })
     }
+
+    fn save_user<'a>(
+        &'a self,
+        user: UserRecord,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
+        Box::pin(async move {
+            if let Some(ref email) = user.email {
+                self.emails.write().await.insert(email.clone(), user.id);
+            }
+            self.users.write().await.insert(user.id, user);
+            Ok(())
+        })
+    }
+
+    fn save_pending_totp_secret<'a>(
+        &'a self,
+        user_id: Uuid,
+        encrypted_secret: &'a str,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
+        Box::pin(async move {
+            let mut users = self.users.write().await;
+            let user = users.get_mut(&user_id).ok_or(SessionError::NotFound)?;
+            user.pending_totp_secret = Some(encrypted_secret.to_string());
+            Ok(())
+        })
+    }
+
+    fn enable_totp_for_user<'a>(
+        &'a self,
+        user_id: Uuid,
+        encrypted_secret: &'a str,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
+        Box::pin(async move {
+            let mut users = self.users.write().await;
+            let user = users.get_mut(&user_id).ok_or(SessionError::NotFound)?;
+            user.mfa_enabled = true;
+            user.totp_secret = Some(encrypted_secret.to_string());
+            user.pending_totp_secret = None;
+            Ok(())
+        })
+    }
 }
 
 impl<T: IdentityStore> IdentityStore for Arc<T> {
@@ -307,6 +361,29 @@ impl<T: IdentityStore> IdentityStore for Arc<T> {
         password_hash: &'a str,
     ) -> BoxFuture<'a, Result<UserRecord, SessionError>> {
         (**self).bind_guest_credentials(user_id, email, password_hash)
+    }
+
+    fn save_user<'a>(
+        &'a self,
+        user: UserRecord,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
+        (**self).save_user(user)
+    }
+
+    fn save_pending_totp_secret<'a>(
+        &'a self,
+        user_id: Uuid,
+        encrypted_secret: &'a str,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
+        (**self).save_pending_totp_secret(user_id, encrypted_secret)
+    }
+
+    fn enable_totp_for_user<'a>(
+        &'a self,
+        user_id: Uuid,
+        encrypted_secret: &'a str,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
+        (**self).enable_totp_for_user(user_id, encrypted_secret)
     }
 }
 
@@ -398,6 +475,7 @@ pub fn build_session_cookie_header(token: &str, ttl_seconds: u64) -> String {
 pub struct AuthState {
     pub magic_link_service: Arc<MagicLinkService>,
     pub session_store: Arc<InMemorySessionStore>,
+    pub totp_service: Arc<TotpService>,
 }
 
 /// Request payload submitted to POST /api/v1/auth/magic-link.
@@ -585,5 +663,8 @@ pub fn build_auth_router(state: AuthState) -> Router {
         .route("/api/v1/auth/magic-link", post(magic_link_login_handler))
         .route("/api/v1/auth/invites", post(create_invite_link_handler))
         .route("/api/v1/auth/bind-account", post(bind_account_handler))
+        .route("/api/v1/auth/totp/setup", post(totp_setup_handler))
+        .route("/api/v1/auth/totp/enable", post(totp_enable_handler))
+        .route("/api/v1/auth/totp/verify", post(totp_verify_handler))
         .with_state(state)
 }

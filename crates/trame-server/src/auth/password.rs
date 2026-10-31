@@ -192,6 +192,23 @@ pub trait IdentityStore: SessionStore {
         email: &'a str,
         password_hash: &'a str,
     ) -> BoxFuture<'a, Result<UserRecord, SessionError>>;
+    /// Saves or updates a user record.
+    fn save_user<'a>(
+        &'a self,
+        user: UserRecord,
+    ) -> BoxFuture<'a, Result<(), SessionError>>;
+    /// Persists an encrypted pending TOTP secret (<nonce_hex>:<ciphertext_hex>) for setup verification.
+    fn save_pending_totp_secret<'a>(
+        &'a self,
+        user_id: Uuid,
+        encrypted_secret: &'a str,
+    ) -> BoxFuture<'a, Result<(), SessionError>>;
+    /// Promotes pending TOTP secret to active and sets mfa_enabled = true.
+    fn enable_totp_for_user<'a>(
+        &'a self,
+        user_id: Uuid,
+        encrypted_secret: &'a str,
+    ) -> BoxFuture<'a, Result<(), SessionError>>;
 }
 
 /// Service coordinating account identity binding and credential graduation.

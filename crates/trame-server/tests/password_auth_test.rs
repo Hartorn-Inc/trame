@@ -95,6 +95,7 @@ async fn test_bind_account_success_preserves_campaign_and_actor() {
     let state = AuthState {
         magic_link_service,
         session_store: store.clone(),
+        totp_service: std::sync::Arc::new(trame_server::auth::totp::TotpService::default()),
     };
     let app = build_auth_router(state);
 
@@ -167,6 +168,7 @@ async fn test_bind_account_email_conflict_returns_409() {
     let state = AuthState {
         magic_link_service,
         session_store: store.clone(),
+        totp_service: Arc::new(trame_server::auth::totp::TotpService::default()),
     };
     let app = build_auth_router(state);
 
@@ -235,6 +237,7 @@ async fn test_bind_account_unauthenticated_or_non_guest_returns_401() {
     let state = AuthState {
         magic_link_service,
         session_store: store.clone(),
+        totp_service: Arc::new(trame_server::auth::totp::TotpService::default()),
     };
     let app = build_auth_router(state);
 
