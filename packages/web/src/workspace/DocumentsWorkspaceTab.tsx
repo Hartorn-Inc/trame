@@ -2,7 +2,7 @@ import { signal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { t } from "../i18n/index.ts";
 import { type PartyJournalEntry } from "../mobile/companionMode.ts";
-import { parseWikiMarkdown, type HandoutBlockNode } from "../notes/wikiParser.ts";
+import { parseWikiMarkdown } from "../notes/wikiParser.ts";
 
 export interface SessionTimelineEventItem {
   id: string;
@@ -32,9 +32,6 @@ export const activeHandoutModalSignal = signal<PartyJournalEntry | null>(null);
 export const selectedNoteIdSignal = signal<string | null>(null);
 export const noteScopeFilterSignal = signal<NoteScopeFilter>("ALL");
 
-export const revealedHandoutsSignal = documentsHandoutsSignal;
-export const activeRevealedHandoutSignal = activeHandoutModalSignal;
-
 export function groupNotesByFolder(notes: NoteHierarchyNode[]): Map<string, NoteHierarchyNode[]> {
   const groups = new Map<string, NoteHierarchyNode[]>();
   for (const note of notes) {
@@ -53,31 +50,14 @@ export function HandoutRevealModal() {
   const activeModal = activeHandoutModalSignal.value;
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    if (!activeModal || typeof window === "undefined") return;
+    const handleEscape = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         activeHandoutModalSignal.value = null;
-      } else if (e.key === "Tab" && activeHandoutModalSignal.value) {
-        const closeBtn = typeof document !== "undefined"
-          ? (document.querySelector('[data-testid="close-handout-modal"]') as HTMLElement | null)
-          : null;
-        if (closeBtn) {
-          e.preventDefault();
-          closeBtn.focus();
-        }
       }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
-
-  useEffect(() => {
-    if (!activeModal) return;
-    const prevFocused = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
-    return () => {
-      if (prevFocused && typeof prevFocused.focus === "function") {
-        prevFocused.focus();
-      }
-    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
   }, [activeModal]);
 
   if (!activeModal) return null;
@@ -111,7 +91,10 @@ export function HandoutRevealModal() {
         }}
       >
         <h3 id="handout-title" data-testid="handout-title">{activeModal.title}</h3>
-        <div data-testid="handout-content" style={{ marginTop: "0.5rem" }}>
+        <div
+          data-testid="handout-content"
+          style={{ marginTop: "0.5rem", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+        >
           {activeModal.content}
         </div>
         <button
@@ -122,7 +105,7 @@ export function HandoutRevealModal() {
           onClick={() => {
             activeHandoutModalSignal.value = null;
           }}
-          style={{ marginTop: "1rem" }}
+          style={{ marginTop: "1rem", minHeight: "40px" }}
         >
           {t("action.close")}
         </button>
@@ -131,14 +114,24 @@ export function HandoutRevealModal() {
   );
 }
 
-export function DocumentsWorkspaceTab() {
+export const isGmSignal = signal<boolean>(false);
+
+export interface DocumentsWorkspaceTabProps {
+  isGm?: boolean;
+}
+
+export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
+  const isGm = props.isGm ?? isGmSignal.value;
   const activeFilter = noteScopeFilterSignal.value;
+  const effectiveFilter = !isGm && activeFilter === "DM_ONLY" ? "ALL" : activeFilter;
   const allNotes = documentsNotesSignal.value;
-  const filteredNotes = activeFilter === "ALL"
-    ? allNotes
-    : allNotes.filter((n) => n.visibility === activeFilter);
+  const visibleNotes = isGm ? allNotes : allNotes.filter((n) => n.visibility !== "DM_ONLY");
+  const filteredNotes = effectiveFilter === "ALL"
+    ? visibleNotes
+    : visibleNotes.filter((n) => n.visibility === effectiveFilter);
   const groupedNotes = groupNotesByFolder(filteredNotes);
   const selectedNote = allNotes.find((n) => n.id === selectedNoteIdSignal.value) ?? null;
+  const parsedActiveNote = selectedNote ? parseWikiMarkdown(selectedNote.content ?? "") : null;
 
   const getLocalizedScope = (vis: NoteHierarchyNode["visibility"]) => {
     switch (vis) {
@@ -156,7 +149,9 @@ export function DocumentsWorkspaceTab() {
   const handleCreateNote = () => {
     const newId = `note-${Date.now()}`;
     const defaultScope: NoteHierarchyNode["visibility"] =
-      activeFilter === "ALL" ? "PARTY" : activeFilter;
+      effectiveFilter === "ALL" || (effectiveFilter === "DM_ONLY" && !isGm)
+        ? "PARTY"
+        : effectiveFilter;
     const newNote: NoteHierarchyNode = {
       id: newId,
       title: `${t("action.create_note")} ${allNotes.length + 1}`,
@@ -167,6 +162,19 @@ export function DocumentsWorkspaceTab() {
     };
     documentsNotesSignal.value = [...allNotes, newNote];
     selectedNoteIdSignal.value = newId;
+  };
+
+  const handleRevealHandout = (handout: { id: string; title: string; content: string }) => {
+    const entry: PartyJournalEntry = {
+      handoutId: handout.id,
+      title: handout.title,
+      content: handout.content,
+      revealedBy: selectedNote?.ownerUserId || "gm",
+      timestamp: Date.now(),
+    };
+    activeHandoutModalSignal.value = entry;
+    const existing = documentsHandoutsSignal.value.filter((h) => h.handoutId !== handout.id);
+    documentsHandoutsSignal.value = [entry, ...existing];
   };
 
   const toggleFilter = (scope: NoteScopeFilter) => {
@@ -200,8 +208,8 @@ export function DocumentsWorkspaceTab() {
             <button
               type="button"
               data-testid="filter-private"
-              aria-pressed={activeFilter === "PRIVATE"}
-              class={`ds-btn ${activeFilter === "PRIVATE" ? "ds-btn-primary" : "ds-btn-secondary"}`}
+              aria-pressed={effectiveFilter === "PRIVATE"}
+              class={`ds-btn ${effectiveFilter === "PRIVATE" ? "ds-btn-primary" : "ds-btn-secondary"}`}
               onClick={() => toggleFilter("PRIVATE")}
             >
               {t("note.scope.private")}
@@ -209,21 +217,23 @@ export function DocumentsWorkspaceTab() {
             <button
               type="button"
               data-testid="filter-party"
-              aria-pressed={activeFilter === "PARTY"}
-              class={`ds-btn ${activeFilter === "PARTY" ? "ds-btn-primary" : "ds-btn-secondary"}`}
+              aria-pressed={effectiveFilter === "PARTY"}
+              class={`ds-btn ${effectiveFilter === "PARTY" ? "ds-btn-primary" : "ds-btn-secondary"}`}
               onClick={() => toggleFilter("PARTY")}
             >
               {t("note.scope.party")}
             </button>
-            <button
-              type="button"
-              data-testid="filter-dm-only"
-              aria-pressed={activeFilter === "DM_ONLY"}
-              class={`ds-btn ${activeFilter === "DM_ONLY" ? "ds-btn-primary" : "ds-btn-secondary"}`}
-              onClick={() => toggleFilter("DM_ONLY")}
-            >
-              {t("note.scope.dm_only")}
-            </button>
+            {isGm && (
+              <button
+                type="button"
+                data-testid="filter-dm-only"
+                aria-pressed={effectiveFilter === "DM_ONLY"}
+                class={`ds-btn ${effectiveFilter === "DM_ONLY" ? "ds-btn-primary" : "ds-btn-secondary"}`}
+                onClick={() => toggleFilter("DM_ONLY")}
+              >
+                {t("note.scope.dm_only")}
+              </button>
+            )}
           </div>
         </div>
 
@@ -282,10 +292,10 @@ export function DocumentsWorkspaceTab() {
                     <div
                       key={note.id}
                       data-testid={`note-item-${note.id}`}
-                      class="note-item-row"
                       role="button"
                       tabIndex={0}
                       aria-pressed={isSelected}
+                      class="note-item-row"
                       onClick={() => {
                         selectedNoteIdSignal.value = note.id;
                       }}
@@ -297,9 +307,9 @@ export function DocumentsWorkspaceTab() {
                       }}
                       style={{
                         minHeight: "44px",
-                        padding: "0.5rem",
+                        padding: "0.5rem 0.75rem",
                         background: isSelected ? "var(--atlas-surface-raised)" : "var(--atlas-surface)",
-                        border: isSelected ? "1px solid var(--atlas-action)" : "1px solid var(--atlas-border)",
+                        border: isSelected ? "2px solid var(--atlas-action)" : "1px solid var(--atlas-border)",
                         borderRadius: "var(--atlas-radius-sm, 4px)",
                         display: "flex",
                         justifyContent: "space-between",
@@ -307,18 +317,10 @@ export function DocumentsWorkspaceTab() {
                         cursor: "pointer",
                       }}
                     >
-                      <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
-                        {isSelected && (
-                          <span
-                            data-testid="selected-note-glyph"
-                            aria-hidden="true"
-                            style={{ color: "var(--atlas-action)", fontWeight: "bold" }}
-                          >
-                            ›
-                          </span>
-                        )}
-                        <strong>{note.title}</strong>
-                      </div>
+                      <strong>
+                        {isSelected ? "› " : ""}
+                        {note.title}
+                      </strong>
                       <span
                         style={{
                           marginLeft: "0.5rem",
@@ -337,115 +339,81 @@ export function DocumentsWorkspaceTab() {
         )}
       </div>
 
-      {selectedNote && (() => {
-        const parsedDoc = parseWikiMarkdown(selectedNote.content ?? "");
-        const handleRevealHandout = (handout: HandoutBlockNode) => {
-          const handoutId = handout.id || `handout-${Date.now()}`;
-          const entry: PartyJournalEntry = {
-            handoutId,
-            title: handout.title,
-            content: handout.content,
-            revealedBy: selectedNote.ownerUserId || "gm",
-            timestamp: Date.now(),
-          };
-
-          const updatedContent = (selectedNote.content ?? "").replace(
-            new RegExp(`:::handout\\{([^}]*?)id="${handout.id}"([^}]*?)\\}`),
-            (match) => {
-              if (match.includes('revealed="false"')) {
-                return match.replace('revealed="false"', 'revealed="true"');
-              }
-              if (!match.includes("revealed=")) {
-                return match.replace(/\}$/, ' revealed="true"}');
-              }
-              return match;
-            },
-          );
-
-          documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
-            n.id === selectedNote.id ? { ...n, content: updatedContent } : n,
-          );
-
-          if (!documentsHandoutsSignal.value.some((it) => it.handoutId === entry.handoutId)) {
-            documentsHandoutsSignal.value = [entry, ...documentsHandoutsSignal.value];
-          }
-          activeHandoutModalSignal.value = entry;
-
-          try {
-            if (typeof fetch !== "undefined") {
-              fetch(`/api/v1/campaigns/active/notes/${selectedNote.id}/reveal-handout`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ handout_id: entry.handoutId, title: entry.title, content: entry.content }),
-              }).catch(() => {});
-            }
-          } catch {
-            // Silently ignore offline or test environment fetch errors
-          }
-        };
-
-        return (
-          <div
-            data-testid="note-editor-pane"
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "0.5rem",
-              padding: "1rem",
-              background: "var(--atlas-surface)",
-              border: "1px solid var(--atlas-border)",
-              borderRadius: "var(--atlas-radius-md, 6px)",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+      {selectedNote && (
+        <div
+          data-testid="note-editor-pane"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.75rem",
+            padding: "1rem",
+            background: "var(--atlas-surface)",
+            border: "1px solid var(--atlas-border)",
+            borderRadius: "var(--atlas-radius-md, 6px)",
+          }}
+        >
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
+            <label htmlFor="note-title-input" style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: "1 1 200px" }}>
+              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>Note Title</span>
               <input
+                id="note-title-input"
                 data-testid="note-title-input"
-                aria-label={`${t("docs.notes")} title`}
+                aria-label="Note Title"
                 class="ds-input"
                 value={selectedNote.title}
                 onInput={(e) => {
                   const val = (e.target as HTMLInputElement).value;
                   documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
-                    n.id === selectedNote.id ? { ...n, title: val } : n,
+                    n.id === selectedNote.id ? { ...n, title: val } : n
                   );
                 }}
-                style={{ fontWeight: 600, fontSize: "1.1rem", flex: 1, minWidth: "180px" }}
+                style={{ fontWeight: 600, fontSize: "1rem" }}
               />
-              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                <input
-                  data-testid="note-folder-input"
-                  aria-label={`${t("docs.notes")} folder`}
-                  class="ds-input"
-                  placeholder="Folder"
-                  value={selectedNote.folder ?? "Root"}
-                  onInput={(e) => {
-                    const val = (e.target as HTMLInputElement).value;
-                    documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
-                      n.id === selectedNote.id ? { ...n, folder: val } : n,
-                    );
-                  }}
-                  style={{ width: "130px" }}
-                />
-                <select
-                  data-testid="note-scope-select"
-                  aria-label={`${t("docs.notes")} visibility`}
-                  class="ds-input"
-                  value={selectedNote.visibility}
-                  onChange={(e) => {
-                    const val = (e.target as HTMLSelectElement).value as NoteHierarchyNode["visibility"];
-                    documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
-                      n.id === selectedNote.id ? { ...n, visibility: val } : n,
-                    );
-                  }}
-                >
-                  <option value="PRIVATE">{t("note.scope.private")}</option>
-                  <option value="PARTY">{t("note.scope.party")}</option>
-                  <option value="DM_ONLY">{t("note.scope.dm_only")}</option>
-                </select>
-              </div>
-            </div>
+            </label>
 
+            <label htmlFor="note-folder-input" style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: "1 1 140px" }}>
+              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>Folder</span>
+              <input
+                id="note-folder-input"
+                data-testid="note-folder-input"
+                aria-label="Note Folder"
+                class="ds-input"
+                value={selectedNote.folder}
+                onInput={(e) => {
+                  const val = (e.target as HTMLInputElement).value;
+                  documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
+                    n.id === selectedNote.id ? { ...n, folder: val } : n
+                  );
+                }}
+              />
+            </label>
+
+            <label htmlFor="note-scope-select" style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: "0 0 160px" }}>
+              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>Scope</span>
+              <select
+                id="note-scope-select"
+                data-testid="note-scope-select"
+                aria-label="Note Scope"
+                class="ds-input"
+                value={selectedNote.visibility}
+                onChange={(e) => {
+                  const val = (e.target as HTMLSelectElement).value as NoteHierarchyNode["visibility"];
+                  documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
+                    n.id === selectedNote.id ? { ...n, visibility: val } : n
+                  );
+                }}
+              >
+                <option value="PRIVATE">{t("note.scope.private")}</option>
+                <option value="PARTY">{t("note.scope.party")}</option>
+                {isGm && <option value="DM_ONLY">{t("note.scope.dm_only")}</option>}
+              </select>
+            </label>
+          </div>
+
+          <label htmlFor="note-content-editor" style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+            <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>{t("docs.notes")}</span>
             <textarea
+              id="note-content-editor"
               data-testid="note-content-editor"
               aria-label={t("docs.notes")}
               class="ds-input"
@@ -454,49 +422,31 @@ export function DocumentsWorkspaceTab() {
               onInput={(e) => {
                 const val = (e.target as HTMLTextAreaElement).value;
                 documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
-                  n.id === selectedNote.id ? { ...n, content: val } : n,
+                  n.id === selectedNote.id ? { ...n, content: val } : n
                 );
               }}
               placeholder={t("docs.notes")}
               style={{ width: "100%", resize: "vertical", fontFamily: "var(--atlas-font-sans, inherit)" }}
             />
+          </label>
 
-            {parsedDoc.handouts.length > 0 && (
-              <div
-                data-testid="note-handouts-controls"
-                style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.5rem" }}
-              >
-                {parsedDoc.handouts.map((handout, idx) => (
-                  <div
-                    key={handout.id || idx}
-                    data-testid={`handout-action-row-${handout.id || idx}`}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      padding: "0.5rem 0.75rem",
-                      background: "var(--atlas-surface-raised)",
-                      border: "1px solid var(--atlas-border)",
-                      borderRadius: "var(--atlas-radius-sm, 4px)",
-                      minHeight: "44px",
-                    }}
-                  >
-                    <span>📄 {handout.title}</span>
-                    <button
-                      type="button"
-                      data-testid="btn-reveal-handout"
-                      class="ds-btn ds-btn-primary"
-                      onClick={() => handleRevealHandout(handout)}
-                    >
-                      {t("action.reveal")}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })()}
+          {parsedActiveNote && parsedActiveNote.handouts.length > 0 && (
+            <div data-testid="note-handout-directives" style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+              {parsedActiveNote.handouts.map((handout) => (
+                <button
+                  key={handout.id}
+                  type="button"
+                  data-testid="btn-reveal-handout"
+                  class="ds-btn ds-btn-primary"
+                  onClick={() => handleRevealHandout(handout)}
+                >
+                  {t("action.reveal")}: {handout.title}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div
         data-testid="past-handouts-gallery"
@@ -510,10 +460,10 @@ export function DocumentsWorkspaceTab() {
             <div
               key={handout.handoutId}
               data-testid={`handout-card-${handout.handoutId}`}
-              class="handout-card-item"
               role="button"
               tabIndex={0}
-              aria-label={`${t("docs.handouts")}: ${handout.title}`}
+              aria-label={`Open handout: ${handout.title}`}
+              class="handout-card-item"
               onClick={() => {
                 activeHandoutModalSignal.value = handout;
               }}
@@ -523,15 +473,10 @@ export function DocumentsWorkspaceTab() {
                   activeHandoutModalSignal.value = handout;
                 }
               }}
-              style={{
-                minHeight: "44px",
-                padding: "0.5rem",
-                border: "1px solid var(--atlas-border)",
-                cursor: "pointer",
-              }}
+              style={{ minHeight: "44px", padding: "0.5rem", border: "1px solid var(--atlas-border)", cursor: "pointer" }}
             >
               <h4>{handout.title}</h4>
-              <p>{handout.content}</p>
+              <p style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{handout.content}</p>
             </div>
           ))
         )}
@@ -545,17 +490,20 @@ export function DocumentsWorkspaceTab() {
         {documentsTimelineSignal.value.length === 0 ? (
           <p data-testid="empty-timeline-hint">{t("docs.timeline.empty")}</p>
         ) : (
-          documentsTimelineSignal.value.map((event) => (
-            <div
-              key={event.id}
-              data-testid={`timeline-event-${event.seqId}`}
-              style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}
-            >
-              <span>
-                #{event.seqId} {event.eventType}
-              </span>
-            </div>
-          ))
+          documentsTimelineSignal.value.map((event) => {
+            const titleSuffix = typeof event.payload?.title === "string" ? `: ${event.payload.title}` : "";
+            return (
+              <div
+                key={event.id}
+                data-testid={`timeline-event-${event.seqId}`}
+                style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}
+              >
+                <span>
+                  #{event.seqId} {event.eventType}{titleSuffix}
+                </span>
+              </div>
+            );
+          })
         )}
       </div>
     </section>
