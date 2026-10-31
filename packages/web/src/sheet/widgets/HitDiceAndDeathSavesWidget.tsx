@@ -2,6 +2,13 @@ import { h, type VNode } from 'preact';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
+function resolveMutationPath(bindingPath: string | undefined, fallbackPath: string): string {
+  if (!bindingPath || typeof bindingPath !== 'string') {
+    return fallbackPath;
+  }
+  return bindingPath.startsWith('sheet.') ? bindingPath.slice(6) : bindingPath;
+}
+
 export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
   const hitDiceCurrent = Number(props.boundValues?.hitDiceCurrent ?? 0);
   const hitDiceMax = Number(props.boundValues?.hitDiceMax ?? 0);
@@ -11,6 +18,11 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
   const deathSuccesses = Number(props.boundValues?.deathSuccesses ?? nestedDeathSaves.successes ?? 0);
   const deathFailures = Number(props.boundValues?.deathFailures ?? nestedDeathSaves.failures ?? 0);
   const hpCurrent = Number(props.boundValues?.hpCurrent ?? 0);
+
+  const hitDiceCurrentPath = resolveMutationPath(props.bindings?.hitDiceCurrent, 'attributes.hitDice.current');
+  const deathSuccessesPath = resolveMutationPath(props.bindings?.deathSuccesses, 'attributes.deathSaves.successes');
+  const deathFailuresPath = resolveMutationPath(props.bindings?.deathFailures, 'attributes.deathSaves.failures');
+  const hpCurrentPath = resolveMutationPath(props.bindings?.hpCurrent, 'attributes.hp.current');
 
   const handleSpendHitDie = () => {
     if (hitDiceCurrent <= 0) return;
@@ -29,7 +41,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
     );
     props.dispatchCommand?.(
       TrameCommand.UpdateActorSheet({
-        path: 'hitDiceCurrent',
+        path: hitDiceCurrentPath,
         hitDiceCurrent: hitDiceCurrent - 1,
         value: hitDiceCurrent - 1,
       }),
@@ -41,7 +53,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
     const isStable = nextVal >= 3;
     props.dispatchCommand?.(
       TrameCommand.UpdateActorSheet({
-        path: 'deathSaves.successes',
+        path: deathSuccessesPath,
         deathSuccesses: nextVal,
         value: nextVal,
         ...(isStable ? { condition: 'stable', status: 'stable' } : {}),
@@ -54,7 +66,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
     const isDeceased = nextVal >= 3;
     props.dispatchCommand?.(
       TrameCommand.UpdateActorSheet({
-        path: 'deathSaves.failures',
+        path: deathFailuresPath,
         deathFailures: nextVal,
         value: nextVal,
         ...(isDeceased ? { condition: 'deceased', status: 'deceased' } : {}),
@@ -68,7 +80,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
       const isDeceased = nextFailures >= 3;
       props.dispatchCommand?.(
         TrameCommand.UpdateActorSheet({
-          path: 'deathSaves.failures',
+          path: deathFailuresPath,
           deathFailures: nextFailures,
           value: nextFailures,
           increment: 2,
@@ -80,7 +92,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
       const isDeceased = nextFailures >= 3;
       props.dispatchCommand?.(
         TrameCommand.UpdateActorSheet({
-          path: 'deathSaves.failures',
+          path: deathFailuresPath,
           deathFailures: nextFailures,
           value: nextFailures,
           increment: 1,
@@ -92,7 +104,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
       const isStable = nextSuccesses >= 3;
       props.dispatchCommand?.(
         TrameCommand.UpdateActorSheet({
-          path: 'deathSaves.successes',
+          path: deathSuccessesPath,
           deathSuccesses: nextSuccesses,
           value: nextSuccesses,
           increment: 1,
@@ -102,7 +114,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
     } else if (rollResult === 20) {
       props.dispatchCommand?.(
         TrameCommand.UpdateActorSheet({
-          path: 'hp.current',
+          path: hpCurrentPath,
           deathSuccesses: 0,
           deathFailures: 0,
           hpCurrent: Math.max(1, hpCurrent + 1),

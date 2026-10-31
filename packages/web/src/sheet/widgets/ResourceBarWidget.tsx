@@ -2,6 +2,13 @@ import { h, type VNode } from 'preact';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
+function resolveMutationPath(bindingPath: string | undefined, fallbackPath: string): string {
+  if (!bindingPath || typeof bindingPath !== 'string') {
+    return fallbackPath;
+  }
+  return bindingPath.startsWith('sheet.') ? bindingPath.slice(6) : bindingPath;
+}
+
 export function ResourceBarWidget(props: WidgetProps): VNode<any> {
   const current = Number(props.boundValues?.current ?? props.boundValues?.hpCurrent ?? 0);
   const max = Number(props.boundValues?.max ?? props.boundValues?.hpMax ?? 0);
@@ -10,12 +17,24 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
   const color = (props.options?.color as string) ?? 'var(--atlas-action)';
   const isLocked = props.isLocked !== false;
 
+  const currentPath = resolveMutationPath(props.bindings?.current, 'attributes.hp.current');
+  const maxPath = resolveMutationPath(props.bindings?.max, 'attributes.hp.max');
+  const tempPath = resolveMutationPath(props.bindings?.temp, 'attributes.hp.temp');
+
   const handleHpChange = (path: string, val: number) => {
+    const cleanVal = Math.max(0, val);
     props.dispatchCommand?.(
       TrameCommand.UpdateActorSheet({
         path,
-        value: Math.max(0, val),
-        current: path.includes('current') ? Math.max(0, val) : current,
+        value: cleanVal,
+        current: path.includes('current') ? cleanVal : current,
+        attributes: {
+          hp: {
+            current: path.includes('current') ? cleanVal : current,
+            max: path.includes('max') ? cleanVal : max,
+            temp: path.includes('temp') ? cleanVal : temp,
+          },
+        },
       }),
     );
   };
@@ -38,7 +57,7 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
           'data-testid': 'resource-input-current',
           'aria-label': `Current ${label}`,
           value: current,
-          onChange: (e: Event) => handleHpChange('hp.current', Number((e.target as HTMLInputElement).value)),
+          onChange: (e: Event) => handleHpChange(currentPath, Number((e.target as HTMLInputElement).value)),
         }),
         h('span', { class: 'ds-resource-separator' }, '/'),
         isLocked
@@ -49,7 +68,7 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
               'data-testid': 'resource-input-max',
               'aria-label': `Maximum ${label}`,
               value: max,
-              onChange: (e: Event) => handleHpChange('hp.max', Number((e.target as HTMLInputElement).value)),
+              onChange: (e: Event) => handleHpChange(maxPath, Number((e.target as HTMLInputElement).value)),
             }),
         h('span', { class: 'ds-resource-separator' }, '+'),
         h('input', {
@@ -58,7 +77,7 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
           'data-testid': 'resource-input-temp',
           'aria-label': `Temporary ${label}`,
           value: temp,
-          onChange: (e: Event) => handleHpChange('hp.temp', Number((e.target as HTMLInputElement).value)),
+          onChange: (e: Event) => handleHpChange(tempPath, Number((e.target as HTMLInputElement).value)),
         }),
         temp > 0
           ? h('span', { class: 'ds-resource-temp atlas-tabular-nums', 'data-testid': 'resource-temp-val' }, ` (${temp} Temp)`)

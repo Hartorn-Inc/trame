@@ -11,6 +11,7 @@ export interface WidgetRenderContext<TOptions = Record<string, unknown>> {
 export interface WidgetProps<TOptions = Record<string, unknown>> {
   id: string;
   boundValues: Record<string, unknown>;
+  bindings?: Record<string, string>;
   options?: TOptions;
   isLocked?: boolean;
   dispatchCommand?: CommandDispatcher;

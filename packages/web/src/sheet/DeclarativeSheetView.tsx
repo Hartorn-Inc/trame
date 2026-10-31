@@ -157,6 +157,7 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
           key: node.id,
           id: node.id,
           boundValues,
+          bindings: node.bindings,
           options: node.options,
           isLocked: effectiveLocked,
           dispatchCommand: props.dispatchCommand,

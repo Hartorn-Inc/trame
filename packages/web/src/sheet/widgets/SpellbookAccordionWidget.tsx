@@ -4,15 +4,26 @@ import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 import { CompendiumDragDropManager } from '../../compendium/CompendiumDragDropManager.ts';
 
+function resolveSlotsBasePath(bindingPath: string | undefined): string {
+  if (!bindingPath || typeof bindingPath !== 'string') {
+    return 'spellSlots';
+  }
+  return bindingPath.startsWith('sheet.') ? bindingPath.slice(6) : bindingPath;
+}
+
 export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
-  const rawSlots = (props.boundValues?.slots as Record<string, any>) ?? {};
+  const rawSlots = (props.boundValues?.slots as Record<string, any>) ?? (props.boundValues?.spellSlots as Record<string, any>) ?? {};
+  const rawPactMagic = (props.boundValues?.pactMagic as Record<string, any>) ?? rawSlots.pact ?? rawSlots.pactMagic ?? {};
   const rawSpells = Array.isArray(props.boundValues?.spells) ? props.boundValues.spells : [];
   const autoDeductSlots = props.options?.autoDeductSlots !== false;
+  const slotsBasePath = resolveSlotsBasePath(props.bindings?.slots);
+  const pactBasePath = resolveSlotsBasePath(props.bindings?.pactMagic ?? 'pactMagic');
 
   const spells = rawSpells.map((s: any) => ({
     id: String(s.id ?? ''),
     name: String(s.name ?? 'Spell'),
     level: Number(s.level ?? 0),
+    isPact: Boolean(s.isPact || s.pactMagic),
     isAoE: Boolean(s.requiresAoE || s.isAoE || s.aoeTemplate),
     aoeTemplate: s.aoeTemplate ?? (s.requiresAoE ? { shape: 'circle', radiusFeet: 20 } : undefined),
   }));
@@ -20,7 +31,6 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
   const handleCast = (spell: (typeof spells)[0]) => {
     if (spell.isAoE) {
       if (!props.isTableCanvasMounted) {
-        // Canvas not mounted
         props.dispatchCommand?.({
           cmd: 'NOTIFICATION',
           type: 'warning',
@@ -57,7 +67,7 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
       const nextVal = Math.max(0, currentSlot - 1);
       props.dispatchCommand?.(
         TrameCommand.UpdateActorSheet({
-          path: `slots.${slotKey}.current`,
+          path: `${slotsBasePath}.${slotKey}.current`,
           slotLevel: spell.level,
           current: nextVal,
           value: nextVal,
@@ -83,8 +93,21 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
     const nextVal = isFilled ? idx : idx + 1;
     props.dispatchCommand?.(
       TrameCommand.UpdateActorSheet({
-        path: `slots.${slotKey}.current`,
+        path: `${slotsBasePath}.${slotKey}.current`,
         slotLevel: lvl,
+        current: nextVal,
+        value: nextVal,
+      }),
+    );
+  };
+
+  const handleTogglePactPip = (currentVal: number, idx: number) => {
+    const isFilled = idx < currentVal;
+    const nextVal = isFilled ? idx : idx + 1;
+    props.dispatchCommand?.(
+      TrameCommand.UpdateActorSheet({
+        path: `${pactBasePath}.current`,
+        slotType: 'pactMagic',
         current: nextVal,
         value: nextVal,
       }),
@@ -111,6 +134,10 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
     spellsByLevel.set(spell.level, list);
   }
 
+  const pactMax = Number(rawPactMagic?.max ?? 0);
+  const pactCurrent = Number(rawPactMagic?.current ?? pactMax);
+  const pactLevel = Number(rawPactMagic?.slotLevel ?? rawPactMagic?.level ?? 1);
+
   return h(
     'div',
     {
@@ -120,6 +147,40 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
       onDrop: handleDrop,
     },
     h('h4', { class: 'ds-widget-title' }, 'Spellbook & Spell Slots'),
+    h(
+      'div',
+      { class: 'ds-pact-magic-section', 'data-testid': 'pact-magic-section' },
+      h(
+        'span',
+        { class: 'ds-pact-magic-label atlas-tabular-nums' },
+        `Pact Magic (Slot Lvl ${pactLevel}): ${pactCurrent}/${pactMax}`,
+      ),
+      pactMax > 0
+        ? h(
+            'div',
+            { class: 'ds-slot-pips-container atlas-tabular-nums', 'data-testid': 'slot-pips-pact' },
+            Array.from({ length: pactMax }, (_, idx) => {
+              const isFilled = idx < pactCurrent;
+              return h(
+                'button',
+                {
+                  key: `pact-pip-${idx}`,
+                  type: 'button',
+                  class: `ds-slot-pip atlas-tabular-nums ${isFilled ? 'is-filled' : 'is-expended'}`,
+                  'data-testid': `slot-pip-pact-${idx}`,
+                  'aria-label': `Toggle Pact Magic spell slot ${idx + 1}, currently ${isFilled ? 'available' : 'expended'}`,
+                  'aria-pressed': isFilled ? 'true' : 'false',
+                  onClick: (e: Event) => {
+                    e.stopPropagation();
+                    handleTogglePactPip(pactCurrent, idx);
+                  },
+                },
+                isFilled ? '[*]' : '[ ]',
+              );
+            }),
+          )
+        : null,
+    ),
     h(
       'div',
       { class: 'ds-spell-levels-accordion' },
