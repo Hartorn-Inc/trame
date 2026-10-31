@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import { register } from "node:module";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 if (!globalThis.__TRAME_TSX_LOADER_REGISTERED__) {
@@ -14,19 +13,6 @@ if (!globalThis.__TRAME_TSX_LOADER_REGISTERED__) {
 }
 
 export async function resolve(specifier, context, nextResolve) {
-  if (specifier.startsWith("@trame/game-system-dnd5e")) {
-    const rest = specifier.slice("@trame/game-system-dnd5e".length) || "/src/index.ts";
-    const resolvedPath = path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "../../game-systems/dnd5e",
-      rest.replace(/^\//, ""),
-    );
-    return {
-      url: pathToFileURL(resolvedPath).href,
-      format: "module",
-      shortCircuit: true,
-    };
-  }
   const nextResult = await nextResolve(specifier, context);
   if (specifier.endsWith(".tsx") || (nextResult?.url && nextResult.url.endsWith(".tsx"))) {
     return {
