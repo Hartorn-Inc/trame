@@ -1427,7 +1427,9 @@ impl CampaignMembershipValidator for SqlxPostgresStore {
         let store = self.clone();
         run_pg_blocking(async move {
             let _ = store.ensure_campaign_row(campaign_id).await;
-            let _ = store.upsert_campaign_member(campaign_id, user_id, "GM").await;
+            let _ = store
+                .upsert_campaign_member(campaign_id, user_id, "GM")
+                .await;
         });
     }
 }
@@ -1436,8 +1438,8 @@ impl PartyJournalStorage for SqlxPostgresStore {
     fn insert_entry(&self, entry: PartyJournalEntry) -> Result<(), NotesError> {
         let pool = self.pool.clone();
         run_pg_blocking(async move {
-            let campaign_uuid = Uuid::parse_str(&entry.campaign_id)
-                .unwrap_or_else(|_| Uuid::from_u128(1));
+            let campaign_uuid =
+                Uuid::parse_str(&entry.campaign_id).unwrap_or_else(|_| Uuid::from_u128(1));
             Self::ensure_campaign_row_on_pool(&pool, campaign_uuid)
                 .await
                 .map_err(|_| NotesError::LockPoisoned)?;
@@ -1470,8 +1472,7 @@ impl PartyJournalStorage for SqlxPostgresStore {
         let pool = self.pool.clone();
         let cid_str = campaign_id.to_string();
         run_pg_blocking(async move {
-            let campaign_uuid =
-                Uuid::parse_str(&cid_str).unwrap_or_else(|_| Uuid::from_u128(1));
+            let campaign_uuid = Uuid::parse_str(&cid_str).unwrap_or_else(|_| Uuid::from_u128(1));
             let rows = sqlx::query(
                 "SELECT payload FROM party_journal_entries
                  WHERE campaign_id = $1
@@ -1526,8 +1527,7 @@ impl TimelineStorage for SqlxPostgresStore {
         let pool = self.pool.clone();
         let cid_str = campaign_id.to_string();
         run_pg_blocking(async move {
-            let campaign_uuid =
-                Uuid::parse_str(&cid_str).unwrap_or_else(|_| Uuid::from_u128(1));
+            let campaign_uuid = Uuid::parse_str(&cid_str).unwrap_or_else(|_| Uuid::from_u128(1));
             Self::ensure_campaign_row_on_pool(&pool, campaign_uuid)
                 .await
                 .map_err(|_| TimelineError::LockPoisoned)?;
@@ -1586,8 +1586,7 @@ impl TimelineStorage for SqlxPostgresStore {
         let cid_str = campaign_id.to_string();
         let effective_limit = limit.clamp(1, 200);
         run_pg_blocking(async move {
-            let campaign_uuid =
-                Uuid::parse_str(&cid_str).unwrap_or_else(|_| Uuid::from_u128(1));
+            let campaign_uuid = Uuid::parse_str(&cid_str).unwrap_or_else(|_| Uuid::from_u128(1));
             let rows = sqlx::query(
                 "SELECT payload FROM session_timeline_events
                  WHERE campaign_id = $1 AND session_num = $2 AND sequence_num > $3
@@ -1634,8 +1633,8 @@ impl AssetStore for SqlxPostgresStore {
         content_type: &'a str,
     ) -> crate::assets::store::BoxFuture<'a, Result<(), AssetStoreError>> {
         Box::pin(async move {
-            let campaign_id = extract_campaign_id_from_asset_key(key)
-                .unwrap_or_else(|| Uuid::from_u128(1));
+            let campaign_id =
+                extract_campaign_id_from_asset_key(key).unwrap_or_else(|| Uuid::from_u128(1));
             self.ensure_campaign_row(campaign_id)
                 .await
                 .map_err(AssetStoreError::Io)?;
@@ -1665,14 +1664,13 @@ impl AssetStore for SqlxPostgresStore {
         key: &'a str,
     ) -> crate::assets::store::BoxFuture<'a, Result<Option<Bytes>, AssetStoreError>> {
         Box::pin(async move {
-            let row_opt =
-                sqlx::query("SELECT payload FROM campaign_assets WHERE asset_key = $1")
-                    .bind(key)
-                    .fetch_optional(&self.pool)
-                    .await
-                    .map_err(|e| AssetStoreError::Io(e.to_string()))?;
+            let row_opt = sqlx::query("SELECT payload FROM campaign_assets WHERE asset_key = $1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| AssetStoreError::Io(e.to_string()))?;
 
-            let Some(row) = row_opt else {
+            let Some(row) = row_opt else {Ref
                 return Ok(None);
             };
             let bytes: Vec<u8> = row
@@ -1688,13 +1686,12 @@ impl AssetStore for SqlxPostgresStore {
         ttl: Duration,
     ) -> crate::assets::store::BoxFuture<'a, Result<String, AssetStoreError>> {
         Box::pin(async move {
-            let exists: Option<String> = sqlx::query_scalar(
-                "SELECT asset_key FROM campaign_assets WHERE asset_key = $1",
-            )
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| AssetStoreError::Io(e.to_string()))?;
+            let exists: Option<String> =
+                sqlx::query_scalar("SELECT asset_key FROM campaign_assets WHERE asset_key = $1")
+                    .bind(key)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(|e| AssetStoreError::Io(e.to_string()))?;
 
             if exists.is_none() {
                 return Err(AssetStoreError::NotFound(key.to_string()));

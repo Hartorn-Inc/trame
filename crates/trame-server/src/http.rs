@@ -443,9 +443,8 @@ pub fn build_full_router(
     timeline_storage: Arc<dyn TimelineStorage>,
 ) -> Router {
     let session_store = Arc::new(InMemorySessionStore::new());
-    let magic_link_service = Arc::new(MagicLinkService::new(
+    let magic_link_service = Arc::new(MagicLinkService::from_env_or_secret(
         b"trame-default-hmac-sha256-signing-secret-key",
-        "trame-server",
     ));
     let auth_state = AuthState {
         magic_link_service,
@@ -1230,13 +1229,15 @@ pub async fn starter_map_handler(
     };
 
     let goblin1_id = Uuid::new_v4();
-    let mut goblin1 = TokenState::new_default(goblin1_id, "Goblin Sneak", Point2D::new(800.0, 300.0));
+    let mut goblin1 =
+        TokenState::new_default(goblin1_id, "Goblin Sneak", Point2D::new(800.0, 300.0));
     goblin1.hp = 12;
     goblin1.max_hp = 12;
     goblin1.visibility_channel = CHANNEL_MATERIAL;
 
     let goblin2_id = Uuid::new_v4();
-    let mut goblin2 = TokenState::new_default(goblin2_id, "Goblin Archer", Point2D::new(900.0, 500.0));
+    let mut goblin2 =
+        TokenState::new_default(goblin2_id, "Goblin Archer", Point2D::new(900.0, 500.0));
     goblin2.hp = 10;
     goblin2.max_hp = 10;
     goblin2.visibility_channel = CHANNEL_MATERIAL;
@@ -1802,13 +1803,17 @@ pub async fn download_asset_handler(
         if now <= exp {
             let signing_input = format!("{clean_key}:{exp}");
             let server_secret = state.auth_state.magic_link_service.secret();
-            let expected_sig = crate::auth::magic_link::hmac_sha256(server_secret, signing_input.as_bytes());
+            let expected_sig =
+                crate::auth::magic_link::hmac_sha256(server_secret, signing_input.as_bytes());
             let mut expected_hex = String::with_capacity(64);
             for b in expected_sig {
                 use std::fmt::Write;
                 let _ = write!(&mut expected_hex, "{:02x}", b);
             }
-            if crate::auth::magic_link::constant_time_eq(sig_hex.as_bytes(), expected_hex.as_bytes()) {
+            if crate::auth::magic_link::constant_time_eq(
+                sig_hex.as_bytes(),
+                expected_hex.as_bytes(),
+            ) {
                 authorized = true;
             }
         }
@@ -1816,7 +1821,9 @@ pub async fn download_asset_handler(
 
     if !authorized {
         if let Ok(user_id) = resolve_authenticated_user(&state, &headers, None).await {
-            if let Some(campaign_id) = crate::storage::postgres::extract_campaign_id_from_asset_key(clean_key) {
+            if let Some(campaign_id) =
+                crate::storage::postgres::extract_campaign_id_from_asset_key(clean_key)
+            {
                 if is_authorized_campaign_member(&state, campaign_id, user_id).await {
                     authorized = true;
                 }
@@ -1829,7 +1836,8 @@ pub async fn download_asset_handler(
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
                 code: Some("FORBIDDEN".to_string()),
-                error: "valid signature or campaign membership required to download asset".to_string(),
+                error: "valid signature or campaign membership required to download asset"
+                    .to_string(),
             }),
         )
             .into_response();

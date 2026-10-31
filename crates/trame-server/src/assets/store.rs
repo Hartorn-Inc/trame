@@ -190,7 +190,10 @@ impl AssetStore for InMemoryAssetStore {
                 .unwrap_or(0);
             let exp = now.saturating_add(ttl.as_secs());
             let signing_input = format!("{sanitized_key}:{exp}");
-            let sig = crate::auth::magic_link::hmac_sha256(&self.signing_secret, signing_input.as_bytes());
+            let sig = crate::auth::magic_link::hmac_sha256(
+                &self.signing_secret,
+                signing_input.as_bytes(),
+            );
             let mut sig_hex = String::with_capacity(64);
             for b in sig {
                 use std::fmt::Write;
