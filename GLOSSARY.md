@@ -335,9 +335,9 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### UndoDrawer
 
-- **Definition**: Game Master history drawer displaying recent table mutations and triggering single-click rollbacks.
-- **Allowed Context**: Game Master HUD, action history inspection, and rollback execution.
-- **_Avoid_**: HistorySidebar, RollbackPanel.
+- **Definition**: Contextual sidebar drawer interface displaying the session action history stack and allowing the Game Master to inspect and revert reversible patches.
+- **Allowed Context**: `UndoDrawer`, `undo drawer`, Game Master history controls.
+- **_Avoid_**: `history panel`, `rollback drawer`, `undo panel`.
 
 ## Domain Terminology / Terminologie Métier
 
