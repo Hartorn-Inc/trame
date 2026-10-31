@@ -415,6 +415,11 @@ impl FilteredNoteDocument {
     pub fn merge_party_note_ast(stored_content: &str, player_content: &str) -> String {
         merge_party_note_ast(stored_content, player_content)
     }
+
+    /// Canonical spec alias for `filter_for_role` (Section 3.2 of spec-3-scope-wiki-notes).
+    pub fn filter_for_user(raw_content: &str, role: UserRole) -> String {
+        Self::filter_for_role(raw_content, role)
+    }
 }
 
 fn tokenize_directive_attrs(input: &str) -> Vec<&str> {

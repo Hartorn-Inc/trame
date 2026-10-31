@@ -78,8 +78,9 @@ mod tests {
         UvttResolution, import_uvtt_map, parse_hex_color,
     };
     use crate::notes::{
-        FilteredNoteDocument, InMemoryPartyJournalStorage, PartyJournalStorage,
-        RevealHandoutCommand, UserRole, parse_handout_revealed_attr, reveal_handout,
+        FilteredNoteDocument, InMemoryPartyJournalStorage, NoteAccessDecision, NoteVisibility,
+        PartyJournalStorage, RevealHandoutCommand, UserRole, evaluate_note_access,
+        parse_handout_revealed_attr, reveal_handout,
     };
     use crate::room::{ConnectedClient, OutboundClientFrame, RoomLeaseManager};
     use crate::sync::{
@@ -776,6 +777,155 @@ Party moves forward."#;
         assert!(merged.contains("Secret MJ"));
         assert!(merged.contains("Texte public modifie"));
         assert!(merged.contains("Fin public"));
+    }
+
+    #[test]
+    fn test_notes_rbac_isolation() {
+        // 1. PRIVATE notes: only the owner gets Ok; peers, GMs, and spectators get NotFound (404)
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Private,
+                "user-alice",
+                "user-alice",
+                UserRole::Player,
+                false
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Private,
+                "user-alice",
+                "user-alice",
+                UserRole::Player,
+                true
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Private,
+                "user-alice",
+                "user-bob",
+                UserRole::Player,
+                false
+            ),
+            NoteAccessDecision::NotFound
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Private,
+                "user-alice",
+                "user-gm",
+                UserRole::GameMaster,
+                false
+            ),
+            NoteAccessDecision::NotFound
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Private,
+                "user-alice",
+                "user-spec",
+                UserRole::Spectator,
+                false
+            ),
+            NoteAccessDecision::NotFound
+        );
+
+        // 2. DM_ONLY notes: only GameMaster gets Ok; players and spectators get Forbidden (403)
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::DmOnly,
+                "user-gm",
+                "user-gm",
+                UserRole::GameMaster,
+                false
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::DmOnly,
+                "user-gm",
+                "user-gm",
+                UserRole::GameMaster,
+                true
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::DmOnly,
+                "user-gm",
+                "user-alice",
+                UserRole::Player,
+                false
+            ),
+            NoteAccessDecision::Forbidden
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::DmOnly,
+                "user-gm",
+                "user-spec",
+                UserRole::Spectator,
+                false
+            ),
+            NoteAccessDecision::Forbidden
+        );
+
+        // 3. PARTY notes: readable by all roles; writable by GM & Player, Forbidden for Spectator writes
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Party,
+                "user-alice",
+                "user-bob",
+                UserRole::Player,
+                false
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Party,
+                "user-alice",
+                "user-bob",
+                UserRole::Player,
+                true
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Party,
+                "user-alice",
+                "user-gm",
+                UserRole::GameMaster,
+                true
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Party,
+                "user-alice",
+                "user-spec",
+                UserRole::Spectator,
+                false
+            ),
+            NoteAccessDecision::Ok
+        );
+        assert_eq!(
+            evaluate_note_access(
+                NoteVisibility::Party,
+                "user-alice",
+                "user-spec",
+                UserRole::Spectator,
+                true
+            ),
+            NoteAccessDecision::Forbidden
+        );
     }
 
     #[test]

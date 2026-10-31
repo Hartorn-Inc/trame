@@ -27,10 +27,89 @@ export type NoteScopeFilter = "ALL" | "PRIVATE" | "PARTY" | "DM_ONLY";
 
 export const documentsNotesSignal = signal<NoteHierarchyNode[]>([]);
 export const documentsHandoutsSignal = signal<PartyJournalEntry[]>([]);
+export const revealedHandoutsSignal = documentsHandoutsSignal;
 export const documentsTimelineSignal = signal<SessionTimelineEventItem[]>([]);
 export const activeHandoutModalSignal = signal<PartyJournalEntry | null>(null);
+export const activeRevealedHandoutSignal = activeHandoutModalSignal;
 export const selectedNoteIdSignal = signal<string | null>(null);
 export const noteScopeFilterSignal = signal<NoteScopeFilter>("ALL");
+
+export interface HandoutRevealedFrame {
+  type?: "HandoutRevealed" | "handout.revealed";
+  event?: "handout.revealed" | "HandoutRevealed";
+  handout_id?: string;
+  handoutId?: string;
+  title: string;
+  content: string;
+  revealed_by?: string;
+  revealedBy?: string;
+  revealed_at?: number;
+  timestamp?: number;
+}
+
+/**
+ * Dispatches an incoming ServerEnvelope::HandoutRevealed / handout.revealed WebSocket frame
+ * into activeHandoutModalSignal and documentsHandoutsSignal (newest-first, deduplicated by handoutId).
+ */
+export function dispatchHandoutRevealedFrame(frame: HandoutRevealedFrame): PartyJournalEntry {
+  const handoutId = frame.handout_id ?? frame.handoutId ?? `handout-${Date.now()}`;
+  const entry: PartyJournalEntry = {
+    handoutId,
+    title: frame.title,
+    content: frame.content,
+    revealedBy: frame.revealed_by ?? frame.revealedBy ?? "gm",
+    timestamp: frame.revealed_at ?? frame.timestamp ?? Date.now(),
+  };
+  activeHandoutModalSignal.value = entry;
+  const existing = documentsHandoutsSignal.value.filter((h) => h.handoutId !== handoutId);
+  documentsHandoutsSignal.value = [entry, ...existing];
+  return entry;
+}
+
+function tryExtractHandoutFrame(raw: unknown): HandoutRevealedFrame | null {
+  try {
+    const payload = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!payload || typeof payload !== "object") return null;
+    const rec = payload as Record<string, unknown>;
+    if (
+      rec.type === "HandoutRevealed" ||
+      rec.event === "handout.revealed" ||
+      rec.event === "HandoutRevealed" ||
+      "HandoutRevealed" in rec
+    ) {
+      const inner =
+        "HandoutRevealed" in rec && typeof rec.HandoutRevealed === "object" && rec.HandoutRevealed !== null
+          ? (rec.HandoutRevealed as Record<string, unknown>)
+          : rec;
+      if (typeof inner.title === "string" && typeof inner.content === "string") {
+        return inner as unknown as HandoutRevealedFrame;
+      }
+    }
+  } catch {
+    // Ignore non-JSON or unrelated frames
+  }
+  return null;
+}
+
+/**
+ * Binds a WebSocket-compatible message emitter so ServerEnvelope::HandoutRevealed frames
+ * automatically update activeHandoutModalSignal and documentsHandoutsSignal.
+ */
+export function attachHandoutRevealedSocket(socket: {
+  addEventListener: (type: "message", listener: (ev: { data: unknown }) => void) => void;
+  removeEventListener?: (type: "message", listener: (ev: { data: unknown }) => void) => void;
+}): () => void {
+  const onMessage = (ev: { data: unknown }) => {
+    const frame = tryExtractHandoutFrame(ev.data);
+    if (frame) {
+      dispatchHandoutRevealedFrame(frame);
+    }
+  };
+  socket.addEventListener("message", onMessage);
+  return () => {
+    socket.removeEventListener?.("message", onMessage);
+  };
+}
 
 export function groupNotesByFolder(notes: NoteHierarchyNode[]): Map<string, NoteHierarchyNode[]> {
   const groups = new Map<string, NoteHierarchyNode[]>();
@@ -50,14 +129,65 @@ export function HandoutRevealModal() {
   const activeModal = activeHandoutModalSignal.value;
 
   useEffect(() => {
-    if (!activeModal || typeof window === "undefined") return;
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        activeHandoutModalSignal.value = null;
+    if (typeof window === "undefined") return;
+    const handleWindowMessage = (ev: MessageEvent) => {
+      const frame = tryExtractHandoutFrame(ev.data);
+      if (frame) {
+        dispatchHandoutRevealedFrame(frame);
       }
     };
-    window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
+    const handleCustomEvent = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail;
+      const frame = tryExtractHandoutFrame(detail) ?? (
+        detail && typeof detail === "object" && typeof detail.title === "string" && typeof detail.content === "string"
+          ? (detail as HandoutRevealedFrame)
+          : null
+      );
+      if (frame) {
+        dispatchHandoutRevealedFrame(frame);
+      }
+    };
+    window.addEventListener("message", handleWindowMessage);
+    window.addEventListener("trame:handout-revealed", handleCustomEvent);
+    return () => {
+      window.removeEventListener("message", handleWindowMessage);
+      window.removeEventListener("trame:handout-revealed", handleCustomEvent);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeModal || typeof window === "undefined") return;
+    const previousActiveElement =
+      typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        activeHandoutModalSignal.value = null;
+        return;
+      }
+      if (e.key === "Tab" && typeof document !== "undefined") {
+        const modalEl = document.querySelector?.('[data-testid="handout-reveal-modal"]');
+        const focusable = modalEl?.querySelectorAll?.(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusable && focusable.length > 0) {
+          const first = focusable[0] as HTMLElement;
+          const last = focusable[focusable.length - 1] as HTMLElement;
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus?.();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus?.();
+          }
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      previousActiveElement?.focus?.();
+    };
   }, [activeModal]);
 
   if (!activeModal) return null;
@@ -105,7 +235,7 @@ export function HandoutRevealModal() {
           onClick={() => {
             activeHandoutModalSignal.value = null;
           }}
-          style={{ marginTop: "1rem", minHeight: "40px" }}
+          style={{ marginTop: "1rem" }}
         >
           {t("action.close")}
         </button>
@@ -313,9 +443,9 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                   class="folder-breadcrumb"
                   data-testid={`folder-breadcrumb-${folderName.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`}
                 >
-                  📁 {folderName}
+                  <span aria-hidden="true">📁</span> {folderName}
                 </span>
-                <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
+                <span class="atlas-tabular-nums" style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
                   {folderNotes.length} {folderNotes.length === 1 ? t("docs.notes.count.singular") : t("docs.notes.count.plural")}
                 </span>
               </div>

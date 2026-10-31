@@ -33,6 +33,8 @@ import {
   DocumentsWorkspaceTab,
   type NoteHierarchyNode,
   updateHandoutDirectiveRevealed,
+  dispatchHandoutRevealedFrame,
+  attachHandoutRevealedSocket,
 } from "../src/workspace/DocumentsWorkspaceTab.tsx";
 import { render } from "preact";
 import {
@@ -236,6 +238,56 @@ describe("[Ticket #89 - Acceptance Criterion 2] Live HandoutRevealed Broadcast &
 
     activeHandoutModalSignal.value = null;
     assert.equal(activeHandoutModalSignal.value, null);
+  });
+
+  it("dispatches ServerEnvelope::HandoutRevealed WebSocket frames into activeHandoutModalSignal and documentsHandoutsSignal", () => {
+    activeHandoutModalSignal.value = null;
+    documentsHandoutsSignal.value = [];
+
+    const listeners: Array<(ev: { data: unknown }) => void> = [];
+    const mockSocket = {
+      addEventListener(_type: "message", fn: (ev: { data: unknown }) => void) {
+        listeners.push(fn);
+      },
+      removeEventListener(_type: "message", fn: (ev: { data: unknown }) => void) {
+        const idx = listeners.indexOf(fn);
+        if (idx >= 0) listeners.splice(idx, 1);
+      },
+    };
+
+    const detach = attachHandoutRevealedSocket(mockSocket);
+    assert.equal(listeners.length, 1);
+
+    listeners[0]({
+      data: JSON.stringify({
+        type: "HandoutRevealed",
+        handout_id: "h-ws-99",
+        title: "Decree of the Archmage",
+        content: "All portals to the Shadowfell are sealed.",
+        revealed_by: "gm-elminster",
+        revealed_at: 1716009999000,
+      }),
+    });
+
+    assert.equal(activeHandoutModalSignal.peek()?.handoutId, "h-ws-99");
+    assert.equal(activeHandoutModalSignal.peek()?.title, "Decree of the Archmage");
+    assert.equal(documentsHandoutsSignal.value.length, 1);
+    assert.equal(documentsHandoutsSignal.value[0].handoutId, "h-ws-99");
+
+    // Re-revealing the same handoutId deduplicates and moves to top
+    dispatchHandoutRevealedFrame({
+      event: "handout.revealed",
+      handout_id: "h-ws-99",
+      title: "Decree of the Archmage (Updated)",
+      content: "All portals to the Shadowfell are sealed.",
+      revealed_by: "gm-elminster",
+    });
+    assert.equal(documentsHandoutsSignal.value.length, 1);
+    assert.equal(documentsHandoutsSignal.value[0].title, "Decree of the Archmage (Updated)");
+
+    detach();
+    assert.equal(listeners.length, 0);
+    activeHandoutModalSignal.value = null;
   });
 });
 
