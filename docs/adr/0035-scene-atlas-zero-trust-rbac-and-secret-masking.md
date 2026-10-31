@@ -1,4 +1,4 @@
-# ADR-0035: Galerie SceneAtlas, Contrôle d'Accès Zero-Trust et Masquage des Secrets
+# ADR 0035: Galerie SceneAtlas, Contrôle d'Accès Zero-Trust et Masquage des Secrets
 
 ## Statut
 Accepté
