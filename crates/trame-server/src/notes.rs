@@ -297,9 +297,10 @@ pub fn merge_party_note_ast(stored_content: &str, player_content: &str) -> Strin
             continue;
         }
 
-        // Determine preceding and following anchor lines from stored AST
+        // Determine preceding and following public anchor lines from stored AST
         let next_anchor_lines: Vec<&str> = stored_ast[ast_idx + 1..]
             .iter()
+            .filter(|n| !n.is_confidential())
             .flat_map(|n| n.raw_string().split('\n'))
             .map(str::trim)
             .filter(|l| !l.is_empty())
@@ -307,6 +308,7 @@ pub fn merge_party_note_ast(stored_content: &str, player_content: &str) -> Strin
 
         let prev_anchor_lines: Vec<&str> = stored_ast[..ast_idx]
             .iter()
+            .filter(|n| !n.is_confidential())
             .rev()
             .flat_map(|n| n.raw_string().split('\n').rev())
             .map(str::trim)
@@ -346,10 +348,11 @@ pub fn merge_party_note_ast(stored_content: &str, player_content: &str) -> Strin
             block_lines_to_insert.push(String::new());
         }
 
+        let inserted_len = block_lines_to_insert.len();
         for (offset, line) in block_lines_to_insert.into_iter().enumerate() {
             player_lines.insert(insert_at + offset, line);
         }
-        last_insert_idx = insert_at + 1;
+        last_insert_idx = insert_at + inserted_len;
     }
 
     player_lines.join("\n")

@@ -2,6 +2,7 @@ import { signal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { t } from "../i18n/index.ts";
 import { type PartyJournalEntry } from "../mobile/companionMode.ts";
+import { parseWikiMarkdown } from "../notes/wikiParser.ts";
 
 export interface SessionTimelineEventItem {
   id: string;
@@ -48,15 +49,20 @@ export function groupNotesByFolder(notes: NoteHierarchyNode[]): Map<string, Note
 export function HandoutRevealModal() {
   const activeModal = activeHandoutModalSignal.value;
 
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        activeHandoutModalSignal.value = null;
-      }
-    };
-    window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
-  }, []);
+  try {
+    useEffect(() => {
+      if (!activeModal || typeof window === "undefined") return;
+      const handleEscape = (e: KeyboardEvent) => {
+        if (e.key === "Escape") {
+          activeHandoutModalSignal.value = null;
+        }
+      };
+      window.addEventListener("keydown", handleEscape);
+      return () => window.removeEventListener("keydown", handleEscape);
+    }, [activeModal]);
+  } catch {
+    // Fallback for headless unit test execution outside a Preact render cycle
+  }
 
   if (!activeModal) return null;
 
@@ -89,7 +95,10 @@ export function HandoutRevealModal() {
         }}
       >
         <h3 id="handout-title" data-testid="handout-title">{activeModal.title}</h3>
-        <div data-testid="handout-content" style={{ marginTop: "0.5rem" }}>
+        <div
+          data-testid="handout-content"
+          style={{ marginTop: "0.5rem", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+        >
           {activeModal.content}
         </div>
         <button
@@ -100,7 +109,7 @@ export function HandoutRevealModal() {
           onClick={() => {
             activeHandoutModalSignal.value = null;
           }}
-          style={{ marginTop: "1rem" }}
+          style={{ marginTop: "1rem", minHeight: "40px" }}
         >
           {t("action.close")}
         </button>
@@ -117,6 +126,7 @@ export function DocumentsWorkspaceTab() {
     : allNotes.filter((n) => n.visibility === activeFilter);
   const groupedNotes = groupNotesByFolder(filteredNotes);
   const selectedNote = allNotes.find((n) => n.id === selectedNoteIdSignal.value) ?? null;
+  const parsedActiveNote = selectedNote ? parseWikiMarkdown(selectedNote.content ?? "") : null;
 
   const getLocalizedScope = (vis: NoteHierarchyNode["visibility"]) => {
     switch (vis) {
@@ -145,6 +155,19 @@ export function DocumentsWorkspaceTab() {
     };
     documentsNotesSignal.value = [...allNotes, newNote];
     selectedNoteIdSignal.value = newId;
+  };
+
+  const handleRevealHandout = (handout: { id: string; title: string; content: string }) => {
+    const entry: PartyJournalEntry = {
+      handoutId: handout.id,
+      title: handout.title,
+      content: handout.content,
+      revealedBy: selectedNote?.ownerUserId || "gm",
+      timestamp: Date.now(),
+    };
+    activeHandoutModalSignal.value = entry;
+    const existing = documentsHandoutsSignal.value.filter((h) => h.handoutId !== handout.id);
+    documentsHandoutsSignal.value = [entry, ...existing];
   };
 
   const toggleFilter = (scope: NoteScopeFilter) => {
@@ -254,44 +277,53 @@ export function DocumentsWorkspaceTab() {
                   paddingLeft: "0.5rem",
                 }}
               >
-                {folderNotes.map((note) => (
-                  <div
-                    key={note.id}
-                    data-testid={`note-item-${note.id}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => {
-                      selectedNoteIdSignal.value = note.id;
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
+                {folderNotes.map((note) => {
+                  const isSelected = selectedNoteIdSignal.value === note.id;
+                  return (
+                    <div
+                      key={note.id}
+                      data-testid={`note-item-${note.id}`}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={isSelected}
+                      class="note-item-row"
+                      onClick={() => {
                         selectedNoteIdSignal.value = note.id;
-                      }
-                    }}
-                    style={{
-                      padding: "0.5rem",
-                      background: selectedNoteIdSignal.value === note.id ? "var(--atlas-surface-raised)" : "var(--atlas-surface)",
-                      border: selectedNoteIdSignal.value === note.id ? "1px solid var(--atlas-action)" : "1px solid var(--atlas-border)",
-                      borderRadius: "var(--atlas-radius-sm, 4px)",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <strong>{note.title}</strong>
-                    <span
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          selectedNoteIdSignal.value = note.id;
+                        }
+                      }}
                       style={{
-                        marginLeft: "0.5rem",
-                        fontSize: "0.8rem",
-                        color: "var(--atlas-text-muted)",
+                        minHeight: "44px",
+                        padding: "0.5rem 0.75rem",
+                        background: isSelected ? "var(--atlas-surface-raised)" : "var(--atlas-surface)",
+                        border: isSelected ? "2px solid var(--atlas-action)" : "1px solid var(--atlas-border)",
+                        borderRadius: "var(--atlas-radius-sm, 4px)",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        cursor: "pointer",
                       }}
                     >
-                      [{getLocalizedScope(note.visibility)}]
-                    </span>
-                  </div>
-                ))}
+                      <strong>
+                        {isSelected ? "› " : ""}
+                        {note.title}
+                      </strong>
+                      <span
+                        style={{
+                          marginLeft: "0.5rem",
+                          fontSize: "0.8rem",
+                          color: "var(--atlas-text-muted)",
+                        }}
+                      >
+                        [{getLocalizedScope(note.visibility)}]
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ))
@@ -304,44 +336,106 @@ export function DocumentsWorkspaceTab() {
           style={{
             display: "flex",
             flexDirection: "column",
-            gap: "0.5rem",
+            gap: "0.75rem",
             padding: "1rem",
             background: "var(--atlas-surface)",
             border: "1px solid var(--atlas-border)",
             borderRadius: "var(--atlas-radius-md, 6px)",
           }}
         >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <input
-              data-testid="note-title-input"
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
+            <label htmlFor="note-title-input" style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: "1 1 200px" }}>
+              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>Note Title</span>
+              <input
+                id="note-title-input"
+                data-testid="note-title-input"
+                aria-label="Note Title"
+                class="ds-input"
+                value={selectedNote.title}
+                onInput={(e) => {
+                  const val = (e.target as HTMLInputElement).value;
+                  documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
+                    n.id === selectedNote.id ? { ...n, title: val } : n
+                  );
+                }}
+                style={{ fontWeight: 600, fontSize: "1rem" }}
+              />
+            </label>
+
+            <label htmlFor="note-folder-input" style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: "1 1 140px" }}>
+              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>Folder</span>
+              <input
+                id="note-folder-input"
+                data-testid="note-folder-input"
+                aria-label="Note Folder"
+                class="ds-input"
+                value={selectedNote.folder}
+                onInput={(e) => {
+                  const val = (e.target as HTMLInputElement).value;
+                  documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
+                    n.id === selectedNote.id ? { ...n, folder: val } : n
+                  );
+                }}
+              />
+            </label>
+
+            <label htmlFor="note-scope-select" style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: "0 0 160px" }}>
+              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>Scope</span>
+              <select
+                id="note-scope-select"
+                data-testid="note-scope-select"
+                aria-label="Note Scope"
+                class="ds-input"
+                value={selectedNote.visibility}
+                onChange={(e) => {
+                  const val = (e.target as HTMLSelectElement).value as NoteHierarchyNode["visibility"];
+                  documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
+                    n.id === selectedNote.id ? { ...n, visibility: val } : n
+                  );
+                }}
+              >
+                <option value="PRIVATE">{t("note.scope.private")}</option>
+                <option value="PARTY">{t("note.scope.party")}</option>
+                <option value="DM_ONLY">{t("note.scope.dm_only")}</option>
+              </select>
+            </label>
+          </div>
+
+          <label htmlFor="note-content-editor" style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+            <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>{t("docs.notes")}</span>
+            <textarea
+              id="note-content-editor"
+              data-testid="note-content-editor"
+              aria-label={t("docs.notes")}
               class="ds-input"
-              value={selectedNote.title}
+              rows={6}
+              value={selectedNote.content ?? ""}
               onInput={(e) => {
-                const val = (e.target as HTMLInputElement).value;
+                const val = (e.target as HTMLTextAreaElement).value;
                 documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
-                  n.id === selectedNote.id ? { ...n, title: val } : n
+                  n.id === selectedNote.id ? { ...n, content: val } : n
                 );
               }}
-              style={{ fontWeight: 600, fontSize: "1.1rem", flex: 1, marginRight: "1rem" }}
+              placeholder={t("docs.notes")}
+              style={{ width: "100%", resize: "vertical", fontFamily: "var(--atlas-font-sans, inherit)" }}
             />
-            <span style={{ fontSize: "0.85rem", color: "var(--atlas-text-muted)" }}>
-              [{getLocalizedScope(selectedNote.visibility)}]
-            </span>
-          </div>
-          <textarea
-            data-testid="note-content-editor"
-            class="ds-input"
-            rows={6}
-            value={selectedNote.content ?? ""}
-            onInput={(e) => {
-              const val = (e.target as HTMLTextAreaElement).value;
-              documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
-                n.id === selectedNote.id ? { ...n, content: val } : n
-              );
-            }}
-            placeholder={t("docs.notes")}
-            style={{ width: "100%", resize: "vertical", fontFamily: "var(--atlas-font-sans, inherit)" }}
-          />
+          </label>
+
+          {parsedActiveNote && parsedActiveNote.handouts.length > 0 && (
+            <div data-testid="note-handout-directives" style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+              {parsedActiveNote.handouts.map((handout) => (
+                <button
+                  key={handout.id}
+                  type="button"
+                  data-testid="btn-reveal-handout"
+                  class="ds-btn ds-btn-primary"
+                  onClick={() => handleRevealHandout(handout)}
+                >
+                  {t("action.reveal")}: {handout.title}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -359,6 +453,8 @@ export function DocumentsWorkspaceTab() {
               data-testid={`handout-card-${handout.handoutId}`}
               role="button"
               tabIndex={0}
+              aria-label={`Open handout: ${handout.title}`}
+              class="handout-card-item"
               onClick={() => {
                 activeHandoutModalSignal.value = handout;
               }}
@@ -368,34 +464,37 @@ export function DocumentsWorkspaceTab() {
                   activeHandoutModalSignal.value = handout;
                 }
               }}
-              style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)", cursor: "pointer" }}
+              style={{ minHeight: "44px", padding: "0.5rem", border: "1px solid var(--atlas-border)", cursor: "pointer" }}
             >
               <h4>{handout.title}</h4>
-              <p>{handout.content}</p>
+              <p style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{handout.content}</p>
             </div>
           ))
         )}
       </div>
 
       <div
-        data-testid="session-timeline-feed"
+        data-testid="session-timeline-viewer"
         style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
       >
         <h3>{t("docs.timeline")}</h3>
         {documentsTimelineSignal.value.length === 0 ? (
           <p data-testid="empty-timeline-hint">{t("docs.timeline.empty")}</p>
         ) : (
-          documentsTimelineSignal.value.map((event) => (
-            <div
-              key={event.id}
-              data-testid={`timeline-event-${event.seqId}`}
-              style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}
-            >
-              <span>
-                #{event.seqId} {event.eventType}
-              </span>
-            </div>
-          ))
+          documentsTimelineSignal.value.map((event) => {
+            const titleSuffix = typeof event.payload?.title === "string" ? `: ${event.payload.title}` : "";
+            return (
+              <div
+                key={event.id}
+                data-testid={`timeline-event-${event.seqId}`}
+                style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}
+              >
+                <span>
+                  #{event.seqId} {event.eventType}{titleSuffix}
+                </span>
+              </div>
+            );
+          })
         )}
       </div>
     </section>

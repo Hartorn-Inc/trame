@@ -1,5 +1,10 @@
 import { signal } from "@preact/signals";
-import { mobileCompanionOverrideSignal, t } from "../i18n/index.ts";
+import {
+  localeSignal,
+  mobileCompanionOverrideSignal,
+  t,
+  unitSystemSignal,
+} from "../i18n/index.ts";
 import { DocumentsWorkspaceTab } from "../workspace/DocumentsWorkspaceTab.tsx";
 
 export type MobileCompanionTab = "sheet" | "dice" | "inventory" | "tracker" | "journal";
@@ -22,32 +27,61 @@ export function MobileCompanionView() {
       data-testid="mobile-companion-view"
       style={{ display: "flex", flexDirection: "column", height: "100vh", width: "100%" }}
     >
-      {mobileCompanionOverrideSignal.value && (
-        <div
-          style={{
-            padding: "0.5rem 1rem",
-            borderBottom: "1px solid var(--atlas-border)",
-            background: "var(--atlas-surface-raised)",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
-          <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>Companion Mode</span>
+      <header
+        data-testid="mobile-companion-header"
+        style={{
+          padding: "0.5rem 1rem",
+          borderBottom: "1px solid var(--atlas-border)",
+          background: "var(--atlas-surface-raised)",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: "0.5rem",
+        }}
+      >
+        <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>Companion Mode</span>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <button
             type="button"
-            data-testid="companion-exit-button"
-            aria-label="Exit companion mode"
+            data-testid="header-locale-toggle"
+            aria-label="Toggle language"
             class="ds-btn ds-btn-secondary"
             onClick={() => {
-              mobileCompanionOverrideSignal.value = false;
+              localeSignal.value = localeSignal.value === "en" ? "fr" : "en";
             }}
             style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" }}
           >
-            Exit
+            {localeSignal.value === "fr" ? "FR" : "EN"}
           </button>
+          <button
+            type="button"
+            data-testid="header-units-toggle"
+            aria-label="Toggle grid units"
+            class="ds-btn ds-btn-secondary"
+            onClick={() => {
+              unitSystemSignal.value =
+                unitSystemSignal.value === "imperial_ft" ? "metric_m" : "imperial_ft";
+            }}
+            style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" }}
+          >
+            {unitSystemSignal.value === "imperial_ft" ? "5 ft" : "1.5 m"}
+          </button>
+          {mobileCompanionOverrideSignal.value && (
+            <button
+              type="button"
+              data-testid="companion-exit-button"
+              aria-label="Exit companion mode"
+              class="ds-btn ds-btn-secondary"
+              onClick={() => {
+                mobileCompanionOverrideSignal.value = false;
+              }}
+              style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" }}
+            >
+              Exit
+            </button>
+          )}
         </div>
-      )}
+      </header>
 
       <main style={{ flex: 1, overflowY: "auto", padding: "1rem" }}>
         {activeTab === "sheet" && <div data-testid="tab-sheet">{t("nav.sheet")}</div>}
@@ -63,6 +97,7 @@ export function MobileCompanionView() {
 
       <nav
         data-testid="mobile-bottom-nav"
+        aria-label="Mobile companion navigation"
         style={{
           display: "flex",
           borderTop: "1px solid var(--atlas-border)",
