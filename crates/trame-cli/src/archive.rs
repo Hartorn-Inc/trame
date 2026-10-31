@@ -755,7 +755,10 @@ mod tests {
             ("empty_args", vec![]),
             ("unknown_subcommand", vec!["unknown"]),
             ("inspect_missing_input", vec!["inspect"]),
-            ("export_missing_campaign", vec!["export", "--output", "a.trame"]),
+            (
+                "export_missing_campaign",
+                vec!["export", "--output", "a.trame"],
+            ),
             (
                 "export_invalid_uuid",
                 vec!["export", "--campaign", "not-a-uuid", "--output", "a.trame"],
@@ -850,10 +853,9 @@ mod tests {
             server: None,
             token: None,
         };
-        let export_out =
-            execute_archive_command(&export_cmd, Some((&source_store, &source_blobs)))
-                .await
-                .expect("CLI export succeeds");
+        let export_out = execute_archive_command(&export_cmd, Some((&source_store, &source_blobs)))
+            .await
+            .expect("CLI export succeeds");
         assert!(export_out.contains(&campaign_id.to_string()));
         assert!(archive_path.exists());
 
@@ -877,10 +879,9 @@ mod tests {
             token: None,
             remap_ids: false,
         };
-        let import_out =
-            execute_archive_command(&import_cmd, Some((&target_store, &target_blobs)))
-                .await
-                .expect("CLI import succeeds");
+        let import_out = execute_archive_command(&import_cmd, Some((&target_store, &target_blobs)))
+            .await
+            .expect("CLI import succeeds");
         assert!(import_out.contains(&campaign_id.to_string()));
         assert!(import_out.contains("actors=1, scenes=1, notes=1, assets=1"));
 
@@ -900,10 +901,9 @@ mod tests {
             token: None,
             remap_ids: true,
         };
-        let remap_out =
-            execute_archive_command(&remap_cmd, Some((&target_store, &target_blobs)))
-                .await
-                .expect("CLI remap import succeeds");
+        let remap_out = execute_archive_command(&remap_cmd, Some((&target_store, &target_blobs)))
+            .await
+            .expect("CLI remap import succeeds");
         assert!(remap_out.contains("Shadows of Saltmarsh"));
         assert!(!remap_out.contains(&campaign_id.to_string()));
 
