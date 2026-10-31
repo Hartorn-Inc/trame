@@ -31,7 +31,7 @@ export const setAppTheme = setThemeMode;
 
 export function App() {
   return (
-    <main
+    <div
       data-testid="trame-app-root"
       data-theme={themeModeSignal.value}
       data-resolved-theme={resolvedThemeSignal.value}
@@ -50,11 +50,17 @@ export function App() {
           color: 'var(--atlas-text)',
         }}
       >
-        <strong class="ds-brand-title">TRAME VTT</strong>
-        <span data-testid="trame-status-badge" class="atlas-tabular-nums">
+        <h1 class="ds-brand-title" style={{ margin: 0 }}>TRAME VTT</h1>
+        <span
+          data-testid="trame-status-badge"
+          role="status"
+          aria-live="polite"
+          class="atlas-tabular-nums"
+        >
           {appStatusSignal.value}
         </span>
       </header>
-    </main>
+      <main style={{ flex: 1 }} />
+    </div>
   );
 }

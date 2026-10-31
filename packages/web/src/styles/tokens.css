@@ -66,10 +66,11 @@
   --atlas-text: #F1F4F3;
   --atlas-text-muted: #B8C7D1;
   --atlas-border: #405466;
+  --atlas-border-control: #678099;
   --atlas-action: #F3BB71;
   --atlas-on-action: #172535;
   --atlas-focus: #80CBE2;
-  --atlas-danger: #D57973;
+  --atlas-danger: #E0827D;
   --atlas-grid: rgba(184, 199, 209, 0.16);
   --atlas-shadow: rgba(5, 10, 16, 0.42);
 
@@ -106,6 +107,7 @@
   --atlas-text: #1C3041;
   --atlas-text-muted: #465D6D;
   --atlas-border: #ACBFCB;
+  --atlas-border-control: #607788;
   --atlas-action: #995817;
   --atlas-on-action: #FFFFFF;
   --atlas-focus: #155D77;
@@ -123,6 +125,7 @@
     --atlas-text: #1C3041;
     --atlas-text-muted: #465D6D;
     --atlas-border: #ACBFCB;
+    --atlas-border-control: #607788;
     --atlas-action: #995817;
     --atlas-on-action: #FFFFFF;
     --atlas-focus: #155D77;
@@ -280,7 +283,7 @@ body {
 .ds-btn-secondary {
   background-color: var(--atlas-surface-raised);
   color: var(--atlas-text);
-  border: 1px solid var(--atlas-border);
+  border: 1px solid var(--atlas-border-control, var(--atlas-border));
 }
 
 .ds-btn-secondary[aria-pressed="true"] {
@@ -299,7 +302,7 @@ body {
   border-radius: var(--atlas-radius-md);
   background-color: var(--atlas-surface-raised);
   color: var(--atlas-text);
-  border: 1px solid var(--atlas-border);
+  border: 1px solid var(--atlas-border-control, var(--atlas-border));
   font-family: var(--atlas-font-sans);
   font-size: 14px;
 }

@@ -161,6 +161,9 @@ let mediaQueryCleanup: (() => void) | null = null;
  * Returns a teardown function for deterministic test and unmount isolation.
  */
 export function initThemeSignal(): () => void {
+  if (mediaQueryCleanup) {
+    mediaQueryCleanup();
+  }
   syncThemeWithDom();
 
   if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
