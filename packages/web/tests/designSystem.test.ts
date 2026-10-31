@@ -500,4 +500,30 @@ describe("TRAME ATLAS v1.1 & Impeccable Design System Suite", () => {
       assert.match(campaignRead, /Flat Structural Framing/);
     });
   });
+
+  describe("7. ATLAS v1.1 CSS Tokens, Local Fonts & Reactive Theme Signals (Ticket #104)", () => {
+    const testFilename = fileURLToPath(import.meta.url);
+    const repoRoot = path.resolve(path.dirname(testFilename), "../../..");
+    const tokensCssPath = path.join(repoRoot, "packages/web/src/styles/tokens.css");
+    const cssContent = fs.readFileSync(tokensCssPath, "utf8");
+
+    it("enforces local WOFF2 font declarations for Space Grotesk and IBM Plex Sans without external CDNs", () => {
+      assert.doesNotMatch(cssContent, /fonts\.googleapis\.com/i);
+      assert.doesNotMatch(cssContent, /fonts\.gstatic\.com/i);
+      assert.doesNotMatch(cssContent, /https?:\/\//i);
+      assert.match(cssContent, /url\("\/fonts\/SpaceGrotesk-Medium\.woff2"\)/);
+      assert.match(cssContent, /url\("\/fonts\/SpaceGrotesk-SemiBold\.woff2"\)/);
+      assert.match(cssContent, /url\("\/fonts\/IBMPlexSans-Regular\.woff2"\)/);
+      assert.match(cssContent, /url\("\/fonts\/IBMPlexSans-Medium\.woff2"\)/);
+      assert.match(cssContent, /url\("\/fonts\/IBMPlexSans-SemiBold\.woff2"\)/);
+    });
+
+    it("enforces .atlas-tabular-nums specifies font-variant-numeric: tabular-nums", () => {
+      assert.match(cssContent, /\.atlas-tabular-nums\s*\{[^}]*font-variant-numeric:\s*tabular-nums;/s);
+    });
+
+    it("enforces keyboard focus outline on .ds-btn:focus-visible", () => {
+      assert.match(cssContent, /\.ds-btn:focus-visible[^{]*\{[^}]*outline:\s*2px solid var\(--atlas-focus\);[^}]*outline-offset:\s*2px;/s);
+    });
+  });
 });

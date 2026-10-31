@@ -19,22 +19,22 @@
 
 import { signal } from '@preact/signals';
 import type { AtlasThemeMode } from './canvas/CanvasThemePalette.ts';
+import {
+  themeModeSignal,
+  resolvedThemeSignal,
+  setThemeMode,
+} from './signals/themeSignal.ts';
 
 export const appStatusSignal = signal<'ready' | 'connecting' | 'connected'>('ready');
-export const appThemeSignal = signal<AtlasThemeMode>('dark');
-
-export function setAppTheme(mode: AtlasThemeMode): void {
-  appThemeSignal.value = mode;
-  if (typeof document !== 'undefined' && document.documentElement) {
-    document.documentElement.setAttribute('data-theme', mode);
-  }
-}
+export const appThemeSignal = themeModeSignal;
+export const setAppTheme = setThemeMode;
 
 export function App() {
   return (
     <main
       data-testid="trame-app-root"
-      data-theme={appThemeSignal.value}
+      data-theme={themeModeSignal.value}
+      data-resolved-theme={resolvedThemeSignal.value}
       class="ds-app-shell"
       style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}
     >

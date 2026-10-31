@@ -230,6 +230,19 @@ body {
   transition: background-color var(--atlas-transition-fast), border-color var(--atlas-transition-fast);
 }
 
+.ds-btn:disabled,
+.ds-btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.ds-btn:focus-visible,
+.ds-input:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
 .ds-btn-primary {
   background-color: var(--atlas-action);
   color: var(--atlas-on-action);
