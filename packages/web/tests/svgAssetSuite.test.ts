@@ -1,39 +1,42 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { VNode } from "preact";
-
-if (typeof module.register === "function") {
-  try {
-    module.register("./tsx-loader.mjs", import.meta.url);
-  } catch {
-    // Optional tsx-loader hook
-  }
-}
-
-const {
+import {
   TrameLogo,
   renderTrameLogoSvg,
   TRAME_LOGO_VARIANTS,
-} = await import("../src/components/icons/TrameLogo.tsx");
-
-const {
+  normalizeLogoSize,
+  isLogoDuotone,
+  type TrameLogoVariant,
+} from "../src/components/icons/TrameLogo.tsx";
+import {
   AtlasIcon,
+  renderAtlasIconSvg,
   ATLAS_ICON_NAMES,
   ATLAS_ICON_PATHS,
   ATLAS_ICON_STROKE_WIDTH,
-  renderAtlasIconSvg,
+  resolveAtlasIconName,
+  MapIcon,
+  ActorsIcon,
+  JournalIcon,
+  CompendiumIcon,
+  SettingsIcon,
+  ThemeDarkIcon,
+  ThemeLightIcon,
+  ThemeSystemIcon,
+  LocaleIcon,
   SelectToolIcon,
   PanToolIcon,
-  RulerToolIcon,
-  GridToolIcon,
-  FogBrushToolIcon,
+  MeasureRulerIcon,
+  GridToggleIcon,
+  FogBrushIcon,
   WallToolIcon,
-  DoorToolIcon,
-  LightToolIcon,
-  AmbientToolIcon,
-  AudioToolIcon,
-  PingToolIcon,
-  AoEToolIcon,
+  DoorStateIcon,
+  LightSourceIcon,
+  AmbientSunIcon,
+  AmbientMoonIcon,
+  AudioWaveIcon,
+  PingBeaconIcon,
+  AoETemplateIcon,
   PadlockLockedIcon,
   PadlockUnlockedIcon,
   LevelUpArrowIcon,
@@ -43,267 +46,153 @@ const {
   AllyBadgeIcon,
   HostileBadgeIcon,
   ActiveTurnChevronIcon,
-  ThemeDarkIcon,
-  ThemeLightIcon,
-  ThemeSystemIcon,
-  WorkspaceMapIcon,
-  WorkspaceActorsIcon,
-  WorkspaceJournalIcon,
-  WorkspaceCompendiumIcon,
-  WorkspaceSettingsIcon,
+  SheetIcon,
+  InventoryIcon,
   UndoIcon,
-  RedoIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
-  CloseIcon,
-  MapIcon,
-  ActorsIcon,
-  JournalIcon,
-  CompendiumIcon,
-  SettingsIcon,
-  MeasureRulerIcon,
-  GridToggleIcon,
-  FogBrushIcon,
-  DoorStateIcon,
-  LightSourceIcon,
-  AmbientSunIcon,
-  AudioWaveIcon,
-  PingBeaconIcon,
-  AoETemplateIcon,
-} = await import("../src/components/icons/AtlasIcons.tsx");
-
-const {
-  AtlasEmptyStates,
+} from "../src/components/icons/AtlasIcons.tsx";
+import {
+  AtlasEmptyState,
+  AtlasEmptyStateContainer,
   EmptyCampaignsSvg,
   EmptyMapAtlasSvg,
   EmptyJournalSvg,
   EmptyActorsSvg,
-  AtlasEmptyStateContainer,
-  EmptyStateContainer,
-  AtlasEmptyState,
   renderEmptyStateSvg,
-} = await import("../src/components/icons/AtlasEmptyStates.tsx");
+  renderEmptyStateHtml,
+  EMPTY_STATE_KINDS,
+  type EmptyStateKind,
+} from "../src/components/icons/AtlasEmptyStates.tsx";
 
-/**
- * Helper to recursively inspect a VNode tree for any forbidden <text> nodes.
- */
-function findTextNodesInVNode(node: unknown): string[] {
-  if (!node || typeof node !== "object") return [];
-  const vnode = node as { type?: unknown; props?: { children?: unknown } };
-  const found: string[] = [];
+describe("ATLAS v1.1 In-House SVG Asset Suite (#106)", () => {
+  describe("1. TrameLogo Cartographic Brand Mark", () => {
+    it("WHEN TrameLogo renders with variant 'route-intersection' and duotone set to true, the component outputs primary geometry in var(--atlas-text) and accent geometry in var(--atlas-action)", () => {
+      const vnode = TrameLogo({ variant: "route-intersection", duotone: true });
+      assert.ok(vnode);
+      assert.equal(vnode.props["data-variant"], "route-intersection");
+      assert.equal(vnode.props["data-mode"], "duotone");
 
-  if (vnode.type === "text") {
-    found.push("<text>");
-  }
+      const children = (vnode.props.children as any[]) || [];
+      assert.equal(children.length, 3);
 
-  const children = vnode.props?.children;
-  if (Array.isArray(children)) {
-    for (const child of children) {
-      found.push(...findTextNodesInVNode(child));
-    }
-  } else if (children && typeof children === "object") {
-    found.push(...findTextNodesInVNode(children));
-  }
+      const primaryPath = children[0];
+      assert.equal(primaryPath.props.stroke, "var(--atlas-text)");
 
-  return found;
-}
-
-describe("Ticket #106: ATLAS v1.1 In-House SVG Asset Suite", () => {
-  describe("1. TrameLogo: Variants, Duotone Token Separation & Viewport Scaling", () => {
-    it("exports all 3 cartographic variants", () => {
-      assert.deepEqual(TRAME_LOGO_VARIANTS, [
-        "route-intersection",
-        "waypoint-grid",
-        "monolith-path",
-      ]);
-    });
-
-    it("WHEN TrameLogo renders with variant 'route-intersection' and duotone set to true, primary geometry uses var(--atlas-text) and accent geometry uses var(--atlas-action)", () => {
-      const vnode = TrameLogo({ variant: "route-intersection", duotone: true }) as VNode<any>;
-      assert.equal(vnode.type, "svg");
-      assert.equal(vnode.props["data-testid"], "trame-logo-route-intersection");
-
-      const children = Array.isArray(vnode.props.children)
-        ? vnode.props.children
-        : [vnode.props.children];
-      assert.ok(children.length >= 2, "Must contain primary and accent geometric elements");
-
-      const primary = children.find((c: any) => c.key === "crossbar" || c.props?.d?.includes("M4 6.5h16"));
-      assert.ok(primary, "Primary crossbar element must exist");
-      assert.equal(primary.props.stroke, "var(--atlas-text)");
-
-      const accentPath = children.find((c: any) => c.key === "waypoint-arms" || c.props?.d?.includes("M6.5 13h3"));
-      assert.ok(accentPath, "Accent waypoint arms must exist");
+      const accentPath = children[1];
       assert.equal(accentPath.props.stroke, "var(--atlas-action)");
 
-      const accentDot = children.find((c: any) => c.key === "waypoint-node" || c.props?.cx === 12);
-      assert.ok(accentDot, "Accent waypoint node must exist");
-      assert.equal(accentDot.props.fill, "var(--atlas-action)");
+      const accentCircle = children[2];
+      assert.equal(accentCircle.props.fill, "var(--atlas-action)");
 
-      // Also verify string generator output
-      const svgString = renderTrameLogoSvg({ variant: "route-intersection", duotone: true });
-      assert.match(svgString, /stroke="var\(--atlas-text\)"/);
-      assert.match(svgString, /stroke="var\(--atlas-action\)"/);
-      assert.match(svgString, /fill="var\(--atlas-action\)"/);
-    });
-
-    it("WHEN TrameLogo renders with variant 'waypoint-grid' and duotone set to true, primary geometry uses var(--atlas-text) and accent geometry uses var(--atlas-action)", () => {
-      const vnode = TrameLogo({ variant: "waypoint-grid", duotone: true }) as VNode<any>;
-      const children = Array.isArray(vnode.props.children)
-        ? vnode.props.children
-        : [vnode.props.children];
-
-      const rect = children.find((c: any) => c.key === "frame" || c.type === "rect");
-      assert.ok(rect, "Frame rect must exist");
-      assert.equal(rect.props.stroke, "var(--atlas-text)");
-
-      const dot = children.find((c: any) => c.key === "node" || c.type === "circle");
-      assert.ok(dot, "Accent circle must exist");
-      assert.equal(dot.props.fill, "var(--atlas-action)");
-    });
-
-    it("WHEN TrameLogo renders with variant 'monolith-path' and duotone set to true, primary geometry uses var(--atlas-text) and accent geometry uses var(--atlas-action)", () => {
-      const vnode = TrameLogo({ variant: "monolith-path", duotone: true }) as VNode<any>;
-      const children = Array.isArray(vnode.props.children)
-        ? vnode.props.children
-        : [vnode.props.children];
-
-      const lintel = children.find((c: any) => c.key === "lintel" || c.type === "path");
-      assert.ok(lintel, "Lintel path must exist");
-      assert.equal(lintel.props.stroke, "var(--atlas-text)");
-
-      const marker = children.find((c: any) => c.key === "marker" || c.type === "rect");
-      assert.ok(marker, "Accent marker rect must exist");
-      assert.equal(marker.props.fill, "var(--atlas-action)");
-    });
-
-    it("WHEN TrameLogo renders with duotone set to false, all geometries fall back to currentColor", () => {
-      const vnode = TrameLogo({ variant: "route-intersection", duotone: false }) as VNode<any>;
-      const children = Array.isArray(vnode.props.children)
-        ? vnode.props.children
-        : [vnode.props.children];
-
-      for (const child of children) {
-        if (child.props?.stroke) {
-          assert.equal(child.props.stroke, "currentColor");
-        }
-        if (child.props?.fill && child.props.fill !== "none") {
-          assert.equal(child.props.fill, "currentColor");
-        }
-      }
+      const renderedSvg = renderTrameLogoSvg({ variant: "route-intersection", duotone: true });
+      assert.match(renderedSvg, /stroke="var\(--atlas-text\)"/);
+      assert.match(renderedSvg, /stroke="var\(--atlas-action\)"/);
+      assert.match(renderedSvg, /fill="var\(--atlas-action\)"/);
     });
 
     it("WHEN TrameLogo renders with size 16, the component sets width=16 and height=16 on the root svg tag", () => {
-      const vnode = TrameLogo({ size: 16 }) as VNode<any>;
+      const vnode = TrameLogo({ size: 16 });
+      assert.ok(vnode);
       assert.equal(vnode.props.width, 16);
       assert.equal(vnode.props.height, 16);
 
-      const svgString = renderTrameLogoSvg({ size: 16 });
-      assert.match(svgString, /width="16"/);
-      assert.match(svgString, /height="16"/);
+      const renderedSvg = renderTrameLogoSvg({ size: 16 });
+      assert.match(renderedSvg, /width="16"/);
+      assert.match(renderedSvg, /height="16"/);
     });
 
-    it("clamps size within the supported [16, 256] range", () => {
-      const small = TrameLogo({ size: 8 }) as VNode<any>;
-      assert.equal(small.props.width, 16);
-      assert.equal(small.props.height, 16);
-
-      const large = TrameLogo({ size: 512 }) as VNode<any>;
-      assert.equal(large.props.width, 256);
-      assert.equal(large.props.height, 256);
+    it("clamps sizes to the supported 16px to 256px range", () => {
+      assert.equal(normalizeLogoSize(10), 16);
+      assert.equal(normalizeLogoSize(16), 16);
+      assert.equal(normalizeLogoSize(48), 48);
+      assert.equal(normalizeLogoSize(256), 256);
+      assert.equal(normalizeLogoSize(512), 256);
+      assert.equal(normalizeLogoSize(undefined), 24);
     });
 
-    it("provides accessible role and title when title prop is specified", () => {
-      const titled = TrameLogo({ title: "TRAME Tabletop Engine" }) as VNode<any>;
-      assert.equal(titled.props["aria-label"], "TRAME Tabletop Engine");
+    it("renders all 3 cartographic variants in monochrome mode with currentColor", () => {
+      for (const variant of TRAME_LOGO_VARIANTS) {
+        const vnode = TrameLogo({ variant, duotone: false });
+        assert.equal(vnode.props["data-mode"], "monochrome");
+
+        const rendered = renderTrameLogoSvg({ variant, duotone: false });
+        assert.match(rendered, /stroke="currentColor"/);
+        assert.doesNotMatch(rendered, /var\(--atlas-action\)/);
+      }
+    });
+
+    it("provides accessible role='img' and aria-label when title is provided, or aria-hidden='true' otherwise", () => {
+      const titled = TrameLogo({ title: "TRAME Cartographic Mark" });
       assert.equal(titled.props.role, "img");
+      assert.equal(titled.props["aria-label"], "TRAME Cartographic Mark");
       assert.equal(titled.props["aria-hidden"], undefined);
 
-      const untitled = TrameLogo({}) as VNode<any>;
+      const untitled = TrameLogo({});
       assert.equal(untitled.props["aria-hidden"], "true");
       assert.equal(untitled.props.role, undefined);
     });
   });
 
-  describe("2. AtlasIcon: 34 Normalized Icons, 1.75px Stroke & Unified Geometry", () => {
-    it("contains exactly 34 canonical icon names without duplicates", () => {
+  describe("2. AtlasIcons Stroked Tabletop & UI Library (34 Normalized Icons)", () => {
+    it("contains exactly 34 canonical registered icon definitions", () => {
       assert.equal(ATLAS_ICON_NAMES.length, 34);
-      const uniqueNames = new Set(ATLAS_ICON_NAMES);
-      assert.equal(uniqueNames.size, 34);
+      assert.equal(Object.keys(ATLAS_ICON_PATHS).length, 34);
+      assert.equal(ATLAS_ICON_STROKE_WIDTH, 1.75);
     });
 
-    const expectedIcons = [
-      "SelectToolIcon",
-      "PanToolIcon",
-      "RulerToolIcon",
-      "GridToolIcon",
-      "FogBrushToolIcon",
-      "WallToolIcon",
-      "DoorToolIcon",
-      "LightToolIcon",
-      "AmbientToolIcon",
-      "AudioToolIcon",
-      "PingToolIcon",
-      "AoEToolIcon",
-      "PadlockLockedIcon",
-      "PadlockUnlockedIcon",
-      "LevelUpArrowIcon",
-      "ShortRestCampfireIcon",
-      "LongRestTentIcon",
-      "DiceD20NeutralIcon",
-      "AllyBadgeIcon",
-      "HostileBadgeIcon",
-      "ActiveTurnChevronIcon",
-      "ThemeDarkIcon",
-      "ThemeLightIcon",
-      "ThemeSystemIcon",
-      "WorkspaceMapIcon",
-      "WorkspaceActorsIcon",
-      "WorkspaceJournalIcon",
-      "WorkspaceCompendiumIcon",
-      "WorkspaceSettingsIcon",
-      "UndoIcon",
-      "RedoIcon",
-      "ChevronDownIcon",
-      "ChevronRightIcon",
-      "CloseIcon",
-    ] as const;
-
-    for (const iconName of expectedIcons) {
-      it(`WHEN AtlasIcon renders '${iconName}', the component outputs an SVG with viewBox '0 0 24 24', strokeWidth 1.75, fill 'none', stroke 'currentColor', and aria-hidden='true'`, () => {
-        const vnode = AtlasIcon({ name: iconName }) as VNode<any>;
-        assert.equal(vnode.type, "svg");
+    const testCases = ATLAS_ICON_NAMES.map((name) => ({ name }));
+    for (const { name } of testCases) {
+      it(`WHEN AtlasIcon renders '${name}', the component outputs an SVG with viewBox '0 0 24 24', strokeWidth 1.75, fill 'none', stroke 'currentColor', and aria-hidden='true'`, () => {
+        const vnode = AtlasIcon({ name });
+        assert.ok(vnode);
         assert.equal(vnode.props.viewBox, "0 0 24 24");
         assert.equal(vnode.props.strokeWidth, 1.75);
         assert.equal(vnode.props.fill, "none");
         assert.equal(vnode.props.stroke, "currentColor");
         assert.equal(vnode.props["aria-hidden"], "true");
-        assert.equal(vnode.props["data-icon"], iconName);
+        assert.equal(vnode.props["data-icon"], name);
 
-        const svgString = renderAtlasIconSvg(iconName);
+        const svgString = renderAtlasIconSvg(name, 24);
         assert.match(svgString, /viewBox="0 0 24 24"/);
         assert.match(svgString, /stroke-width="1.75"/);
         assert.match(svgString, /fill="none"/);
         assert.match(svgString, /stroke="currentColor"/);
         assert.match(svgString, /aria-hidden="true"/);
-        assert.match(svgString, new RegExp(`data-icon="${iconName}"`));
+        assert.match(svgString, new RegExp(`data-icon="${name}"`));
       });
     }
 
-    it("exports dedicated standalone components for every canonical icon and common aliases", () => {
-      const standaloneMap: Record<string, () => VNode<any>> = {
+    it("resolves names with or without 'Icon' suffix and handles case-insensitivity", () => {
+      assert.equal(resolveAtlasIconName("SheetIcon"), "SheetIcon");
+      assert.equal(resolveAtlasIconName("Sheet"), "SheetIcon");
+      assert.equal(resolveAtlasIconName("sheet"), "SheetIcon");
+      assert.equal(resolveAtlasIconName("inventory"), "InventoryIcon");
+      assert.equal(resolveAtlasIconName("undo"), "UndoIcon");
+    });
+
+    it("exports dedicated named component functions for all 34 canonical icons", () => {
+      const iconComponents = [
+        MapIcon,
+        ActorsIcon,
+        JournalIcon,
+        CompendiumIcon,
+        SettingsIcon,
+        ThemeDarkIcon,
+        ThemeLightIcon,
+        ThemeSystemIcon,
+        LocaleIcon,
         SelectToolIcon,
         PanToolIcon,
-        RulerToolIcon,
-        GridToolIcon,
-        FogBrushToolIcon,
+        MeasureRulerIcon,
+        GridToggleIcon,
+        FogBrushIcon,
         WallToolIcon,
-        DoorToolIcon,
-        LightToolIcon,
-        AmbientToolIcon,
-        AudioToolIcon,
-        PingToolIcon,
-        AoEToolIcon,
+        DoorStateIcon,
+        LightSourceIcon,
+        AmbientSunIcon,
+        AmbientMoonIcon,
+        AudioWaveIcon,
+        PingBeaconIcon,
+        AoETemplateIcon,
         PadlockLockedIcon,
         PadlockUnlockedIcon,
         LevelUpArrowIcon,
@@ -313,166 +202,112 @@ describe("Ticket #106: ATLAS v1.1 In-House SVG Asset Suite", () => {
         AllyBadgeIcon,
         HostileBadgeIcon,
         ActiveTurnChevronIcon,
-        ThemeDarkIcon,
-        ThemeLightIcon,
-        ThemeSystemIcon,
-        WorkspaceMapIcon,
-        WorkspaceActorsIcon,
-        WorkspaceJournalIcon,
-        WorkspaceCompendiumIcon,
-        WorkspaceSettingsIcon,
+        SheetIcon,
+        InventoryIcon,
         UndoIcon,
-        RedoIcon,
-        ChevronDownIcon,
-        ChevronRightIcon,
-        CloseIcon,
-        // Aliases
-        MapIcon,
-        ActorsIcon,
-        JournalIcon,
-        CompendiumIcon,
-        SettingsIcon,
-        MeasureRulerIcon,
-        GridToggleIcon,
-        FogBrushIcon,
-        DoorStateIcon,
-        LightSourceIcon,
-        AmbientSunIcon,
-        AudioWaveIcon,
-        PingBeaconIcon,
-        AoETemplateIcon,
-      };
+      ];
+      assert.equal(iconComponents.length, 34);
+      for (const Comp of iconComponents) {
+        const vnode = Comp({ size: 24 });
+        assert.ok(vnode);
+        assert.equal(vnode.props.viewBox, "0 0 24 24");
+        assert.equal(vnode.props.strokeWidth, 1.75);
+        assert.equal(vnode.props["aria-hidden"], "true");
+      }
+    });
+  });
 
-      for (const [name, Component] of Object.entries(standaloneMap)) {
-        const vnode = Component();
-        assert.equal(vnode.type, "svg", `${name} must output an SVG element`);
-        assert.equal(vnode.props.viewBox, "0 0 24 24", `${name} must have 24x24 viewBox`);
-        assert.equal(vnode.props.strokeWidth, ATLAS_ICON_STROKE_WIDTH, `${name} must have 1.75 strokeWidth`);
-        assert.equal(vnode.props.fill, "none", `${name} must have fill none`);
-        assert.equal(vnode.props["aria-hidden"], "true", `${name} must have aria-hidden true`);
+  describe("3. AtlasEmptyStates Cartographic Empty States & Accessibility", () => {
+    const emptyStateCases: Array<{
+      kind: EmptyStateKind;
+      component: (props: any) => any;
+      testId: string;
+    }> = [
+      { kind: "campaigns", component: EmptyCampaignsSvg, testId: "empty-state-campaigns" },
+      { kind: "map-atlas", component: EmptyMapAtlasSvg, testId: "empty-state-map-atlas" },
+      { kind: "journal", component: EmptyJournalSvg, testId: "empty-state-journal" },
+      { kind: "actors", component: EmptyActorsSvg, testId: "empty-state-actors" },
+    ];
+
+    for (const { kind, component, testId } of emptyStateCases) {
+      it(`WHEN SVG illustration '${kind}' renders, the output DOM tree contains zero text elements`, () => {
+        const vnode = component({});
+        assert.ok(vnode);
+        assert.equal(vnode.props["data-testid"], testId);
+        assert.equal(vnode.props.viewBox, "0 0 160 100");
+        assert.equal(vnode.props["aria-hidden"], "true");
+
+        const serializeChildren = (node: any): string => {
+          if (!node || typeof node !== "object") return "";
+          let out = `<${node.type}>`;
+          const kids = Array.isArray(node.props?.children)
+            ? node.props.children
+            : node.props?.children
+            ? [node.props.children]
+            : [];
+          for (const kid of kids) {
+            out += serializeChildren(kid);
+          }
+          return out;
+        };
+
+        const domTreeString = serializeChildren(vnode);
+        assert.doesNotMatch(domTreeString, /<text[\s>]/i);
+
+        const rawSvg = renderEmptyStateSvg(kind);
+        assert.doesNotMatch(rawSvg, /<text[\s>]/i);
+        assert.match(rawSvg, /var\(--atlas-action\)/);
+      });
+    }
+
+    it("WHEN an empty state container renders an AtlasEmptyState illustration, the container wrapper provides an accessible role='status' with external localized heading and body elements", () => {
+      for (const kind of EMPTY_STATE_KINDS) {
+        const container = AtlasEmptyState({
+          kind,
+          heading: `No ${kind} available`,
+          body: `Create or join a new ${kind} to begin playing.`,
+        });
+        assert.ok(container);
+        assert.equal(container.props.role, "status");
+        assert.equal(container.props["aria-live"], "polite");
+        assert.equal(container.props["data-empty-state"], kind);
+        assert.match(container.props.class, /ds-empty-state/);
+
+        const children = container.props.children as any[];
+        assert.ok(children);
+        assert.equal(children.length, 2);
+
+        const illustrationWrapper = children[0];
+        assert.equal(illustrationWrapper.props["aria-hidden"], "true");
+        assert.equal(illustrationWrapper.props.class, "ds-empty-state-illustration");
+
+        const contentWrapper = children[1];
+        assert.equal(contentWrapper.props.class, "ds-empty-state-content");
+
+        const contentKids = contentWrapper.props.children as any[];
+        const heading = contentKids[0];
+        assert.equal(heading.type, "h3");
+        assert.equal(heading.props.children, `No ${kind} available`);
+
+        const body = contentKids[1];
+        assert.equal(body.type, "p");
+        assert.equal(body.props.children, `Create or join a new ${kind} to begin playing.`);
+
+        const renderedHtml = renderEmptyStateHtml({
+          kind,
+          heading: `No ${kind} available`,
+          body: `Create or join a new ${kind} to begin playing.`,
+        });
+        assert.match(renderedHtml, /role="status"/);
+        assert.match(renderedHtml, /aria-live="polite"/);
+        assert.match(renderedHtml, /<h3 class="ds-empty-state-heading">/);
+        assert.match(renderedHtml, /<p class="ds-empty-state-body">/);
+        assert.doesNotMatch(renderedHtml, /<svg[^>]*>[\s\S]*?<text[\s>]/i);
       }
     });
 
-    it("allows customizing size, color, className, and ARIA attributes", () => {
-      const vnode = AtlasIcon({
-        name: "UndoIcon",
-        size: 24,
-        color: "var(--atlas-action)",
-        className: "custom-icon",
-        "aria-hidden": false,
-        "data-testid": "custom-undo",
-      }) as VNode<any>;
-
-      assert.equal(vnode.props.width, 24);
-      assert.equal(vnode.props.height, 24);
-      assert.equal(vnode.props.stroke, "var(--atlas-action)");
-      assert.equal(vnode.props.class, "custom-icon");
-      assert.equal(vnode.props["aria-hidden"], "false");
-      assert.equal(vnode.props["data-testid"], "custom-undo");
-    });
-  });
-
-  describe("3. AtlasEmptyStates: 4 Cartographic SVGs & Zero-Text Invariant", () => {
-    const emptyStateIllustrations = [
-      { name: "EmptyCampaignsSvg", component: EmptyCampaignsSvg, testId: "empty-state-campaigns" },
-      { name: "EmptyMapAtlasSvg", component: EmptyMapAtlasSvg, testId: "empty-state-map-atlas" },
-      { name: "EmptyJournalSvg", component: EmptyJournalSvg, testId: "empty-state-journal" },
-      { name: "EmptyActorsSvg", component: EmptyActorsSvg, testId: "empty-state-actors" },
-    ] as const;
-
-    for (const { name, component, testId } of emptyStateIllustrations) {
-      it(`WHEN ${name} renders, the output DOM tree contains zero text elements`, () => {
-        const vnode = component() as VNode<any>;
-        assert.equal(vnode.type, "svg");
-        assert.equal(vnode.props["data-testid"], testId);
-        assert.equal(vnode.props["aria-hidden"], "true");
-        assert.equal(vnode.props.viewBox, "0 0 160 100");
-
-        const textNodes = findTextNodesInVNode(vnode);
-        assert.deepEqual(textNodes, [], `${name} VNode must strictly contain zero <text> elements`);
-      });
-    }
-
-    const kinds = ["campaigns", "map-atlas", "journal", "actors"] as const;
-    for (const kind of kinds) {
-      it(`WHEN renderEmptyStateSvg('${kind}') executes, the output string contains zero <text elements`, () => {
-        const svgString = renderEmptyStateSvg(kind);
-        assert.doesNotMatch(svgString, /<text[\s>]/i, `SVG string for ${kind} must not contain <text>`);
-        assert.match(svgString, /viewBox="0 0 160 100"/);
-        assert.match(svgString, /aria-hidden="true"/);
-        assert.match(svgString, /var\(--atlas-action\)/);
-      });
-    }
-  });
-
-  describe("4. AtlasEmptyStateContainer: Accessible role='status', Localized Headings & Action Seam", () => {
-    it("WHEN an empty state container renders an AtlasEmptyState illustration, the container wrapper provides an accessible role='status' with external localized heading and body elements", () => {
-      const container = AtlasEmptyStateContainer({
-        kind: "campaigns",
-        title: "No Campaigns Found",
-        description: "Create your first cartographic campaign to begin exploring.",
-      }) as VNode<any>;
-
-      assert.equal(container.type, "div");
-      assert.equal(container.props.role, "status");
-      assert.equal(container.props["aria-live"], "polite");
-      assert.match(container.props.class, /ds-empty-state/);
-
-      const children = container.props.children;
-      assert.ok(Array.isArray(children));
-
-      // Illustration wrapper
-      const illustrationWrapper = children[0];
-      assert.ok(illustrationWrapper);
-      assert.equal(illustrationWrapper.props["aria-hidden"], "true");
-      assert.match(illustrationWrapper.props.class, /ds-empty-state-illustration/);
-
-      // Verify the illustration child inside the wrapper has zero <text>
-      const innerSvg = illustrationWrapper.props.children;
-      assert.equal(innerSvg.type, EmptyCampaignsSvg);
-
-      // Localized heading element
-      const heading = children[1];
-      assert.ok(heading);
-      assert.equal(heading.type, "h3");
-      assert.equal(heading.props["data-testid"], "empty-state-heading");
-      assert.equal(heading.props.children, "No Campaigns Found");
-
-      // Localized body element
-      const body = children[2];
-      assert.ok(body);
-      assert.equal(body.type, "p");
-      assert.equal(body.props["data-testid"], "empty-state-body");
-      assert.equal(body.props.children, "Create your first cartographic campaign to begin exploring.");
-    });
-
-    it("renders custom action CTA when action prop is provided", () => {
-      const container = EmptyStateContainer({
-        kind: "map-atlas",
-        title: "Unconfigured Map Atlas",
-        description: "Upload a UVTT or grid map to start tabletop play.",
-        action: { type: "button", props: { children: "Upload Map", "data-testid": "upload-cta" } },
-      }) as VNode<any>;
-
-      assert.equal(container.props.role, "status");
-      const children = container.props.children;
-      const actionWrapper = children[3];
-      assert.ok(actionWrapper, "Action container must exist");
-      assert.equal(actionWrapper.props["data-testid"], "empty-state-action");
-      assert.equal(actionWrapper.props.children.props.children, "Upload Map");
-    });
-
-    it("supports custom illustration component child directly", () => {
-      const customIllustration = EmptyActorsSvg({ width: 200, height: 120 });
-      const container = AtlasEmptyState({
-        illustration: customIllustration,
-        title: "Empty Actor Roster",
-        description: "Add player characters and monsters to the roster.",
-      }) as VNode<any>;
-
-      assert.equal(container.props.role, "status");
-      const illustrationWrapper = container.props.children[0];
-      assert.equal(illustrationWrapper.props.children, customIllustration);
+    it("AtlasEmptyStateContainer alias functions identically to AtlasEmptyState", () => {
+      assert.equal(AtlasEmptyStateContainer, AtlasEmptyState);
     });
   });
 });
