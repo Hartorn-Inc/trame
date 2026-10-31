@@ -1,7 +1,7 @@
 import { useSignal } from '@preact/signals';
 import { useEffect } from 'preact/hooks';
 import type { CampaignMapScene, StudioWallSegment, StagedToken, StudioLightSource, AudioEmitterConfig, UserRole, WallType } from './types.ts';
-import { generateEntityUuid, mapBackendSceneToFrontend, toggleDoorState } from './domain.ts';
+import { createStarterDungeonScene, generateEntityUuid, mapBackendSceneToFrontend, toggleDoorState } from './domain.ts';
 import { SceneAtlas } from './SceneAtlas.tsx';
 import { SHARED_WALL_KINDS, type CanonicalWallKind } from '../canvas/CanvasThemePalette.ts';
 
@@ -177,6 +177,12 @@ export function MapsStudioTab({
       revealedToPlayers: !selectedScene.revealedToPlayers,
     };
     scenesSignal.value = scenesSignal.value.map((s) => (s.id === updatedScene.id ? updatedScene : s));
+  };
+
+  const handleGenerateStarterDungeon = () => {
+    const dungeon = createStarterDungeonScene(campaignId);
+    scenesSignal.value = [...scenesSignal.value, dungeon];
+    selectedSceneIdSignal.value = dungeon.id;
   };
 
   const handleCreateScene = () => {
@@ -361,14 +367,24 @@ export function MapsStudioTab({
         <aside style={{ width: '260px', borderRight: '1px solid var(--atlas-border)', display: 'flex', flexDirection: 'column', gap: 'var(--atlas-space-sm)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h3 style={{ margin: 0 }}>Scenes</h3>
-            <button
-              type="button"
-              data-testid="create-scene-btn"
-              onClick={handleCreateScene}
-              style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
-            >
-              + New Scene
-            </button>
+            <div style={{ display: 'flex', gap: 'var(--atlas-space-xs)' }}>
+              <button
+                type="button"
+                data-testid="starter-dungeon-btn"
+                onClick={handleGenerateStarterDungeon}
+                style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
+              >
+                Starter Dungeon
+              </button>
+              <button
+                type="button"
+                data-testid="create-scene-btn"
+                onClick={handleCreateScene}
+                style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-text-xs)' }}
+              >
+                + New Scene
+              </button>
+            </div>
           </div>
 
           <ul data-testid="scenes-list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>

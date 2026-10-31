@@ -50,6 +50,183 @@ export function filterScenesForRole(
     }));
 }
 
+export function createStarterDungeonScene(campaignId: string): CampaignMapScene {
+  const entranceSpawn: SpawnPointConfig = {
+    id: generateEntityUuid(),
+    name: 'Crypt Entrance',
+    x: 350,
+    y: 1050,
+  };
+
+  const walls: StudioWallSegment[] = [
+    {
+      id: generateEntityUuid(),
+      a: { x: 140, y: 700 },
+      b: { x: 840, y: 700 },
+      wallType: 'Normal',
+      blocksMovement: true,
+      blocksVision: true,
+      blocksLight: true,
+      blocksSound: true,
+      bottomElevationFt: 0,
+      topElevationFt: 10,
+    },
+    {
+      id: generateEntityUuid(),
+      a: { x: 840, y: 700 },
+      b: { x: 840, y: 1400 },
+      wallType: 'Normal',
+      blocksMovement: true,
+      blocksVision: true,
+      blocksLight: true,
+      blocksSound: true,
+      bottomElevationFt: 0,
+      topElevationFt: 10,
+    },
+    {
+      id: generateEntityUuid(),
+      a: { x: 840, y: 1400 },
+      b: { x: 140, y: 1400 },
+      wallType: 'Normal',
+      blocksMovement: true,
+      blocksVision: true,
+      blocksLight: true,
+      blocksSound: true,
+      bottomElevationFt: 0,
+      topElevationFt: 10,
+    },
+    {
+      id: generateEntityUuid(),
+      a: { x: 140, y: 1400 },
+      b: { x: 140, y: 700 },
+      wallType: 'Normal',
+      blocksMovement: true,
+      blocksVision: true,
+      blocksLight: true,
+      blocksSound: true,
+      bottomElevationFt: 0,
+      topElevationFt: 10,
+    },
+    {
+      id: generateEntityUuid(),
+      a: { x: 490, y: 700 },
+      b: { x: 630, y: 700 },
+      wallType: 'SecretDoor',
+      blocksMovement: true,
+      blocksVision: true,
+      blocksLight: true,
+      blocksSound: true,
+      bottomElevationFt: 0,
+      topElevationFt: 10,
+      secretDoorState: { isOpen: false },
+    },
+    {
+      id: generateEntityUuid(),
+      a: { x: 1680, y: 980 },
+      b: { x: 1680, y: 1120 },
+      wallType: 'Door',
+      blocksMovement: true,
+      blocksVision: true,
+      blocksLight: true,
+      blocksSound: true,
+      bottomElevationFt: 0,
+      topElevationFt: 10,
+      doorState: { isOpen: false, isLocked: false },
+    },
+  ];
+
+  const lights: StudioLightSource[] = [
+    {
+      id: generateEntityUuid(),
+      origin: { x: 210, y: 770 },
+      brightRadiusFt: 10,
+      dimRadiusFt: 20,
+      colorHex: '#FFAA33',
+      intensity: 1.0,
+      elevationFt: 0,
+    },
+    {
+      id: generateEntityUuid(),
+      origin: { x: 210, y: 1330 },
+      brightRadiusFt: 10,
+      dimRadiusFt: 20,
+      colorHex: '#FFAA33',
+      intensity: 1.0,
+      elevationFt: 0,
+    },
+    {
+      id: generateEntityUuid(),
+      origin: { x: 2170, y: 1050 },
+      brightRadiusFt: 20,
+      dimRadiusFt: 40,
+      colorHex: '#FF5500',
+      intensity: 1.2,
+      elevationFt: 0,
+    },
+  ];
+
+  const stagedTokens: StagedToken[] = [
+    {
+      id: generateEntityUuid(),
+      name: 'Skeleton 1',
+      templateKey: 'Skeleton',
+      monsterTemplateId: 'Skeleton',
+      x: 1120,
+      y: 980,
+      elevationFt: 0,
+      visibilityChannel: 'GmHidden',
+      ownerUserId: null,
+      hpCurrent: 13,
+      hpMax: 13,
+    },
+    {
+      id: generateEntityUuid(),
+      name: 'Skeleton 2',
+      templateKey: 'Skeleton',
+      monsterTemplateId: 'Skeleton',
+      x: 1120,
+      y: 1120,
+      elevationFt: 0,
+      visibilityChannel: 'GmHidden',
+      ownerUserId: null,
+      hpCurrent: 13,
+      hpMax: 13,
+    },
+    {
+      id: generateEntityUuid(),
+      name: 'Necromancer Boss',
+      templateKey: 'Boss',
+      monsterTemplateId: 'Boss',
+      x: 2380,
+      y: 1050,
+      elevationFt: 0,
+      visibilityChannel: 'GmHidden',
+      ownerUserId: null,
+      hpCurrent: 45,
+      hpMax: 45,
+    },
+  ];
+
+  return {
+    id: generateEntityUuid(),
+    campaignId,
+    title: 'The Forgotten Crypt',
+    revealedToPlayers: false,
+    gridType: 'square',
+    gridCellSizePx: 70,
+    feetPerCell: 5.0,
+    widthPx: 2800,
+    heightPx: 2100,
+    defaultGroundElevationFt: 0.0,
+    spawnPoint: { x: entranceSpawn.x, y: entranceSpawn.y },
+    spawnPoints: [entranceSpawn],
+    walls,
+    lights,
+    audioEmitters: [],
+    stagedTokens,
+  };
+}
+
 export function generateEntityUuid(): string {
   if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function') {
     return globalThis.crypto.randomUUID();
