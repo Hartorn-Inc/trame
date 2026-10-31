@@ -55,6 +55,7 @@ pub mod auth;
 pub mod dice;
 pub mod http;
 pub mod importers;
+pub mod maps;
 pub mod notes;
 pub mod room;
 pub mod storage;
