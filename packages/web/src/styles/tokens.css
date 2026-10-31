@@ -66,10 +66,11 @@
   --atlas-text: #F1F4F3;
   --atlas-text-muted: #B8C7D1;
   --atlas-border: #405466;
+  --atlas-border-control: #678099;
   --atlas-action: #F3BB71;
   --atlas-on-action: #172535;
   --atlas-focus: #80CBE2;
-  --atlas-danger: #D57973;
+  --atlas-danger: #E0827D;
   --atlas-grid: rgba(184, 199, 209, 0.16);
   --atlas-shadow: rgba(5, 10, 16, 0.42);
 
@@ -106,6 +107,7 @@
   --atlas-text: #1C3041;
   --atlas-text-muted: #465D6D;
   --atlas-border: #ACBFCB;
+  --atlas-border-control: #607788;
   --atlas-action: #995817;
   --atlas-on-action: #FFFFFF;
   --atlas-focus: #155D77;
@@ -123,6 +125,7 @@
     --atlas-text: #1C3041;
     --atlas-text-muted: #465D6D;
     --atlas-border: #ACBFCB;
+    --atlas-border-control: #607788;
     --atlas-action: #995817;
     --atlas-on-action: #FFFFFF;
     --atlas-focus: #155D77;
@@ -204,6 +207,21 @@ body {
   padding: var(--atlas-space-md);
 }
 
+.ds-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--atlas-border);
+  padding-bottom: var(--atlas-space-sm);
+}
+
+.ds-panel-title {
+  font-family: var(--atlas-font-display);
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+}
+
 .ds-overlay-modal {
   background-color: var(--atlas-surface);
   color: var(--atlas-text);
@@ -211,6 +229,19 @@ body {
   border-radius: var(--atlas-radius-lg);
   box-shadow: var(--atlas-elevation-overlay);
   padding: var(--atlas-space-lg);
+}
+
+.ds-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-xs);
+}
+
+.ds-field-label {
+  font-family: var(--atlas-font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--atlas-text);
 }
 
 .ds-btn {
@@ -230,6 +261,19 @@ body {
   transition: background-color var(--atlas-transition-fast), border-color var(--atlas-transition-fast);
 }
 
+.ds-btn:disabled,
+.ds-btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.ds-btn:focus-visible,
+.ds-input:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
 .ds-btn-primary {
   background-color: var(--atlas-action);
   color: var(--atlas-on-action);
@@ -239,7 +283,7 @@ body {
 .ds-btn-secondary {
   background-color: var(--atlas-surface-raised);
   color: var(--atlas-text);
-  border: 1px solid var(--atlas-border);
+  border: 1px solid var(--atlas-border-control, var(--atlas-border));
 }
 
 .ds-btn-secondary[aria-pressed="true"] {
@@ -258,7 +302,7 @@ body {
   border-radius: var(--atlas-radius-md);
   background-color: var(--atlas-surface-raised);
   color: var(--atlas-text);
-  border: 1px solid var(--atlas-border);
+  border: 1px solid var(--atlas-border-control, var(--atlas-border));
   font-family: var(--atlas-font-sans);
   font-size: 14px;
 }
