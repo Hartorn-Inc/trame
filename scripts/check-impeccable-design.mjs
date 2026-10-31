@@ -364,9 +364,9 @@ export function auditSourceContent(relPath, content) {
 
   // Map-Art Independence Rule: Ban CSS or WebGL filters on backgroundMap or PixiJS canvas
   if (
-    /(?:\.trame-pixijs-canvas|backgroundMap)[^{}]*\{[^}]*filter\s*:\s*(?!none\b)[^;]+;/i.test(stripped) ||
-    /\bbackgroundMap\b[^;]*\.filters\s*=\s*(?!null\b|\[\s*\])[^;]+/i.test(stripped) ||
-    /<[^>]*(?:table-canvas|trame-pixijs-canvas|backgroundMap)[^>]*style=\{\{[^}]*filter\s*:\s*["'](?!none\b)[^"']+/i.test(stripped)
+    /(?:\.trame-pixijs-canvas|backgroundMap)[^{}]*\{[^}]*filter\s*:(?!\s*none(?:\s*!important)?\s*(?:;|\}))[^;]+;/i.test(stripped) ||
+    /\bbackgroundMap\b[^;]*\.filters\s*=(?!\s*(?:null|\[\s*\])\s*(?:;|$))[^;\n]+/i.test(stripped) ||
+    /<[^>]*(?:table-canvas|trame-pixijs-canvas|backgroundMap)[^>]*style=\{\{[^}]*filter\s*:\s*["'](?!\s*none["'])[^"']+/i.test(stripped)
   ) {
     errors.push(
       `${normalizedRel}: filters applied to backgroundMap or tactical canvas violate The Map-Art Independence Rule`,
