@@ -339,26 +339,80 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: Game Master HUD, action history inspection, and rollback execution.
 - **_Avoid_**: HistorySidebar, RollbackPanel.
 
-## Domain Terminology / Terminologie Métier
+### Campaign
 
-| Term (EN) | Terme (FR) | Définition Normative (ASD-STE100) | Statut | Termes Proscrits (_Avoid_) |
-|---|---|---|---|---|
-| `DeclarativeSheetView` | Vue Déclarative de Fiche | Interactive Preact component that consumes an AST sheet layout and renders registered declarative widgets. | Ubiquitous | SheetView, HardcodedSheet, HudSheet |
-| `WidgetRegistry` | Registre de Widgets | Central registry mapping declarative widget layout types to their corresponding Preact component implementations. | Ubiquitous | ComponentMap, WidgetMap, ElementRegistry |
-| `CoreBuildLock` | Verrou de Construction Fondamentale | Hierarchical security mechanism governing whether actor core build scores render as 1-click roll triggers or editable controls. | Ubiquitous | StatLock, SheetLock, BuildFreeze |
-| `coreStatsLocked` | Verrou Local Joueur | Client-side boolean signal toggled by the player using a padlock icon to switch between roll mode and edit mode. | Ubiquitous | localLock, playerPadlock, editToggle |
-| `gm_core_locked` | Verrou Autoritaire MJ | Server-authoritative boolean flag set by the Game Master to force actor core build scores into locked roll mode. | Ubiquitous | masterLock, serverFreeze, gmLock |
-| `AbilityScore` | Valeur de Caractéristique | One of the six core attributes (Strength, Dexterity, Constitution, Intelligence, Wisdom, Charisma) defining an actor. | Ubiquitous | character build stats, raw stats, stat scores |
-| `ProficiencyRank` | Rang de Maîtrise | Integer scale defining proficiency tier: 0 for unproficient, 1 for proficient, and 2 for expertise. | Ubiquitous | proficiency level, skill rank, mastery rank |
-| `DeathSavingThrow` | Jet de Sauvegarde contre la Mort | Authoritative saving throw rolled when an actor current HP is 0 to determine stabilization or death. | Ubiquitous | Death Saves, Death save roll, [ Roll Death Save ] |
-| `ActiveEffect` | Effet Actif | Reactive modifier applied to an actor that alters statistics, proficiencies, or status conditions. | Ubiquitous | Buff, Debuff, StatusModifier |
-| `AttackActionTable` | Tableau des Actions d'Attaque | Declarative widget rendering weapon and spell attacks with ammunition linkages and roll execution. | Ubiquitous | AttackList, WeaponTable, ActionGrid |
-| `SpellbookAccordion` | Accordéon de Grimoire | Declarative widget organizing spells by spell level, managing spell slot pips, and triggering AoE projections. | Ubiquitous | SpellList, MagicBook, SpellRoster |
-| `InventoryContainerTree` | Arbre de Conteneurs d'Inventaire | Declarative widget managing hierarchical containers, equipment, items, currencies, and encumbrance calculations. | Ubiquitous | BagList, ItemTree, InventoryView |
-| `CompendiumDrawer` | Tiroir de Compendium | Searchable sidebar drawer interface exposing items, spells, and features across compendium libraries. | Ubiquitous | CompendiumPanel, LibraryDrawer, SpellsItemsDrawer |
-| `CompendiumDragDropManager` | Gestionnaire de Glisser-Déposer de Compendium | Stateless client service coordinating drag-and-drop actions from the compendium to character sheet drop targets. | Ubiquitous | DragManager, DropCoordinator, CompendiumDnD |
-| `RollDice` | Lancer de Dé Autoritaire | Authoritative CQRS command requesting server-side pseudorandom roll evaluation via ChaCha20Rng. | Ubiquitous | DiceRoll, RollRequest, ThrowDice |
-| `ChaCha20Rng` | Générateur ChaCha20 | Cryptographically secure deterministic pseudorandom number generator used for authoritative dice rolls. | Ubiquitous | CryptoRng, RandomSource, MathRandom |
-| `derivedDAG` | Graphe Acyclique Dirigé Dérivé | Reactive dependency graph computing derived actor statistics from base attributes and active modifiers. | Ubiquitous | ComputedStats, StatGraph, DerivedValues |
-| `TableCanvas` | Canevas de Table Virtuelle | Tabletop interactive canvas rendering the map, grid, tokens, measurements, and AoE template projections. | Ubiquitous | BoardView, CanvasGrid, VTTCanvas |
-| `AoEProjection` | Projection de Zone d'Effet | Interactive geometric shape projected onto TableCanvas to preview and confirm spell area of effect placement. | Ubiquitous | SpellTemplate, BlastZone, ShapeOverlay |
+- **Definition**: Persistent game workspace that groups scenes, actors, wiki notes, party journals, and ruleset settings for a gaming group.
+- **Allowed Context**: `Campaign`, `campaign`, workspace boundaries, and database record association.
+- **_Avoid_**: GameSession, AdventureWorld, TableInstance.
+
+### DocumentsWorkspaceTab
+
+- **Definition**: Navigation tab within `CampaignWorkspace` (`[data-testid="tab-documents"]`) containing folder-organized notes, the past handouts gallery, and the session timeline feed.
+- **Allowed Context**: Campaign navigation, note hierarchy inspection, and handout gallery browsing.
+- **_Avoid_**: NotesTab, LoreView, JournalDrawer.
+
+### FilteredNoteDocument
+
+- **Definition**: Server-side sanitizer and AST projection component in `trame-server` that purges confidential blocks (`:::dm` and unrevealed `:::handout`) prior to network transmission to non-GM recipients.
+- **Allowed Context**: Note serialization, collaborative note merging, and role-based view projection.
+- **_Avoid_**: NoteSanitizer, MarkdownFilter, SecretStripper.
+
+### Handout
+
+- **Definition**: Visual, textual, or map document intended for distribution to campaign players, initialized as unrevealed (`revealed="false"`) until the Game Master explicitly reveals it.
+- **Allowed Context**: Clue distribution, party journal persistence, and player reveal interactions.
+- **_Avoid_**: SharedClue, PlayerDocument, RevealedArtifact.
+
+### HandoutRevealModal
+
+- **Definition**: Modal dialog component (`[data-testid="handout-reveal-modal"]`) displayed to connected players upon receiving a `HandoutRevealed` broadcast event or clicking an archived handout card.
+- **Allowed Context**: Handout inspection, live reveal notification, and keyboard-accessible dialog dismissal.
+- **_Avoid_**: CluePopup, RevealDialog, HandoutOverlay.
+
+### LocaleSignal
+
+- **Definition**: Reactive Preact signal (`localeSignal`) storing the active client interface language (`'en' | 'fr'`) with fallback to browser language.
+- **Allowed Context**: Reactive UI localization, bilingual compendium search queries, and language switcher buttons.
+- **_Avoid_**: LanguageStore, ActiveLocaleState, I18nContext.
+
+### MobileCompanionView
+
+- **Definition**: Touch-optimized Preact view activated on viewports under 768 pixels or through manual override, bypassing PixiJS WebGL initialization and offering 5 touch navigation tabs.
+- **Allowed Context**: Mobile companion mode, responsive layout switching, and physical table reference.
+- **_Avoid_**: PhoneView, MobileShell, ResponsiveCompanion.
+
+### Note
+
+- **Definition**: Markdown document stored within a campaign, assigned to an optional folder, and governed by a 3-tier visibility scope (`NoteVisibility`).
+- **Allowed Context**: Campaign lore documentation, player journals, and collaborative wikis.
+- **_Avoid_**: LoreEntry, WikiArticle, CampaignDoc.
+
+### NoteVisibility
+
+- **Definition**: 3-tier access control enumeration (`PRIVATE`, `PARTY`, `DM_ONLY`) governing read and write permissions for campaign notes.
+- **Allowed Context**: Note access evaluation, zero-trust RBAC queries, and document serialization filtering.
+- **_Avoid_**: NoteScope, PrivacyLevel, NotePermission.
+
+### PartyJournalEntry
+
+- **Definition**: Persistent and immutable record in `party_journal_entries` representing a handout revealed to the campaign group, decoupled from the source note lifecycle.
+- **Allowed Context**: Revealed handout archiving, past handouts gallery, and campaign timeline history.
+- **_Avoid_**: JournalItem, ArchivedHandout, SharedNoteRecord.
+
+### SessionTimelineEvent
+
+- **Definition**: Append-only event in `session_events` recording a significant campaign milestone indexed by a monotonically increasing sequence identifier.
+- **Allowed Context**: Session timeline querying, MCP timeline inspection, and campaign activity feeds.
+- **_Avoid_**: AuditLogEntry, CampaignEvent, HistoryRecord.
+
+### UnitSystemSignal
+
+- **Definition**: Reactive Preact signal (`unitSystemSignal`) storing the active tactical measurement system (`'imperial_ft' | 'metric_m'`).
+- **Allowed Context**: Tactical grid distance formatting, ruler measurements, and unit switcher toggles.
+- **_Avoid_**: MeasurementState, MetricSystemSignal, DistanceUnitContext.
+
+### UserRole
+
+- **Definition**: Campaign role enumeration (`GameMaster`, `Player`, `Spectator`) governing authority over notes, handouts, tokens, and table state mutations.
+- **Allowed Context**: Note RBAC evaluation, command dispatch permissions, and WebSocket envelope filtering.
+- **_Avoid_**: PlayerRole, CampaignRank, UserPrivilege.
