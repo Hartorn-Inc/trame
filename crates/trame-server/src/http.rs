@@ -62,7 +62,7 @@ use crate::auth::session::{
     hash_session_token,
 };
 use crate::auth::totp::TotpService;
-use crate::room::{ConnectedClient, RoomLeaseManager};
+use crate::room::{ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomLeaseManager};
 use crate::storage::blob::{
     AssetDescriptor, BlobStore, BlobStoreError, BlobStream, Sha256Hasher, slice_to_stream,
     stream_to_bytes,
@@ -600,6 +600,17 @@ async fn is_authorized_campaign_gm(state: &AppState, campaign_id: Uuid, user_id:
 
 /// Unauthenticated `GET /healthz` probe verifying database connectivity and returning `{"status":"ok"}` in under 5 ms.
 pub async fn healthz_handler(State(state): State<AppState>) -> Response {
+    if IS_SHUTTING_DOWN.load(Ordering::Acquire) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                code: Some("SHUTTING_DOWN".to_string()),
+                error: "server is shutting down".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     if !state.check_database_connectivity().await {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -949,6 +960,17 @@ pub async fn ws_campaign_handler(
     Query(query): Query<WsAuthQuery>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
+    if IS_SHUTTING_DOWN.load(Ordering::Acquire) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                code: Some("SHUTTING_DOWN".to_string()),
+                error: "server is shutting down".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let role = match query.role.as_deref() {
         Some("gm") | Some("GM") => CampaignRole::Gm,
         Some("spectator") | Some("Spectator") => CampaignRole::Spectator,
@@ -963,6 +985,7 @@ pub async fn ws_campaign_handler(
             role,
         )
     })
+    .into_response()
 }
 
 fn is_valid_asset_hash(hash: &str) -> bool {
@@ -1047,7 +1070,7 @@ async fn handle_ws_connection(
     };
 
     let session_id = Uuid::new_v4();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<OutboundClientFrame>();
     let client = ConnectedClient {
         session_id,
         user_id,
@@ -1062,9 +1085,21 @@ async fn handle_ws_connection(
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
     let send_task = tokio::spawn(async move {
-        while let Some(bytes) = rx.recv().await {
-            if ws_sender.send(Message::Binary(bytes.into())).await.is_err() {
-                break;
+        while let Some(frame) = rx.recv().await {
+            match frame {
+                OutboundClientFrame::Binary(bytes) => {
+                    if ws_sender.send(Message::Binary(bytes.into())).await.is_err() {
+                        break;
+                    }
+                }
+                OutboundClientFrame::Close { code, reason } => {
+                    let close_frame = axum::extract::ws::CloseFrame {
+                        code,
+                        reason: reason.into(),
+                    };
+                    let _ = ws_sender.send(Message::Close(Some(close_frame))).await;
+                    break;
+                }
             }
         }
     });

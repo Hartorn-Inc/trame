@@ -81,7 +81,7 @@ mod tests {
         FilteredNoteDocument, InMemoryPartyJournalStorage, PartyJournalStorage,
         RevealHandoutCommand, UserRole, parse_handout_revealed_attr, reveal_handout,
     };
-    use crate::room::{ConnectedClient, RoomLeaseManager};
+    use crate::room::{ConnectedClient, OutboundClientFrame, RoomLeaseManager};
     use crate::sync::{
         ClientEnvelope, ServerEnvelope, encode_server_envelope, project_state_for_recipient,
     };
@@ -1065,7 +1065,10 @@ Hidden Text
             .await
             .unwrap();
 
-        let first_frame = rx.recv().await.unwrap();
+        let first_frame = match rx.recv().await.unwrap() {
+            OutboundClientFrame::Binary(bytes) => bytes,
+            other => panic!("Expected binary frame, got {other:?}"),
+        };
         let decoded: ServerEnvelope = rmp_serde::from_slice(&first_frame).unwrap();
         assert!(matches!(
             decoded,
@@ -1085,7 +1088,10 @@ Hidden Text
             .await
             .unwrap();
 
-        let second_frame = rx.recv().await.unwrap();
+        let second_frame = match rx.recv().await.unwrap() {
+            OutboundClientFrame::Binary(bytes) => bytes,
+            other => panic!("Expected binary frame, got {other:?}"),
+        };
         let decoded_move: ServerEnvelope = rmp_serde::from_slice(&second_frame).unwrap();
         match decoded_move {
             ServerEnvelope::CommandAccepted {
