@@ -840,4 +840,98 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
 
     unmount();
   });
+
+  it("WHEN LevelUpModal renders, container uses semantic atlas tokens, hit targets satisfy min-h-[40px], and inputs use var(--atlas-focus) rings (WCAG 1.4.11, 1.4.3, 2.5.8, 2.4.7)", async () => {
+    const actor = createDefaultActorData("actor-wizard", "Galdor");
+    actor.classId = "wizard";
+    actor.attributes.level = 3;
+    actor.attributes.casterType = "full";
+
+    const { container, getNextButton, unmount } = await renderModal({
+      isOpen: true,
+      actor,
+      onClose: () => {},
+      onSave: () => {},
+    });
+
+    const modal = container.querySelector(".ds-levelup-modal");
+    assert.ok(modal, "Modal container must exist");
+    const modalCls = modal.getAttribute("class") || "";
+    assert.ok(modalCls.includes("bg-[var(--atlas-surface)]"), "Modal must use semantic var(--atlas-surface)");
+    assert.ok(modalCls.includes("border-[var(--atlas-border)]"), "Modal must use semantic var(--atlas-border)");
+    assert.equal(modalCls.includes("bg-zinc-900"), false, "Modal must not hardcode bg-zinc-900");
+    assert.equal(modalCls.includes("border-zinc-700"), false, "Modal must not hardcode border-zinc-700");
+
+    const closeBtn = container.querySelector("button[aria-label='Fermer la fenêtre de montée de niveau']");
+    assert.ok(closeBtn.getAttribute("class")?.includes("focus-visible:ring-offset-[var(--atlas-surface)]"), "Close button must use semantic ring-offset");
+
+    const nextBtn = getNextButton();
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+
+    const hpRadios = container.querySelectorAll("input[name='hpMode']");
+    assert.ok(hpRadios.length >= 2, "HP mode radios must exist");
+    for (const radio of hpRadios) {
+      const cls = radio.getAttribute("class") || "";
+      assert.ok(cls.includes("focus-visible:ring-[var(--atlas-focus)]"), "HP radio must have atlas-focus ring");
+      assert.ok(cls.includes("focus-visible:ring-offset-[var(--atlas-surface)]"), "HP radio must have atlas-surface ring offset");
+      assert.equal(cls.includes("focus:ring-amber-500"), false, "HP radio must not use focus:ring-amber-500");
+    }
+
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+
+    const asiRadios = container.querySelectorAll("input[name='asiSubMode']");
+    assert.ok(asiRadios.length >= 2, "ASI submode radios must exist");
+    for (const radio of asiRadios) {
+      const cls = radio.getAttribute("class") || "";
+      assert.ok(cls.includes("focus-visible:ring-[var(--atlas-focus)]"), "ASI radio must have atlas-focus ring");
+      assert.ok(cls.includes("focus-visible:ring-offset-[var(--atlas-surface)]"), "ASI radio must have atlas-surface ring offset");
+    }
+
+    const asiLabels = container.querySelectorAll("label").filter((l: any) => l.textContent.includes("+2 à une") || l.textContent.includes("+1 à deux"));
+    assert.equal(asiLabels.length, 2, "Two ASI sub-mode labels must be present");
+    for (const label of asiLabels) {
+      const cls = label.getAttribute("class") || "";
+      assert.ok(cls.includes("min-h-[40px]"), "ASI radio label must have min-h-[40px] hit target");
+      assert.ok(cls.includes("px-3"), "ASI radio label must have horizontal padding");
+      assert.ok(cls.includes("py-2"), "ASI radio label must have vertical padding");
+    }
+
+    const featTabBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Choisir un Don"));
+    featTabBtn.dispatchEvent(new (globalThis as any).Event("click"));
+    const featSelect = container.querySelector("#asi-feat-select");
+    featSelect.value = "srd:feat:tough";
+    featSelect.dispatchEvent(new (globalThis as any).Event("change"));
+
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+
+    const spellCheckboxes = container.querySelectorAll("input[type='checkbox']");
+    assert.ok(spellCheckboxes.length > 0, "Spell checkboxes must exist for Wizard");
+    for (const cb of spellCheckboxes) {
+      const cls = cb.getAttribute("class") || "";
+      assert.ok(cls.includes("focus-visible:ring-[var(--atlas-focus)]"), "Spell checkbox must have atlas-focus ring");
+      assert.ok(cls.includes("focus-visible:ring-offset-[var(--atlas-surface)]"), "Spell checkbox must have atlas-surface ring offset");
+      assert.equal(cls.includes("focus:ring-amber-500"), false, "Spell checkbox must not use focus:ring-amber-500");
+    }
+
+    const spellLabels = container.querySelectorAll("label").filter((l: any) => l.textContent.includes("Niv."));
+    assert.ok(spellLabels.length > 0, "Spell item labels must exist");
+    for (const label of spellLabels) {
+      const cls = label.getAttribute("class") || "";
+      assert.ok(cls.includes("min-h-[40px]"), "Spell item label must have min-h-[40px] hit target");
+      assert.ok(cls.includes("px-3"), "Spell item label must have horizontal padding");
+      assert.ok(cls.includes("py-2"), "Spell item label must have vertical padding");
+    }
+
+    const spellLevelSpans = container.querySelectorAll("span").filter((s: any) => s.textContent.startsWith("Niv."));
+    assert.ok(spellLevelSpans.length > 0, "Spell level badges must exist");
+    for (const span of spellLevelSpans) {
+      const cls = span.getAttribute("class") || "";
+      assert.ok(cls.includes("text-zinc-400"), "Spell level must use text-zinc-400 for >= 6.8:1 contrast");
+      assert.ok(cls.includes("text-xs"), "Spell level must use text-xs (>= 12px)");
+      assert.equal(cls.includes("text-[10px]"), false, "Spell level must not use text-[10px]");
+      assert.equal(cls.includes("text-zinc-500"), false, "Spell level must not use text-zinc-500");
+    }
+
+    unmount();
+  });
 });

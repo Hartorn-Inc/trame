@@ -397,7 +397,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
     h(
       "div",
       {
-        class: "ds-levelup-modal w-full max-w-2xl bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden text-zinc-100",
+        class: "ds-levelup-modal w-full max-w-2xl bg-[var(--atlas-surface)] border border-[var(--atlas-border)] rounded-xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden text-zinc-100",
       },
       // Modal Header
       h(
@@ -421,7 +421,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           "button",
           {
             type: "button",
-            class: "inline-flex items-center justify-center min-w-[40px] min-h-[40px] p-2 text-zinc-400 hover:text-zinc-100 text-lg rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+            class: "inline-flex items-center justify-center min-w-[40px] min-h-[40px] p-2 text-zinc-400 hover:text-zinc-100 text-lg rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
             onClick: onClose,
             "aria-label": "Fermer la fenêtre de montée de niveau",
           },
@@ -501,7 +501,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     "select",
                     {
                       id: "subclass-select",
-                      class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded-md p-2.5 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                      class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded-md p-2.5 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                       value: subclassId,
                       onChange: (e: any) => setSubclassId(e.target.value),
                     },
@@ -558,7 +558,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     value: "fixed",
                     checked: hpMode === "fixed",
                     onChange: () => setHpMode("fixed"),
-                    class: "text-amber-500 focus:ring-amber-500",
+                    class: "text-amber-500 focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                   }),
                   h("span", { class: "font-semibold" }, "Moyenne fixe")
                 ),
@@ -587,7 +587,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     value: "rolled",
                     checked: hpMode === "rolled",
                     onChange: () => setHpMode("rolled"),
-                    class: "text-amber-500 focus:ring-amber-500",
+                    class: "text-amber-500 focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                   }),
                   h("span", { class: "font-semibold" }, "Tirer le dé de vie")
                 ),
@@ -609,7 +609,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     "button",
                     {
                       type: "button",
-                      class: "min-h-[40px] px-4 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-50 text-[var(--atlas-on-action)] rounded font-medium text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center justify-center",
+                      class: "min-h-[40px] px-4 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-50 text-[var(--atlas-on-action)] rounded font-medium text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
                       onClick: handleRollDice,
                       disabled: rollLoading,
                     },
@@ -666,7 +666,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                       id: "tab-asi",
                       "aria-selected": asiOrFeatMode === "asi" ? "true" : "false",
                       "aria-controls": "tabpanel-asi-or-feat",
-                      class: `min-h-[40px] px-3 py-2 font-medium border-b-2 rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center gap-1.5 ${
+                      class: `min-h-[40px] px-3 py-2 font-medium border-b-2 rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center gap-1.5 ${
                         asiOrFeatMode === "asi" ? "border-amber-500 text-amber-400" : "border-transparent text-zinc-400"
                       }`,
                       onClick: () => setAsiOrFeatMode("asi"),
@@ -682,7 +682,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                       id: "tab-feat",
                       "aria-selected": asiOrFeatMode === "feat" ? "true" : "false",
                       "aria-controls": "tabpanel-asi-or-feat",
-                      class: `min-h-[40px] px-3 py-2 font-medium border-b-2 rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center gap-1.5 ${
+                      class: `min-h-[40px] px-3 py-2 font-medium border-b-2 rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center gap-1.5 ${
                         asiOrFeatMode === "feat" ? "border-amber-500 text-amber-400" : "border-transparent text-zinc-400"
                       }`,
                       onClick: () => setAsiOrFeatMode("feat"),
@@ -707,25 +707,27 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                           { class: "flex space-x-4 text-xs" },
                           h(
                             "label",
-                            { class: "flex items-center space-x-1.5 cursor-pointer" },
+                            { class: "min-h-[40px] px-3 py-2 flex items-center space-x-1.5 cursor-pointer" },
                             h("input", {
                               type: "radio",
                               name: "asiSubMode",
                               value: "plusTwo",
                               checked: asiSubMode === "plusTwo",
                               onChange: () => setAsiSubMode("plusTwo"),
+                              class: "text-amber-500 focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             }),
                             h("span", null, "+2 à une caractéristique")
                           ),
                           h(
                             "label",
-                            { class: "flex items-center space-x-1.5 cursor-pointer" },
+                            { class: "min-h-[40px] px-3 py-2 flex items-center space-x-1.5 cursor-pointer" },
                             h("input", {
                               type: "radio",
                               name: "asiSubMode",
                               value: "plusOneOne",
                               checked: asiSubMode === "plusOneOne",
                               onChange: () => setAsiSubMode("plusOneOne"),
+                              class: "text-amber-500 focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             }),
                             h("span", null, "+1 à deux caractéristiques")
                           )
@@ -740,7 +742,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                                 {
                                   id: "asi-single-ability",
                                   "aria-label": "Caractéristique à augmenter de +2",
-                                  class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                                  class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                                   value: asiSingleAbility,
                                   onChange: (e: any) => setAsiSingleAbility(e.target.value as AbilityId),
                                 },
@@ -765,7 +767,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                                   {
                                     id: "asi-first-ability",
                                     "aria-label": "Première caractéristique à augmenter de +1",
-                                    class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                                    class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                                     value: asiFirstAbility,
                                     onChange: (e: any) => setAsiFirstAbility(e.target.value as AbilityId),
                                   },
@@ -787,7 +789,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                                   {
                                     id: "asi-second-ability",
                                     "aria-label": "Deuxième caractéristique à augmenter de +1",
-                                    class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                                    class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                                     value: asiSecondAbility,
                                     onChange: (e: any) => setAsiSecondAbility(e.target.value as AbilityId),
                                   },
@@ -813,7 +815,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                           {
                             id: "asi-feat-select",
                             "aria-label": "Sélectionner un Don du compendium",
-                            class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                            class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             value: selectedFeatId,
                             onChange: (e: any) => setSelectedFeatId(e.target.value),
                           },
@@ -902,7 +904,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                           "label",
                           {
                             key: spell.id,
-                            class: `flex items-center justify-between p-1.5 rounded ${
+                            class: `min-h-[40px] px-3 py-2 flex items-center justify-between rounded ${
                               isDisabled ? "opacity-50 cursor-not-allowed text-zinc-500" : "cursor-pointer"
                             } ${
                               isChecked ? "bg-amber-500/15 text-amber-200" : "hover:bg-zinc-800/50 text-zinc-300"
@@ -916,11 +918,11 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                               checked: isChecked,
                               disabled: isDisabled,
                               onChange: () => toggleSpellSelection(spell.id),
-                              class: "text-amber-500 focus:ring-amber-500 rounded",
+                              class: "text-amber-500 rounded focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             }),
                             h("span", null, spell.i18n?.fr?.name || spell.name)
                           ),
-                          h("span", { class: "text-zinc-500 text-[10px]" }, `Niv. ${spell.data.level}`)
+                          h("span", { class: "text-zinc-400 text-xs" }, `Niv. ${spell.data.level}`)
                         );
                       })
                     ),
@@ -952,7 +954,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           "button",
           {
             type: "button",
-            class: "min-h-[40px] px-4 py-2 border border-zinc-700 hover:bg-zinc-800 text-zinc-300 rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:opacity-30 inline-flex items-center justify-center",
+            class: "min-h-[40px] px-4 py-2 border border-zinc-700 hover:bg-zinc-800 text-zinc-300 rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] disabled:opacity-30 inline-flex items-center justify-center",
             onClick: () => setCurrentStep((s) => Math.max(1, s - 1)),
             disabled: currentStep === 1 || isSubmitting,
           },
@@ -965,7 +967,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
             "button",
             {
               type: "button",
-              class: "min-h-[40px] px-4 py-2 text-zinc-400 hover:text-zinc-200 text-xs font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:opacity-30 inline-flex items-center justify-center",
+              class: "min-h-[40px] px-4 py-2 text-zinc-400 hover:text-zinc-200 text-xs font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] disabled:opacity-30 inline-flex items-center justify-center",
               onClick: onClose,
               disabled: isSubmitting,
             },
@@ -976,7 +978,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 "button",
                 {
                   type: "button",
-                  class: "min-h-[40px] px-4 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center justify-center",
+                  class: "min-h-[40px] px-4 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
                   onClick: () => setCurrentStep((s) => Math.min(4, s + 1)),
                   disabled: !canProceed() || isSubmitting,
                 },
@@ -986,7 +988,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 "button",
                 {
                   type: "button",
-                  class: "min-h-[40px] px-5 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center justify-center",
+                  class: "min-h-[40px] px-5 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
                   onClick: handleConfirmLevelUp,
                   disabled: !canProceed() || isSubmitting,
                 },
