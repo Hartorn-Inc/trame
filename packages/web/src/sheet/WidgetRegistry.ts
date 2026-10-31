@@ -32,7 +32,7 @@ export class WidgetRegistry {
   private static readonly defaultInstance = new WidgetRegistry();
   private readonly store = new Map<string, unknown>();
 
-  public static register(widgetType: string, implementation: unknown): void {
+  public static register(widgetType: string, implementation: WidgetImplementation): void {
     WidgetRegistry.defaultInstance.register(widgetType, implementation);
   }
 
@@ -64,7 +64,7 @@ export class WidgetRegistry {
     registerAllCanonicalWidgets(this);
   }
 
-  public register(widgetType: string, implementation: unknown): void {
+  public register(widgetType: string, implementation: WidgetImplementation): void {
     if (!widgetType || typeof widgetType !== "string") {
       throw new Error(`Widget type must be a non-empty string, got: ${String(widgetType)}`);
     }

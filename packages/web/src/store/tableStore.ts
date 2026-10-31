@@ -214,7 +214,19 @@ export class TableClientStore {
   public gmOverrideHp(tokenId: string, input: TokenResourceOverrideInput): boolean {
     const token = this.tokens.get(tokenId);
     if (!token) return false;
-    this.gmOverride.overrideHpAndResources(token, input);
+    const target = {
+      hp: token.hp,
+      maxHp: token.maxHp,
+      tempHp: token.tempHp ?? 0,
+      spellSlots: token.spellSlots,
+      deathSaves: token.deathSaves,
+    };
+    this.gmOverride.overrideHpAndResources(target, input);
+    token.hp = target.hp;
+    token.maxHp = target.maxHp;
+    token.tempHp = target.tempHp;
+    token.spellSlots = target.spellSlots;
+    token.deathSaves = target.deathSaves;
     return true;
   }
 

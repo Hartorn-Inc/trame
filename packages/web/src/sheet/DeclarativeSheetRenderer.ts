@@ -232,15 +232,16 @@ export class DeclarativeSheetRenderer {
       };
     }
 
-    const boundValues = BindingResolver.resolveBindings(actorState, node.bindings || {});
-    const options = (node.options as Record<string, unknown>) || {};
+    const widgetNode = node as import("./types.ts").WidgetLayoutNode;
+    const boundValues = BindingResolver.resolveBindings(actorState, widgetNode.bindings || {});
+    const options = (widgetNode.options as Record<string, unknown>) || {};
 
-    const widgetImpl = WidgetRegistry.get(node.widgetType);
+    const widgetImpl = WidgetRegistry.get(widgetNode.widgetType);
     let renderedOutput: unknown = undefined;
 
     if (typeof widgetImpl === "function") {
       renderedOutput = widgetImpl({
-        id: node.id,
+        id: widgetNode.id,
         boundValues,
         options,
         dispatchCommand: dispatcher,
@@ -252,7 +253,7 @@ export class DeclarativeSheetRenderer {
       typeof (widgetImpl as { render: unknown }).render === "function"
     ) {
       renderedOutput = (widgetImpl as { render: Function }).render({
-        id: node.id,
+        id: widgetNode.id,
         boundValues,
         options,
         dispatchCommand: dispatcher,
@@ -260,13 +261,13 @@ export class DeclarativeSheetRenderer {
     }
 
     return {
-      id: node.id,
+      id: widgetNode.id,
       kind: "widget",
-      widgetType: node.widgetType,
+      widgetType: widgetNode.widgetType,
       boundValues,
       options,
-      visibilityTier: node.visibilityTier,
-      cssClass: node.cssClass,
+      visibilityTier: widgetNode.visibilityTier,
+      cssClass: widgetNode.cssClass,
       renderedOutput,
     };
   }

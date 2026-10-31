@@ -438,7 +438,7 @@ describe("WidgetRegistry & Component Execution", () => {
   it("dispatches RollDice command when ability card click interaction triggers", () => {
     WidgetRegistry.clear();
 
-    WidgetRegistry.register("StatBlock6", (context) => {
+    WidgetRegistry.register("StatBlock6", (context: import("../../src/sheet/WidgetRegistry.ts").WidgetRenderContext) => {
       const abilities = context.boundValues.abilities as Record<string, { score: number; mod: number }> | undefined;
       return {
         id: context.id,

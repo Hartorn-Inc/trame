@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 trame-engine = { path = "../trame-engine" }
 trame-server = { path = "../trame-server" }

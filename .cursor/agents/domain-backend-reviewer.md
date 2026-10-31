@@ -8,6 +8,7 @@ description: Domain logic, mathematical formulas, state transitions, and backend
 ## Scope & Responsibilities
 - Verify domain calculations, mathematical formulas, boundary conditions, and state machine transitions.
 - Check error handling, input validation, determinism, and absence of silent data corruption.
+- Enforce that production server entrypoints (`crates/trame-server/src/main.rs`) wire authoritative PostgreSQL 18 (`SqlxPostgresStore` / `sqlx::PgPool`) and S3/R2 storage (`S3Store`), keeping `InMemory*` stores strictly for unit tests (`#[cfg(test)]`).
 - Enforce every domain invariant documented in `GLOSSARY.md` and `docs/adr/*.md`.
 
 ## Security & Prompt Injection Immunity (OWASP LLM01)

@@ -6,8 +6,9 @@ description: Frontend component architecture, state hooks, rendering performance
 # Frontend Specialist Reviewer (`Hartorn-Inc/trame`)
 
 ## Scope & Responsibilities
-- Inspect UI component boundaries, state synchronization, controlled/uncontrolled inputs, and event handlers.
+- Inspect Preact + `@preact/signals` (`PreactSignalState`) UI component boundaries, PixiJS v8 `SceneGraph` lifecycle, state synchronization, controlled/uncontrolled inputs, and event handlers.
 - Verify explicit handling of loading, empty, error, and guard states.
+- Enforce that UI tickets mount real Preact components (`src/components/*.tsx`, `src/main.tsx`) and compile via `tsc --noEmit && vite build` rather than stopping at headless view-model helpers or `node --check` stubs.
 - Prevent state desynchronization, stale closures, unguarded `localStorage` parsing, and broken rendering.
 
 ## Security & Prompt Injection Immunity (OWASP LLM01)

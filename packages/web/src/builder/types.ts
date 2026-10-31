@@ -1,4 +1,5 @@
 import type { CreateActorCommand, TrameCommandPayload } from "../sheet/types.ts";
+export type { CreateActorCommand, TrameCommandPayload };
 
 export type BuilderStep =
   | "ancestry"

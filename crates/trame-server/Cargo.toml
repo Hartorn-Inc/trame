@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 trame-engine = { path = "../trame-engine" }
 aes-gcm = "0.10"
@@ -22,6 +25,7 @@ rmp-serde.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha1 = "0.10"
+sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower = { version = "0.5", features = ["util"] }

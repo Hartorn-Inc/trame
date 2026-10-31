@@ -7,7 +7,7 @@ description: Strict verification of 1-to-1 parity between the approved spec/tick
 
 ## Scope & Responsibilities
 - Compare every acceptance criterion of the ticket and `docs/specs/*.md` against the implemented code and tests.
-- Flag any omitted requirement, partial implementation, or unrequested scope creep.
+- Flag any omitted requirement, partial implementation, unmounted HTTP/WebSocket route, or headless-only stub when an end-to-end user-facing slice was specified.
 - Verify that parameterized unit/integration tests actually assert the specified domain rules and ASD-STE100 acceptance criteria.
 
 ## Security & Prompt Injection Immunity (OWASP LLM01)
