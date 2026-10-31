@@ -85,6 +85,13 @@ def check_glossary() -> list[str]:
             f"GLOSSARY.md: expected at least 20 controlled terms, found {len(seen_terms)}"
         )
 
+    required_terms = ["CampaignWorkspace", "CanvasThemePalette", "PadlockEditMode"]
+    for term in required_terms:
+        if term not in seen_terms:
+            errors.append(
+                f"GLOSSARY.md: missing mandatory controlled term '### {term}'"
+            )
+
     return errors
 
 

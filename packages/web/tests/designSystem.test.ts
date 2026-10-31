@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import module from "node:module";
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   auditSourceContent,
+  CANONICAL_SECTION_TITLES,
   contrastRatio,
+  extractCanonicalHeadings,
+  parseDesignMdFrontmatter,
+  parseYamlSubset,
   runAudit,
+  validateCanonicalHeadings,
+  validateDesignJson,
 } from "../../../scripts/check-impeccable-design.mjs";
 import {
   type AtlasThemeMode,
@@ -322,5 +331,173 @@ describe("TRAME ATLAS v1.1 & Impeccable Design System Suite", () => {
         );
       });
     }
+  });
+
+  describe("6. ATLAS Design Contracts, Impeccable Sidecar & Glossary Validation (Ticket #103)", () => {
+    const testFilename = fileURLToPath(import.meta.url);
+    const repoRoot = path.resolve(path.dirname(testFilename), "../../..");
+    const glossaryPath = path.join(repoRoot, "GLOSSARY.md");
+    const designMdPath = path.join(repoRoot, "DESIGN.md");
+    const designJsonPath = path.join(repoRoot, ".impeccable/design.json");
+    const configJsonPath = path.join(repoRoot, ".impeccable/config.json");
+    const tableOperatePath = path.join(repoRoot, ".impeccable/surfaces/table-operate.md");
+    const campaignReadPath = path.join(repoRoot, ".impeccable/surfaces/campaign-read.md");
+
+    it("validates GLOSSARY.md contains unique entries and definitions for CampaignWorkspace, CanvasThemePalette, and PadlockEditMode", () => {
+      const content = fs.readFileSync(glossaryPath, "utf8");
+      const requiredTerms = ["CampaignWorkspace", "CanvasThemePalette", "PadlockEditMode"];
+      for (const term of requiredTerms) {
+        const heading = `### ${term}`;
+        const headingIdx = content.indexOf(heading);
+        assert.ok(headingIdx !== -1, `GLOSSARY.md must contain heading '${heading}'`);
+        const firstIdx = content.indexOf(heading);
+        const secondIdx = content.indexOf(heading, firstIdx + heading.length);
+        assert.equal(secondIdx, -1, `GLOSSARY.md has duplicate definition for '${heading}'`);
+        const slice = content.slice(headingIdx, headingIdx + 400);
+        assert.match(slice, /- \*\*Definition\*\*:/, `'${heading}' must have a - **Definition**: bullet`);
+        assert.match(slice, /- \*\*Allowed Context\*\*:/, `'${heading}' must specify - **Allowed Context**:`);
+        assert.match(slice, /- \*\*_Avoid_\*\*:/, `'${heading}' must specify - **_Avoid_**:`);
+      }
+    });
+
+    it("extracts and validates YAML frontmatter from DESIGN.md containing name, description, colors, typography, rounded, spacing, and components", () => {
+      const content = fs.readFileSync(designMdPath, "utf8");
+      const frontmatter = parseDesignMdFrontmatter(content);
+      assert.equal(frontmatter.name, "TRAME");
+      assert.equal(typeof frontmatter.description, "string");
+      assert.ok(String(frontmatter.description).includes("ATLAS v1.1"));
+
+      const colors = frontmatter.colors as Record<string, string>;
+      assert.ok(colors && typeof colors === "object");
+      const requiredColorKeys = ["navy", "slate", "raised", "parchment", "amber", "cyan-focus", "danger-dark"];
+      for (const k of requiredColorKeys) {
+        assert.ok(colors[k], `DESIGN.md colors frontmatter must define '${k}'`);
+      }
+
+      const typo = frontmatter.typography as Record<string, unknown>;
+      assert.ok(typo.display && typo.headline && typo.body && typo.label);
+
+      const rounded = frontmatter.rounded as Record<string, string>;
+      assert.equal(rounded.sm, "4px");
+      assert.equal(rounded.md, "6px");
+      assert.equal(rounded.lg, "8px");
+
+      const spacing = frontmatter.spacing as Record<string, string>;
+      assert.equal(spacing.xs, "4px");
+      assert.equal(spacing.sm, "8px");
+      assert.equal(spacing.md, "16px");
+      assert.equal(spacing.lg, "24px");
+      assert.equal(spacing.xl, "32px");
+
+      const components = frontmatter.components as string[];
+      assert.deepEqual(components, ["button-primary", "button-secondary", "input-field", "panel-surface"]);
+    });
+
+    it("rejects DESIGN.md YAML frontmatter missing required keys or delimiters", () => {
+      assert.throws(() => parseDesignMdFrontmatter("# No Frontmatter"), /Missing YAML frontmatter/);
+      assert.throws(
+        () => parseDesignMdFrontmatter("---\nname: \"TRAME\"\n---\n# Content"),
+        /missing required fields/,
+      );
+    });
+
+    it("extracts the 8 canonical section headings from DESIGN.md in exact Impeccable order", () => {
+      const content = fs.readFileSync(designMdPath, "utf8");
+      const headings = extractCanonicalHeadings(content);
+      assert.deepEqual(headings, CANONICAL_SECTION_TITLES);
+      assert.deepEqual(headings, [
+        "Overview",
+        "Colors",
+        "Typography",
+        "Layout",
+        "Elevation & Depth",
+        "Shapes",
+        "Components",
+        "Do's and Don'ts",
+      ]);
+      const errors = validateCanonicalHeadings(headings);
+      assert.deepEqual(errors, []);
+    });
+
+    it("detects out-of-order or missing canonical section headings", () => {
+      const swapped = [
+        "Colors",
+        "Overview",
+        "Typography",
+        "Layout",
+        "Elevation & Depth",
+        "Shapes",
+        "Components",
+        "Do's and Don'ts",
+      ];
+      const swapErrors = validateCanonicalHeadings(swapped);
+      assert.ok(swapErrors.length > 0);
+      assert.ok(swapErrors.some((e) => e.includes("Overview")));
+
+      const incomplete = ["Overview", "Colors"];
+      const incompleteErrors = validateCanonicalHeadings(incomplete);
+      assert.ok(incompleteErrors.some((e) => e.includes("Expected 8")));
+    });
+
+    it("validates .impeccable/design.json Schema v2 structure with colorMeta, typographyMeta, shadows, motion, and breakpoints", () => {
+      const parsed = JSON.parse(fs.readFileSync(designJsonPath, "utf8"));
+      const errors = validateDesignJson(parsed);
+      assert.deepEqual(errors, []);
+      assert.equal(parsed.schemaVersion, "2.0");
+
+      const meta = parsed.colorMeta || parsed.extensions?.colorMeta;
+      assert.ok(meta);
+      assert.equal(meta.slateRamp.length, 8);
+      assert.equal(meta.parchmentRamp.length, 8);
+      assert.equal(meta.amberRamp.length, 8);
+      assert.equal(meta.cyanFocusRamp.length, 8);
+      assert.equal(meta.dangerRamp.length, 8);
+
+      const typo = parsed.typographyMeta || parsed.extensions?.typographyMeta;
+      assert.ok(typo);
+      assert.equal(typo.numericVariant, "tabular-nums");
+      assert.equal(typo.selfHostedWoff2, true);
+
+      const shadows = parsed.shadows || parsed.extensions?.shadows;
+      assert.ok(shadows.overlay);
+
+      const motion = parsed.motion || parsed.extensions?.motion;
+      assert.equal(motion.reducedMotion, "0.01ms");
+
+      const breakpoints = parsed.breakpoints || parsed.extensions?.breakpoints;
+      assert.equal(breakpoints.tablet, "768px");
+    });
+
+    it("rejects invalid design.json schema structures", () => {
+      assert.ok(validateDesignJson({ schemaVersion: "1.0" }).length > 0);
+      assert.ok(validateDesignJson({ schemaVersion: "2.0", components: [] }).length > 0);
+      assert.ok(
+        validateDesignJson({
+          schemaVersion: "2.0",
+          components: [1, 2, 3, 4],
+          colorMeta: { slateRamp: ["#000"] },
+        }).length > 0,
+      );
+    });
+
+    it("verifies .impeccable/config.json sidecar linkage and enabled detector", () => {
+      const config = JSON.parse(fs.readFileSync(configJsonPath, "utf8"));
+      assert.equal(config.designSystem.path, "DESIGN.md");
+      assert.equal(config.designSystem.sidecar, ".impeccable/design.json");
+      assert.equal(config.detector.designSystem.enabled, true);
+      assert.equal(config.hook.perEditRules, "all");
+    });
+
+    it("verifies surface contracts for table-operate.md and campaign-read.md exist and specify required modes", () => {
+      const tableOperate = fs.readFileSync(tableOperatePath, "utf8");
+      assert.match(tableOperate, /# Surface Contract: Live Tabletop & Tactical HUD \(`Operate` Mode\)/);
+      assert.match(tableOperate, />= 75% Viewport/);
+      assert.match(tableOperate, /PadlockEditMode/);
+
+      const campaignRead = fs.readFileSync(campaignReadPath, "utf8");
+      assert.match(campaignRead, /# Surface Contract: Campaign Lobby, Wiki Notes & Compendium \(`Read` Mode\)/);
+      assert.match(campaignRead, /60ch–72ch/);
+      assert.match(campaignRead, /Flat Structural Framing/);
+    });
   });
 });
