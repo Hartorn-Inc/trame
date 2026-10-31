@@ -44,7 +44,7 @@ export function MobileCompanionView() {
           <button
             type="button"
             data-testid="header-locale-toggle"
-            aria-label="Toggle language"
+            aria-label={`Toggle language: ${localeSignal.value === "fr" ? "FR" : "EN"}`}
             class="ds-btn ds-btn-secondary"
             onClick={() => {
               localeSignal.value = localeSignal.value === "en" ? "fr" : "en";
@@ -56,7 +56,7 @@ export function MobileCompanionView() {
           <button
             type="button"
             data-testid="header-units-toggle"
-            aria-label="Toggle grid units"
+            aria-label={`Toggle grid units: ${unitSystemSignal.value === "imperial_ft" ? "5 ft" : "1.5 m"}`}
             class="ds-btn ds-btn-secondary"
             onClick={() => {
               unitSystemSignal.value =
