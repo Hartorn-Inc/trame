@@ -1,4 +1,22 @@
-//! Argon2id password hashing, entropy verification, and identity binding.
+//! ============================================================================
+//! PURPOSE:
+//!   Implements OWASP-compliant Argon2id password hashing, password entropy
+//!   verification, and guest-to-permanent account identity binding.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//!   - Argon2id parameters enforce 19,456 KiB (19 MiB) memory cost, 2
+//!     iterations, 1 parallelism lane, 16-byte random salt, and 32-byte output.
+//!   - Identity binding preserves existing campaign memberships, character
+//!     assignments, and active session tokens while setting `is_guest = false`.
+//!   - Duplicate email addresses are rejected with `PasswordError::EmailAlreadyExists`
+//!     (HTTP 409 Conflict).
+//!
+//! EXECUTION LIFECYCLE:
+//!   1. Extract active session token from `Cookie` or `Authorization` header.
+//!   2. Verify the caller holds an unexpired guest session (`is_guest = true`).
+//!   3. Validate email uniqueness and password entropy, then compute Argon2id hash.
+//!   4. Persist credentials via `IdentityStore::bind_guest_credentials`.
+//! ============================================================================
 
 use super::session::{AuthState, BoxFuture, SessionError, SessionStore, UserRecord};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -192,6 +210,20 @@ pub trait IdentityStore: SessionStore {
         email: &'a str,
         password_hash: &'a str,
     ) -> BoxFuture<'a, Result<UserRecord, SessionError>>;
+    /// Saves or updates a user record.
+    fn save_user<'a>(&'a self, user: UserRecord) -> BoxFuture<'a, Result<(), SessionError>>;
+    /// Persists an encrypted pending TOTP secret (<nonce_hex>:<ciphertext_hex>) for setup verification.
+    fn save_pending_totp_secret<'a>(
+        &'a self,
+        user_id: Uuid,
+        encrypted_secret: &'a str,
+    ) -> BoxFuture<'a, Result<(), SessionError>>;
+    /// Promotes pending TOTP secret to active and sets mfa_enabled = true.
+    fn enable_totp_for_user<'a>(
+        &'a self,
+        user_id: Uuid,
+        encrypted_secret: &'a str,
+    ) -> BoxFuture<'a, Result<(), SessionError>>;
 }
 
 /// Service coordinating account identity binding and credential graduation.

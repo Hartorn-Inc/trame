@@ -68,6 +68,7 @@ mod tests {
         AuthState, InMemorySessionStore, MagicLinkLoginRequest, MagicLinkLoginResponse,
         SESSION_COOKIE_NAME, SessionStore, build_auth_router, hash_session_token,
     };
+    use crate::auth::totp::TotpService;
     use crate::dice::{RollVisibility, SeededDiceRoller, project_roll_for_recipient};
     use crate::http::{InMemoryMembershipValidator, build_router};
     use crate::importers::uvtt::{
@@ -125,6 +126,7 @@ mod tests {
         let auth_state = AuthState {
             magic_link_service: magic_service.clone(),
             session_store: session_store.clone(),
+            totp_service: Arc::new(TotpService::default()),
         };
         let router = build_auth_router(auth_state);
 
@@ -195,6 +197,7 @@ mod tests {
         let auth_state = AuthState {
             magic_link_service: magic_service.clone(),
             session_store: session_store.clone(),
+            totp_service: Arc::new(TotpService::default()),
         };
         let router = build_auth_router(auth_state);
 
@@ -243,6 +246,7 @@ mod tests {
         let auth_state = AuthState {
             magic_link_service: magic_service.clone(),
             session_store: session_store.clone(),
+            totp_service: Arc::new(TotpService::default()),
         };
         let router = build_auth_router(auth_state);
 
@@ -276,6 +280,7 @@ mod tests {
         let auth_state = AuthState {
             magic_link_service: magic_service.clone(),
             session_store: session_store.clone(),
+            totp_service: Arc::new(TotpService::default()),
         };
         let router = build_auth_router(auth_state);
 
@@ -324,6 +329,7 @@ mod tests {
         let auth_state = AuthState {
             magic_link_service: magic_service,
             session_store,
+            totp_service: Arc::new(TotpService::default()),
         };
         let router = build_auth_router(auth_state);
         let campaign_id = Uuid::new_v4();

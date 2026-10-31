@@ -1,4 +1,20 @@
-//! Integration and unit tests for Argon2id password hashing and identity binding.
+#![allow(clippy::doc_lazy_continuation)]
+
+//! ============================================================================
+//! PURPOSE:
+//!   Integration and unit test suite for Argon2id password hashing, entropy
+//!   validation, and guest-to-permanent account identity binding.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//!   - Verifies OWASP Argon2id parameters (m=19456, t=2, p=1, 32-byte digest).
+//!   - Verifies campaign memberships and assigned characters persist across
+//!     account binding, and duplicate emails return HTTP 409 Conflict.
+//!
+//! EXECUTION LIFECYCLE:
+//!   1. Execute parameterized entropy and Argon2id PHC verification tests.
+//!   2. Drive `/api/v1/auth/bind-account` through Axum `oneshot` requests.
+//!
+//! ============================================================================
 
 use argon2::password_hash::PasswordHash;
 use axum::body::Body;
@@ -95,6 +111,7 @@ async fn test_bind_account_success_preserves_campaign_and_actor() {
     let state = AuthState {
         magic_link_service,
         session_store: store.clone(),
+        totp_service: std::sync::Arc::new(trame_server::auth::totp::TotpService::default()),
     };
     let app = build_auth_router(state);
 
@@ -167,6 +184,7 @@ async fn test_bind_account_email_conflict_returns_409() {
     let state = AuthState {
         magic_link_service,
         session_store: store.clone(),
+        totp_service: Arc::new(trame_server::auth::totp::TotpService::default()),
     };
     let app = build_auth_router(state);
 
@@ -235,6 +253,7 @@ async fn test_bind_account_unauthenticated_or_non_guest_returns_401() {
     let state = AuthState {
         magic_link_service,
         session_store: store.clone(),
+        totp_service: Arc::new(trame_server::auth::totp::TotpService::default()),
     };
     let app = build_auth_router(state);
 
