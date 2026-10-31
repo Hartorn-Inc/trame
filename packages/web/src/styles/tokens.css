@@ -204,6 +204,21 @@ body {
   padding: var(--atlas-space-md);
 }
 
+.ds-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--atlas-border);
+  padding-bottom: var(--atlas-space-sm);
+}
+
+.ds-panel-title {
+  font-family: var(--atlas-font-display);
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+}
+
 .ds-overlay-modal {
   background-color: var(--atlas-surface);
   color: var(--atlas-text);
@@ -211,6 +226,19 @@ body {
   border-radius: var(--atlas-radius-lg);
   box-shadow: var(--atlas-elevation-overlay);
   padding: var(--atlas-space-lg);
+}
+
+.ds-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-xs);
+}
+
+.ds-field-label {
+  font-family: var(--atlas-font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--atlas-text);
 }
 
 .ds-btn {

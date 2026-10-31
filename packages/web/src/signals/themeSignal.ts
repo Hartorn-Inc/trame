@@ -89,9 +89,7 @@ export const resolvedThemeSignal: ReadonlySignal<ResolvedAtlasTheme> = computed<
     if (mode === "light") {
       return "light";
     }
-    // mode === "system"
-    const _reactiveDep = systemPrefersDarkSignal.value;
-    return getSystemPrefersDark() ? "dark" : "light";
+    return systemPrefersDarkSignal.value ? "dark" : "light";
   },
 );
 

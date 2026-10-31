@@ -308,6 +308,23 @@ describe("ATLAS v1.1 Reactive Theme Signals & CSS Tokens (Ticket #104)", () => {
       );
     });
 
+    it("verifies all 5 self-hosted WOFF2 font binary assets exist on disk with valid wOF2 magic headers", () => {
+      const requiredFonts = [
+        "SpaceGrotesk-Medium.woff2",
+        "SpaceGrotesk-SemiBold.woff2",
+        "IBMPlexSans-Regular.woff2",
+        "IBMPlexSans-Medium.woff2",
+        "IBMPlexSans-SemiBold.woff2",
+      ];
+      const fontsDir = path.join(repoRoot, "packages/web/public/fonts");
+      for (const fontFile of requiredFonts) {
+        const fp = path.join(fontsDir, fontFile);
+        assert.ok(fs.existsSync(fp), `Font binary missing: ${fontFile}`);
+        const header = fs.readFileSync(fp).subarray(0, 4).toString("ascii");
+        assert.equal(header, "wOF2", `Invalid magic header for: ${fontFile}`);
+      }
+    });
+
     it("WHEN an element applies class .atlas-tabular-nums, the browser applies CSS property font-variant-numeric: tabular-nums", () => {
       assert.match(
         cssContent,
