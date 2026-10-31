@@ -541,43 +541,41 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
 pub fn rewrite_wikilinks(content: &str, id_map: &HashMap<Uuid, Uuid>) -> String {
     let mut result = String::with_capacity(content.len());
     let mut cursor = 0;
-    let bytes = content.as_bytes();
 
-    while cursor < bytes.len() {
-        if cursor + 1 < bytes.len() && bytes[cursor] == b'[' && bytes[cursor + 1] == b'[' {
-            if let Some(close_rel) = content[cursor + 2..].find("]]") {
-                let close_idx = cursor + 2 + close_rel;
-                let inner = &content[cursor + 2..close_idx];
+    while cursor < content.len() {
+        let slice = &content[cursor..];
+        if let Some(close_rel) = slice.strip_prefix("[[").and_then(|s| s.find("]]")) {
+            let close_idx = cursor + 2 + close_rel;
+            let inner = &content[cursor + 2..close_idx];
 
-                let (uuid_part, label_part) = match inner.split_once('|') {
-                    Some((u, l)) if !l.is_empty() => (u, Some(l)),
-                    Some(_) => (inner, None),
-                    None => (inner, None),
-                };
+            let (uuid_part, label_part) = match inner.split_once('|') {
+                Some((u, l)) if !l.is_empty() => (u, Some(l)),
+                Some(_) => (inner, None),
+                None => (inner, None),
+            };
 
-                let remapped = if uuid_part.len() == 36
-                    && let Ok(old_uuid) = Uuid::parse_str(uuid_part)
-                    && let Some(new_uuid) = id_map.get(&old_uuid)
-                {
-                    Some(match label_part {
-                        Some(label) => format!("[[{new_uuid}|{label}]]"),
-                        None => format!("[[{new_uuid}]]"),
-                    })
-                } else {
-                    None
-                };
+            let remapped = if uuid_part.len() == 36
+                && let Ok(old_uuid) = Uuid::parse_str(uuid_part)
+                && let Some(new_uuid) = id_map.get(&old_uuid)
+            {
+                Some(match label_part {
+                    Some(label) => format!("[[{new_uuid}|{label}]]"),
+                    None => format!("[[{new_uuid}]]"),
+                })
+            } else {
+                None
+            };
 
-                if let Some(replaced) = remapped {
-                    result.push_str(&replaced);
-                } else {
-                    result.push_str(&content[cursor..close_idx + 2]);
-                }
-                cursor = close_idx + 2;
-                continue;
+            if let Some(replaced) = remapped {
+                result.push_str(&replaced);
+            } else {
+                result.push_str(&content[cursor..close_idx + 2]);
             }
+            cursor = close_idx + 2;
+            continue;
         }
 
-        if let Some(ch) = content[cursor..].chars().next() {
+        if let Some(ch) = slice.chars().next() {
             result.push(ch);
             cursor += ch.len_utf8();
         } else {
