@@ -2,8 +2,8 @@
 
 use super::password::{IdentityStore, extract_session_token};
 use super::session::{
-    AuthState, DEFAULT_SESSION_TTL_SECONDS, SessionStore,
-    build_session_cookie_header, generate_session_token, hash_session_token,
+    AuthState, DEFAULT_SESSION_TTL_SECONDS, SessionStore, build_session_cookie_header,
+    generate_session_token, hash_session_token,
 };
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -106,8 +106,8 @@ impl TotpService {
 
     /// Encrypts plaintext bytes using AES-256-GCM, returning `<nonce_hex>:<ciphertext_hex>`.
     pub fn encrypt_secret(&self, secret_bytes: &[u8]) -> Result<String, TotpError> {
-        let cipher = Aes256Gcm::new_from_slice(&self.master_key)
-            .map_err(|_| TotpError::EncryptionError)?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&self.master_key).map_err(|_| TotpError::EncryptionError)?;
         let mut nonce_bytes = [0u8; 12];
         rand::rng().fill(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
@@ -136,8 +136,8 @@ impl TotpService {
             .decode(ct_hex.as_bytes())
             .map_err(|_| TotpError::InvalidPayloadFormat)?;
 
-        let cipher = Aes256Gcm::new_from_slice(&self.master_key)
-            .map_err(|_| TotpError::DecryptionError)?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&self.master_key).map_err(|_| TotpError::DecryptionError)?;
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let plaintext = cipher
@@ -168,7 +168,12 @@ impl TotpService {
     }
 
     /// Verifies candidate code against secret bytes for the given timestamp window (0 skew allowed).
-    pub fn verify_code(&self, secret_bytes: &[u8], candidate_code: &str, timestamp_secs: u64) -> bool {
+    pub fn verify_code(
+        &self,
+        secret_bytes: &[u8],
+        candidate_code: &str,
+        timestamp_secs: u64,
+    ) -> bool {
         let clean_code = candidate_code.trim();
         if clean_code.len() != 6 || !clean_code.chars().all(|c| c.is_ascii_digit()) {
             return false;
@@ -268,27 +273,34 @@ pub struct TotpErrorResponse {
 }
 
 /// Handler for POST /api/v1/auth/totp/setup.
-pub async fn totp_setup_handler(
-    State(state): State<AuthState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn totp_setup_handler(State(state): State<AuthState>, headers: HeaderMap) -> Response {
     let session_token = match extract_session_token(&headers) {
         Some(token) => token,
         None => {
-            return (StatusCode::UNAUTHORIZED, Json(TotpErrorResponse {
-                error: "authentication session required".to_string(),
-            }))
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(TotpErrorResponse {
+                    error: "authentication session required".to_string(),
+                }),
+            )
                 .into_response();
         }
     };
 
     let token_hash = hash_session_token(&session_token);
-    let session = match state.session_store.get_session_by_token_hash(&token_hash).await {
+    let session = match state
+        .session_store
+        .get_session_by_token_hash(&token_hash)
+        .await
+    {
         Ok(Some(s)) => s,
         _ => {
-            return (StatusCode::UNAUTHORIZED, Json(TotpErrorResponse {
-                error: "invalid or expired session".to_string(),
-            }))
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(TotpErrorResponse {
+                    error: "invalid or expired session".to_string(),
+                }),
+            )
                 .into_response();
         }
     };
@@ -298,18 +310,24 @@ pub async fn totp_setup_handler(
         .unwrap_or_default()
         .as_secs();
     if session.expires_at < now {
-        return (StatusCode::UNAUTHORIZED, Json(TotpErrorResponse {
-            error: "session expired".to_string(),
-        }))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(TotpErrorResponse {
+                error: "session expired".to_string(),
+            }),
+        )
             .into_response();
     }
 
     let user = match state.session_store.get_user_by_id(session.user_id).await {
         Ok(Some(u)) => u,
         _ => {
-            return (StatusCode::UNAUTHORIZED, Json(TotpErrorResponse {
-                error: "user not found".to_string(),
-            }))
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(TotpErrorResponse {
+                    error: "user not found".to_string(),
+                }),
+            )
                 .into_response();
         }
     };
@@ -322,16 +340,22 @@ pub async fn totp_setup_handler(
         .save_pending_totp_secret(user.id, &encrypted_secret)
         .await
     {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(TotpErrorResponse {
-            error: e.to_string(),
-        }))
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(TotpErrorResponse {
+                error: e.to_string(),
+            }),
+        )
             .into_response();
     }
 
-    (StatusCode::OK, Json(TotpSetupResponse {
-        secret: base32_secret,
-        otpauth_url,
-    }))
+    (
+        StatusCode::OK,
+        Json(TotpSetupResponse {
+            secret: base32_secret,
+            otpauth_url,
+        }),
+    )
         .into_response()
 }
 
@@ -344,20 +368,30 @@ pub async fn totp_enable_handler(
     let session_token = match extract_session_token(&headers) {
         Some(token) => token,
         None => {
-            return (StatusCode::UNAUTHORIZED, Json(TotpErrorResponse {
-                error: "authentication session required".to_string(),
-            }))
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(TotpErrorResponse {
+                    error: "authentication session required".to_string(),
+                }),
+            )
                 .into_response();
         }
     };
 
     let token_hash = hash_session_token(&session_token);
-    let session = match state.session_store.get_session_by_token_hash(&token_hash).await {
+    let session = match state
+        .session_store
+        .get_session_by_token_hash(&token_hash)
+        .await
+    {
         Ok(Some(s)) => s,
         _ => {
-            return (StatusCode::UNAUTHORIZED, Json(TotpErrorResponse {
-                error: "invalid or expired session".to_string(),
-            }))
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(TotpErrorResponse {
+                    error: "invalid or expired session".to_string(),
+                }),
+            )
                 .into_response();
         }
     };
@@ -365,9 +399,12 @@ pub async fn totp_enable_handler(
     let user = match state.session_store.get_user_by_id(session.user_id).await {
         Ok(Some(u)) => u,
         _ => {
-            return (StatusCode::UNAUTHORIZED, Json(TotpErrorResponse {
-                error: "user not found".to_string(),
-            }))
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(TotpErrorResponse {
+                    error: "user not found".to_string(),
+                }),
+            )
                 .into_response();
         }
     };
@@ -375,9 +412,12 @@ pub async fn totp_enable_handler(
     let pending_secret_encrypted = match &user.pending_totp_secret {
         Some(s) => s.as_str(),
         None => {
-            return (StatusCode::BAD_REQUEST, Json(TotpErrorResponse {
-                error: "no pending totp setup found for user".to_string(),
-            }))
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(TotpErrorResponse {
+                    error: "no pending totp setup found for user".to_string(),
+                }),
+            )
                 .into_response();
         }
     };
@@ -385,9 +425,12 @@ pub async fn totp_enable_handler(
     let secret_bytes = match state.totp_service.decrypt_secret(pending_secret_encrypted) {
         Ok(b) => b,
         Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(TotpErrorResponse {
-                error: "failed to decrypt pending totp secret".to_string(),
-            }))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(TotpErrorResponse {
+                    error: "failed to decrypt pending totp secret".to_string(),
+                }),
+            )
                 .into_response();
         }
     };
@@ -396,10 +439,16 @@ pub async fn totp_enable_handler(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    if !state.totp_service.verify_code(&secret_bytes, &payload.code, now) {
-        return (StatusCode::UNAUTHORIZED, Json(TotpErrorResponse {
-            error: "invalid totp verification code".to_string(),
-        }))
+    if !state
+        .totp_service
+        .verify_code(&secret_bytes, &payload.code, now)
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(TotpErrorResponse {
+                error: "invalid totp verification code".to_string(),
+            }),
+        )
             .into_response();
     }
 
@@ -408,13 +457,20 @@ pub async fn totp_enable_handler(
         .enable_totp_for_user(user.id, pending_secret_encrypted)
         .await
     {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(TotpErrorResponse {
-            error: e.to_string(),
-        }))
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(TotpErrorResponse {
+                error: e.to_string(),
+            }),
+        )
             .into_response();
     }
 
-    (StatusCode::OK, Json(TotpEnableResponse { mfa_enabled: true })).into_response()
+    (
+        StatusCode::OK,
+        Json(TotpEnableResponse { mfa_enabled: true }),
+    )
+        .into_response()
 }
 
 /// Handler for POST /api/v1/auth/totp/verify.
@@ -425,26 +481,35 @@ pub async fn totp_verify_handler(
     let user = match state.session_store.get_user_by_id(payload.user_id).await {
         Ok(Some(u)) => u,
         _ => {
-            return (StatusCode::UNAUTHORIZED, Json(TotpErrorResponse {
-                error: "user not found or mfa not configured".to_string(),
-            }))
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(TotpErrorResponse {
+                    error: "user not found or mfa not configured".to_string(),
+                }),
+            )
                 .into_response();
         }
     };
 
     if !user.mfa_enabled {
-        return (StatusCode::UNAUTHORIZED, Json(TotpErrorResponse {
-            error: "mfa is not enabled for this user".to_string(),
-        }))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(TotpErrorResponse {
+                error: "mfa is not enabled for this user".to_string(),
+            }),
+        )
             .into_response();
     }
 
     let encrypted_secret = match &user.totp_secret {
         Some(s) => s.as_str(),
         None => {
-            return (StatusCode::UNAUTHORIZED, Json(TotpErrorResponse {
-                error: "totp secret missing".to_string(),
-            }))
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(TotpErrorResponse {
+                    error: "totp secret missing".to_string(),
+                }),
+            )
                 .into_response();
         }
     };
@@ -452,9 +517,12 @@ pub async fn totp_verify_handler(
     let secret_bytes = match state.totp_service.decrypt_secret(encrypted_secret) {
         Ok(b) => b,
         Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(TotpErrorResponse {
-                error: "decryption failed".to_string(),
-            }))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(TotpErrorResponse {
+                    error: "decryption failed".to_string(),
+                }),
+            )
                 .into_response();
         }
     };
@@ -463,10 +531,16 @@ pub async fn totp_verify_handler(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    if !state.totp_service.verify_code(&secret_bytes, &payload.code, now) {
-        return (StatusCode::UNAUTHORIZED, Json(TotpErrorResponse {
-            error: "invalid or expired totp code".to_string(),
-        }))
+    if !state
+        .totp_service
+        .verify_code(&secret_bytes, &payload.code, now)
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(TotpErrorResponse {
+                error: "invalid or expired totp code".to_string(),
+            }),
+        )
             .into_response();
     }
 
@@ -477,9 +551,12 @@ pub async fn totp_verify_handler(
         .create_session(user.id, &token_hash, DEFAULT_SESSION_TTL_SECONDS)
         .await
     {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(TotpErrorResponse {
-            error: e.to_string(),
-        }))
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(TotpErrorResponse {
+                error: e.to_string(),
+            }),
+        )
             .into_response();
     }
 
@@ -489,9 +566,13 @@ pub async fn totp_verify_handler(
         headers.insert(SET_COOKIE, val);
     }
 
-    (StatusCode::OK, headers, Json(TotpVerifyResponse {
-        status: "success".to_string(),
-        user_id: user.id,
-    }))
+    (
+        StatusCode::OK,
+        headers,
+        Json(TotpVerifyResponse {
+            status: "success".to_string(),
+            user_id: user.id,
+        }),
+    )
         .into_response()
 }

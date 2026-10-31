@@ -3,9 +3,7 @@
 use super::magic_link::{MagicLinkClaims, MagicLinkError, MagicLinkService, now_epoch_seconds};
 pub use super::password::IdentityStore;
 use super::password::bind_account_handler;
-use super::totp::{
-    TotpService, totp_enable_handler, totp_setup_handler, totp_verify_handler,
-};
+use super::totp::{TotpService, totp_enable_handler, totp_setup_handler, totp_verify_handler};
 use crate::storage::blob::Sha256Hasher;
 use axum::Router;
 use axum::extract::State;
@@ -297,10 +295,7 @@ impl IdentityStore for InMemorySessionStore {
         })
     }
 
-    fn save_user<'a>(
-        &'a self,
-        user: UserRecord,
-    ) -> BoxFuture<'a, Result<(), SessionError>> {
+    fn save_user<'a>(&'a self, user: UserRecord) -> BoxFuture<'a, Result<(), SessionError>> {
         Box::pin(async move {
             if let Some(ref email) = user.email {
                 self.emails.write().await.insert(email.clone(), user.id);
@@ -363,10 +358,7 @@ impl<T: IdentityStore> IdentityStore for Arc<T> {
         (**self).bind_guest_credentials(user_id, email, password_hash)
     }
 
-    fn save_user<'a>(
-        &'a self,
-        user: UserRecord,
-    ) -> BoxFuture<'a, Result<(), SessionError>> {
+    fn save_user<'a>(&'a self, user: UserRecord) -> BoxFuture<'a, Result<(), SessionError>> {
         (**self).save_user(user)
     }
 

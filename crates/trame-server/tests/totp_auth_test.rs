@@ -11,13 +11,8 @@ use trame_server::auth::session::{
     UserRecord, build_auth_router, generate_session_token, hash_session_token,
 };
 use trame_server::auth::totp::{
-    TotpEnableRequest,
-    TotpEnableResponse,
-    TotpService,
-    TotpSetupResponse,
-    TotpVerifyRequest,
-    TotpVerifyResponse,
-    compute_totp_code,
+    TotpEnableRequest, TotpEnableResponse, TotpService, TotpSetupResponse, TotpVerifyRequest,
+    TotpVerifyResponse, compute_totp_code,
 };
 use uuid::Uuid;
 
