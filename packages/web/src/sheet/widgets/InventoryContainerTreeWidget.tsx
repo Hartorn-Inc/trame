@@ -163,6 +163,7 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
                     class: `ds-btn-attune ${item.isAttuned ? 'is-attuned' : ''}`,
                     'data-testid': `btn-attune-${item.id}`,
                     'aria-label': `Toggle attunement for ${item.name}`,
+                    'aria-pressed': item.isAttuned ? 'true' : 'false',
                     onClick: () => handleToggleAttunement(item),
                   },
                   item.isAttuned ? 'Attuned' : 'Attune',
