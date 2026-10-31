@@ -125,9 +125,19 @@ export function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           {errorBanner && (
             <div
+              role="alert"
+              aria-live="assertive"
+              tabIndex={0}
+              aria-label={`Dismiss error: ${errorBanner}`}
               data-testid="trame-status-banner"
               onClick={() => {
                 lastErrorBannerSignal.value = null;
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') {
+                  e.preventDefault();
+                  lastErrorBannerSignal.value = null;
+                }
               }}
               style={{
                 padding: '0.25rem 0.65rem',

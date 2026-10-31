@@ -387,7 +387,7 @@ export function TableCanvas() {
         ctx.fillStyle = '#e2e8f0';
         ctx.font = `600 ${Math.max(10, Math.round(11 / cam.scale))}px Inter, sans-serif`;
         ctx.fillText(
-          isGmHidden ? `👁️‍🗨️ ${token.name} (GM Hidden)` : token.name,
+          isGmHidden ? ` ${token.name} (GM Hidden)` : token.name,
           tx,
           ty + radius + 12 / cam.scale,
         );
@@ -981,8 +981,8 @@ export function TableCanvas() {
                 }}
               >
                 {((selectedToken.visibility_channel ?? 1) & 4) !== 0
-                  ? '👁️ Reveal to Players'
-                  : '👁️‍🗨️ Hide from Players'}
+                  ? ' Reveal to Players'
+                  : ' Hide from Players'}
               </button>
             )}
           </div>
@@ -1009,7 +1009,7 @@ export function TableCanvas() {
           }}
         >
           <span style={{ fontSize: '0.82rem' }}>
-            ⚔️ <strong>{pendingHitConfirm.attackerName}</strong> rolled attack vs{' '}
+             <strong>{pendingHitConfirm.attackerName}</strong> rolled attack vs{' '}
             <strong>{pendingHitConfirm.targetName}</strong> ({pendingHitConfirm.damageExpr})
           </span>
           {isGm && (
@@ -1089,7 +1089,7 @@ export function TableCanvas() {
                   borderBottom: '1px solid #1e293b',
                 }}
               >
-                🎯 {contextMenu.token.name} ({contextMenu.token.hp}/{contextMenu.token.max_hp} HP)
+                 {contextMenu.token.name} ({contextMenu.token.hp}/{contextMenu.token.max_hp} HP)
               </div>
 
               <button
@@ -1129,7 +1129,7 @@ export function TableCanvas() {
                   cursor: 'pointer',
                 }}
               >
-                ⚔️ {t('menu.attack_melee')}
+                 {t('menu.attack_melee')}
               </button>
 
               <button
@@ -1155,7 +1155,7 @@ export function TableCanvas() {
                   cursor: 'pointer',
                 }}
               >
-                💥 {t('menu.damage_5')}
+                 {t('menu.damage_5')}
               </button>
 
               <button
@@ -1180,7 +1180,7 @@ export function TableCanvas() {
                   cursor: 'pointer',
                 }}
               >
-                ↔️ {t('menu.toggle_squeeze')}
+                ↔ {t('menu.toggle_squeeze')}
               </button>
 
               <button
@@ -1202,7 +1202,7 @@ export function TableCanvas() {
                   cursor: 'pointer',
                 }}
               >
-                📜 Inspect Character Sheet
+                 Inspect Character Sheet
               </button>
 
               {isGm && (
@@ -1235,8 +1235,8 @@ export function TableCanvas() {
                     }}
                   >
                     {((contextMenu.token.visibility_channel ?? 1) & 4) === 0
-                      ? `👁️‍🗨️ ${t('menu.gm_hide_token')}`
-                      : `👁️ ${t('menu.gm_reveal_token')}`}
+                      ? ` ${t('menu.gm_hide_token')}`
+                      : ` ${t('menu.gm_reveal_token')}`}
                   </button>
 
                   <button
@@ -1263,7 +1263,7 @@ export function TableCanvas() {
                       cursor: 'pointer',
                     }}
                   >
-                    👤 GM: Toggle Owner Assignment
+                     GM: Toggle Owner Assignment
                   </button>
 
                   <button
@@ -1287,7 +1287,7 @@ export function TableCanvas() {
                       cursor: 'pointer',
                     }}
                   >
-                    🗑️ {t('menu.gm_delete_token')}
+                     {t('menu.gm_delete_token')}
                   </button>
                 </>
               )}
@@ -1306,7 +1306,7 @@ export function TableCanvas() {
                   borderBottom: '1px solid #1e293b',
                 }}
               >
-                🚪 Door Controls
+                 Door Controls
               </div>
               <button
                 type="button"
@@ -1330,7 +1330,7 @@ export function TableCanvas() {
                   cursor: 'pointer',
                 }}
               >
-                {contextMenu.door.is_open ? `🔒 ${t('menu.door_close')}` : `🔓 ${t('menu.door_open')}`}
+                {contextMenu.door.is_open ? ` ${t('menu.door_close')}` : ` ${t('menu.door_open')}`}
               </button>
 
               {isGm && (
@@ -1360,7 +1360,7 @@ export function TableCanvas() {
                       cursor: 'pointer',
                     }}
                   >
-                    🗝️ {t('menu.gm_door_lock')}
+                     {t('menu.gm_door_lock')}
                   </button>
 
                   <button
@@ -1388,7 +1388,7 @@ export function TableCanvas() {
                       cursor: 'pointer',
                     }}
                   >
-                    🕵️ {t('menu.gm_door_secret')}
+                     {t('menu.gm_door_secret')}
                   </button>
                 </>
               )}
@@ -1407,7 +1407,7 @@ export function TableCanvas() {
                   borderBottom: '1px solid #1e293b',
                 }}
               >
-                📍 Cell ({Math.round(contextMenu.worldPt.x)}, {Math.round(contextMenu.worldPt.y)})
+                 Cell ({Math.round(contextMenu.worldPt.x)}, {Math.round(contextMenu.worldPt.y)})
               </div>
 
               {selectedToken && (
@@ -1438,7 +1438,7 @@ export function TableCanvas() {
                     cursor: 'pointer',
                   }}
                 >
-                  🥾 {t('menu.move_here')} ({selectedToken.name})
+                   {t('menu.move_here')} ({selectedToken.name})
                 </button>
               )}
 
@@ -1475,7 +1475,7 @@ export function TableCanvas() {
                   cursor: 'pointer',
                 }}
               >
-                🔥 {t('menu.cast_aoe')}
+                 {t('menu.cast_aoe')}
               </button>
 
               <button
@@ -1496,7 +1496,7 @@ export function TableCanvas() {
                   cursor: 'pointer',
                 }}
               >
-                📡 {t('menu.ping_here')}
+                 {t('menu.ping_here')}
               </button>
 
               {isGm && (
@@ -1530,7 +1530,7 @@ export function TableCanvas() {
                         cursor: 'pointer',
                       }}
                     >
-                      ⚡ {t('menu.gm_teleport')}
+                       {t('menu.gm_teleport')}
                     </button>
                   )}
 
@@ -1567,7 +1567,7 @@ export function TableCanvas() {
                       cursor: 'pointer',
                     }}
                   >
-                    👹 {t('menu.gm_spawn_monster')}
+                     {t('menu.gm_spawn_monster')}
                   </button>
                 </>
               )}

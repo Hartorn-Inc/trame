@@ -401,10 +401,10 @@ export function HudDrawers() {
       >
         {(
           [
-            { id: 'combat', label: '⚔️', title: 'Combat Tracker' },
-            { id: 'dice', label: '🎲', title: 'Dice Tray' },
-            { id: 'sheet', label: '📜', title: 'Character Sheet (Padlock Protected)' },
-            { id: 'notes', label: '📖', title: 'Wiki Notes & Handouts' },
+            { id: 'combat', label: '', title: 'Combat Tracker' },
+            { id: 'dice', label: '', title: 'Dice Tray' },
+            { id: 'sheet', label: '', title: 'Character Sheet (Padlock Protected)' },
+            { id: 'notes', label: '', title: 'Wiki Notes & Handouts' },
           ] as const
         ).map((item) => (
           <button
@@ -727,7 +727,7 @@ export function HudDrawers() {
                       cursor: 'pointer',
                     }}
                   >
-                    {coreStatsLocked ? '🔒 Locked' : '🔓 Edit Mode'}
+                    {coreStatsLocked ? ' Locked' : ' Edit Mode'}
                   </button>
                   <button
                     type="button"
@@ -897,6 +897,8 @@ export function HudDrawers() {
 
               {builderErrors.length > 0 && (
                 <div
+                  role="alert"
+                  aria-live="assertive"
                   data-testid="builder-validation-errors"
                   style={{
                     padding: '0.5rem 0.65rem',
@@ -913,8 +915,10 @@ export function HudDrawers() {
 
               {builderStep === 'ancestry' && (
                 <div data-testid="builder-step-ancestry" style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                  <label style={{ fontSize: '0.8rem', color: '#94a3b8' }}>Character Name</label>
+                  <label htmlFor="builder-name-input" style={{ fontSize: '0.8rem', color: '#94a3b8' }}>Character Name</label>
                   <input
+                    id="builder-name-input"
+                    aria-label="Character Name"
                     type="text"
                     data-testid="builder-name-input"
                     value={builderName}
@@ -1302,7 +1306,7 @@ export function HudDrawers() {
                         }}
                       >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <strong style={{ color: '#7dd3fc' }}>📜 {node.title}</strong>
+                          <strong style={{ color: '#7dd3fc' }}> {node.title}</strong>
                           {isGm && (
                             <button
                               type="button"

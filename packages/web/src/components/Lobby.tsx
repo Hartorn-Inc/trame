@@ -438,10 +438,15 @@ export function Lobby() {
             gap: '0.4rem',
           }}
         >
-          <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#93c5fd' }}>
+          <label
+            htmlFor="minted-invite-token-input"
+            style={{ fontSize: '0.82rem', fontWeight: 600, color: '#93c5fd' }}
+          >
             1-Click Player Magic Link Invite Token:
-          </div>
+          </label>
           <input
+            id="minted-invite-token-input"
+            aria-label="1-Click Player Magic Link Invite Token"
             data-testid="minted-invite-token-input"
             type="text"
             readOnly
@@ -475,6 +480,7 @@ export function Lobby() {
         >
           <h2 style={{ margin: 0, fontSize: '1.05rem', color: '#f8fafc' }}>Create New Campaign</h2>
           <input
+            aria-label="Campaign Name"
             data-testid="create-campaign-name-input"
             type="text"
             value={newCampaignName.value}
@@ -524,6 +530,7 @@ export function Lobby() {
             Restore a streaming PKWARE ZIP `.trame` archive with automatic SHA-256 verification.
           </p>
           <input
+            aria-label="Import Portable .trame Archive File"
             data-testid="import-trame-file-input"
             type="file"
             accept=".trame,.zip"
@@ -549,6 +556,7 @@ export function Lobby() {
         >
           <strong style={{ fontSize: '0.88rem', color: '#fcd34d' }}>Bind Guest Account:</strong>
           <input
+            aria-label="Permanent Email"
             data-testid="bind-guest-email-input"
             type="email"
             placeholder="Permanent Email"
@@ -564,6 +572,7 @@ export function Lobby() {
             }}
           />
           <input
+            aria-label="Strong Password"
             data-testid="bind-guest-password-input"
             type="password"
             placeholder="Strong Password"

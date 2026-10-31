@@ -470,22 +470,22 @@ export function CampaignWorkspace() {
             [
               {
                 id: 'characters',
-                icon: '🛡️',
+                icon: '',
                 label: t('workspace.tab.characters'),
               },
               {
                 id: 'maps',
-                icon: '🗺️',
+                icon: '',
                 label: isGm ? t('workspace.tab.maps_gm') : t('workspace.tab.maps_player'),
               },
               {
                 id: 'documents',
-                icon: '📜',
+                icon: '',
                 label: t('workspace.tab.documents'),
               },
               {
                 id: 'table',
-                icon: '⚔️',
+                icon: '',
                 label: t('workspace.tab.table'),
               },
             ] as const
@@ -539,7 +539,7 @@ export function CampaignWorkspace() {
               cursor: 'pointer',
             }}
           >
-            🌐 {locale.toUpperCase()}
+             {locale.toUpperCase()}
           </button>
 
           <button
@@ -559,7 +559,7 @@ export function CampaignWorkspace() {
               cursor: 'pointer',
             }}
           >
-            📏 {unitSystem === 'imperial_ft' ? '5 ft / sq' : '1.5 m / case'}
+             {unitSystem === 'imperial_ft' ? '5 ft / sq' : '1.5 m / case'}
           </button>
         </div>
       </nav>
@@ -619,10 +619,21 @@ export function CampaignWorkspace() {
               return (
                 <div
                   key={actor.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={isSelected}
+                  aria-label={`Select character ${actor.name}`}
                   data-testid={`party-actor-card-${actor.id}`}
                   onClick={() => {
                     setSelectedActorId(actor.id);
                     selectedTokenIdSignal.value = actor.id;
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedActorId(actor.id);
+                      selectedTokenIdSignal.value = actor.id;
+                    }
                   }}
                   style={{
                     padding: '0.65rem',
@@ -639,7 +650,7 @@ export function CampaignWorkspace() {
                     <strong style={{ fontSize: '0.9rem' }}>{actor.name}</strong>
                     {actor.gm_core_locked && (
                       <span title="Core stats locked by GM" style={{ fontSize: '0.75rem', color: '#f59e0b' }}>
-                        🛡️ GM Lock
+                        [GM Lock]
                       </span>
                     )}
                   </div>
@@ -679,6 +690,7 @@ export function CampaignWorkspace() {
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <input
+                    aria-label="Character Name"
                     type="text"
                     data-testid="hub-actor-name-input"
                     disabled={isEffectiveCoreLocked}
@@ -733,10 +745,10 @@ export function CampaignWorkspace() {
                   }}
                 >
                   {!isGm && editGmCoreLocked
-                    ? `🛡️ ${t('sheet.gm_locked')}`
+                    ? ` ${t('sheet.gm_locked')}`
                     : isEffectiveCoreLocked
-                      ? `🔒 ${t('sheet.locked')}`
-                      : `🔓 ${t('sheet.unlocked')}`}
+                      ? ` ${t('sheet.locked')}`
+                      : ` ${t('sheet.unlocked')}`}
                 </button>
 
                 {isGm && (
@@ -759,7 +771,7 @@ export function CampaignWorkspace() {
                       cursor: 'pointer',
                     }}
                   >
-                    {editGmCoreLocked ? '🛡️ GM Core Locked' : '🛡️ Lock Player Build'}
+                    {editGmCoreLocked ? ' GM Core Locked' : ' Lock Player Build'}
                   </button>
                 )}
 
@@ -797,7 +809,7 @@ export function CampaignWorkspace() {
                     cursor: 'pointer',
                   }}
                 >
-                  ⛺ {t('sheet.short_rest')}
+                   {t('sheet.short_rest')}
                 </button>
 
                 <button
@@ -815,7 +827,7 @@ export function CampaignWorkspace() {
                     cursor: 'pointer',
                   }}
                 >
-                  🌙 {t('sheet.long_rest')}
+                   {t('sheet.long_rest')}
                 </button>
 
                 <button
@@ -850,6 +862,7 @@ export function CampaignWorkspace() {
                 <div style={{ fontSize: '0.72rem', color: '#94a3b8', fontWeight: 700 }}>CURRENT / MAX HP (ALWAYS UNLOCKED)</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.35rem' }}>
                   <input
+                    aria-label="Current HP"
                     type="number"
                     data-testid="hub-actor-hp-input"
                     value={editHp}
@@ -867,6 +880,7 @@ export function CampaignWorkspace() {
                   />
                   <span>/</span>
                   <input
+                    aria-label="Maximum HP"
                     type="number"
                     data-testid="hub-actor-maxhp-input"
                     disabled={isEffectiveCoreLocked}
@@ -956,6 +970,7 @@ export function CampaignWorkspace() {
                       {t(`ability.${ab}`)}
                     </span>
                     <input
+                      aria-label={`${ab.toUpperCase()} Ability Score`}
                       type="number"
                       min={1}
                       max={30}
@@ -997,7 +1012,7 @@ export function CampaignWorkspace() {
                         cursor: 'pointer',
                       }}
                     >
-                      🎲 {modStr}
+                       {modStr}
                     </button>
                   </div>
                 );
@@ -1008,7 +1023,7 @@ export function CampaignWorkspace() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
               <div style={{ background: '#131722', border: '1px solid #1e293b', borderRadius: '8px', padding: '0.85rem' }}>
                 <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '0.88rem', color: '#cbd5e1' }}>
-                  🎒 Equipped Gear & Containers ({editEquipment.length})
+                   Equipped Gear & Containers ({editEquipment.length})
                 </h4>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
                   {editEquipment.map((item, idx) => (
@@ -1037,7 +1052,7 @@ export function CampaignWorkspace() {
                           fontSize: '0.75rem',
                         }}
                       >
-                        ✕
+                        
                       </button>
                     </div>
                   ))}
@@ -1046,7 +1061,7 @@ export function CampaignWorkspace() {
 
               <div style={{ background: '#131722', border: '1px solid #1e293b', borderRadius: '8px', padding: '0.85rem' }}>
                 <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '0.88rem', color: '#cbd5e1' }}>
-                  ✨ Prepared Spells & Grimoire ({editSpells.length})
+                   Prepared Spells & Grimoire ({editSpells.length})
                 </h4>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
                   {editSpells.map((spell, idx) => (
@@ -1102,9 +1117,10 @@ export function CampaignWorkspace() {
             }}
           >
             <h3 style={{ margin: 0, fontSize: '0.95rem' }}>
-              📚 SRD 5.1 Compendium (FR / EN)
+               SRD 5.1 Compendium (FR / EN)
             </h3>
             <input
+              aria-label="Search SRD Compendium"
               type="text"
               data-testid="compendium-search-input"
               value={compendiumQuery}
@@ -1218,7 +1234,7 @@ export function CampaignWorkspace() {
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
                 <div>
-                  <h3 style={{ margin: 0, fontSize: '1.05rem' }}>🗺️ GM Map Preparation Studio</h3>
+                  <h3 style={{ margin: 0, fontSize: '1.05rem' }}> GM Map Preparation Studio</h3>
                   <p style={{ margin: '0.2rem 0 0 0', fontSize: '0.8rem', color: '#94a3b8' }}>
                     Prepare battlemaps ahead of session, import `.uvtt` dynamic lighting walls, or push any scene to the Live Table.
                   </p>
@@ -1226,8 +1242,10 @@ export function CampaignWorkspace() {
 
                 {/* Combat Automation Mode Selector */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-                  <span style={{ fontSize: '0.78rem', color: '#94a3b8', fontWeight: 600 }}>Combat Rules:</span>
+                  <label htmlFor="combat-automation-mode-select" style={{ fontSize: '0.78rem', color: '#94a3b8', fontWeight: 600 }}>Combat Rules:</label>
                   <select
+                    id="combat-automation-mode-select"
+                    aria-label="Combat Automation Mode"
                     data-testid="combat-automation-mode-select"
                     value={automationMode}
                     onChange={(e) => {
@@ -1252,10 +1270,12 @@ export function CampaignWorkspace() {
 
               <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>
+                  <label htmlFor="prep-map-name-input" style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>
                     Scene Name
                   </label>
                   <input
+                    id="prep-map-name-input"
+                    aria-label="Scene Name"
                     type="text"
                     data-testid="prep-map-name-input"
                     value={newMapName}
@@ -1275,6 +1295,7 @@ export function CampaignWorkspace() {
                   </label>
                   <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
                     <input
+                      aria-label="Map Width in Pixels"
                       type="number"
                       value={newMapWidth}
                       onInput={(e) => setNewMapWidth(Number((e.currentTarget as HTMLInputElement).value) || 1200)}
@@ -1282,6 +1303,7 @@ export function CampaignWorkspace() {
                     />
                     <span>×</span>
                     <input
+                      aria-label="Map Height in Pixels"
                       type="number"
                       value={newMapHeight}
                       onInput={(e) => setNewMapHeight(Number((e.currentTarget as HTMLInputElement).value) || 800)}
@@ -1393,7 +1415,7 @@ export function CampaignWorkspace() {
                 padding: '1rem',
               }}
             >
-              <h3 style={{ margin: 0, fontSize: '1.05rem' }}>🧭 Revealed Campaign Atlas</h3>
+              <h3 style={{ margin: 0, fontSize: '1.05rem' }}> Revealed Campaign Atlas</h3>
               <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.82rem', color: '#94a3b8' }}>
                 Locations and battlemaps discovered by the party during the campaign.
               </p>
@@ -1499,7 +1521,7 @@ export function CampaignWorkspace() {
               overflowY: 'auto',
             }}
           >
-            <h3 style={{ margin: 0, fontSize: '0.95rem' }}>📓 Campaign Journal</h3>
+            <h3 style={{ margin: 0, fontSize: '0.95rem' }}> Campaign Journal</h3>
             <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
               {(['all', 'party', 'private', ...(isGm ? (['dm_only'] as const) : [])] as const).map((sc) => (
                 <button
@@ -1563,6 +1585,7 @@ export function CampaignWorkspace() {
           >
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <input
+                aria-label="Journal Note Title"
                 type="text"
                 data-testid="journal-note-title-input"
                 value={noteTitle}
@@ -1578,6 +1601,7 @@ export function CampaignWorkspace() {
                 }}
               />
               <select
+                aria-label="Journal Note Visibility Scope"
                 data-testid="journal-note-scope-select"
                 value={noteFolder}
                 onChange={(e) =>
@@ -1616,6 +1640,7 @@ export function CampaignWorkspace() {
             </div>
 
             <textarea
+              aria-label="Journal Note Markdown Content"
               rows={6}
               data-testid="journal-note-markdown-input"
               value={noteMarkdown}
@@ -1682,7 +1707,7 @@ export function CampaignWorkspace() {
                       }}
                     >
                       <div>
-                        <strong style={{ color: '#7dd3fc' }}>📜 {node.title}</strong>
+                        <strong style={{ color: '#7dd3fc' }}> {node.title}</strong>
                         <div style={{ fontSize: '0.82rem', marginTop: '0.2rem' }}>{node.content}</div>
                       </div>
                       {isGm && (
@@ -1725,7 +1750,7 @@ export function CampaignWorkspace() {
               overflowY: 'auto',
             }}
           >
-            <h3 style={{ margin: 0, fontSize: '0.95rem' }}>📜 Revealed Handouts Archive</h3>
+            <h3 style={{ margin: 0, fontSize: '0.95rem' }}> Revealed Handouts Archive</h3>
             {handouts.length === 0 ? (
               <p style={{ color: '#64748b', fontSize: '0.82rem' }}>
                 No handouts revealed yet. When the GM reveals a document or clue, it appears here permanently.
@@ -1734,9 +1759,18 @@ export function CampaignWorkspace() {
               handouts.map((h, i) => (
                 <div
                   key={i}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Open revealed handout ${h.title}`}
                   data-testid={`archived-handout-${h.handout_id}`}
                   onClick={() => {
                     activeHandoutModalSignal.value = h;
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      activeHandoutModalSignal.value = h;
+                    }
                   }}
                   style={{
                     padding: '0.65rem',
@@ -1772,7 +1806,17 @@ export function CampaignWorkspace() {
           ==================================================================== */}
       {levelUpOpen && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="level-up-modal-title"
+          tabIndex={-1}
           data-testid="level-up-modal"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              setLevelUpOpen(false);
+            }
+          }}
           style={{
             position: 'fixed',
             inset: 0,
@@ -1796,8 +1840,8 @@ export function CampaignWorkspace() {
               gap: '0.9rem',
             }}
           >
-            <h3 style={{ margin: 0, fontSize: '1.1rem' }}>
-              ⬆ Level Up {editName}: Level {editLevel} → Level {Math.min(20, editLevel + 1)}
+            <h3 id="level-up-modal-title" style={{ margin: 0, fontSize: '1.1rem' }}>
+              Level Up {editName}: Level {editLevel} to Level {Math.min(20, editLevel + 1)}
             </h3>
             <div style={{ fontSize: '0.84rem', color: '#cbd5e1' }}>
               Class: <strong>{editClass}</strong> (Hit Die: 1d{CLASS_HIT_DIE[editClass] ?? 8})
@@ -1849,10 +1893,12 @@ export function CampaignWorkspace() {
 
             {[4, 8, 12, 16, 19].includes(editLevel + 1) && (
               <div>
-                <label style={{ fontSize: '0.8rem', color: '#fde68a', display: 'block', marginBottom: '0.3rem' }}>
+                <label htmlFor="levelup-asi-select" style={{ fontSize: '0.8rem', color: '#fde68a', display: 'block', marginBottom: '0.3rem' }}>
                   Ability Score Improvement (+2 at Level {editLevel + 1}):
                 </label>
                 <select
+                  id="levelup-asi-select"
+                  aria-label="Ability Score Improvement"
                   data-testid="levelup-asi-select"
                   value={levelUpAsiAbility}
                   onChange={(e) =>
@@ -1917,7 +1963,17 @@ export function CampaignWorkspace() {
           ==================================================================== */}
       {activeHandoutModal && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="live-handout-modal-title"
+          tabIndex={-1}
           data-testid="live-handout-modal"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              activeHandoutModalSignal.value = null;
+            }
+          }}
           style={{
             position: 'fixed',
             inset: 0,
@@ -1942,8 +1998,8 @@ export function CampaignWorkspace() {
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3 style={{ margin: 0, color: '#7dd3fc', fontSize: '1.15rem' }}>
-                📜 Handout Revealed: {activeHandoutModal.title}
+              <h3 id="live-handout-modal-title" style={{ margin: 0, color: '#7dd3fc', fontSize: '1.15rem' }}>
+                Handout Revealed: {activeHandoutModal.title}
               </h3>
               <button
                 type="button"
