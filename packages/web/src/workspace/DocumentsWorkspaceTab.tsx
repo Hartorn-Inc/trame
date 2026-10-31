@@ -53,32 +53,14 @@ export function HandoutRevealModal() {
   const activeModal = activeHandoutModalSignal.value;
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleEscape = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         activeHandoutModalSignal.value = null;
-      } else if (e.key === "Tab" && activeHandoutModalSignal.value) {
-        const closeBtn = typeof document !== "undefined"
-          ? (document.querySelector('[data-testid="close-handout-modal"]') as HTMLElement | null)
-          : null;
-        if (closeBtn) {
-          e.preventDefault();
-          closeBtn.focus();
-        }
       }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
   }, []);
-
-  useEffect(() => {
-    if (!activeModal) return;
-    const prevFocused = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
-    return () => {
-      if (prevFocused && typeof prevFocused.focus === "function") {
-        prevFocused.focus();
-      }
-    };
-  }, [activeModal]);
 
   if (!activeModal) return null;
 
@@ -285,7 +267,6 @@ export function DocumentsWorkspaceTab() {
                       class="note-item-row"
                       role="button"
                       tabIndex={0}
-                      aria-label={`${note.title} (${getLocalizedScope(note.visibility)})`}
                       aria-pressed={isSelected}
                       onClick={() => {
                         selectedNoteIdSignal.value = note.id;
