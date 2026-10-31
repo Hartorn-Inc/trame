@@ -1,331 +1,509 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { ComponentChildren, JSX } from "preact";
-import { client as defaultClient, type ApiClient } from "../api/client.ts";
+import { client, type ApiClient } from "../api/client.ts";
 import { ViewportCamera, measureRulerWaypointsFt, type Waypoint3D } from "../canvas/SceneGraph.ts";
 import { Bvh2D, type Point2D, type WallSegmentDto } from "../engine/wasmBridge.ts";
-import { appSignals } from "../state/appSignals.ts";
-import type { CampaignRoomState, Token, WallSegment } from "../types/index.ts";
+import { appSignals, mutateActorPosition } from "../state/appSignals.ts";
+import type { CampaignRoomState, Token, TrameCommand, WallSegment } from "../types/index.ts";
+
+export class HeadlessCanvasMock {
+  public width: number;
+  public height: number;
+  public destroyed = false;
+  public isHeadless = true;
+  public stage = { children: [] as unknown[] };
+  public canvas: unknown = null;
+
+  constructor(options?: { width?: number; height?: number }) {
+    this.width = options?.width ?? 1200;
+    this.height = options?.height ?? 800;
+  }
+
+  public render(): void {}
+  public destroy(): void {
+    this.destroyed = true;
+  }
+}
+
+export function isWebGLAvailable(): boolean {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return false;
+  }
+  try {
+    const canvas = document.createElement("canvas");
+    if (!canvas || typeof canvas.getContext !== "function") return false;
+    return Boolean(
+      (window as unknown as { WebGLRenderingContext?: unknown }).WebGLRenderingContext &&
+        (canvas.getContext("webgl2") ||
+          canvas.getContext("webgl") ||
+          canvas.getContext("experimental-webgl")),
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function isDoorSegment(wall: WallSegment): boolean {
+  if (wall.id && wall.id.toLowerCase().includes("door")) return true;
+  if (typeof wall.kind === "string") {
+    const k = wall.kind.toUpperCase();
+    return k === "DOOR" || k === "SECRETDOOR" || k === "SECRET_DOOR";
+  }
+  if (typeof wall.kind === "object" && wall.kind !== null) {
+    const obj = wall.kind as Record<string, unknown>;
+    if ("Door" in obj || "SecretDoor" in obj) return true;
+    if (typeof obj.kind === "string") {
+      const k = obj.kind.toUpperCase();
+      return k === "DOOR" || k === "SECRETDOOR" || k === "SECRET_DOOR";
+    }
+  }
+  return false;
+}
+
+export function isDoorOpen(wall: WallSegment): boolean {
+  if (typeof wall.kind === "object" && wall.kind !== null) {
+    const obj = wall.kind as Record<string, unknown>;
+    if (typeof obj.is_open === "boolean") return obj.is_open;
+    if (typeof obj.isOpen === "boolean") return obj.isOpen;
+    if (typeof obj.Door === "object" && obj.Door !== null) {
+      return Boolean(
+        (obj.Door as Record<string, unknown>).is_open ??
+          (obj.Door as Record<string, unknown>).isOpen,
+      );
+    }
+    if (typeof obj.SecretDoor === "object" && obj.SecretDoor !== null) {
+      return Boolean(
+        (obj.SecretDoor as Record<string, unknown>).is_open ??
+          (obj.SecretDoor as Record<string, unknown>).isOpen,
+      );
+    }
+  }
+  return false;
+}
 
 export interface TableCanvasProps {
   children?: ComponentChildren;
+  campaignId?: string;
   client?: ApiClient;
-  roomState?: CampaignRoomState | null;
-  readOnly?: boolean;
-  rulerActive?: boolean;
-  pingKeyActive?: boolean;
-  onRecenterViewport?: () => void;
-}
-
-export class HeadlessCanvasMock {
-  public readonly isHeadless = true;
-  public width = 1200;
-  public height = 800;
-  public renderedFrames = 0;
-
-  public renderFrame(): void {
-    this.renderedFrames++;
-  }
-}
-
-function isDoorWall(wall: WallSegment | WallSegmentDto): boolean {
-  if (!wall) return false;
-  if (typeof wall.kind === "string") {
-    return wall.kind.toLowerCase().includes("door");
-  }
-  if (typeof wall.kind === "object" && wall.kind !== null) {
-    return "Door" in wall.kind || "SecretDoor" in wall.kind || "door" in wall.kind || "secretDoor" in wall.kind;
-  }
-  return wall.id.toLowerCase().includes("door");
-}
-
-function isDoorOpen(wall: WallSegment | WallSegmentDto): boolean {
-  if (typeof wall.kind === "object" && wall.kind !== null) {
-    const k = wall.kind as Record<string, any>;
-    if (k.Door && typeof k.Door.is_open === "boolean") return k.Door.is_open;
-    if (k.SecretDoor && typeof k.SecretDoor.is_open === "boolean") return k.SecretDoor.is_open;
-    if (typeof k.is_open === "boolean") return k.is_open;
-    if (typeof k.isOpen === "boolean") return k.isOpen;
-  }
-  return wall.blocksMovement === false && wall.blocksVision === false;
+  tableState?: CampaignRoomState | null;
+  activeTokenId?: string | null;
+  onSelectToken?: (tokenId: string | null) => void;
+  onMoveToken?: (command: TrameCommand) => void;
+  onToggleDoor?: (command: TrameCommand) => void;
+  onPointerPing?: (ping: { x: number; y: number; colorHex?: string }) => void;
+  onCollisionCheck?: (collided: boolean, tokenId: string, targetPos: Point2D) => void;
+  onRecenter?: () => void;
 }
 
 export function TableCanvas(props: TableCanvasProps): JSX.Element {
-  const activeClient = props.client || defaultClient;
+  const activeClient = props.client || client;
+  const activeTableState = props.tableState !== undefined ? props.tableState : appSignals.tableStateSignal.value;
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cameraRef = useRef<ViewportCamera>(new ViewportCamera());
 
-  const [isHeadless, setIsHeadless] = useState(false);
-  const [headlessMock] = useState(() => new HeadlessCanvasMock());
-  const camera = useMemo(() => new ViewportCamera(), []);
+  const [headlessMock, setHeadlessMock] = useState<HeadlessCanvasMock | null>(null);
+  const [, setCameraTransform] = useState(cameraRef.current.getTransform());
 
-  const liveRoomState = props.roomState ?? appSignals.tableStateSignal.value;
-  const tokens = liveRoomState?.tokens ? Object.values(liveRoomState.tokens) : [];
-  const walls = (liveRoomState?.walls || []) as (WallSegment | WallSegmentDto)[];
-  const cellSizePx = liveRoomState?.cellSizePx || 100;
-  const feetPerCell = liveRoomState?.feetPerCell || 5;
+  const [isRulerActive, setIsRulerActive] = useState(false);
+  const [rulerWaypoints, setRulerWaypoints] = useState<Waypoint3D[]>([]);
+  const [rulerElevationFt, setRulerElevationFt] = useState(0);
 
-  const bvh = useMemo(() => {
-    const wallDtos: WallSegmentDto[] = walls.map((w) => ({
+  const [isPingToolActive, setIsPingToolActive] = useState(false);
+  const [pings, setPings] = useState<Array<{ id: string; x: number; y: number; color: string; timestamp: number }>>([]);
+
+  const [draggedTokenId, setDraggedTokenId] = useState<string | null>(null);
+  const [dragCurrentPos, setDragCurrentPos] = useState<Point2D | null>(null);
+
+  useEffect(() => {
+    if (!isWebGLAvailable()) {
+      const mock = new HeadlessCanvasMock({
+        width: activeTableState?.mapWidthPx ?? 1200,
+        height: activeTableState?.mapHeightPx ?? 800,
+      });
+      setHeadlessMock(mock);
+      if (typeof window !== "undefined") {
+        const event =
+          typeof CustomEvent !== "undefined"
+            ? new CustomEvent("mock-canvas-active", { detail: { mock, headless: true } })
+            : ({ type: "mock-canvas-active", detail: { mock, headless: true } } as unknown as Event);
+        window.dispatchEvent(event);
+      }
+      return () => {
+        mock.destroy();
+      };
+    }
+
+    let cancelled = false;
+    let appInstance: { destroy: (removeView?: boolean) => void; canvas?: unknown } | null = null;
+
+    (async () => {
+      try {
+        const { Application } = await import("pixi.js");
+        if (cancelled) return;
+        const app = new Application();
+        await app.init({
+          width: activeTableState?.mapWidthPx ?? 1200,
+          height: activeTableState?.mapHeightPx ?? 800,
+          backgroundColor: 0x0b0f19,
+          preference: "webgl",
+        });
+        if (cancelled) {
+          app.destroy(true);
+          return;
+        }
+        appInstance = app;
+        if (containerRef.current && (app as unknown as { canvas: Node }).canvas) {
+          containerRef.current.appendChild((app as unknown as { canvas: Node }).canvas);
+        }
+      } catch (_err) {
+        const mock = new HeadlessCanvasMock();
+        setHeadlessMock(mock);
+        if (typeof window !== "undefined") {
+          const event =
+            typeof CustomEvent !== "undefined"
+              ? new CustomEvent("mock-canvas-active", { detail: { mock, headless: true } })
+              : ({ type: "mock-canvas-active", detail: { mock, headless: true } } as unknown as Event);
+          window.dispatchEvent(event);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (appInstance) {
+        appInstance.destroy(true);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleRecenter = () => {
+      cameraRef.current = new ViewportCamera();
+      setCameraTransform(cameraRef.current.getTransform());
+      props.onRecenter?.();
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("recenter-viewport", handleRecenter);
+      return () => window.removeEventListener("recenter-viewport", handleRecenter);
+    }
+  }, [props.onRecenter]);
+
+  const recenter = () => {
+    cameraRef.current = new ViewportCamera();
+    setCameraTransform(cameraRef.current.getTransform());
+    props.onRecenter?.();
+  };
+
+  const handleDoorClick = (doorId: string) => {
+    const walls = activeTableState?.walls || [];
+    const wall = walls.find((w) => w.id === doorId);
+    const isOpen = wall ? isDoorOpen(wall) : false;
+
+    const toggleCmd: TrameCommand = {
+      cmd: "TOGGLE_DOOR",
+      wall_id: doorId,
+      is_open: !isOpen,
+    };
+    activeClient.sendCommand(toggleCmd);
+    props.onToggleDoor?.(toggleCmd);
+  };
+
+  const handleTokenDragEnd = (tokenId: string, targetPos: Point2D) => {
+    const token = activeTableState?.tokens?.[tokenId];
+    if (!token) return;
+
+    const walls = (activeTableState?.walls || []).map((w) => ({
       id: w.id,
       a: w.a,
       b: w.b,
       blocksVision: w.blocksVision,
       blocksMovement: w.blocksMovement !== false,
-      bottomElevationFt: w.bottomElevationFt ?? -1000,
-      topElevationFt: w.topElevationFt ?? 1000,
-      kind: w.kind,
-    }));
-    return new Bvh2D(wallDtos);
-  }, [walls]);
+      bottomElevationFt: w.bottomElevationFt,
+      topElevationFt: w.topElevationFt,
+    } as WallSegmentDto));
 
-  const [rulerActive, setRulerActive] = useState(Boolean(props.rulerActive));
-  const [rulerWaypoints, setRulerWaypoints] = useState<Waypoint3D[]>([]);
-  const [rulerDistanceFt, setRulerDistanceFt] = useState<number>(0);
+    const bvh = new Bvh2D(walls);
+    const collides = bvh.checkMovementCollision(token.topLeft, targetPos);
+    props.onCollisionCheck?.(collides, tokenId, targetPos);
 
-  const [pings, setPings] = useState<Array<{ id: string; x: number; y: number; colorHex: string; timestamp: number }>>([]);
-  const [draggingTokenId, setDraggingTokenId] = useState<string | null>(null);
-  const [dragCurrentPos, setDragCurrentPos] = useState<Point2D | null>(null);
-  const [collisionAlert, setCollisionAlert] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (props.rulerActive !== undefined) {
-      setRulerActive(props.rulerActive);
-    }
-  }, [props.rulerActive]);
-
-  const detectHeadlessAndInit = useCallback(() => {
-    let hasWebGl = false;
-    if (typeof window !== "undefined" && typeof document !== "undefined") {
-      try {
-        const testCanvas = document.createElement("canvas");
-        const gl = testCanvas.getContext("webgl") || testCanvas.getContext("experimental-webgl") || testCanvas.getContext("webgl2");
-        hasWebGl = Boolean(gl);
-      } catch {
-        hasWebGl = false;
-      }
-    }
-
-    if (!hasWebGl) {
-      setIsHeadless(true);
-      if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
-        const ev = typeof CustomEvent !== "undefined"
-          ? new CustomEvent("mock-canvas-active", { detail: { headless: true } })
-          : ({ type: "mock-canvas-active", detail: { headless: true } } as unknown as Event);
-        window.dispatchEvent(ev);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    detectHeadlessAndInit();
-  }, [detectHeadlessAndInit]);
-
-  const recenter = useCallback(() => {
-    camera.pan(-camera.getTransform().offsetX, -camera.getTransform().offsetY);
-    props.onRecenterViewport?.();
-  }, [camera, props.onRecenterViewport]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const handleRecenter = () => {
-      recenter();
+    const moveCmd: TrameCommand = {
+      cmd: "MOVE_TOKEN",
+      token_id: tokenId,
+      to_top_left: targetPos,
+      to_elevation_ft: token.elevationFt ?? 0,
+      gm_teleport: false,
     };
-    window.addEventListener("recenter-canvas-viewport", handleRecenter);
-    return () => window.removeEventListener("recenter-canvas-viewport", handleRecenter);
-  }, [recenter]);
 
-  const handleTokenDragStart = (tokenId: string, initialPos: Point2D) => {
-    setDraggingTokenId(tokenId);
-    setDragCurrentPos(initialPos);
-    setCollisionAlert(null);
-  };
-
-  const handleTokenDragComplete = (tokenId: string, targetPos: Point2D) => {
-    const token = tokens.find((t) => t.id === tokenId);
-    if (!token) {
-      setDraggingTokenId(null);
-      setDragCurrentPos(null);
-      return;
-    }
-
-    const from = token.topLeft;
-    const hasCollision = bvh.checkCollision(from, targetPos, token.elevationFt ?? 0);
-
-    if (hasCollision) {
-      setCollisionAlert(`Movement blocked by wall collision for token ${token.name || tokenId}`);
-    } else {
-      activeClient.sendCommand({
-        cmd: "MOVE_TOKEN",
-        token_id: tokenId,
-        to_top_left: targetPos,
-        to_elevation_ft: token.elevationFt ?? 0,
-        gm_teleport: false,
-      });
-      setCollisionAlert(null);
-    }
-
-    setDraggingTokenId(null);
+    activeClient.sendCommand(moveCmd);
+    props.onMoveToken?.(moveCmd);
+    mutateActorPosition(tokenId, targetPos, token.elevationFt);
+    setDraggedTokenId(null);
     setDragCurrentPos(null);
   };
 
-  const handleDoorClick = (wall: WallSegment | WallSegmentDto) => {
-    if (!isDoorWall(wall)) return;
-    const currentOpen = isDoorOpen(wall);
-    activeClient.sendCommand({
-      cmd: "TOGGLE_DOOR",
-      wall_id: wall.id,
-      is_open: !currentOpen,
-    });
-  };
+  const handleSurfaceClick = (e: MouseEvent) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    const clickX = rect ? e.clientX - rect.left : e.clientX || 0;
+    const clickY = rect ? e.clientY - rect.top : e.clientY || 0;
 
-  const triggerPointerPing = (x: number, y: number, colorHex = "#38bdf8") => {
-    const newPing = {
-      id: `ping-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      x,
-      y,
-      colorHex,
-      timestamp: Date.now(),
-    };
-    setPings((prev) => [...prev, newPing]);
-    activeClient.sendEnvelope({
-      type: "PointerPing",
-      pos: { x, y },
-      colorHex,
-    });
-    setTimeout(() => {
-      setPings((prev) => prev.filter((p) => p.id !== newPing.id));
-    }, 1500);
-  };
-
-  const handleCanvasClick = (e: MouseEvent) => {
-    const rect = canvasRef.current?.getBoundingClientRect() || { left: 0, top: 0 };
-    const screenPos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    const worldPos = camera.screenToWorld(screenPos);
-
-    if (e.altKey || props.pingKeyActive) {
-      triggerPointerPing(worldPos.x, worldPos.y);
+    if (e.shiftKey || e.altKey || e.ctrlKey || isPingToolActive) {
+      const newPing = {
+        id: `ping-${Date.now()}`,
+        x: clickX,
+        y: clickY,
+        color: "#f59e0b",
+        timestamp: Date.now(),
+      };
+      setPings((prev) => [...prev, newPing]);
+      activeClient.sendPointerPing({ x: clickX, y: clickY }, "#f59e0b");
+      props.onPointerPing?.({ x: clickX, y: clickY, colorHex: "#f59e0b" });
       return;
     }
 
-    if (rulerActive) {
-      const next = [...rulerWaypoints, { x: worldPos.x, y: worldPos.y, elevationFt: 0 }];
-      setRulerWaypoints(next);
-      if (next.length >= 2) {
-        const dist = measureRulerWaypointsFt(next, cellSizePx, feetPerCell, "EUCLIDEAN");
-        setRulerDistanceFt(dist);
+    if (isRulerActive) {
+      if (rulerWaypoints.length >= 2) {
+        setRulerWaypoints([{ x: clickX, y: clickY, elevationFt: rulerElevationFt }]);
+      } else {
+        setRulerWaypoints((prev) => [
+          ...prev,
+          { x: clickX, y: clickY, elevationFt: rulerElevationFt },
+        ]);
       }
     }
   };
 
+  const cellSizePx = activeTableState?.cellSizePx || 100;
+  const feetPerCell = activeTableState?.feetPerCell || 5;
+  const pxPerFt = cellSizePx / feetPerCell;
+
+  let rulerDistanceFt = 0;
+  if (rulerWaypoints.length >= 2) {
+    const p1 = rulerWaypoints[0];
+    const p2 = rulerWaypoints[1];
+    const dxFt = Math.abs(p2.x - p1.x) / pxPerFt;
+    const dyFt = Math.abs(p2.y - p1.y) / pxPerFt;
+    const dzFt = Math.abs((p2.elevationFt ?? 0) - (p1.elevationFt ?? 0));
+    rulerDistanceFt = Math.sqrt(dxFt * dxFt + dyFt * dyFt + dzFt * dzFt);
+  }
+
+  const tokens = Object.values(activeTableState?.tokens || {});
+  const walls = activeTableState?.walls || [];
+
   return (
-    <section
-      ref={containerRef}
-      role="region"
-      aria-label="Tactical Tabletop Canvas"
+    <div
       data-testid="table-canvas-container"
+      role="region"
+      aria-label="Tabletop Canvas"
       tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === "r" || e.key === "R") {
-          setRulerActive((prev) => !prev);
-        } else if (e.key === "p" || e.key === "P") {
-          const center = camera.screenToWorld({ x: 600, y: 400 });
-          triggerPointerPing(center.x, center.y);
-        } else if (e.key === "Escape") {
-          setRulerWaypoints([]);
-          setRulerDistanceFt(0);
-        }
-      }}
+      ref={containerRef}
+      onClick={handleSurfaceClick}
       style={{
         position: "relative",
         width: "100%",
         height: "100%",
         minHeight: "600px",
-        backgroundColor: "#070b12",
+        backgroundColor: "#0b0f19",
         overflow: "hidden",
+        userSelect: "none",
         outline: "none",
       }}
     >
-      {isHeadless ? (
+      {headlessMock && (
         <div
           data-testid="headless-canvas-mock"
-          aria-label="Headless Mock Canvas"
-          style={{
-            width: "100%",
-            height: "100%",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#94a3b8",
-          }}
-        >
-          <div data-testid="headless-status-badge" style={{ fontSize: "0.875rem", color: "#38bdf8" }}>
-            HeadlessCanvasMock Active (Zero-GPU Safe)
-          </div>
-        </div>
-      ) : (
-        <canvas
-          ref={canvasRef}
-          data-testid="pixi-canvas-element"
-          width={1200}
-          height={800}
-          onClick={handleCanvasClick}
-          style={{ width: "100%", height: "100%", display: "block" }}
+          aria-hidden="true"
+          style={{ display: "none" }}
         />
       )}
 
-      {collisionAlert && (
-        <div
-          role="alert"
-          aria-live="assertive"
-          data-testid="collision-warning-banner"
+      <div
+        role="toolbar"
+        aria-label="Table Canvas Tools"
+        style={{
+          position: "absolute",
+          top: "1rem",
+          left: "1rem",
+          zIndex: 40,
+          display: "flex",
+          gap: "0.5rem",
+          backgroundColor: "rgba(19, 26, 42, 0.9)",
+          padding: "0.5rem",
+          borderRadius: "6px",
+          border: "1px solid #1e293b",
+        }}
+      >
+        <button
+          type="button"
+          data-testid="tool-ruler-btn"
+          aria-pressed={isRulerActive}
+          aria-label="3D Distance Ruler Tool"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsRulerActive(!isRulerActive);
+            if (isRulerActive) setRulerWaypoints([]);
+          }}
           style={{
-            position: "absolute",
-            top: "1rem",
-            left: "50%",
-            transform: "translateX(-50%)",
-            backgroundColor: "#7f1d1d",
-            color: "#fecaca",
-            padding: "0.5rem 1rem",
+            padding: "0.375rem 0.75rem",
+            backgroundColor: isRulerActive ? "#38bdf8" : "#1e293b",
+            color: isRulerActive ? "#0f172a" : "#f8fafc",
+            border: "1px solid #334155",
             borderRadius: "4px",
-            zIndex: 30,
-            fontSize: "0.875rem",
-            border: "1px solid #dc2626",
+            cursor: "pointer",
+            fontWeight: 600,
           }}
         >
-          {collisionAlert}
-        </div>
-      )}
+          3D Ruler
+        </button>
 
-      <div
-        data-testid="tokens-layer"
-        aria-label="Tokens Layer"
-        style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none" }}
-      >
-        {tokens.map((token: Token) => (
-          <div
-            key={token.id}
-            role="button"
-            tabIndex={0}
-            aria-label={`Token ${token.name || token.id}`}
-            data-testid={`token-${token.id}`}
-            data-token-id={token.id}
-            onClick={() => handleTokenDragStart(token.id, token.topLeft)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                handleTokenDragComplete(token.id, {
-                  x: token.topLeft.x + cellSizePx,
-                  y: token.topLeft.y,
-                });
-              }
+        <button
+          type="button"
+          data-testid="tool-ping-btn"
+          aria-pressed={isPingToolActive}
+          aria-label="PointerPing Tool"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsPingToolActive(!isPingToolActive);
+          }}
+          style={{
+            padding: "0.375rem 0.75rem",
+            backgroundColor: isPingToolActive ? "#f59e0b" : "#1e293b",
+            color: isPingToolActive ? "#0f172a" : "#f8fafc",
+            border: "1px solid #334155",
+            borderRadius: "4px",
+            cursor: "pointer",
+            fontWeight: 600,
+          }}
+        >
+          Ping
+        </button>
+
+        <button
+          type="button"
+          data-testid="recenter-viewport-btn"
+          aria-label="Re-center Viewport"
+          onClick={(e) => {
+            e.stopPropagation();
+            recenter();
+          }}
+          style={{
+            padding: "0.375rem 0.75rem",
+            backgroundColor: "#1e293b",
+            color: "#cbd5e1",
+            border: "1px solid #334155",
+            borderRadius: "4px",
+            cursor: "pointer",
+          }}
+        >
+          Center
+        </button>
+
+        {isRulerActive && (
+          <label
+            htmlFor="ruler-elevation-input"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.25rem",
+              fontSize: "0.75rem",
+              color: "#94a3b8",
             }}
+          >
+            Elev (ft):
+            <input
+              id="ruler-elevation-input"
+              type="number"
+              data-testid="ruler-elevation-input"
+              value={rulerElevationFt}
+              onInput={(e) =>
+                setRulerElevationFt(Number((e.target as HTMLInputElement).value) || 0)
+              }
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: "50px",
+                backgroundColor: "#0f172a",
+                color: "#f8fafc",
+                border: "1px solid #334155",
+                borderRadius: "4px",
+                padding: "0.25rem",
+              }}
+            />
+          </label>
+        )}
+      </div>
+
+      <svg
+        data-testid="table-walls-overlay"
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          pointerEvents: "none",
+        }}
+      >
+        {walls.map((wall) => {
+          const isInteractiveDoor = isDoorSegment(wall);
+          const isOpen = isDoorOpen(wall);
+          return (
+            <g key={wall.id}>
+              <line
+                x1={wall.a.x}
+                y1={wall.a.y}
+                x2={wall.b.x}
+                y2={wall.b.y}
+                stroke={isInteractiveDoor ? (isOpen ? "#22c55e" : "#eab308") : "#64748b"}
+                strokeWidth={isInteractiveDoor ? "6" : "4"}
+                strokeDasharray={isOpen ? "4,4" : undefined}
+              />
+              {isInteractiveDoor && (
+                <circle
+                  data-testid={`door-${wall.id}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Toggle door ${wall.id}`}
+                  cx={(wall.a.x + wall.b.x) / 2}
+                  cy={(wall.a.y + wall.b.y) / 2}
+                  r="14"
+                  fill={isOpen ? "#15803d" : "#ca8a04"}
+                  stroke="#ffffff"
+                  strokeWidth="2"
+                  style={{ cursor: "pointer", pointerEvents: "auto" }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDoorClick(wall.id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      handleDoorClick(wall.id);
+                    }
+                  }}
+                />
+              )}
+            </g>
+          );
+        })}
+      </svg>
+
+      {tokens.map((tok) => {
+        const isDragging = draggedTokenId === tok.id;
+        const posX = isDragging && dragCurrentPos ? dragCurrentPos.x : tok.topLeft.x;
+        const posY = isDragging && dragCurrentPos ? dragCurrentPos.y : tok.topLeft.y;
+
+        return (
+          <div
+            key={tok.id}
+            data-testid={`token-${tok.id}`}
+            role="button"
+            aria-label={`Token ${tok.name}`}
+            tabIndex={0}
             style={{
               position: "absolute",
-              left: `${camera.worldToScreen(token.topLeft).x}px`,
-              top: `${camera.worldToScreen(token.topLeft).y}px`,
-              width: `${(token.gridW || 1) * cellSizePx * camera.getTransform().scale}px`,
-              height: `${(token.gridH || 1) * cellSizePx * camera.getTransform().scale}px`,
+              left: `${posX}px`,
+              top: `${posY}px`,
+              width: "60px",
+              height: "60px",
               borderRadius: "50%",
               backgroundColor: "#0284c7",
               border: "2px solid #38bdf8",
@@ -333,188 +511,107 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
               alignItems: "center",
               justifyContent: "center",
               color: "#ffffff",
-              fontWeight: 600,
               fontSize: "0.75rem",
-              cursor: "grab",
-              pointerEvents: "auto",
+              fontWeight: 600,
+              cursor: isDragging ? "grabbing" : "grab",
+              boxShadow: "0 4px 6px rgba(0,0,0,0.5)",
+              zIndex: isDragging ? 30 : 10,
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              setDraggedTokenId(tok.id);
+              setDragCurrentPos(tok.topLeft);
+            }}
+            onPointerMove={(e) => {
+              if (draggedTokenId === tok.id) {
+                e.stopPropagation();
+                const rect = containerRef.current?.getBoundingClientRect();
+                const x = rect ? e.clientX - rect.left : e.clientX || 0;
+                const y = rect ? e.clientY - rect.top : e.clientY || 0;
+                setDragCurrentPos({ x, y });
+              }
+            }}
+            onPointerUp={(e) => {
+              if (draggedTokenId === tok.id && dragCurrentPos) {
+                e.stopPropagation();
+                handleTokenDragEnd(tok.id, dragCurrentPos);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowRight") handleTokenDragEnd(tok.id, { x: tok.topLeft.x + 50, y: tok.topLeft.y });
+              if (e.key === "ArrowLeft") handleTokenDragEnd(tok.id, { x: tok.topLeft.x - 50, y: tok.topLeft.y });
+              if (e.key === "ArrowUp") handleTokenDragEnd(tok.id, { x: tok.topLeft.x, y: tok.topLeft.y - 50 });
+              if (e.key === "ArrowDown") handleTokenDragEnd(tok.id, { x: tok.topLeft.x, y: tok.topLeft.y + 50 });
             }}
           >
-            {token.name?.slice(0, 3) || "TOK"}
+            {tok.name.slice(0, 3)}
           </div>
-        ))}
-      </div>
+        );
+      })}
 
-      <div
-        data-testid="doors-layer"
-        aria-label="Interactive Doors Layer"
-        style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none" }}
-      >
-        {walls.filter(isDoorWall).map((door) => {
-          const isOpen = isDoorOpen(door);
-          const mid = { x: (door.a.x + door.b.x) * 0.5, y: (door.a.y + door.b.y) * 0.5 };
-          const screenMid = camera.worldToScreen(mid);
-          return (
-            <button
-              type="button"
-              key={door.id}
-              data-testid={`door-segment-${door.id}`}
-              data-door-open={String(isOpen)}
-              aria-label={`Interactive Door ${door.id} (${isOpen ? "Open" : "Closed"})`}
-              onClick={() => handleDoorClick(door)}
-              style={{
-                position: "absolute",
-                left: `${screenMid.x - 12}px`,
-                top: `${screenMid.y - 12}px`,
-                width: "24px",
-                height: "24px",
-                borderRadius: "4px",
-                backgroundColor: isOpen ? "#10b981" : "#f59e0b",
-                color: "#0f172a",
-                border: "2px solid #ffffff",
-                fontSize: "0.625rem",
-                fontWeight: 700,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                cursor: "pointer",
-                pointerEvents: "auto",
-              }}
-            >
-              {isOpen ? "O" : "D"}
-            </button>
-          );
-        })}
-      </div>
-
-      {rulerActive && (
-        <div
-          data-testid="ruler-overlay"
-          aria-label="3D Ruler Overlay"
-          style={{
-            position: "absolute",
-            top: "1rem",
-            right: "1rem",
-            backgroundColor: "#1e293b",
-            color: "#f8fafc",
-            padding: "0.5rem 0.875rem",
-            borderRadius: "6px",
-            border: "1px solid #38bdf8",
-            boxShadow: "0 4px 6px rgba(0,0,0,0.3)",
-            fontSize: "0.875rem",
-            zIndex: 40,
-          }}
-        >
-          <div style={{ fontWeight: 600, color: "#38bdf8" }}>3D Elevation Ruler</div>
-          <div data-testid="ruler-distance-value" style={{ marginTop: "0.25rem" }}>
-            Distance: <strong>{rulerDistanceFt.toFixed(1)} ft</strong> (Euclidean)
-          </div>
-          <div style={{ fontSize: "0.75rem", color: "#94a3b8", marginTop: "0.125rem" }}>
-            Formula: sqrt(dx^2 + dy^2 + dz^2)
+      {isRulerActive && rulerWaypoints.length >= 2 && (
+        <div data-testid="ruler-line-overlay" style={{ pointerEvents: "none" }}>
+          <svg
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              height: "100%",
+              pointerEvents: "none",
+            }}
+          >
+            <line
+              x1={rulerWaypoints[0].x}
+              y1={rulerWaypoints[0].y}
+              x2={rulerWaypoints[1].x}
+              y2={rulerWaypoints[1].y}
+              stroke="#38bdf8"
+              strokeWidth="2"
+              strokeDasharray="5,5"
+            />
+          </svg>
+          <div
+            data-testid="ruler-distance-label"
+            aria-label={`Distance: ${rulerDistanceFt.toFixed(1)} ft`}
+            style={{
+              position: "absolute",
+              left: `${(rulerWaypoints[0].x + rulerWaypoints[1].x) / 2}px`,
+              top: `${(rulerWaypoints[0].y + rulerWaypoints[1].y) / 2 - 20}px`,
+              backgroundColor: "#0f172a",
+              color: "#38bdf8",
+              padding: "0.25rem 0.5rem",
+              borderRadius: "4px",
+              border: "1px solid #38bdf8",
+              fontSize: "0.75rem",
+              fontWeight: 600,
+              transform: "translate(-50%, -50%)",
+            }}
+          >
+            {rulerDistanceFt.toFixed(1)} ft
           </div>
         </div>
       )}
 
-      <div
-        data-testid="pings-layer"
-        aria-label="Radar Pings Layer"
-        style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none" }}
-      >
-        {pings.map((p) => {
-          const screenPos = camera.worldToScreen({ x: p.x, y: p.y });
-          return (
-            <div
-              key={p.id}
-              data-testid="pointer-ping"
-              data-ping-id={p.id}
-              style={{
-                position: "absolute",
-                left: `${screenPos.x - 20}px`,
-                top: `${screenPos.y - 20}px`,
-                width: "40px",
-                height: "40px",
-                borderRadius: "50%",
-                border: `3px solid ${p.colorHex}`,
-                backgroundColor: `${p.colorHex}33`,
-                pointerEvents: "none",
-                animation: "pingPulse 1.2s ease-out forwards",
-              }}
-            />
-          );
-        })}
-      </div>
-
-      <div
-        style={{
-          position: "absolute",
-          bottom: "1rem",
-          left: "1rem",
-          display: "flex",
-          gap: "0.5rem",
-          zIndex: 20,
-        }}
-      >
-        <button
-          type="button"
-          data-testid="ruler-tool-btn"
-          aria-label="Toggle 3D Ruler Tool"
-          aria-pressed={rulerActive}
-          onClick={() => {
-            setRulerActive((prev) => !prev);
-            if (rulerActive) {
-              setRulerWaypoints([]);
-              setRulerDistanceFt(0);
-            }
-          }}
+      {pings.map((ping) => (
+        <div
+          key={ping.id}
+          data-testid="pointer-ping"
           style={{
-            padding: "0.5rem 0.75rem",
-            backgroundColor: rulerActive ? "#0284c7" : "#1e293b",
-            color: "#f8fafc",
-            border: "1px solid #38bdf8",
-            borderRadius: "4px",
-            fontSize: "0.875rem",
-            cursor: "pointer",
+            position: "absolute",
+            left: `${ping.x}px`,
+            top: `${ping.y}px`,
+            width: "36px",
+            height: "36px",
+            borderRadius: "50%",
+            border: "2px solid #f59e0b",
+            backgroundColor: "rgba(245, 158, 11, 0.2)",
+            transform: "translate(-50%, -50%)",
+            pointerEvents: "none",
+            animation: "pulse 1.5s infinite",
           }}
-        >
-          {rulerActive ? "Ruler Active" : "3D Ruler"}
-        </button>
-        <button
-          type="button"
-          data-testid="ping-tool-btn"
-          aria-label="Emit Radar Ping"
-          onClick={() => {
-            const center = camera.screenToWorld({ x: 600, y: 400 });
-            triggerPointerPing(center.x, center.y);
-          }}
-          style={{
-            padding: "0.5rem 0.75rem",
-            backgroundColor: "#1e293b",
-            color: "#38bdf8",
-            border: "1px solid #334155",
-            borderRadius: "4px",
-            fontSize: "0.875rem",
-            cursor: "pointer",
-          }}
-        >
-          Radar Ping
-        </button>
-        <button
-          type="button"
-          data-testid="recenter-camera-btn"
-          aria-label="Recenter Viewport"
-          onClick={recenter}
-          style={{
-            padding: "0.5rem 0.75rem",
-            backgroundColor: "#1e293b",
-            color: "#cbd5e1",
-            border: "1px solid #334155",
-            borderRadius: "4px",
-            fontSize: "0.875rem",
-            cursor: "pointer",
-          }}
-        >
-          Recenter
-        </button>
-      </div>
-    </section>
+        />
+      ))}
+    </div>
   );
 }
