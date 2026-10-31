@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  type AtlasThemeMode,
   type CanonicalWallKind,
   type CanvasThemePaletteSpec,
   DARK_CANVAS_PALETTE,
