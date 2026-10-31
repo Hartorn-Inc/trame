@@ -1,8 +1,16 @@
 import { h, type VNode } from 'preact';
-import type { CompendiumEntry } from '../../../../packages/game-systems/dnd5e/src/compendium.ts';
 import { useSafeState } from '../sheet/safeHooks.ts';
 import type { CommandDispatcher } from '../sheet/types.ts';
 import { CompendiumDragDropManager } from './CompendiumDragDropManager.ts';
+
+export interface CompendiumEntry {
+  id: string;
+  slug: string;
+  name: string;
+  entityType: 'item' | 'spell' | 'feat' | 'monster' | string;
+  tier?: string;
+  data?: Record<string, unknown>;
+}
 
 export interface CompendiumDrawerProps {
   isOpen: boolean;
