@@ -1,3 +1,5 @@
+#![allow(clippy::doc_lazy_continuation)]
+
 //! ============================================================================
 //! PURPOSE:
 //!   Unit and integration test suite for RFC 6238 TOTP MFA, AES-256-GCM secret
@@ -12,6 +14,7 @@
 //! EXECUTION LIFECYCLE:
 //!   1. Run RFC 6238 test vectors and AES-256-GCM encryption assertions.
 //!   2. Exercise `/api/v1/auth/totp/setup`, `enable`, and `verify` handlers.
+//!
 //! ============================================================================
 
 use axum::body::Body;

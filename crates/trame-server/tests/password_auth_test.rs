@@ -1,3 +1,5 @@
+#![allow(clippy::doc_lazy_continuation)]
+
 //! ============================================================================
 //! PURPOSE:
 //!   Integration and unit test suite for Argon2id password hashing, entropy
@@ -11,6 +13,7 @@
 //! EXECUTION LIFECYCLE:
 //!   1. Execute parameterized entropy and Argon2id PHC verification tests.
 //!   2. Drive `/api/v1/auth/bind-account` through Axum `oneshot` requests.
+//!
 //! ============================================================================
 
 use argon2::password_hash::PasswordHash;
