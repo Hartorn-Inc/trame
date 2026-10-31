@@ -1,10 +1,43 @@
-//! Campaign archive (.trame) importer with cryptographic verification and UUID remapping.
+//! ============================================================================
+//! STREAMING `.TRAME` CAMPAIGN ARCHIVE IMPORTER & UUID REMAPPING (importer.rs)
+//! ============================================================================
+//!
+//! PURPOSE:
+//! --------
+//! Implements `ArchiveImporter` to validate and unpack `.trame` PKWARE ZIP
+//! campaign archives with cryptographic SHA-256 verification, unlisted entry
+//! rejection, `FAIL_IF_EXISTS` collision protection, and optional UUID
+//! remapping (`remap_ids: true`) across JSONL entities, CommonMark note
+//! wikilinks (`[[uuid]]`, `[[uuid|label]]`), and WebP assets.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//! -------------------------------
+//!   1. `Manifest-First Entry Invariant`:
+//!      - Extraction immediately aborts with `ArchiveError::InvalidManifest`
+//!        if ZIP entry `0` is not `manifest.json`.
+//!   2. `Pre-Commit SHA-256 & Unlisted Entry Verification`:
+//!      - Every archive entry outside `manifest.json` must be declared in
+//!        `manifest.entries` (otherwise `ArchiveError::UnlistedEntry`) and its
+//!        streamed SHA-256 digest and byte count must match the manifest
+//!        before any campaign, entity, note, or asset is committed.
+//!   3. `Idempotent Collision Policy & Referential Remapping`:
+//!      - When `remap_ids == false`, importing an existing campaign UUID halts
+//!        with `ArchiveError::CampaignAlreadyExists`. When `remap_ids == true`,
+//!        all entity/note/asset UUIDs are remapped consistently across foreign
+//!        keys and Markdown wikilinks.
+//!
+//! EXECUTION LIFECYCLE:
+//! --------------------
+//!   `ArchiveImporter::import(reader, options)`
+//!     ├── 1. Verify entry `0 == "manifest.json"` and parse `CampaignManifest`.
+//!     ├── 2. Check campaign collision (`remap_ids == false`) and unlisted entries.
+//!     ├── 3. Stream entries in 64 KiB chunks, verifying SHA-256 and byte sizes.
+//!     └── 4. Apply optional UUID remapping & persist campaign, entities, notes, and assets.
+//! ============================================================================
 
 use super::exporter::{ExportEntity, NoteRecord};
 use super::manifest::{CampaignManifest, CampaignMetadata};
-use crate::storage::blob::{
-    BlobStore, BlobStoreError, CHUNK_SIZE, Sha256Hasher, slice_to_stream,
-};
+use crate::storage::blob::{BlobStore, BlobStoreError, CHUNK_SIZE, Sha256Hasher, slice_to_stream};
 use async_zip::tokio::read::seek::ZipFileReader;
 use bytes::Bytes;
 use futures_lite::io::AsyncReadExt;
@@ -79,7 +112,11 @@ impl InMemoryCampaignStore {
 
     pub fn with_campaign(campaign: CampaignMetadata) -> Self {
         let store = Self::new();
-        store.campaigns.write().unwrap().insert(campaign.id, campaign);
+        store
+            .campaigns
+            .write()
+            .unwrap()
+            .insert(campaign.id, campaign);
         store
     }
 
@@ -156,7 +193,8 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
         reader: R,
         options: ImportOptions,
     ) -> Result<ImportResult, ArchiveError> {
-        self.execute_import(BufReader::new(reader), options.remap_ids).await
+        self.execute_import(BufReader::new(reader), options.remap_ids)
+            .await
     }
 
     /// Streams and imports a campaign archive with explicit boolean remapping flag.
@@ -199,7 +237,9 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
         // Invariant 2: Read and parse manifest.json
         let mut manifest_reader = zip_reader.reader_with_entry(0).await?;
         let mut manifest_raw = String::new();
-        manifest_reader.read_to_string_checked(&mut manifest_raw).await?;
+        manifest_reader
+            .read_to_string_checked(&mut manifest_raw)
+            .await?;
         let manifest: CampaignManifest = serde_json::from_str(&manifest_raw)
             .map_err(|e| ArchiveError::InvalidManifest(e.to_string()))?;
 
