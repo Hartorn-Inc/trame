@@ -1,57 +1,57 @@
-# ADR-0006: Declarative Character Sheet UI Architecture, Widget Registry, and CoreBuildLock
+# ADR-0006: Declarative Character Sheet UI Architecture and Widget Registry
 
 ## Status
 Accepted
 
 ## Context
-TRAME requires character sheets to adapt dynamically to distinct game systems without hardcoding game-specific JSX components in `packages/web`. The D&D 5e character sheet layout is declared in `DND5E_SHEET_LAYOUT` within `@trame/game-system-dnd5e`, while maintaining strict separation between layout presentation and reactive `Actor` state.
+TRAME requires character sheets to adapt dynamically to distinct game systems without hardcoding game-specific JSX components in `packages/web`. The D&D 5e character sheet renders entirely from `dnd5e/system.json` layout declarations (`DND5E_SHEET_LAYOUT`) while maintaining strict separation between layout presentation and reactive `Actor` state.
 
-Historically, `HudDrawers.tsx` rendered a hardcoded sheet subset containing only AC, Initiative, Speed, and raw ability score inputs. Players could not interact with saving throws, skills, death saving throws, condition badges, attacks, spell slots, nested inventory containers, features, or character notes.
+However, the live user interface in `HudDrawers.tsx` historically rendered a hardcoded subset containing only AC, Initiative, Speed, and 6 raw ability score inputs. Players could not interact with saving throws, skills, death saving throws, condition badges, attacks, spell slots, nested inventory containers, features, or character notes.
 
 Additionally, live tabletop play requires dual operational modes:
-1. Play Mode: Ability scores, saving throws, skills, attacks, and spells must function as single-click `RollDice` triggers dispatching authoritative server rolls without focusing text fields or risking accidental stat modification.
+1. Play Mode: Ability scores, saving throws, skills, attacks, and spells must function as single-click roll triggers dispatching authoritative server rolls without focusing text fields or risking accidental stat modification.
 2. Edit Mode: When preparing or leveling a character, players require numeric steppers, proficiency toggles, and direct field editing.
 
-Finally, Game Masters must retain authoritative control to freeze character build stats during sessions to prevent mid-combat cheating.
+Finally, Game Masters must retain the authority to freeze character build stats during sessions to prevent mid-combat cheating.
 
 ## Decision
-1. **Declarative Layout AST and Unified View (`DeclarativeSheetView`)**:
-   - Implement `DeclarativeSheetView` in `packages/web` as the unified Preact component that traverses `DND5E_SHEET_LAYOUT`.
-   - `DeclarativeSheetView` delegates widget rendering to Preact components registered in `WidgetRegistry`.
-   - The view renders identically in both the Live Table drawer (`HudDrawers.tsx`) and `CampaignWorkspace`.
-2. **Canonical 12-Widget Registry (`WidgetRegistry`)**:
-   Register interactive Preact component implementations for all 12 declarative widgets:
-   - `StatBlock6Widget`
-   - `ResourceBarWidget`
-   - `ArmorInitiativeSpeedWidget`
-   - `SavingThrowListWidget`
-   - `SkillCheckListWidget`
-   - `HitDiceAndDeathSavesWidget`
-   - `ConditionBadgeStripWidget`
-   - `AttackActionTableWidget`
-   - `SpellbookAccordionWidget`
-   - `InventoryContainerTreeWidget`
-   - `FeatureTraitListWidget`
-   - `NotesMarkdownPaneWidget`
-3. **CoreBuildLock Security Hierarchy**:
+1. **Declarative Layout AST & DeclarativeSheetView**:
+   - Game system manifests declare layout trees using container nodes (`tabs`, `tab`, `grid`, `section`).
+   - Implement a unified Preact component `DeclarativeSheetView` that traverses `DND5E_SHEET_LAYOUT` and delegates widget rendering to components registered in `WidgetRegistry`.
+2. **Canonical 12 Interactive Widgets**:
+   - Register interactive Preact implementations for all 12 declarative widgets:
+     - `StatBlock6Widget`
+     - `ResourceBarWidget`
+     - `ArmorInitiativeSpeedWidget`
+     - `SavingThrowListWidget`
+     - `SkillCheckListWidget`
+     - `HitDiceAndDeathSavesWidget`
+     - `ConditionBadgeStripWidget`
+     - `AttackActionTableWidget`
+     - `SpellbookAccordionWidget`
+     - `InventoryContainerTreeWidget`
+     - `FeatureTraitListWidget`
+     - `NotesMarkdownPaneWidget`
+3. **CoreBuildLock Hierarchy**:
    - Server-authoritative `gm_core_locked` takes precedence over client-side `coreStatsLocked`.
-   - IF `gm_core_locked === true`, THEN `isLocked` evaluates to `true`, and the client padlock toggle button is disabled.
-   - WHEN `isLocked === true`, THEN all core build elements render as single-click `RollDice` triggers.
-   - WHEN `isLocked === false`, THEN core build elements render inline numeric steppers and cyclic `ProficiencyRank` selectors.
-   - Active play state (current HP, temporary HP, `DeathSaveCounters`, spell slots, ammunition, currency, items, notes) remains mutable at all times by the actor owner and GM regardless of lock state.
-4. **Deterministic Data Binding and Surgical Signals Reactivity (`PreactSignalState`)**:
-   - Connect `DeclarativeSheetView` and widget view-models to `@preact/signals` slices from `tableStore`.
-   - `DeclarativeSheetView` resolves computed values from the `Actor` record (`Dnd5eActorData`) and its evaluated `derivedDAG` attributes (`AbilityModifier`, `ProficiencyBonus`, Armor Class, Spell Save DC).
-   - Signal updates mutate DOM text nodes surgically without full sheet re-rendering, maintaining 60 FPS UI performance.
+   - If `gm_core_locked === true`, `isLocked` evaluates to `true`, and the client padlock toggle is disabled.
+   - If `isLocked === true`, all core build elements render as single-click `RollDice` triggers.
+   - If `isLocked === false`, core build elements render inline numeric steppers and cyclic `ProficiencyRank` selectors.
+   - Active play state (current HP, temporary HP, DeathSaveCounters, spell slots, ammunition, currency, items, notes) remains mutable at all times by the actor owner and GM regardless of lock state.
+4. **Deterministic Data Binding & Signal Reactivity**:
+   - `DeclarativeSheetView` resolves values from the `Actor` record (`Dnd5eActorData`) and its evaluated `derivedDAG` attributes (`AbilityModifier`, `ProficiencyBonus`, Armor Class, Spell Save DC).
+   - Connect `DeclarativeSheetView` to `@preact/signals` slices from `tableStore` to eliminate full sheet re-renders on incremental state changes.
+5. **Interactive Roll & Mutation Dispatch**:
+   - Clicking any roll trigger constructs the appropriate dice formula (`1d20 + mod` or weapon/spell expression) and dispatches a `RollDice` envelope over the WebSocket, while sheet edits dispatch `UpdateActorField` / `UpsertActor` mutations.
 
 ## Consequences
 ### Positive
-- Game system packages own their sheet layout specifications declaratively in `DND5E_SHEET_LAYOUT`.
-- All 12 widgets in `DND5E_SHEET_LAYOUT` are fully functional and interactive across Live Table drawers and `CampaignWorkspace`.
-- Single-click roll triggers eliminate accidental stat modifications during combat.
-- Server authority strictly governs GM build locking via `CoreBuildLock`.
-- Granular `@preact/signals` subscriptions maintain 60 FPS performance during frequent HP and spell slot mutations.
+- Game system packages own their sheet layout specifications declaratively.
+- All 12 widgets in `DND5E_SHEET_LAYOUT` are fully functional and interactive in both Live Table drawers and `CampaignWorkspace`.
+- Zero accidental stat modifications during combat via single-click roll triggers.
+- Strict server authority enforcement for GM locking.
+- Granular `@preact/signals` subscriptions maintain 60 FPS UI performance during frequent HP or slot updates.
 
 ### Negative
-- Adding a new atomic widget primitive requires registering its view-model builder and Preact renderer in `WidgetRegistry`.
-- Requires comprehensive automated test suites covering both locked and unlocked modes across all 12 widgets.
+- Adding a new atomic widget primitive requires registering its view-model builder and Preact renderer.
+- Increased component footprint requiring rigorous automated testing across both locked and unlocked modes.
