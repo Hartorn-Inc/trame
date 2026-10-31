@@ -471,6 +471,8 @@ export function applyLevelUp(
       targetLevel
     );
     clone.attributes.casterType = effectiveCasterType;
+  } else if (clone.spellSlots && Object.keys(clone.spellSlots).length === 0) {
+    delete clone.spellSlots;
   }
 
   // 13. Recalculate proficiency bonus and derived stats
