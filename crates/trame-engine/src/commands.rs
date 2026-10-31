@@ -47,7 +47,8 @@
 //! ============================================================================
 
 use crate::aoe::{AoeTemplate, GridCell, TokenSpatialRef};
-use crate::geometry::{Bvh2D, CHANNEL_MATERIAL, Point2D, SenseProfile, WallKind, WallSegment};
+pub use crate::geometry::Point2D;
+use crate::geometry::{Bvh2D, CHANNEL_MATERIAL, SenseProfile, WallKind, WallSegment};
 use crate::rules::{ActiveEffect, DamageAffinity, DamageResolution, resolve_damage_application};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};

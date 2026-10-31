@@ -1,11 +1,11 @@
 use crate::assets::store::{AssetStore, AssetStoreError};
+use crate::storage::blob::Sha256Hasher;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
 use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView, ImageFormat};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::io::Cursor;
 use thiserror::Error;
 use trame_engine::geometry::{Point2D, WallKind, WallSegment};
@@ -294,9 +294,7 @@ pub async fn import_uvtt_map<S: AssetStore + ?Sized>(
     let primary_bytes = encode_image(&decoded_img, ImageFormat::WebP)?;
 
     // Compute SHA-256 content address digest
-    let mut hasher = Sha256::new();
-    hasher.update(&primary_bytes);
-    let hash_hex = format!("{:x}", hasher.finalize());
+    let hash_hex = Sha256Hasher::digest(&primary_bytes);
 
     // Generate 256px maximum dimension thumbnail preserving aspect ratio
     let thumb_img = decoded_img.resize(

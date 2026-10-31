@@ -6,9 +6,14 @@ license.workspace = true
 
 [dependencies]
 trame-engine = { path = "../trame-engine" }
+aes-gcm = "0.10"
+argon2 = "0.5"
 axum.workspace = true
+async_zip = { version = "0.0.17", features = ["tokio", "deflate"] }
 base64 = "0.22"
 bytes = "1.12"
+data-encoding = "2.11"
+futures-lite = "2"
 futures-util.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 rand.workspace = true
@@ -16,7 +21,7 @@ rand_chacha.workspace = true
 rmp-serde.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
+sha1 = "0.10"
 thiserror.workspace = true
 tokio.workspace = true
 tower = { version = "0.5", features = ["util"] }

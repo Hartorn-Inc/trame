@@ -1,9 +1,11 @@
 #![allow(
     async_fn_in_trait,
-    clippy::unnecessary_sort_by,
+    clippy::collapsible_else_if,
+    clippy::collapsible_if,
+    clippy::doc_lazy_continuation,
     clippy::too_many_arguments,
     clippy::type_complexity,
-    clippy::doc_lazy_continuation
+    clippy::unnecessary_sort_by
 )]
 
 //! ============================================================================
@@ -13,6 +15,7 @@
 //! PURPOSE:
 //! --------
 //! Orchestrates the authoritative multiplayer server runtime for `trame`:
+//! streaming PKWARE portable campaign archive export/import (`archive`),
 //! content-addressed WebP asset storage (`assets`), Universal VTT map importing
 //! (`importers`), cryptographically seeded ChaCha20 dice resolution (`dice`),
 //! Axum HTTP/WebSocket transport (`http`), isolated per-campaign Tokio actor
@@ -46,12 +49,15 @@
 //!     └── 4. `sync::project_state_for_recipient` strips hidden state per recipient socket.
 //! ============================================================================
 
+pub mod archive;
 pub mod assets;
+pub mod auth;
 pub mod dice;
 pub mod http;
 pub mod importers;
 pub mod notes;
 pub mod room;
+pub mod storage;
 pub mod sync;
 pub mod timeline;
 pub mod wal;
@@ -59,6 +65,12 @@ pub mod wal;
 #[cfg(test)]
 mod tests {
     use crate::assets::store::{AssetStore, InMemoryAssetStore};
+    use crate::auth::magic_link::{MagicLinkService, now_epoch_seconds};
+    use crate::auth::session::{
+        AuthState, InMemorySessionStore, MagicLinkLoginRequest, MagicLinkLoginResponse,
+        SESSION_COOKIE_NAME, SessionStore, build_auth_router, hash_session_token,
+    };
+    use crate::auth::totp::TotpService;
     use crate::dice::{RollVisibility, SeededDiceRoller, project_roll_for_recipient};
     use crate::http::{InMemoryMembershipValidator, build_router};
     use crate::importers::uvtt::{
@@ -69,7 +81,7 @@ mod tests {
         FilteredNoteDocument, InMemoryPartyJournalStorage, PartyJournalStorage,
         RevealHandoutCommand, UserRole, parse_handout_revealed_attr, reveal_handout,
     };
-    use crate::room::{ConnectedClient, RoomLeaseManager};
+    use crate::room::{ConnectedClient, OutboundClientFrame, RoomLeaseManager};
     use crate::sync::{
         ClientEnvelope, ServerEnvelope, encode_server_envelope, project_state_for_recipient,
     };
@@ -104,6 +116,244 @@ mod tests {
             .write_to(&mut cursor, image::ImageFormat::Png)
             .expect("PNG encode failed");
         bytes
+    }
+
+    #[tokio::test]
+    async fn test_magic_link_jwt_creation_and_onboarding_lifecycle() {
+        let session_store = Arc::new(InMemorySessionStore::new());
+        let magic_service = Arc::new(MagicLinkService::new(
+            b"test_jwt_secret_1234567890",
+            "trame-test",
+        ));
+        let auth_state = AuthState {
+            magic_link_service: magic_service.clone(),
+            session_store: session_store.clone(),
+            totp_service: Arc::new(TotpService::default()),
+        };
+        let router = build_auth_router(auth_state);
+
+        let gm_id = Uuid::new_v4();
+        let campaign_id = Uuid::new_v4();
+        let character_id = Uuid::new_v4();
+
+        let (token, claims) = magic_service
+            .create_invite_token(gm_id, campaign_id, Some(character_id), "PLAYER", 3600)
+            .expect("create invite token");
+
+        assert_eq!(claims.sub, gm_id.to_string());
+        assert_eq!(claims.iss, "trame-test");
+        assert_eq!(claims.campaign_id, campaign_id);
+        assert_eq!(claims.character_id, Some(character_id));
+        assert_eq!(claims.role, "PLAYER");
+        assert!(claims.exp > now_epoch_seconds());
+
+        let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
+            token: token.clone(),
+        })
+        .unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/magic-link")
+            .header("content-type", "application/json")
+            .body(Body::from(req_body))
+            .unwrap();
+
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let set_cookie_header = resp
+            .headers()
+            .get("set-cookie")
+            .expect("set-cookie present");
+        let set_cookie_str = set_cookie_header.to_str().unwrap();
+        assert!(set_cookie_str.contains(&format!("{SESSION_COOKIE_NAME}=")));
+        assert!(set_cookie_str.contains("HttpOnly"));
+        assert!(set_cookie_str.contains("Secure"));
+        assert!(set_cookie_str.contains("SameSite=Lax"));
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let login_resp: MagicLinkLoginResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(login_resp.campaign_id, campaign_id);
+        assert_eq!(login_resp.character_id, Some(character_id));
+        assert_eq!(login_resp.role, "PLAYER");
+
+        let member = session_store
+            .get_campaign_member(campaign_id, login_resp.user_id)
+            .await
+            .unwrap()
+            .expect("member record exists");
+        assert_eq!(member.user_id, login_resp.user_id);
+        assert_eq!(member.character_id, Some(character_id));
+        assert_eq!(member.role, "PLAYER");
+    }
+
+    #[tokio::test]
+    async fn test_magic_link_preserves_custom_roles_such_as_spectator_and_assistant_gm() {
+        let session_store = Arc::new(InMemorySessionStore::new());
+        let magic_service = Arc::new(MagicLinkService::new(
+            b"test_jwt_secret_1234567890",
+            "trame-test",
+        ));
+        let auth_state = AuthState {
+            magic_link_service: magic_service.clone(),
+            session_store: session_store.clone(),
+            totp_service: Arc::new(TotpService::default()),
+        };
+        let router = build_auth_router(auth_state);
+
+        for custom_role in ["SPECTATOR", "ASSISTANT_GM"] {
+            let gm_id = Uuid::new_v4();
+            let campaign_id = Uuid::new_v4();
+
+            let (token, claims) = magic_service
+                .create_invite_token(gm_id, campaign_id, None, custom_role, 3600)
+                .expect("create invite token");
+            assert_eq!(claims.role, custom_role);
+
+            let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/magic-link")
+                .header("content-type", "application/json")
+                .body(Body::from(req_body))
+                .unwrap();
+
+            let resp = router.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let login_resp: MagicLinkLoginResponse = serde_json::from_slice(&body_bytes).unwrap();
+            assert_eq!(login_resp.role, custom_role);
+
+            let member = session_store
+                .get_campaign_member(campaign_id, login_resp.user_id)
+                .await
+                .unwrap()
+                .expect("member record exists");
+            assert_eq!(member.role, custom_role);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_magic_link_revoked_invite_returns_401() {
+        let session_store = Arc::new(InMemorySessionStore::new());
+        let magic_service = Arc::new(MagicLinkService::new(
+            b"test_jwt_secret_1234567890",
+            "trame-test",
+        ));
+        let auth_state = AuthState {
+            magic_link_service: magic_service.clone(),
+            session_store: session_store.clone(),
+            totp_service: Arc::new(TotpService::default()),
+        };
+        let router = build_auth_router(auth_state);
+
+        let gm_id = Uuid::new_v4();
+        let campaign_id = Uuid::new_v4();
+        let (token, claims) = magic_service
+            .create_invite_token(gm_id, campaign_id, None, "PLAYER", 3600)
+            .unwrap();
+
+        session_store.revoke_invite(claims.jti).await.unwrap();
+
+        let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/magic-link")
+            .header("content-type", "application/json")
+            .body(Body::from(req_body))
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_magic_link_expired_invite_returns_401() {
+        let session_store = Arc::new(InMemorySessionStore::new());
+        let magic_service = Arc::new(MagicLinkService::new(
+            b"test_jwt_secret_1234567890",
+            "trame-test",
+        ));
+        let auth_state = AuthState {
+            magic_link_service: magic_service.clone(),
+            session_store: session_store.clone(),
+            totp_service: Arc::new(TotpService::default()),
+        };
+        let router = build_auth_router(auth_state);
+
+        let gm_id = Uuid::new_v4();
+        let campaign_id = Uuid::new_v4();
+        let expired_claims = crate::auth::magic_link::MagicLinkClaims {
+            sub: gm_id.to_string(),
+            iss: "trame-test".to_string(),
+            campaign_id,
+            character_id: None,
+            role: "PLAYER".to_string(),
+            exp: now_epoch_seconds().saturating_sub(60),
+            jti: Uuid::new_v4(),
+        };
+        let token = magic_service.sign_claims(&expired_claims).unwrap();
+
+        let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/magic-link")
+            .header("content-type", "application/json")
+            .body(Body::from(req_body))
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_session_token_hashing_and_randomness() {
+        let token1 = crate::auth::session::generate_session_token();
+        let token2 = crate::auth::session::generate_session_token();
+        assert_ne!(token1, token2);
+        assert_eq!(token1.len(), 64);
+
+        let hash1 = hash_session_token(&token1);
+        let hash2 = hash_session_token(&token1);
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash1.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn test_create_invite_link_handler_nominal() {
+        let session_store = Arc::new(InMemorySessionStore::new());
+        let magic_service = Arc::new(MagicLinkService::new(b"secret", "trame-test"));
+        let auth_state = AuthState {
+            magic_link_service: magic_service,
+            session_store,
+            totp_service: Arc::new(TotpService::default()),
+        };
+        let router = build_auth_router(auth_state);
+        let campaign_id = Uuid::new_v4();
+        let character_id = Uuid::new_v4();
+
+        let req_body = serde_json::to_vec(&crate::auth::session::CreateInviteLinkRequest {
+            campaign_id,
+            character_id: Some(character_id),
+            role: Some("PLAYER".to_string()),
+            ttl_seconds: Some(1800),
+        })
+        .unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/invites")
+            .header("content-type", "application/json")
+            .body(Body::from(req_body))
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -700,17 +950,18 @@ Hidden Text
             match vis {
                 RollVisibility::Public => {
                     assert_eq!(player_view.total, Some(outcome.total));
-                    assert!(bystander_view.is_some());
+                    let bystander = bystander_view.expect("Public roll visible to bystander");
+                    assert_eq!(bystander.total, Some(outcome.total));
                 }
                 RollVisibility::GmOnly => {
                     assert_eq!(player_view.total, Some(outcome.total));
-                    assert!(bystander_view.is_none());
+                    assert!(bystander_view.is_none(), "GmOnly hidden from other players");
                 }
                 RollVisibility::BlindGm => {
                     assert!(player_view.blind_masked);
                     assert_eq!(player_view.total, None);
                     assert!(player_view.terms.is_empty());
-                    assert!(bystander_view.is_none());
+                    assert!(bystander_view.is_none(), "BlindGm hidden from bystanders");
                 }
             }
         }
@@ -814,7 +1065,10 @@ Hidden Text
             .await
             .unwrap();
 
-        let first_frame = rx.recv().await.unwrap();
+        let first_frame = match rx.recv().await.unwrap() {
+            OutboundClientFrame::Binary(bytes) => bytes,
+            other => panic!("Expected binary frame, got {other:?}"),
+        };
         let decoded: ServerEnvelope = rmp_serde::from_slice(&first_frame).unwrap();
         assert!(matches!(
             decoded,
@@ -834,7 +1088,10 @@ Hidden Text
             .await
             .unwrap();
 
-        let second_frame = rx.recv().await.unwrap();
+        let second_frame = match rx.recv().await.unwrap() {
+            OutboundClientFrame::Binary(bytes) => bytes,
+            other => panic!("Expected binary frame, got {other:?}"),
+        };
         let decoded_move: ServerEnvelope = rmp_serde::from_slice(&second_frame).unwrap();
         match decoded_move {
             ServerEnvelope::CommandAccepted {
