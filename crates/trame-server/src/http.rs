@@ -695,7 +695,7 @@ pub struct CampaignDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_map_hash: Option<String>,
     #[serde(default)]
-    pub actors: Vec< serde_json::Value >,
+    pub actors: Vec<serde_json::Value>,
 }
 
 /// Request payload for `POST /api/v1/campaigns`.
@@ -707,7 +707,10 @@ pub struct CreateCampaignRequest {
 }
 
 /// Lists campaigns where the authenticated caller is a member (`GET /api/v1/campaigns`).
-pub async fn list_campaigns_handler(headers: HeaderMap, State(state): State<AppState>) -> Response {
+pub async fn list_campaigns_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Response {
     let user_id = match resolve_authenticated_user(&state, &headers, None).await {
         Ok(uid) => uid,
         Err(status) => {
@@ -1799,7 +1802,8 @@ pub async fn download_asset_handler(
     let now = crate::auth::magic_link::now_epoch_seconds();
     let mut authorized = false;
 
-    if let (Some(exp), Some(ref sig_hex)) = (query.exp, query.sig.as_ref()) {
+    let exp_opt = query.exp.or(query.expires);
+    if let (Some(exp), Some(ref sig_hex)) = (exp_opt, query.sig.as_ref()) {
         if now <= exp {
             let signing_input = format!("{clean_key}:{exp}");
             let server_secret = state.auth_state.magic_link_service.secret();
@@ -1811,7 +1815,7 @@ pub async fn download_asset_handler(
                 let _ = write!(&mut expected_hex, "{:02x}", b);
             }
             if crate::auth::magic_link::constant_time_eq(
-                sig_hex.as_bytes(),
+                sig_hex.to_ascii_lowercase().as_bytes(),
                 expected_hex.as_bytes(),
             ) {
                 authorized = true;
@@ -2049,7 +2053,11 @@ pub async fn export_campaign_handler(
             .await
             .unwrap_or_default()
     } else {
-        state.campaign_store.all_notes()
+        state
+            .campaign_store
+            .all_notes()
+            .into_iter()
+            .collect()
     };
     let asset_ids: Vec<Uuid> = state
         .blob_store

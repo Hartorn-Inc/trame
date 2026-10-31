@@ -548,8 +548,8 @@ impl WalStorage for SqlxPostgresStore {
             Self::ensure_campaign_row_on_pool(&pool, entry.campaign_id)
                 .await
                 .map_err(WalError::Serialization)?;
-            let payload_json = serde_json::to_value(&entry)
-                .map_err(|e| WalError::Serialization(e.to_string()))?;
+            let payload_json =
+                serde_json::to_value(&entry).map_err(|e| WalError::Serialization(e.to_string()))?;
 
             let event_type = entry
                 .events
@@ -611,13 +611,12 @@ impl WalStorage for SqlxPostgresStore {
     ) -> Result<Option<TableStateSnapshot>, WalError> {
         let pool = self.pool.clone();
         run_pg_blocking(async move {
-            let row_opt = sqlx::query(
-                "SELECT snapshot_data FROM wal_snapshots WHERE campaign_id = $1",
-            )
-            .bind(campaign_id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(|e| WalError::Serialization(e.to_string()))?;
+            let row_opt =
+                sqlx::query("SELECT snapshot_data FROM wal_snapshots WHERE campaign_id = $1")
+                    .bind(campaign_id)
+                    .fetch_optional(&pool)
+                    .await
+                    .map_err(|e| WalError::Serialization(e.to_string()))?;
 
             let Some(row) = row_opt else {
                 return Ok(None);
@@ -926,9 +925,7 @@ impl IdentityStore for SqlxPostgresStore {
                 username: row
                     .try_get("display_name")
                     .map_err(|e| SessionError::Storage(e.to_string()))?,
-                role: row
-                    .try_get("role")
-                    .unwrap_or_else(|_| "PLAYER".to_string()),
+                role: row.try_get("role").unwrap_or_else(|_| "PLAYER".to_string()),
                 is_guest: row.try_get("is_ephemeral").unwrap_or(false),
                 created_at: row.try_get::<i64, _>("created_epoch").unwrap_or(0).max(0) as u64,
                 email: row.try_get("email").ok(),
@@ -968,9 +965,7 @@ impl IdentityStore for SqlxPostgresStore {
                 username: row
                     .try_get("display_name")
                     .map_err(|e| SessionError::Storage(e.to_string()))?,
-                role: row
-                    .try_get("role")
-                    .unwrap_or_else(|_| "PLAYER".to_string()),
+                role: row.try_get("role").unwrap_or_else(|_| "PLAYER".to_string()),
                 is_guest: row.try_get("is_ephemeral").unwrap_or(false),
                 created_at: row.try_get::<i64, _>("created_epoch").unwrap_or(0).max(0) as u64,
                 email: row.try_get("email").ok(),
@@ -1197,14 +1192,13 @@ impl PatStore for SqlxPostgresStore {
         user_id: Uuid,
     ) -> BoxFuture<'a, Result<bool, PatError>> {
         Box::pin(async move {
-            let res = sqlx::query(
-                "DELETE FROM personal_access_tokens WHERE id = $1 AND user_id = $2",
-            )
-            .bind(pat_id)
-            .bind(user_id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| PatError::Storage(e.to_string()))?;
+            let res =
+                sqlx::query("DELETE FROM personal_access_tokens WHERE id = $1 AND user_id = $2")
+                    .bind(pat_id)
+                    .bind(user_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| PatError::Storage(e.to_string()))?;
             Ok(res.rows_affected() > 0)
         })
     }
@@ -1670,7 +1664,7 @@ impl AssetStore for SqlxPostgresStore {
                 .await
                 .map_err(|e| AssetStoreError::Io(e.to_string()))?;
 
-            let Some(row) = row_opt else {Ref
+            let Some(row) = row_opt else {
                 return Ok(None);
             };
             let bytes: Vec<u8> = row

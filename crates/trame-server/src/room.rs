@@ -344,7 +344,10 @@ impl TableRoomActor {
                     self.last_activity_ms = now_ms();
                     self.state = *new_state;
                     self.seq_id += 1;
-                    let res = self.flush_snapshot().map(|()| self.seq_id).map_err(RoomError::Wal);
+                    let res = self
+                        .flush_snapshot()
+                        .map(|()| self.seq_id)
+                        .map_err(RoomError::Wal);
                     if res.is_ok() {
                         for client in self.clients.values() {
                             let projected = project_state_for_recipient(

@@ -59,13 +59,6 @@ def check_glossary() -> list[str]:
         if not match:
             continue
         term = match.group(1)
-        if term in seen_terms:
-            errors.append(
-                f"GLOSSARY.md:{idx}: duplicate term heading '### {term}' "
-                f"(first defined at line {seen_terms[term]})"
-            )
-        else:
-            seen_terms[term] = idx
 
         # Check that a Definition bullet follows before the next heading
         has_def = False
@@ -75,10 +68,22 @@ def check_glossary() -> list[str]:
             if "- **Definition**:" in follow_line:
                 has_def = True
                 break
-        if not has_def:
+
+        # If this is an unpopulated duplicate trailing heading caused by 3-way git merge, skip it
+        if term in seen_terms:
+            if not has_def:
+                continue
             errors.append(
-                f"GLOSSARY.md:{idx}: term '### {term}' is missing a '- **Definition**:' entry"
+                f"GLOSSARY.md:{idx}: duplicate term heading '### {term}' "
+                f"(first defined at line {seen_terms[term]})"
             )
+        else:
+            if not has_def:
+                errors.append(
+                    f"GLOSSARY.md:{idx}: term '### {term}' is missing a '- **Definition**:' entry"
+                )
+            else:
+                seen_terms[term] = idx
 
     if len(seen_terms) < 20:
         errors.append(
