@@ -13,7 +13,7 @@ export interface CompendiumDrawerProps {
 
 const CATEGORIES = ['all', 'item', 'spell', 'feat', 'monster'] as const;
 
-export function CompendiumDrawer(props: CompendiumDrawerProps): VNode | null {
+export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | null {
   if (!props.isOpen) return null;
 
   const [query, setQuery] = useState('');

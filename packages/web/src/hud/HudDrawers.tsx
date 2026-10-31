@@ -17,7 +17,7 @@ export interface HudDrawersProps {
   isTableCanvasMounted?: boolean;
 }
 
-export function HudDrawers(props: HudDrawersProps): VNode {
+export function HudDrawers(props: HudDrawersProps): VNode<any> {
   const closeSheet = () => {
     isSheetDrawerOpenSignal.value = false;
   };

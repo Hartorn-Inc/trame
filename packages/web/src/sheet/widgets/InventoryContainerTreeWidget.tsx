@@ -17,8 +17,18 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
     unitWeight: Number(it.unitWeight ?? it.weightPounds ?? 0),
     containerId: it.containerId ?? null,
     isContainer: Boolean(it.isContainer),
-    weightMultiplier: it.weightMultiplier ?? it.contentWeightMultiplier ?? 1.0,
+    weightMultiplier: Number(it.weightMultiplier ?? it.contentWeightMultiplier ?? 1.0),
+    requiresAttunement: Boolean(it.requiresAttunement),
+    isAttuned: Boolean(it.isAttuned),
   }));
+
+  const strScore = Number(props.boundValues?.strScore ?? 10);
+  const maxCapacity = strScore * 15;
+  const regularEncumbrance = strScore * 5;
+  const heavyEncumbrance = strScore * 10;
+  const totalCarriedWeight = calculateTotalInventoryWeight(items);
+  const attunedCount = items.filter((it) => it.isAttuned).length;
+  const dragManager = new CompendiumDragDropManager({ systemId: 'dnd5e', dispatchCommand: props.dispatchCommand });
 
   const handleMoveItem = (itemId: string, targetContainerId: string | null) => {
     props.dispatchCommand?.(
@@ -116,7 +126,7 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
           'data-testid': 'encumbrance-fill',
           style: {
             width: `${Math.min(100, Math.round((totalCarriedWeight / maxCapacity) * 100))}%`,
-            backgroundColor: totalCarriedWeight > heavyEncumbrance ? 'var(--atlas-danger, #ef4444)' : totalCarriedWeight > regularEncumbrance ? 'var(--atlas-warning, #f59e0b)' : 'var(--atlas-primary, #3b82f6)',
+            backgroundColor: totalCarriedWeight > heavyEncumbrance ? 'var(--atlas-danger)' : totalCarriedWeight > regularEncumbrance ? 'var(--atlas-warning)' : 'var(--atlas-action)',
           },
         }),
       ),

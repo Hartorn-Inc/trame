@@ -1,6 +1,16 @@
 import fs from "node:fs";
+import { register } from "node:module";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+
+if (!globalThis.__TRAME_TSX_LOADER_REGISTERED__) {
+  globalThis.__TRAME_TSX_LOADER_REGISTERED__ = true;
+  try {
+    register(import.meta.url);
+  } catch {
+    // Already running inside loader worker thread
+  }
+}
 
 export async function resolve(specifier, context, nextResolve) {
   const nextResult = await nextResolve(specifier, context);

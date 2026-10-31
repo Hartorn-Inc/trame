@@ -58,7 +58,7 @@ export interface DeclarativeSheetViewProps {
   onToggleCoreStatsLocked?: () => void;
 }
 
-export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode {
+export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<any> {
   const layout = props.sheetLayout ?? DND5E_SHEET_LAYOUT;
   const [localLocked, setLocalLocked] = useState(props.coreStatsLocked ?? true);
   const [activeTabId, setActiveTabId] = useState<string>('tab-combat');
@@ -75,7 +75,7 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode {
     }
   };
 
-  const renderNode = (node: SheetLayoutNode): VNode | null => {
+  const renderNode = (node: SheetLayoutNode): VNode<any> | null => {
     if (node.kind === 'section' || node.kind === 'column' || node.kind === 'row') {
       const children = (node.children || []).map((child) => renderNode(child)).filter(Boolean);
       return h(
