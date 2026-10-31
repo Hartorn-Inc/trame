@@ -98,6 +98,7 @@ async fn test_magic_link_guest_to_registered_binding() {
     // 2. Player follows magic link to execute 1-click onboarding
     let login_payload = serde_json::to_vec(&MagicLinkLoginRequest {
         token: invite_token,
+        ..Default::default()
     })
     .unwrap();
 

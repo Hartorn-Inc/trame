@@ -1,7 +1,8 @@
 //! ============================================================================
 //! PURPOSE:
-//!   Manages authenticated user sessions, guest user provisioning from Magic
-//!   Link invites, campaign membership records, and `trame_session` cookies.
+//!   Manages authenticated user sessions, permanent account registration/login,
+//!   guest user provisioning from Magic Link invites, campaign membership
+//!   records, and `trame_session` cookies.
 //!
 //! INVARIANTS & SAFETY BOUNDARIES:
 //!   - Raw 256-bit session tokens are returned only via `HttpOnly; Secure;
@@ -9,18 +10,16 @@
 //!     `SessionStore`.
 //!   - Revoked or expired Magic Link invite `jti` claims are rejected with
 //!     HTTP 401 Unauthorized.
-//!
-//! EXECUTION LIFECYCLE:
-//!   1. Validate incoming invite token or session credential against `SessionStore`.
-//!   2. Provision guest user and campaign membership or update identity state.
-//!   3. Mint 256-bit session token, persist SHA-256 digest, and attach cookie.
+//!   - Passwords on registration and login use OWASP Argon2id hashing.
 //! ============================================================================
 
 use super::magic_link::{MagicLinkClaims, MagicLinkError, MagicLinkService, now_epoch_seconds};
 pub use super::oauth::{OAuthError, OAuthProvider, OAuthStore, PendingOAuthState};
 pub use super::password::IdentityStore;
-use super::password::bind_account_handler;
-pub use super::pat::{PatError, PatRecord, PatStore, create_pat_handler, list_pats_handler};
+use super::password::{PasswordError, PasswordService, bind_account_handler, extract_session_token};
+pub use super::pat::{
+    PatError, PatMiddleware, PatRecord, PatStore, create_pat_handler, list_pats_handler,
+};
 use super::totp::{TotpService, totp_enable_handler, totp_setup_handler, totp_verify_handler};
 use crate::storage::blob::Sha256Hasher;
 use axum::Router;
@@ -28,7 +27,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::header::{HeaderMap, HeaderValue, SET_COOKIE};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -122,6 +121,12 @@ pub trait SessionStore: Send + Sync {
         &'a self,
         token_hash: &'a str,
     ) -> BoxFuture<'a, Result<Option<SessionRecord>, SessionError>>;
+    fn delete_session<'a>(
+        &'a self,
+        _token_hash: &'a str,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
+        Box::pin(async { Ok(()) })
+    }
     fn is_invite_revoked(&self, jti: Uuid) -> BoxFuture<'_, bool>;
     fn revoke_invite(&self, jti: Uuid) -> BoxFuture<'_, Result<(), SessionError>>;
     fn get_campaign_member(
@@ -134,6 +139,10 @@ pub trait SessionStore: Send + Sync {
         user_id: Uuid,
     ) -> BoxFuture<'_, Result<Vec<CampaignMemberRecord>, SessionError>>;
 }
+
+/// Unified trait combining `SessionStore`, `IdentityStore`, `PatStore`, and `OAuthStore`.
+pub trait FullAuthStore: SessionStore + IdentityStore + PatStore + OAuthStore {}
+impl<T: SessionStore + IdentityStore + PatStore + OAuthStore + ?Sized> FullAuthStore for T {}
 
 /// In-memory implementation of `SessionStore` and `IdentityStore`.
 #[derive(Default, Clone)]
@@ -234,6 +243,16 @@ impl SessionStore for InMemorySessionStore {
         })
     }
 
+    fn delete_session<'a>(
+        &'a self,
+        token_hash: &'a str,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
+        Box::pin(async move {
+            self.sessions.write().await.remove(token_hash);
+            Ok(())
+        })
+    }
+
     fn is_invite_revoked(&self, jti: Uuid) -> BoxFuture<'_, bool> {
         Box::pin(async move { self.revoked_invites.read().await.contains(&jti) })
     }
@@ -278,8 +297,9 @@ impl IdentityStore for InMemorySessionStore {
         email: &'a str,
     ) -> BoxFuture<'a, Result<Option<UserRecord>, SessionError>> {
         Box::pin(async move {
+            let normalized = email.trim().to_lowercase();
             let emails = self.emails.read().await;
-            if let Some(user_id) = emails.get(email) {
+            if let Some(user_id) = emails.get(&normalized).or_else(|| emails.get(email)) {
                 let users = self.users.read().await;
                 Ok(users.get(user_id).cloned())
             } else {
@@ -311,7 +331,10 @@ impl IdentityStore for InMemorySessionStore {
             user.email = Some(email.to_string());
             user.password_hash = Some(password_hash.to_string());
             let updated = user.clone();
-            self.emails.write().await.insert(email.to_string(), user_id);
+            self.emails
+                .write()
+                .await
+                .insert(email.to_lowercase(), user_id);
             Ok(updated)
         })
     }
@@ -319,7 +342,10 @@ impl IdentityStore for InMemorySessionStore {
     fn save_user<'a>(&'a self, user: UserRecord) -> BoxFuture<'a, Result<(), SessionError>> {
         Box::pin(async move {
             if let Some(ref email) = user.email {
-                self.emails.write().await.insert(email.clone(), user.id);
+                self.emails
+                    .write()
+                    .await
+                    .insert(email.to_lowercase(), user.id);
             }
             self.users.write().await.insert(user.id, user);
             Ok(())
@@ -478,7 +504,7 @@ impl OAuthStore for InMemorySessionStore {
                 .await
                 .insert((provider, provider_user_id.to_string()), user_id);
             if let Some(ref em) = updated.email {
-                self.emails.write().await.insert(em.clone(), user_id);
+                self.emails.write().await.insert(em.to_lowercase(), user_id);
             }
             Ok(updated)
         })
@@ -564,6 +590,13 @@ impl<T: SessionStore + ?Sized> SessionStore for Arc<T> {
         (**self).get_session_by_token_hash(token_hash)
     }
 
+    fn delete_session<'a>(
+        &'a self,
+        token_hash: &'a str,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
+        (**self).delete_session(token_hash)
+    }
+
     fn is_invite_revoked(&self, jti: Uuid) -> BoxFuture<'_, bool> {
         (**self).is_invite_revoked(jti)
     }
@@ -617,14 +650,66 @@ pub fn build_session_cookie_header(token: &str, ttl_seconds: u64) -> String {
 #[derive(Clone)]
 pub struct AuthState {
     pub magic_link_service: Arc<MagicLinkService>,
-    pub session_store: Arc<InMemorySessionStore>,
+    pub session_store: Arc<dyn FullAuthStore>,
     pub totp_service: Arc<TotpService>,
 }
 
-/// Request payload submitted to POST /api/v1/auth/magic-link.
-#[derive(Debug, Deserialize, Serialize)]
+/// User summary returned by `/register`, `/login`, `/me`, and `/magic-link/redeem`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthUserDto {
+    pub id: Uuid,
+    pub email: String,
+    pub display_name: String,
+    pub username: String,
+    pub is_guest: bool,
+    pub is_ephemeral: bool,
+    pub role: String,
+}
+
+impl From<UserRecord> for AuthUserDto {
+    fn from(u: UserRecord) -> Self {
+        let email = u
+            .email
+            .unwrap_or_else(|| format!("ephemeral_{}@trame.local", u.id));
+        Self {
+            id: u.id,
+            email,
+            display_name: u.username.clone(),
+            username: u.username,
+            is_guest: u.is_guest,
+            is_ephemeral: u.is_guest,
+            role: u.role,
+        }
+    }
+}
+
+/// Request payload submitted to `POST /api/v1/auth/register`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RegisterRequest {
+    pub email: String,
+    pub display_name: String,
+    pub password: String,
+}
+
+/// Request payload submitted to `POST /api/v1/auth/login`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+/// Response payload returned by `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, and `GET /api/v1/auth/me`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthUserEnvelope {
+    pub user: AuthUserDto,
+}
+
+/// Request payload submitted to POST /api/v1/auth/magic-link or /magic-link/redeem.
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct MagicLinkLoginRequest {
     pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
 }
 
 /// Response payload returned on successful magic link onboarding.
@@ -636,15 +721,345 @@ pub struct MagicLinkLoginResponse {
     pub character_id: Option<Uuid>,
     pub role: String,
     pub session_id: Uuid,
+    pub user: AuthUserDto,
 }
 
 /// Response payload returned on authentication error.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthErrorResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
     pub error: String,
 }
 
-/// Axum handler consuming magic link JWTs at POST /api/v1/auth/magic-link.
+/// Handler for `POST /api/v1/auth/register`.
+pub async fn register_handler(
+    State(state): State<AuthState>,
+    Json(payload): Json<RegisterRequest>,
+) -> Response {
+    let email = payload.email.trim().to_lowercase();
+    let display_name = payload.display_name.trim().to_string();
+
+    if email.is_empty() || !email.contains('@') {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AuthErrorResponse {
+                code: Some("INVALID_EMAIL".to_string()),
+                error: "valid email address is required".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    if display_name.chars().count() < 2 || display_name.chars().count() > 100 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AuthErrorResponse {
+                code: Some("INVALID_DISPLAY_NAME".to_string()),
+                error: "display_name must be between 2 and 100 characters".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    match state.session_store.get_user_by_email(&email).await {
+        Ok(Some(_)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(AuthErrorResponse {
+                    code: Some("EMAIL_ALREADY_EXISTS".to_string()),
+                    error: "email already registered".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AuthErrorResponse {
+                    code: Some("STORAGE_ERROR".to_string()),
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Ok(None) => {}
+    }
+
+    let pw_service = PasswordService::new();
+    let password_hash = match pw_service.hash_password(&payload.password) {
+        Ok(h) => h,
+        Err(PasswordError::WeakPassword(msg)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(AuthErrorResponse {
+                    code: Some("WEAK_PASSWORD".to_string()),
+                    error: msg,
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AuthErrorResponse {
+                    code: Some("HASHING_ERROR".to_string()),
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let user = UserRecord {
+        id: Uuid::new_v4(),
+        username: display_name,
+        role: "GM".to_string(),
+        is_guest: false,
+        created_at: now_epoch_seconds(),
+        email: Some(email),
+        password_hash: Some(password_hash),
+        mfa_enabled: false,
+        totp_secret: None,
+        pending_totp_secret: None,
+    };
+
+    if let Err(e) = state.session_store.save_user(user.clone()).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AuthErrorResponse {
+                code: Some("STORAGE_ERROR".to_string()),
+                error: e.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let session_token = generate_session_token();
+    let token_hash = hash_session_token(&session_token);
+    if let Err(e) = state
+        .session_store
+        .create_session(user.id, &token_hash, DEFAULT_SESSION_TTL_SECONDS)
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AuthErrorResponse {
+                code: Some("STORAGE_ERROR".to_string()),
+                error: e.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let cookie_val = build_session_cookie_header(&session_token, DEFAULT_SESSION_TTL_SECONDS);
+    let mut headers = HeaderMap::new();
+    if let Ok(val) = HeaderValue::from_str(&cookie_val) {
+        headers.insert(SET_COOKIE, val);
+    }
+
+    (
+        StatusCode::CREATED,
+        headers,
+        Json(AuthUserEnvelope {
+            user: AuthUserDto::from(user),
+        }),
+    )
+        .into_response()
+}
+
+/// Handler for `POST /api/v1/auth/login`.
+pub async fn login_handler(
+    State(state): State<AuthState>,
+    Json(payload): Json<LoginRequest>,
+) -> Response {
+    let email = payload.email.trim().to_lowercase();
+    let user = match state.session_store.get_user_by_email(&email).await {
+        Ok(Some(u)) => u,
+        _ => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(AuthErrorResponse {
+                    code: Some("INVALID_CREDENTIALS".to_string()),
+                    error: "invalid email or password".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let Some(ref stored_hash) = user.password_hash else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(AuthErrorResponse {
+                code: Some("INVALID_CREDENTIALS".to_string()),
+                error: "invalid email or password".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    let pw_service = PasswordService::new();
+    if !pw_service.verify_password(&payload.password, stored_hash) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(AuthErrorResponse {
+                code: Some("INVALID_CREDENTIALS".to_string()),
+                error: "invalid email or password".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let session_token = generate_session_token();
+    let token_hash = hash_session_token(&session_token);
+    if let Err(e) = state
+        .session_store
+        .create_session(user.id, &token_hash, DEFAULT_SESSION_TTL_SECONDS)
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AuthErrorResponse {
+                code: Some("STORAGE_ERROR".to_string()),
+                error: e.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let cookie_val = build_session_cookie_header(&session_token, DEFAULT_SESSION_TTL_SECONDS);
+    let mut headers = HeaderMap::new();
+    if let Ok(val) = HeaderValue::from_str(&cookie_val) {
+        headers.insert(SET_COOKIE, val);
+    }
+
+    (
+        StatusCode::OK,
+        headers,
+        Json(AuthUserEnvelope {
+            user: AuthUserDto::from(user),
+        }),
+    )
+        .into_response()
+}
+
+/// Handler for `POST /api/v1/auth/logout`.
+pub async fn logout_handler(State(state): State<AuthState>, headers: HeaderMap) -> Response {
+    if let Some(session_token) = extract_session_token(&headers) {
+        let token_hash = hash_session_token(&session_token);
+        let _ = state.session_store.delete_session(&token_hash).await;
+    }
+
+    let cookie_val = build_session_cookie_header("", 0);
+    let mut resp_headers = HeaderMap::new();
+    if let Ok(val) = HeaderValue::from_str(&cookie_val) {
+        resp_headers.insert(SET_COOKIE, val);
+    }
+
+    (
+        StatusCode::OK,
+        resp_headers,
+        Json(serde_json::json!({ "status": "logged_out" })),
+    )
+        .into_response()
+}
+
+/// Handler for `GET /api/v1/auth/me`.
+pub async fn me_handler(State(state): State<AuthState>, headers: HeaderMap) -> Response {
+    if let Some(auth_hdr) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        let trimmed = auth_hdr.trim();
+        if let Some(token) = trimmed.strip_prefix("Bearer ") {
+            let token = token.trim();
+            if token.starts_with(crate::auth::pat::PAT_PREFIX) {
+                let pat_mw = PatMiddleware::new(state.session_store.clone());
+                if let Ok(pat_record) = pat_mw.authenticate_header(trimmed).await
+                    && let Ok(Some(user)) = state.session_store.get_user_by_id(pat_record.user_id).await
+                {
+                    return (
+                        StatusCode::OK,
+                        Json(AuthUserEnvelope {
+                            user: AuthUserDto::from(user),
+                        }),
+                    )
+                        .into_response();
+                }
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(AuthErrorResponse {
+                        code: Some("UNAUTHORIZED".to_string()),
+                        error: "invalid personal access token".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let Some(session_token) = extract_session_token(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(AuthErrorResponse {
+                code: Some("UNAUTHORIZED".to_string()),
+                error: "authentication session required".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    let token_hash = hash_session_token(&session_token);
+    let session = match state
+        .session_store
+        .get_session_by_token_hash(&token_hash)
+        .await
+    {
+        Ok(Some(s)) => s,
+        _ => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(AuthErrorResponse {
+                    code: Some("UNAUTHORIZED".to_string()),
+                    error: "invalid or expired session".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let now = now_epoch_seconds();
+    if session.expires_at < now {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(AuthErrorResponse {
+                code: Some("UNAUTHORIZED".to_string()),
+                error: "session expired".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    match state.session_store.get_user_by_id(session.user_id).await {
+        Ok(Some(user)) => (
+            StatusCode::OK,
+            Json(AuthUserEnvelope {
+                user: AuthUserDto::from(user),
+            }),
+        )
+            .into_response(),
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            Json(AuthErrorResponse {
+                code: Some("UNAUTHORIZED".to_string()),
+                error: "user not found".to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Axum handler consuming magic link JWTs at POST /api/v1/auth/magic-link and POST /api/v1/auth/magic-link/redeem.
 pub async fn magic_link_login_handler(
     State(state): State<AuthState>,
     Json(payload): Json<MagicLinkLoginRequest>,
@@ -659,6 +1074,7 @@ pub async fn magic_link_login_handler(
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(AuthErrorResponse {
+                    code: Some("EXPIRED_TOKEN".to_string()),
                     error: "invite token has expired".to_string(),
                 }),
             )
@@ -668,6 +1084,7 @@ pub async fn magic_link_login_handler(
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(AuthErrorResponse {
+                    code: Some("REVOKED_TOKEN".to_string()),
                     error: "invite token has been revoked".to_string(),
                 }),
             )
@@ -677,6 +1094,7 @@ pub async fn magic_link_login_handler(
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(AuthErrorResponse {
+                    code: Some("INVALID_TOKEN".to_string()),
                     error: err.to_string(),
                 }),
             )
@@ -684,18 +1102,24 @@ pub async fn magic_link_login_handler(
         }
     };
 
-    let guest_user = match state.session_store.create_guest_user(&claims.role).await {
+    let mut guest_user = match state.session_store.create_guest_user(&claims.role).await {
         Ok(u) => u,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(AuthErrorResponse {
+                    code: Some("STORAGE_ERROR".to_string()),
                     error: e.to_string(),
                 }),
             )
                 .into_response();
         }
     };
+
+    if let Some(nick) = payload.nickname.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        guest_user.username = nick.to_string();
+        let _ = state.session_store.save_user(guest_user.clone()).await;
+    }
 
     if let Err(e) = state
         .session_store
@@ -710,6 +1134,7 @@ pub async fn magic_link_login_handler(
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(AuthErrorResponse {
+                code: Some("STORAGE_ERROR".to_string()),
                 error: e.to_string(),
             }),
         )
@@ -728,6 +1153,7 @@ pub async fn magic_link_login_handler(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(AuthErrorResponse {
+                    code: Some("STORAGE_ERROR".to_string()),
                     error: e.to_string(),
                 }),
             )
@@ -741,6 +1167,7 @@ pub async fn magic_link_login_handler(
         headers.insert(SET_COOKIE, val);
     }
 
+    let user_dto = AuthUserDto::from(guest_user.clone());
     let resp = MagicLinkLoginResponse {
         user_id: guest_user.id,
         username: guest_user.username,
@@ -748,23 +1175,27 @@ pub async fn magic_link_login_handler(
         character_id: claims.character_id,
         role: guest_user.role,
         session_id: session_record.session_id,
+        user: user_dto,
     };
 
     (StatusCode::OK, headers, Json(resp)).into_response()
 }
 
 /// Request payload for GM/Admin creating an invite link.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct CreateInviteLinkRequest {
     pub campaign_id: Uuid,
     pub character_id: Option<Uuid>,
     pub role: Option<String>,
     pub ttl_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<u64>,
 }
 
 /// Response payload returning the minted JWT invite token.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateInviteLinkResponse {
+    pub invite_url: String,
     pub token: String,
     pub claims: MagicLinkClaims,
 }
@@ -775,7 +1206,10 @@ pub async fn create_invite_link_handler(
     Json(payload): Json<CreateInviteLinkRequest>,
 ) -> Response {
     let role = payload.role.unwrap_or_else(|| "PLAYER".to_string());
-    let ttl = payload.ttl_seconds.unwrap_or(DEFAULT_SESSION_TTL_SECONDS);
+    let ttl = payload
+        .duration_seconds
+        .or(payload.ttl_seconds)
+        .unwrap_or(DEFAULT_SESSION_TTL_SECONDS);
     let creator_id = Uuid::new_v4();
 
     match state.magic_link_service.create_invite_token(
@@ -787,12 +1221,17 @@ pub async fn create_invite_link_handler(
     ) {
         Ok((token, claims)) => (
             StatusCode::OK,
-            Json(CreateInviteLinkResponse { token, claims }),
+            Json(CreateInviteLinkResponse {
+                invite_url: format!("/lobby?invite={token}"),
+                token,
+                claims,
+            }),
         )
             .into_response(),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(AuthErrorResponse {
+                code: Some("INVITE_ERROR".to_string()),
                 error: err.to_string(),
             }),
         )
@@ -803,8 +1242,20 @@ pub async fn create_invite_link_handler(
 /// Builds the Axum router for authentication endpoints.
 pub fn build_auth_router(state: AuthState) -> Router {
     Router::new()
+        .route("/api/v1/auth/register", post(register_handler))
+        .route("/api/v1/auth/login", post(login_handler))
+        .route("/api/v1/auth/logout", post(logout_handler))
+        .route("/api/v1/auth/me", get(me_handler))
         .route("/api/v1/auth/magic-link", post(magic_link_login_handler))
+        .route(
+            "/api/v1/auth/magic-link/redeem",
+            post(magic_link_login_handler),
+        )
         .route("/api/v1/auth/invites", post(create_invite_link_handler))
+        .route(
+            "/api/v1/auth/magic-link/mint",
+            post(create_invite_link_handler),
+        )
         .route("/api/v1/auth/bind-account", post(bind_account_handler))
         .route("/api/v1/auth/totp/setup", post(totp_setup_handler))
         .route("/api/v1/auth/totp/enable", post(totp_enable_handler))

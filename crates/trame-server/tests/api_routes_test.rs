@@ -82,9 +82,11 @@ fn create_test_app_state() -> (AppState, Arc<InMemoryMembershipValidator>) {
         membership: membership.clone(),
         instance_id: Uuid::new_v4(),
         timeline_storage,
+        journal_storage: Arc::new(trame_server::notes::InMemoryPartyJournalStorage::new()),
         campaign_store: InMemoryCampaignStore::new(),
         blob_store: InMemoryBlobStore::new(),
         auth_state,
+        pg_store: None,
         db_healthy: Arc::new(AtomicBool::new(true)),
     };
 
@@ -332,6 +334,7 @@ async fn test_campaign_invites_gm_authorization_and_magic_link_onboarding_flow()
             role: Some("PLAYER".to_string()),
             ttl_seconds: Some(3600),
             user_id: caller_uid,
+            ..Default::default()
         };
         let req = Request::builder()
             .method("POST")
@@ -367,6 +370,7 @@ async fn test_campaign_invites_gm_authorization_and_magic_link_onboarding_flow()
         .body(Body::from(
             serde_json::to_vec(&MagicLinkLoginRequest {
                 token: invite.token,
+                ..Default::default()
             })
             .unwrap(),
         ))
