@@ -53,6 +53,7 @@ export interface ViewerContext {
   role?: string;
   userId?: string;
   actorOwnerId?: string | null;
+  padlockUnlocked?: boolean;
 }
 
 export class DuplicateNodeIdError extends Error {
@@ -217,8 +218,17 @@ export type RenderedLayoutNode =
   | RenderedTabsNode
   | RenderedWidgetNode;
 
+export interface PadlockHeaderViewModel {
+  testId: "sheet-padlock-toggle";
+  unlocked: boolean;
+  ariaPressed: "true" | "false";
+  iconName: "PadlockUnlockedIcon" | "PadlockLockedIcon";
+  cssClass: string;
+}
+
 export interface RenderedSheetTree {
   systemId: string;
   version: string;
   root: RenderedLayoutNode | null;
+  padlockEditMode?: PadlockHeaderViewModel;
 }
