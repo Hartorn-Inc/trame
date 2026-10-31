@@ -95,6 +95,23 @@ function setupMockDom() {
       return child;
     }
 
+    remove() {
+      if (this.parentNode) {
+        this.parentNode.removeChild(this);
+      }
+    }
+
+    focus() {}
+
+    contains(other: MockNode | null): boolean {
+      let cur = other;
+      while (cur) {
+        if (cur === this) return true;
+        cur = cur.parentNode;
+      }
+      return false;
+    }
+
     setAttribute(name: string, value: any) {
       const strVal = String(value);
       this.attributes[name] = strVal;
@@ -133,12 +150,13 @@ function setupMockDom() {
     }
 
     dispatchEvent(event: { type: string; [k: string]: any }): boolean {
+      const target = event.target ?? this;
       const list = this.listeners[event.type] || [];
       for (const handler of list) {
-        handler.call(this, { ...event, target: this, currentTarget: this });
+        handler.call(this, { ...event, target, currentTarget: this });
       }
       if (this.parentNode && (event as any).bubbles !== false) {
-        this.parentNode.dispatchEvent(event);
+        this.parentNode.dispatchEvent({ ...event, target });
       }
       return true;
     }
@@ -157,11 +175,17 @@ function setupMockDom() {
         if (selector.startsWith(".")) {
           return node.classList.contains(selector.slice(1));
         }
-        if (selector.startsWith("[") && selector.endsWith("]")) {
-          const inner = selector.slice(1, -1);
+        const bracketIdx = selector.indexOf("[");
+        if (bracketIdx !== -1 && selector.endsWith("]")) {
+          const tagPart = selector.slice(0, bracketIdx).trim();
+          if (tagPart && node.nodeName.toLowerCase() !== tagPart.toLowerCase()) {
+            return false;
+          }
+          const inner = selector.slice(bracketIdx + 1, -1);
           if (inner.includes("=")) {
-            const [attr, rawVal] = inner.split("=");
-            const val = rawVal.replace(/['"]/g, "");
+            const eqIdx = inner.indexOf("=");
+            const attr = inner.slice(0, eqIdx).trim();
+            const val = inner.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, "");
             return node.getAttribute(attr) === val || (node as any)[attr] === val;
           }
           return node.hasAttribute(inner);
@@ -217,7 +241,8 @@ function setupMockDom() {
 
 // Helper to render Preact component to mock DOM and clean up
 async function renderModal(props: LevelUpModalProps) {
-  const { render, h } = await import("preact");
+  const { render, h, options } = await import("preact");
+  options.debounceRendering = (cb: () => void) => cb();
   const doc = (globalThis as any).document || setupMockDom();
   const container = doc.createElement("div");
   doc.body.appendChild(container);
