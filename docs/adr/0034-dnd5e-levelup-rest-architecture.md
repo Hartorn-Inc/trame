@@ -1,14 +1,17 @@
 # ADR-0034: D&D 5e Level-Up Progression (Lvl 1-20), Rest Management (Short/Long), and SRD 5.1 Expansion
 
-## Status
-Accepted
+- **Status**: Accepted
+- **Date**: 2025-05-20
+- **Deciders**: Architecte EPURE, Core Team TRAME
+- **Branch**: `plan/77-spec-d-d-5e-levelupmodal-lvl-1-20-sh` / `task/82-dnd5e-core-progression-levelup`
+- **Title (FR)**: ADR 0034 : Architecture de la Montée de Niveau (Lvl 1-20), des Repos (Short/Long) et de l'Expansion SRD 5.1
 
 ## Context
-The game system `@trame/game-system-dnd5e` contained an embryonic `applyLevelUp` implementation in `packages/game-systems/dnd5e/src/progression.ts`. This implementation did not handle subclass selection, the Ability Score Improvement (ASI: `+2` or `+1/+1`) versus Feat choice, spell acquisition, or pact magic progression. Furthermore, rest routines (`ShortRest`, `LongRest`) required comprehensive regression coverage and state-machine integration. In the web user interface (`@trame/web`), no dialogue was exposed to execute level-up progression or rests from an `Actor` sheet (`CampaignWorkspace` or `HudDrawers.tsx`). Finally, the embedded compendium `compendium.ts` only included a minimal fraction of SRD 5.1 items and monsters and lacked bilingual localization (`en`/`fr`).
+The game system `@trame/game-system-dnd5e` contained an embryonic `applyLevelUp` implementation in `packages/game-systems/dnd5e/src/progression.ts`. This implementation did not handle subclass selection, the Ability Score Improvement (ASI: `+2` or `+1/+1`) versus Feat choice, spell acquisition, or multiclass / pact magic progression. Furthermore, the engine did not define rest functions (`ShortRest`, `LongRest`), and rest routines required comprehensive regression coverage and state-machine integration. In the web user interface (`@trame/web`), no dialogue was exposed to execute level-up progression or rests from an `Actor` sheet (`CampaignWorkspace` or `HudDrawers.tsx`). Finally, the embedded compendium `compendium.ts` only included a minimal fraction of SRD 5.1 items and monsters and lacked bilingual localization (`en`/`fr`).
 
 ## Decision
 1. **Modular Rules Architecture in `@trame/game-system-dnd5e`**:
-   - The recovery pipeline in `packages/game-systems/dnd5e/src/pipeline.ts` encapsulates pure synchronous rest functions `applyShortRest(actor: Dnd5eActorData, options: ShortRestOptions): Dnd5eActorData` and `applyLongRest(actor: Dnd5eActorData): Dnd5eActorData`.
+   - The recovery pipeline in `packages/game-systems/dnd5e/src/pipeline.ts` and rest module `packages/game-systems/dnd5e/src/rest.ts` encapsulate pure synchronous rest functions `applyShortRest(actor: Dnd5eActorData, options: ShortRestOptions): Dnd5eActorData` and `applyLongRest(actor: Dnd5eActorData): Dnd5eActorData`.
    - `packages/game-systems/dnd5e/src/progression.ts` extends `applyLevelUp(actor: Dnd5eActorData, options: LevelUpOptions): Dnd5eActorData` with strict validation of the maximum level (20), capping ability scores at 20 during ASI, and canonical spell slot progression tables.
    - Spell slot progression tables `FULL_CASTER_SPELL_SLOTS`, `HALF_CASTER_SPELL_SLOTS`, and `PACT_MAGIC_SPELL_SLOTS` are exported from `packages/game-systems/dnd5e/src/progression.ts`.
 2. **Server-Authoritative Dice Rolling**:
@@ -29,5 +32,5 @@ The game system `@trame/game-system-dnd5e` contained an embryonic `applyLevelUp`
 - Full traceability and anti-cheat protection for hit dice rolls via server-side `ChaCha20Rng`.
 - Unified user experience between out-of-session preparation (`CampaignWorkspace`) and live gameplay (`HudDrawers.tsx`).
 
-### Negative
+### Negative and Mitigated Risks
 - Dual persistence channels (REST and CQRS) require UI code to share presentation state while delegating persistence to an injected environment adapter.
