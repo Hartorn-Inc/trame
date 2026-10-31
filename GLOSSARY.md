@@ -335,6 +335,6 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### UndoDrawer
 
-- **Definition**: Slide-out HUD drawer allowing the Game Master to inspect the bounded 50-action ring buffer and revert mutations with 1 click.
-- **Allowed Context**: Live table view, Game Master undo interface, and mutation history inspection.
-- **_Avoid_**: UndoPanel, HistoryDrawer, RollbackDrawer.
+- **Definition**: Slide-out Preact HUD drawer component allowing the Game Master to inspect the bounded 50-action undo ring buffer and revert recent table mutations with 1 click.
+- **Allowed Context**: Live table view, HUD drawer navigation, and Game Master undo workflow.
+- **_Avoid_**: UndoMenu, RollbackPanel, HistoryDrawer.
