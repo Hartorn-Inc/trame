@@ -45,7 +45,15 @@ export interface ActorRecord {
 
 export type TableMode = "EXPLORATION" | "TURN_BY_TURN";
 
-export type AmbientPreset = "DAYLIGHT" | "DUSK" | "NIGHT_MOONLIGHT" | "PITCH_DARKNESS";
+export type AmbientPreset =
+  | "DAYLIGHT"
+  | "DUSK"
+  | "NIGHT_MOONLIGHT"
+  | "PITCH_DARKNESS"
+  | "Daylight"
+  | "Dusk"
+  | "NightMoonlight"
+  | "PitchDarkness";
 
 export interface WallSegment {
   id: string;
@@ -381,13 +389,18 @@ export type TrameEvent =
       [key: string]: unknown;
     };
 
-export type ClientEnvelope =
-  | { type: "Command"; command: TrameCommand; Command?: TrameCommand; SubmitCommand?: TrameCommand }
-  | { Command: TrameCommand }
-  | { SubmitCommand: TrameCommand }
-  | { type: "RollDice"; expression: string; visibility: string; reason: string }
-  | { type: "PointerPing"; pos: Point2D; colorHex: string }
-  | { type: "Ping"; clientTimeMs: number };
+export interface ClientEnvelope {
+  type?: "Command" | "RollDice" | "PointerPing" | "Ping" | string;
+  command?: TrameCommand;
+  Command?: TrameCommand;
+  SubmitCommand?: TrameCommand;
+  expression?: string;
+  visibility?: string;
+  reason?: string;
+  pos?: Point2D;
+  colorHex?: string;
+  clientTimeMs?: number;
+}
 
 export type ServerEnvelope =
   | { type: "StateSync"; seqId: number; seq_id?: number; state: CampaignRoomState }
