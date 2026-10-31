@@ -1,6 +1,7 @@
 import { useSignal } from '@preact/signals';
+import { useEffect } from 'preact/hooks';
 import type { CampaignMapScene, StudioWallSegment, StagedToken, StudioLightSource, AudioEmitterConfig, UserRole, WallType } from './types.ts';
-import { mapBackendSceneToFrontend, toggleDoorState } from './domain.ts';
+import { generateEntityUuid, mapBackendSceneToFrontend, toggleDoorState } from './domain.ts';
 import { SceneAtlas } from './SceneAtlas.tsx';
 import { SHARED_WALL_KINDS, type CanonicalWallKind } from '../canvas/CanvasThemePalette.ts';
 
@@ -79,6 +80,24 @@ export function MapsStudioTab({
     doorFeedbackSignal = { value: {} };
   }
 
+  try {
+    useEffect(() => {
+      if (normalizedInitialScenes.length > 0 && scenesSignal.value.length === 0) {
+        scenesSignal.value = normalizedInitialScenes;
+        if (!selectedSceneIdSignal.value) {
+          selectedSceneIdSignal.value = normalizedInitialScenes[0]?.id ?? null;
+        }
+      }
+    }, [initialScenes]);
+  } catch {
+    if (normalizedInitialScenes.length > 0 && scenesSignal.value.length === 0) {
+      scenesSignal.value = normalizedInitialScenes;
+      if (!selectedSceneIdSignal.value) {
+        selectedSceneIdSignal.value = normalizedInitialScenes[0]?.id ?? null;
+      }
+    }
+  }
+
   if (userRole !== 'GM') {
     return <SceneAtlas campaignId={campaignId} scenes={initialScenes} />;
   }
@@ -133,7 +152,7 @@ export function MapsStudioTab({
     if (!selectedScene) return;
     const spawn = selectedScene.spawnPoints?.[0] || selectedScene.spawnPoint || { x: 100, y: 100 };
     const newToken: StagedToken = {
-      id: `token-${Date.now()}`,
+      id: generateEntityUuid(),
       name: String(templateKey),
       templateKey,
       x: spawn.x + 20,
@@ -161,7 +180,7 @@ export function MapsStudioTab({
   };
 
   const handleCreateScene = () => {
-    const newId = `scene-${Date.now()}`;
+    const newId = generateEntityUuid();
     const newScene: CampaignMapScene = {
       id: newId,
       campaignId,
@@ -176,7 +195,7 @@ export function MapsStudioTab({
       audioEmitters: [],
       stagedTokens: [],
       spawnPoint: { x: 700, y: 700 },
-      spawnPoints: [{ id: `sp-${Date.now()}`, name: 'Primary Spawn', x: 700, y: 700 }],
+      spawnPoints: [{ id: generateEntityUuid(), name: 'Primary Spawn', x: 700, y: 700 }],
       defaultGroundElevationFt: 0,
     };
     scenesSignal.value = [...scenesSignal.value, newScene];
@@ -192,7 +211,7 @@ export function MapsStudioTab({
     const blocksSound = type === 'Normal' || type === 'Window' || type === 'Door' || type === 'SecretDoor' || type === 'OneWay';
 
     const newWall: StudioWallSegment = {
-      id: `wall-${Date.now()}`,
+      id: generateEntityUuid(),
       a: { x: wallP1XSignal.value, y: wallP1YSignal.value },
       b: { x: wallP2XSignal.value, y: wallP2YSignal.value },
       wallType: type,
@@ -225,7 +244,7 @@ export function MapsStudioTab({
     if (!selectedScene) return;
     const radius = lightRadiusFtSignal.value;
     const newLight: StudioLightSource = {
-      id: `light-${Date.now()}`,
+      id: generateEntityUuid(),
       origin: { x: lightXSignal.value, y: lightYSignal.value },
       brightRadiusFt: radius * 0.5,
       dimRadiusFt: radius,
@@ -243,7 +262,7 @@ export function MapsStudioTab({
   const handleAddAudio = () => {
     if (!selectedScene) return;
     const newEmitter: AudioEmitterConfig = {
-      id: `audio-${Date.now()}`,
+      id: generateEntityUuid(),
       url: audioClipUrlSignal.value,
       x: audioXSignal.value,
       y: audioYSignal.value,

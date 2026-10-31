@@ -50,6 +50,17 @@ export function filterScenesForRole(
     }));
 }
 
+export function generateEntityUuid(): string {
+  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export function activateSceneTransition(
   currentTable: ActiveTableRoomState,
   targetScene: CampaignMapScene,
@@ -57,10 +68,11 @@ export function activateSceneTransition(
   const heroTokens = currentTable.tokens.filter((t) => Boolean(t.ownerUserId || (t as any).owner_user_id));
   const defaultElevation = targetScene.defaultGroundElevationFt ?? targetScene.default_ground_elevation_ft ?? 0;
   const rawSpawns = targetScene.spawnPoints || targetScene.spawn_points;
-  const spawnPoints = rawSpawns && rawSpawns.length > 0
+  const hasExplicitSpawnArray = Array.isArray(rawSpawns) && rawSpawns.length > 0;
+  const spawnPoints = hasExplicitSpawnArray
     ? rawSpawns
     : targetScene.spawnPoint
-    ? [{ id: 'sp-default', name: 'Default Spawn', x: targetScene.spawnPoint.x, y: targetScene.spawnPoint.y }]
+    ? [{ id: generateEntityUuid(), name: 'Default Spawn', x: targetScene.spawnPoint.x, y: targetScene.spawnPoint.y }]
     : [];
 
   const preservedHeroes = heroTokens.map((hero, index) => {
@@ -70,9 +82,6 @@ export function activateSceneTransition(
       const sp = spawnPoints[index % spawnPoints.length];
       x = sp.x;
       y = sp.y;
-    } else {
-      x = 0;
-      y = 0;
     }
     return {
       ...hero,
