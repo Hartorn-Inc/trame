@@ -4,7 +4,7 @@ import { client as defaultClient, type ApiClient } from "../api/client.ts";
 import { DeclarativeSheetRenderer } from "../sheet/DeclarativeSheetRenderer.ts";
 import { WidgetRegistry } from "../sheet/WidgetRegistry.ts";
 import { registerAllCanonicalWidgets } from "../sheet/widgets/index.ts";
-import { DND5E_SHEET_LAYOUT, type SheetLayoutTree } from "@trame/game-system-dnd5e/src/sheetLayout.ts";
+import { DND5E_SHEET_LAYOUT, type SheetLayoutTree } from "../../../game-systems/dnd5e/src/sheetLayout.ts";
 import { appSignals } from "../state/appSignals.ts";
 import { CompendiumDragDropManager } from "../dnd/CompendiumDragDropManager.ts";
 import type { ActorRecord, ClientDiceLogEntry, TrameCommand } from "../types/index.ts";
@@ -53,18 +53,18 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
           width: props.embedded ? "100%" : "440px",
           height: props.embedded ? "100%" : undefined,
           maxWidth: "100vw",
-          backgroundColor: "#0b0f19",
-          borderLeft: props.embedded ? "none" : "1px solid #1e293b",
+          backgroundColor: "var(--atlas-bg)",
+          borderLeft: props.embedded ? "none" : "1px solid var(--atlas-surface)",
           zIndex: props.embedded ? 1 : 50,
           display: "flex",
           flexDirection: "column",
-          boxShadow: props.embedded ? "none" : "-4px 0 16px rgba(0,0,0,0.5)",
-          color: "#f8fafc",
+          boxShadow: props.embedded ? "none" : "-4px 0 16px var(--atlas-surface-raised)",
+          color: "var(--atlas-text)",
           padding: "1.5rem",
         }}
       >
         <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-          <h2 style={{ margin: 0, fontSize: "1.25rem", color: "#f59e0b" }}>Character Sheet</h2>
+          <h2 style={{ margin: 0, fontSize: "1.25rem", color: "var(--atlas-action)" }}>Character Sheet</h2>
           <button
             type="button"
             data-testid="close-sheet-btn"
@@ -72,13 +72,13 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
               appSignals.activeDrawerSignal.value = null;
               props.onClose?.();
             }}
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "#334155", color: "#f8fafc", border: "none", borderRadius: "4px", cursor: "pointer" }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-border)", color: "var(--atlas-text)", border: "none", borderRadius: "4px", cursor: "pointer" }}
           >
             Close
           </button>
         </header>
         <div data-testid="sheet-empty-state" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", gap: "1rem" }}>
-          <p style={{ color: "#94a3b8", margin: 0 }}>No character selected or created yet.</p>
+          <p style={{ color: "var(--atlas-text-muted)", margin: 0 }}>No character selected or created yet.</p>
           <button
             type="button"
             data-testid="empty-state-open-builder-btn"
@@ -89,8 +89,8 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
             }}
             style={{
               padding: "0.5rem 1rem",
-              backgroundColor: "#f59e0b",
-              color: "#0f172a",
+              backgroundColor: "var(--atlas-action)",
+              color: "var(--atlas-bg)",
               fontWeight: 600,
               border: "none",
               borderRadius: "4px",
@@ -152,14 +152,20 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
         wis: sheetData.abilities.wis?.mod ?? 0,
         cha: sheetData.abilities.cha?.mod ?? 0,
       },
-      savingThrows: [
-        { id: "str", name: "Strength", bonus: sheetData.abilities.str?.mod ?? 0, proficient: false },
-        { id: "dex", name: "Dexterity", bonus: (sheetData.abilities.dex?.mod ?? 0) + 2, proficient: true },
-      ],
-      skills: [
-        { id: "stealth", name: "Stealth", ability: "dex", bonus: (sheetData.abilities.dex?.mod ?? 0) + 2, proficient: true },
-        { id: "perception", name: "Perception", ability: "wis", bonus: sheetData.abilities.wis?.mod ?? 0, proficient: false },
-      ],
+      savingThrows: {
+        str: { modifier: sheetData.abilities.str?.mod ?? 0, proficient: false },
+        dex: { modifier: (sheetData.abilities.dex?.mod ?? 0) + 2, proficient: true },
+        con: { modifier: sheetData.abilities.con?.mod ?? 0, proficient: false },
+        int: { modifier: sheetData.abilities.int?.mod ?? 0, proficient: false },
+        wis: { modifier: sheetData.abilities.wis?.mod ?? 0, proficient: false },
+        cha: { modifier: sheetData.abilities.cha?.mod ?? 0, proficient: false },
+      },
+      skills: {
+        acrobatics: { modifier: sheetData.abilities.dex?.mod ?? 0, proficiencyLevel: "none", passive: 10 },
+        athletics: { modifier: sheetData.abilities.str?.mod ?? 0, proficiencyLevel: "none", passive: 10 },
+        stealth: { modifier: (sheetData.abilities.dex?.mod ?? 0) + 2, proficiencyLevel: "proficient", passive: 12 },
+        perception: { modifier: sheetData.abilities.wis?.mod ?? 0, proficiencyLevel: "none", passive: 10 },
+      },
       attacks: [
         { id: "atk-1", name: "Shortsword", attackBonus: 4, damageFormula: "1d6+2", damageType: "piercing" },
       ],
@@ -267,7 +273,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
           }}
         >
           {node.title && (
-            <h3 style={{ margin: "0 0 0.5rem 0", fontSize: "1.1rem", color: "#f59e0b", width: "100%" }}>
+            <h3 style={{ margin: "0 0 0.5rem 0", fontSize: "1.1rem", color: "var(--atlas-action)", width: "100%" }}>
               {node.title}
             </h3>
           )}
@@ -281,7 +287,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
       const currentTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
       return (
         <div key={node.id} id={node.id} data-testid="sheet-tabs-container" style={{ marginTop: "0.5rem" }}>
-          <div role="tablist" aria-label="Character Sheet Sections" style={{ display: "flex", gap: "0.25rem", borderBottom: "1px solid #334155", marginBottom: "0.75rem" }}>
+          <div role="tablist" aria-label="Character Sheet Sections" style={{ display: "flex", gap: "0.25rem", borderBottom: "1px solid var(--atlas-border)", marginBottom: "0.75rem" }}>
             {tabs.map((tab) => (
               <button
                 key={tab.id}
@@ -294,10 +300,10 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                 onClick={() => setActiveTabId(tab.id)}
                 style={{
                   padding: "0.5rem 0.875rem",
-                  backgroundColor: currentTab?.id === tab.id ? "#1e293b" : "transparent",
-                  color: currentTab?.id === tab.id ? "#38bdf8" : "#94a3b8",
+                  backgroundColor: currentTab?.id === tab.id ? "var(--atlas-surface)" : "transparent",
+                  color: currentTab?.id === tab.id ? "var(--atlas-info)" : "var(--atlas-text-muted)",
                   border: "none",
-                  borderBottom: currentTab?.id === tab.id ? "2px solid #38bdf8" : "2px solid transparent",
+                  borderBottom: currentTab?.id === tab.id ? "2px solid var(--atlas-info)" : "2px solid transparent",
                   cursor: "pointer",
                   fontWeight: 600,
                   fontSize: "0.875rem",
@@ -331,15 +337,15 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
           data-testid={`widget-${widgetType}`}
           data-widget-type={widgetType}
           style={{
-            backgroundColor: "#131a2a",
-            border: "1px solid #1e293b",
+            backgroundColor: "var(--atlas-surface)",
+            border: "1px solid var(--atlas-surface)",
             borderRadius: "6px",
             padding: "0.75rem",
             flex: "1 1 auto",
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.25rem" }}>
-            <span style={{ fontSize: "0.75rem", color: "#94a3b8", textTransform: "uppercase", fontWeight: 700 }}>
+            <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)", textTransform: "uppercase", fontWeight: 700 }}>
               {widgetType}
             </span>
           </div>
@@ -375,18 +381,18 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                   });
                 }}
                 style={{
-                  backgroundColor: "#0f172a",
-                  border: "1px solid #334155",
+                  backgroundColor: "var(--atlas-bg)",
+                  border: "1px solid var(--atlas-border)",
                   borderRadius: "4px",
                   padding: "0.5rem",
-                  color: "#f8fafc",
+                  color: "var(--atlas-text)",
                   cursor: "pointer",
                   textAlign: "center",
                 }}
               >
-                <div style={{ fontSize: "0.75rem", color: "#94a3b8" }}>{key.toUpperCase()}</div>
+                <div style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>{key.toUpperCase()}</div>
                 <div style={{ fontSize: "1.25rem", fontWeight: 700 }}>{val.score}</div>
-                <div style={{ fontSize: "0.75rem", color: "#38bdf8" }}>{val.mod >= 0 ? `+${val.mod}` : val.mod}</div>
+                <div style={{ fontSize: "0.75rem", color: "var(--atlas-info)" }}>{val.mod >= 0 ? `+${val.mod}` : val.mod}</div>
               </button>
             ))}
           </div>
@@ -398,12 +404,12 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.875rem" }}>
               <span>HP: {actor.hp} / {actor.maxHp}</span>
             </div>
-            <div style={{ height: "8px", backgroundColor: "#334155", borderRadius: "4px", overflow: "hidden", marginTop: "0.25rem" }}>
+            <div style={{ height: "8px", backgroundColor: "var(--atlas-border)", borderRadius: "4px", overflow: "hidden", marginTop: "0.25rem" }}>
               <div
                 style={{
                   height: "100%",
                   width: `${Math.min(100, Math.max(0, (actor.hp / actor.maxHp) * 100))}%`,
-                  backgroundColor: "#ef4444",
+                  backgroundColor: "var(--atlas-danger)",
                 }}
               />
             </div>
@@ -414,15 +420,15 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
         return (
           <div style={{ display: "flex", justifyContent: "space-around", textAlign: "center" }}>
             <div>
-              <div style={{ fontSize: "0.75rem", color: "#94a3b8" }}>AC</div>
+              <div style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>AC</div>
               <div style={{ fontSize: "1.1rem", fontWeight: 700 }}>14</div>
             </div>
             <div>
-              <div style={{ fontSize: "0.75rem", color: "#94a3b8" }}>Initiative</div>
+              <div style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>Initiative</div>
               <div style={{ fontSize: "1.1rem", fontWeight: 700 }}>+2</div>
             </div>
             <div>
-              <div style={{ fontSize: "0.75rem", color: "#94a3b8" }}>Speed</div>
+              <div style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>Speed</div>
               <div style={{ fontSize: "1.1rem", fontWeight: 700 }}>30 ft</div>
             </div>
           </div>
@@ -437,8 +443,8 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
               onClick={() => dispatcher({ cmd: "ROLL_DICE", expression: "1d20+4", reason: "Attack: Shortsword" })}
               style={{
                 padding: "0.375rem 0.75rem",
-                backgroundColor: "#f59e0b",
-                color: "#0f172a",
+                backgroundColor: "var(--atlas-action)",
+                color: "var(--atlas-bg)",
                 border: "none",
                 borderRadius: "4px",
                 fontWeight: 600,
@@ -455,13 +461,13 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
         const spells = items.filter((it) => it.type === "spell" || it.entityType === "spell");
         return (
           <div>
-            <div style={{ fontSize: "0.875rem", color: "#94a3b8", marginBottom: "0.5rem" }}>
+            <div style={{ fontSize: "0.875rem", color: "var(--atlas-text-muted)", marginBottom: "0.5rem" }}>
               Prepared Spells (Slots: 2 / 2)
             </div>
             <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-              <li style={{ padding: "0.25rem 0", color: "#38bdf8" }}>Fire Bolt (Cantrip)</li>
+              <li style={{ padding: "0.25rem 0", color: "var(--atlas-info)" }}>Fire Bolt (Cantrip)</li>
               {spells.map((it) => (
-                <li key={it.id} data-testid={`spell-item-${it.id}`} style={{ padding: "0.25rem 0", color: "#a855f7" }}>
+                <li key={it.id} data-testid={`spell-item-${it.id}`} style={{ padding: "0.25rem 0", color: "var(--atlas-info)" }}>
                   {it.name}
                 </li>
               ))}
@@ -474,7 +480,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
         const nonSpells = items.filter((it) => it.type !== "spell" && it.entityType !== "spell");
         return (
           <div data-testid="inventory-tree-container">
-            <div style={{ fontSize: "0.75rem", color: "#94a3b8" }}>Inventory Items ({nonSpells.length})</div>
+            <div style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>Inventory Items ({nonSpells.length})</div>
             <ul style={{ listStyle: "none", padding: 0, margin: "0.25rem 0" }}>
               {nonSpells.map((it) => (
                 <li key={it.id} data-testid={`inventory-item-${it.id}`} style={{ padding: "0.25rem 0" }}>
@@ -487,7 +493,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
       }
       case "SavingThrowList":
       case "SavingThrowsList": {
-        const savesList = Array.isArray(output?.saves)
+        const savesList = Array.isArray(output?.saves) && output.saves.length > 0
           ? (output?.saves as Array<{ key: string; modifier: number; proficient: boolean }>)
           : ['str', 'dex', 'con', 'int', 'wis', 'cha'].map((k) => {
               const mod = Number(((sheetData.abilities as Record<string, { mod?: number }>)?.[k]?.mod) ?? 0);
@@ -504,7 +510,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                   aria-label={`Roll ${save.key} saving throw (${sign})${save.proficient ? " - Proficient" : ""}`}
                   data-testid={`save-${save.key}-btn`}
                   onClick={() => {
-                    if (typeof output?.clickSave === "function") {
+                    if (typeof output?.clickSave === "function" && Array.isArray(output?.saves) && output.saves.length > 0) {
                       (output.clickSave as (k: string) => void)(save.key);
                     } else {
                       dispatcher({
@@ -519,19 +525,19 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                     justifyContent: "space-between",
                     alignItems: "center",
                     padding: "0.375rem 0.5rem",
-                    backgroundColor: save.proficient ? "#1e293b" : "#0f172a",
-                    border: "1px solid #334155",
+                    backgroundColor: save.proficient ? "var(--atlas-surface)" : "var(--atlas-bg)",
+                    border: "1px solid var(--atlas-border)",
                     borderRadius: "4px",
-                    color: "#f8fafc",
+                    color: "var(--atlas-text)",
                     cursor: "pointer",
                     fontSize: "0.75rem",
                   }}
                 >
                   <span style={{ display: "flex", alignItems: "center", gap: "0.25rem", textTransform: "uppercase", fontWeight: save.proficient ? 700 : 400 }}>
-                    {save.proficient && <span aria-hidden="true" style={{ color: "#38bdf8" }}>●</span>}
+                    {save.proficient && <span aria-hidden="true" style={{ color: "var(--atlas-info)" }}>●</span>}
                     <span>{save.key}</span>
                   </span>
-                  <span style={{ color: "#38bdf8" }}>{sign}</span>
+                  <span style={{ color: "var(--atlas-info)" }}>{sign}</span>
                 </button>
               );
             })}
@@ -541,7 +547,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
       case "SkillCheckList":
       case "SkillList":
       case "SkillsList": {
-        const skillsList = Array.isArray(output?.skills)
+        const skillsList = Array.isArray(output?.skills) && output.skills.length > 0
           ? (output?.skills as Array<{ key: string; modifier: number; proficiencyLevel: string; passive: number }>)
           : [
               { key: "acrobatics", modifier: 0, proficiencyLevel: "none", passive: 10 },
@@ -561,7 +567,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                   aria-label={`Roll ${sk.key} check (${sign})${isProficient ? " - Proficient" : ""}`}
                   data-testid={`skill-${sk.key}-btn`}
                   onClick={() => {
-                    if (typeof output?.clickSkill === "function") {
+                    if (typeof output?.clickSkill === "function" && Array.isArray(output?.skills) && output.skills.length > 0) {
                       (output.clickSkill as (k: string) => void)(sk.key);
                     } else {
                       dispatcher({
@@ -576,19 +582,19 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                     justifyContent: "space-between",
                     alignItems: "center",
                     padding: "0.375rem 0.5rem",
-                    backgroundColor: isProficient ? "#1e293b" : "#0f172a",
-                    border: "1px solid #334155",
+                    backgroundColor: isProficient ? "var(--atlas-surface)" : "var(--atlas-bg)",
+                    border: "1px solid var(--atlas-border)",
                     borderRadius: "4px",
-                    color: "#f8fafc",
+                    color: "var(--atlas-text)",
                     cursor: "pointer",
                     fontSize: "0.75rem",
                   }}
                 >
                   <span style={{ display: "flex", alignItems: "center", gap: "0.25rem", textTransform: "capitalize" }}>
-                    {isProficient && <span aria-hidden="true" style={{ color: "#38bdf8" }}>●</span>}
+                    {isProficient && <span aria-hidden="true" style={{ color: "var(--atlas-info)" }}>●</span>}
                     <span>{sk.key}</span>
                   </span>
-                  <span style={{ color: "#38bdf8" }}>{sign}</span>
+                  <span style={{ color: "var(--atlas-info)" }}>{sign}</span>
                 </button>
               );
             })}
@@ -608,8 +614,8 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
           <div data-testid="death-saves-hit-dice-display" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
-                <span style={{ fontSize: "0.75rem", color: "#94a3b8" }}>Hit Dice: </span>
-                <strong style={{ fontSize: "0.875rem", color: "#38bdf8" }}>{currentHD}/{maxHD} d{dieSides}</strong>
+                <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>Hit Dice: </span>
+                <strong style={{ fontSize: "0.875rem", color: "var(--atlas-info)" }}>{currentHD}/{maxHD} d{dieSides}</strong>
               </div>
               <button
                 type="button"
@@ -621,15 +627,15 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                     dispatcher({ cmd: "ROLL_DICE", expression: `1d${dieSides}`, reason: "Spend Hit Die" });
                   }
                 }}
-                style={{ padding: "0.25rem 0.5rem", backgroundColor: "#1e293b", color: "#38bdf8", border: "1px solid #0284c7", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+                style={{ padding: "0.25rem 0.5rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-info)", border: "1px solid var(--atlas-info)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
               >
                 Spend Die
               </button>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ fontSize: "0.75rem" }}>
-                <span style={{ color: "#10b981", marginRight: "0.5rem" }}>Successes: {successes}/3</span>
-                <span style={{ color: "#ef4444" }}>Failures: {failures}/3</span>
+                <span style={{ color: "var(--atlas-success)", marginRight: "0.5rem" }}>Successes: {successes}/3</span>
+                <span style={{ color: "var(--atlas-danger)" }}>Failures: {failures}/3</span>
               </div>
               <button
                 type="button"
@@ -641,7 +647,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
                     dispatcher({ cmd: "ROLL_DICE", expression: "1d20", reason: "Death Saving Throw" });
                   }
                 }}
-                style={{ padding: "0.25rem 0.5rem", backgroundColor: "#450a0a", color: "#fca5a5", border: "1px solid #b91c1c", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+                style={{ padding: "0.25rem 0.5rem", backgroundColor: "var(--atlas-info)", color: "var(--atlas-info)", border: "1px solid var(--atlas-info)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
               >
                 Death Save
               </button>
@@ -658,17 +664,17 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
         return (
           <div data-testid="features-traits-display">
             {rawFeatures.length === 0 ? (
-              <div style={{ fontSize: "0.75rem", color: "#94a3b8" }}>No features recorded.</div>
+              <div style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>No features recorded.</div>
             ) : (
               <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
                 {rawFeatures.map((feat) => (
-                  <li key={feat.id} data-testid={`feature-${feat.id}`} style={{ marginBottom: "0.5rem", padding: "0.5rem", backgroundColor: "#0f172a", borderRadius: "4px", border: "1px solid #334155" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.875rem", fontWeight: 600, color: "#38bdf8" }}>
+                  <li key={feat.id} data-testid={`feature-${feat.id}`} style={{ marginBottom: "0.5rem", padding: "0.5rem", backgroundColor: "var(--atlas-bg)", borderRadius: "4px", border: "1px solid var(--atlas-border)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.875rem", fontWeight: 600, color: "var(--atlas-info)" }}>
                       <span>{feat.name}</span>
-                      <span style={{ fontSize: "0.625rem", color: "#94a3b8" }}>{feat.source}</span>
+                      <span style={{ fontSize: "0.625rem", color: "var(--atlas-text-muted)" }}>{feat.source}</span>
                     </div>
                     {feat.description && (
-                      <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.75rem", color: "#cbd5e1" }}>{feat.description}</p>
+                      <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>{feat.description}</p>
                     )}
                   </li>
                 ))}
@@ -687,13 +693,13 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
           <div data-testid="conditions-senses-display">
             <div style={{ display: "flex", gap: "0.375rem", flexWrap: "wrap" }}>
               {conds.length === 0 ? (
-                <span style={{ fontSize: "0.75rem", color: "#64748b" }}>Normal (No conditions)</span>
+                <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>Normal (No conditions)</span>
               ) : (
                 conds.map((c) => (
                   <span
                     key={c.id}
                     data-testid={`condition-badge-${c.id}`}
-                    style={{ fontSize: "0.625rem", padding: "0.125rem 0.375rem", backgroundColor: "#450a0a", color: "#fca5a5", borderRadius: "4px", border: "1px solid #7f1d1d" }}
+                    style={{ fontSize: "0.625rem", padding: "0.125rem 0.375rem", backgroundColor: "var(--atlas-info)", color: "var(--atlas-info)", borderRadius: "4px", border: "1px solid var(--atlas-danger)" }}
                   >
                     {c.name}
                   </span>
@@ -710,20 +716,20 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
           <div data-testid="notes-pane-content" style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
             {bio && (
               <div>
-                <span style={{ fontSize: "0.75rem", color: "#94a3b8", fontWeight: 700 }}>Biography</span>
-                <div style={{ fontSize: "0.75rem", color: "#cbd5e1", backgroundColor: "#0f172a", padding: "0.5rem", borderRadius: "4px", marginTop: "0.25rem" }}>{bio}</div>
+                <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)", fontWeight: 700 }}>Biography</span>
+                <div style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)", backgroundColor: "var(--atlas-bg)", padding: "0.5rem", borderRadius: "4px", marginTop: "0.25rem" }}>{bio}</div>
               </div>
             )}
             <div>
-              <span style={{ fontSize: "0.75rem", color: "#94a3b8", fontWeight: 700 }}>Notes</span>
-              <div style={{ fontSize: "0.75rem", color: "#cbd5e1", backgroundColor: "#0f172a", padding: "0.5rem", borderRadius: "4px", marginTop: "0.25rem", whiteSpace: "pre-wrap" }}>{notes || "No campaign notes recorded."}</div>
+              <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)", fontWeight: 700 }}>Notes</span>
+              <div style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)", backgroundColor: "var(--atlas-bg)", padding: "0.5rem", borderRadius: "4px", marginTop: "0.25rem", whiteSpace: "pre-wrap" }}>{notes || "No campaign notes recorded."}</div>
             </div>
           </div>
         );
       }
       default:
         return (
-          <div style={{ fontSize: "0.875rem", color: "#cbd5e1" }}>
+          <div style={{ fontSize: "0.875rem", color: "var(--atlas-text-muted)" }}>
             {output ? String(JSON.stringify(output).slice(0, 80)) : `${type} Active`}
           </div>
         );
@@ -749,13 +755,13 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
         width: props.embedded ? "100%" : "480px",
         height: props.embedded ? "100%" : undefined,
         maxWidth: "100vw",
-        backgroundColor: "#0b0f19",
-        borderLeft: isDragOver ? "2px dashed #f59e0b" : props.embedded ? "none" : "1px solid #1e293b",
+        backgroundColor: "var(--atlas-bg)",
+        borderLeft: isDragOver ? "2px dashed var(--atlas-action)" : props.embedded ? "none" : "1px solid var(--atlas-surface)",
         zIndex: props.embedded ? 1 : 50,
         display: "flex",
         flexDirection: "column",
-        boxShadow: props.embedded ? "none" : "-4px 0 16px rgba(0,0,0,0.5)",
-        color: "#f8fafc",
+        boxShadow: props.embedded ? "none" : "-4px 0 16px var(--atlas-surface-raised)",
+        color: "var(--atlas-text)",
       }}
     >
       <header
@@ -764,15 +770,15 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
           justifyContent: "space-between",
           alignItems: "center",
           padding: "1rem 1.25rem",
-          borderBottom: "1px solid #1e293b",
-          backgroundColor: "#0f172a",
+          borderBottom: "1px solid var(--atlas-surface)",
+          backgroundColor: "var(--atlas-bg)",
         }}
       >
         <div>
-          <h2 data-testid="actor-sheet-title" style={{ margin: 0, fontSize: "1.25rem", color: "#f59e0b" }}>
+          <h2 data-testid="actor-sheet-title" style={{ margin: 0, fontSize: "1.25rem", color: "var(--atlas-action)" }}>
             {actor.name}
           </h2>
-          <span style={{ fontSize: "0.75rem", color: "#94a3b8" }}>
+          <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
             {actor.kind || "Character"} | D&D 5e SRD 5.1
           </span>
         </div>
@@ -785,8 +791,8 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
           }}
           style={{
             padding: "0.375rem 0.75rem",
-            backgroundColor: "#334155",
-            color: "#f8fafc",
+            backgroundColor: "var(--atlas-border)",
+            color: "var(--atlas-text)",
             border: "none",
             borderRadius: "4px",
             cursor: "pointer",
@@ -804,7 +810,7 @@ export function ActorSheetDrawer(props: ActorSheetDrawerProps): JSX.Element | nu
         }}
       >
         {renderedTree.root ? renderNode(renderedTree.root) : (
-          <p style={{ color: "#94a3b8" }}>No sheet layout available.</p>
+          <p style={{ color: "var(--atlas-text-muted)" }}>No sheet layout available.</p>
         )}
       </div>
     </aside>

@@ -167,7 +167,7 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
         left: 0,
         right: 0,
         bottom: 0,
-        backgroundColor: "rgba(0,0,0,0.8)",
+        backgroundColor: "var(--atlas-surface-raised)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -177,17 +177,17 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
     >
       <div
         style={{
-          backgroundColor: "#131a2a",
-          border: "1px solid #334155",
+          backgroundColor: "var(--atlas-surface)",
+          border: "1px solid var(--atlas-border)",
           borderRadius: "8px",
           maxWidth: "540px",
           width: "100%",
           padding: "1.5rem",
-          color: "#f8fafc",
+          color: "var(--atlas-text)",
         }}
       >
-        <header style={{ marginBottom: "1rem", borderBottom: "1px solid #1e293b", paddingBottom: "0.75rem" }}>
-          <h2 id="builder-modal-title" style={{ margin: 0, fontSize: "1.25rem", color: "#f59e0b" }}>
+        <header style={{ marginBottom: "1rem", borderBottom: "1px solid var(--atlas-surface)", paddingBottom: "0.75rem" }}>
+          <h2 id="builder-modal-title" style={{ margin: 0, fontSize: "1.25rem", color: "var(--atlas-action)" }}>
             5-Step SRD Character Builder ({currentStep})
           </h2>
           <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
@@ -199,8 +199,8 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
                   fontSize: "0.75rem",
                   padding: "0.125rem 0.5rem",
                   borderRadius: "4px",
-                  backgroundColor: currentStep === st ? "#f59e0b" : "#1e293b",
-                  color: currentStep === st ? "#0f172a" : "#94a3b8",
+                  backgroundColor: currentStep === st ? "var(--atlas-action)" : "var(--atlas-surface)",
+                  color: currentStep === st ? "var(--atlas-bg)" : "var(--atlas-text-muted)",
                   fontWeight: currentStep === st ? 700 : 400,
                 }}
               >
@@ -211,7 +211,7 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
         </header>
 
         {errorMessage && (
-          <div role="alert" style={{ backgroundColor: "#450a0a", color: "#fca5a5", padding: "0.5rem", borderRadius: "4px", marginBottom: "1rem" }}>
+          <div role="alert" style={{ backgroundColor: "var(--atlas-info)", color: "var(--atlas-info)", padding: "0.5rem", borderRadius: "4px", marginBottom: "1rem" }}>
             {errorMessage}
           </div>
         )}
@@ -226,7 +226,7 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
                 value={name}
                 onInput={(e) => setName((e.target as HTMLInputElement).value)}
                 data-testid="builder-name-input"
-                style={{ width: "100%", padding: "0.5rem", backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: "4px", color: "#f8fafc", marginBottom: "1rem" }}
+                style={{ width: "100%", padding: "0.5rem", backgroundColor: "var(--atlas-bg)", border: "1px solid var(--atlas-border)", borderRadius: "4px", color: "var(--atlas-text)", marginBottom: "1rem" }}
               />
               <label htmlFor="builder-ancestry-select" style={{ display: "block", marginBottom: "0.25rem" }}>Ancestry / Species</label>
               <select
@@ -234,7 +234,7 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
                 value={ancestry}
                 onChange={(e) => setAncestry((e.target as HTMLSelectElement).value)}
                 data-testid="builder-ancestry-select"
-                style={{ width: "100%", padding: "0.5rem", backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: "4px", color: "#f8fafc" }}
+                style={{ width: "100%", padding: "0.5rem", backgroundColor: "var(--atlas-bg)", border: "1px solid var(--atlas-border)", borderRadius: "4px", color: "var(--atlas-text)" }}
               >
                 <option value="human">Human</option>
                 <option value="elf">Elf</option>
@@ -252,7 +252,7 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
                 value={characterClass}
                 onChange={(e) => setCharacterClass((e.target as HTMLSelectElement).value)}
                 data-testid="builder-class-select"
-                style={{ width: "100%", padding: "0.5rem", backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: "4px", color: "#f8fafc" }}
+                style={{ width: "100%", padding: "0.5rem", backgroundColor: "var(--atlas-bg)", border: "1px solid var(--atlas-border)", borderRadius: "4px", color: "var(--atlas-text)" }}
               >
                 <option value="fighter">Fighter</option>
                 <option value="wizard">Wizard</option>
@@ -273,7 +273,7 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
                     value={scores[ab]}
                     onInput={(e) => setScores({ ...scores, [ab]: Number((e.target as HTMLInputElement).value) })}
                     data-testid={`builder-score-${ab}`}
-                    style={{ width: "100%", padding: "0.375rem", backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: "4px", color: "#f8fafc" }}
+                    style={{ width: "100%", padding: "0.375rem", backgroundColor: "var(--atlas-bg)", border: "1px solid var(--atlas-border)", borderRadius: "4px", color: "var(--atlas-text)" }}
                   />
                 </div>
               ))}
@@ -282,10 +282,10 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
 
           {currentStep === "equipment" && (
             <div>
-              <p style={{ fontSize: "0.875rem", color: "#94a3b8" }}>Selected SRD Starting Gear:</p>
+              <p style={{ fontSize: "0.875rem", color: "var(--atlas-text-muted)" }}>Selected SRD Starting Gear:</p>
               <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                 {selectedEquipment.map((eq) => (
-                  <span key={eq} data-testid={`builder-equip-${eq}`} style={{ padding: "0.25rem 0.5rem", backgroundColor: "#1e293b", borderRadius: "4px" }}>
+                  <span key={eq} data-testid={`builder-equip-${eq}`} style={{ padding: "0.25rem 0.5rem", backgroundColor: "var(--atlas-surface)", borderRadius: "4px" }}>
                     {eq}
                   </span>
                 ))}
@@ -295,22 +295,22 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
 
           {currentStep === "review" && (
             <div data-testid="builder-review-pane">
-              <h4 style={{ margin: "0 0 0.5rem 0", color: "#38bdf8" }}>{name} ({ancestry} {characterClass})</h4>
-              <div style={{ fontSize: "0.875rem", color: "#cbd5e1" }}>
+              <h4 style={{ margin: "0 0 0.5rem 0", color: "var(--atlas-info)" }}>{name} ({ancestry} {characterClass})</h4>
+              <div style={{ fontSize: "0.875rem", color: "var(--atlas-text-muted)" }}>
                 STR: {scores.str} | DEX: {scores.dex} | CON: {scores.con} | INT: {scores.int} | WIS: {scores.wis} | CHA: {scores.cha}
               </div>
-              <div style={{ marginTop: "0.5rem", fontSize: "0.75rem", color: "#94a3b8" }}>
+              <div style={{ marginTop: "0.5rem", fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
                 Submitting will persist to PostgreSQL and spawn the token at (200, 200).
               </div>
             </div>
           )}
         </div>
 
-        <footer style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #1e293b", paddingTop: "1rem" }}>
+        <footer style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid var(--atlas-surface)", paddingTop: "1rem" }}>
           <button
             type="button"
             onClick={props.onClose}
-            style={{ padding: "0.5rem 1rem", backgroundColor: "#334155", color: "#f8fafc", border: "none", borderRadius: "4px", cursor: "pointer" }}
+            style={{ padding: "0.5rem 1rem", backgroundColor: "var(--atlas-border)", color: "var(--atlas-text)", border: "none", borderRadius: "4px", cursor: "pointer" }}
           >
             Cancel
           </button>
@@ -320,7 +320,7 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
                 type="button"
                 onClick={handlePrev}
                 data-testid="builder-prev-btn"
-                style={{ padding: "0.5rem 1rem", backgroundColor: "#1e293b", color: "#f8fafc", border: "1px solid #334155", borderRadius: "4px", cursor: "pointer" }}
+                style={{ padding: "0.5rem 1rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-text)", border: "1px solid var(--atlas-border)", borderRadius: "4px", cursor: "pointer" }}
               >
                 Back
               </button>
@@ -330,7 +330,7 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
                 type="button"
                 onClick={handleNext}
                 data-testid="builder-next-btn"
-                style={{ padding: "0.5rem 1rem", backgroundColor: "#f59e0b", color: "#0f172a", fontWeight: 600, border: "none", borderRadius: "4px", cursor: "pointer" }}
+                style={{ padding: "0.5rem 1rem", backgroundColor: "var(--atlas-action)", color: "var(--atlas-bg)", fontWeight: 600, border: "none", borderRadius: "4px", cursor: "pointer" }}
               >
                 Next
               </button>
@@ -340,7 +340,7 @@ export function ActorBuilderModal(props: ActorBuilderModalProps): JSX.Element {
                 disabled={loading}
                 onClick={handleSubmit}
                 data-testid="builder-submit-btn"
-                style={{ padding: "0.5rem 1rem", backgroundColor: "#10b981", color: "#0f172a", fontWeight: 600, border: "none", borderRadius: "4px", cursor: "pointer" }}
+                style={{ padding: "0.5rem 1rem", backgroundColor: "var(--atlas-success)", color: "var(--atlas-bg)", fontWeight: 600, border: "none", borderRadius: "4px", cursor: "pointer" }}
               >
                 {loading ? "Spawning..." : "Submit Character"}
               </button>

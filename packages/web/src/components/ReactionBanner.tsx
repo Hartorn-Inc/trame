@@ -83,21 +83,21 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
         top: "1rem",
         left: "50%",
         transform: "translateX(-50%)",
-        backgroundColor: "#7c2d12",
-        border: "2px solid #f97316",
+        backgroundColor: "var(--atlas-action)",
+        border: "2px solid var(--atlas-action)",
         borderRadius: "8px",
         padding: "0.875rem 1.25rem",
-        color: "#ffedd5",
+        color: "var(--atlas-text)",
         zIndex: 100,
         display: "flex",
         alignItems: "center",
         gap: "1rem",
-        boxShadow: "0 10px 25px rgba(0,0,0,0.6)",
+        boxShadow: "0 10px 25px var(--atlas-surface-raised)",
       }}
     >
       <div role="alert" aria-live="assertive" aria-atomic="true">
         <strong style={{ display: "block", fontSize: "0.875rem" }}>Opportunity Reaction Available!</strong>
-        <span style={{ fontSize: "0.75rem", color: "#fed7aa" }}>
+        <span style={{ fontSize: "0.75rem", color: "var(--atlas-text)" }}>
           {prompt.triggerTokenName} provoked a reaction from {prompt.reactorTokenName} ({prompt.description})
         </span>
       </div>
@@ -108,9 +108,9 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
         style={{
           fontSize: "1.25rem",
           fontWeight: 700,
-          color: "#fb923c",
+          color: "var(--atlas-action)",
           padding: "0.25rem 0.5rem",
-          backgroundColor: "#431407",
+          backgroundColor: "var(--atlas-action)",
           borderRadius: "4px",
         }}
       >
@@ -126,8 +126,8 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
           onClick={() => handleDecision(true)}
           style={{
             padding: "0.375rem 0.75rem",
-            backgroundColor: "#c2410c",
-            color: "#ffffff",
+            backgroundColor: "var(--atlas-action)",
+            color: "var(--atlas-text)",
             fontWeight: 600,
             border: "none",
             borderRadius: "4px",
@@ -143,9 +143,9 @@ export function ReactionBanner(props: ReactionBannerProps): JSX.Element | null {
           onClick={() => handleDecision(false)}
           style={{
             padding: "0.375rem 0.75rem",
-            backgroundColor: "#431407",
-            color: "#fdba74",
-            border: "1px solid #7c2d12",
+            backgroundColor: "var(--atlas-action)",
+            color: "var(--atlas-action)",
+            border: "1px solid var(--atlas-action)",
             borderRadius: "4px",
             cursor: "pointer",
           }}

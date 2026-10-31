@@ -47,7 +47,7 @@ export function HandoutPopupModal(props: HandoutPopupModalProps): JSX.Element | 
         left: 0,
         right: 0,
         bottom: 0,
-        backgroundColor: "rgba(0,0,0,0.8)",
+        backgroundColor: "var(--atlas-surface-raised)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -57,20 +57,20 @@ export function HandoutPopupModal(props: HandoutPopupModalProps): JSX.Element | 
     >
       <div
         style={{
-          backgroundColor: "#131a2a",
-          border: "2px solid #f59e0b",
+          backgroundColor: "var(--atlas-surface)",
+          border: "2px solid var(--atlas-action)",
           borderRadius: "8px",
           maxWidth: "540px",
           width: "100%",
           padding: "1.5rem",
-          color: "#f8fafc",
+          color: "var(--atlas-text)",
         }}
       >
         <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-          <h3 id="handout-popup-title" style={{ margin: 0, fontSize: "1.25rem", color: "#f59e0b" }}>
+          <h3 id="handout-popup-title" style={{ margin: 0, fontSize: "1.25rem", color: "var(--atlas-action)" }}>
             {handout.title}
           </h3>
-          <span style={{ fontSize: "0.75rem", color: "#94a3b8" }}>
+          <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
             Revealed by {handout.revealedBy || "GM"}
           </span>
         </header>
@@ -78,10 +78,10 @@ export function HandoutPopupModal(props: HandoutPopupModalProps): JSX.Element | 
         <div
           data-testid="handout-content-body"
           style={{
-            backgroundColor: "#0f172a",
+            backgroundColor: "var(--atlas-bg)",
             padding: "1rem",
             borderRadius: "4px",
-            border: "1px solid #1e293b",
+            border: "1px solid var(--atlas-surface)",
             marginBottom: "1.5rem",
             whiteSpace: "pre-wrap",
           }}
@@ -97,8 +97,8 @@ export function HandoutPopupModal(props: HandoutPopupModalProps): JSX.Element | 
             data-testid="close-handout-modal-btn"
             style={{
               padding: "0.5rem 1rem",
-              backgroundColor: "#334155",
-              color: "#f8fafc",
+              backgroundColor: "var(--atlas-border)",
+              color: "var(--atlas-text)",
               border: "none",
               borderRadius: "4px",
               cursor: "pointer",

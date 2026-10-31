@@ -55,15 +55,15 @@ export function App(): import("preact").JSX.Element {
         display: "flex",
         flexDirection: "column",
         height: "100vh",
-        backgroundColor: "#070b12",
-        color: "#f8fafc",
+        backgroundColor: "var(--atlas-bg)",
+        color: "var(--atlas-text)",
         overflow: "hidden",
       }}
     >
       <header
         style={{
-          backgroundColor: "#0f172a",
-          borderBottom: "1px solid #1e293b",
+          backgroundColor: "var(--atlas-bg)",
+          borderBottom: "1px solid var(--atlas-surface)",
           padding: "0.5rem 1rem",
           display: "flex",
           alignItems: "center",
@@ -72,17 +72,17 @@ export function App(): import("preact").JSX.Element {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-          <strong style={{ color: "#f59e0b" }}>TRAME VTT</strong>
-          <span style={{ fontSize: "0.875rem", color: "#94a3b8" }}>{activeCampaign.name}</span>
+          <strong style={{ color: "var(--atlas-action)" }}>TRAME VTT</strong>
+          <span style={{ fontSize: "0.875rem", color: "var(--atlas-text-muted)" }}>{activeCampaign.name}</span>
           <button
             type="button"
             onClick={() => (appSignals.activeCampaignSignal.value = null)}
             data-testid="leave-campaign-btn"
             style={{
               padding: "0.25rem 0.5rem",
-              backgroundColor: "#1e293b",
-              color: "#cbd5e1",
-              border: "1px solid #334155",
+              backgroundColor: "var(--atlas-surface)",
+              color: "var(--atlas-text-muted)",
+              border: "1px solid var(--atlas-border)",
               borderRadius: "4px",
               fontSize: "0.75rem",
               cursor: "pointer",
@@ -97,7 +97,7 @@ export function App(): import("preact").JSX.Element {
             type="button"
             onClick={() => (appSignals.activeDrawerSignal.value = activeDrawer === "sheet" ? null : "sheet")}
             data-testid="toggle-sheet-btn"
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "#1e293b", color: "#38bdf8", border: "1px solid #38bdf8", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-info)", border: "1px solid var(--atlas-info)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
           >
             Character Sheet
           </button>
@@ -105,7 +105,7 @@ export function App(): import("preact").JSX.Element {
             type="button"
             onClick={() => setIsBuilderOpen(true)}
             data-testid="open-builder-btn"
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "#1e293b", color: "#f59e0b", border: "1px solid #f59e0b", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-action)", border: "1px solid var(--atlas-action)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
           >
             New Character
           </button>
@@ -113,7 +113,7 @@ export function App(): import("preact").JSX.Element {
             type="button"
             onClick={() => (appSignals.activeDrawerSignal.value = activeDrawer === "compendium" ? null : "compendium")}
             data-testid="toggle-compendium-btn"
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "#1e293b", color: "#c084fc", border: "1px solid #c084fc", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-info)", border: "1px solid var(--atlas-info)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
           >
             Compendium
           </button>
@@ -121,7 +121,7 @@ export function App(): import("preact").JSX.Element {
             type="button"
             onClick={() => (appSignals.activeDrawerSignal.value = activeDrawer === "dice" ? null : "dice")}
             data-testid="toggle-dice-btn"
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "#1e293b", color: "#34d399", border: "1px solid #34d399", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-success)", border: "1px solid var(--atlas-success)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
           >
             Dice
           </button>
@@ -129,7 +129,7 @@ export function App(): import("preact").JSX.Element {
             type="button"
             onClick={() => (appSignals.activeDrawerSignal.value = activeDrawer === "wiki" ? null : "wiki")}
             data-testid="toggle-wiki-btn"
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "#1e293b", color: "#fb923c", border: "1px solid #fb923c", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-surface)", color: "var(--atlas-action)", border: "1px solid var(--atlas-action)", borderRadius: "4px", fontSize: "0.75rem", cursor: "pointer" }}
           >
             Wiki
           </button>

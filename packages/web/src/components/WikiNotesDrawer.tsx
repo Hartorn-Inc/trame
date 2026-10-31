@@ -64,19 +64,19 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
         width: props.embedded ? "100%" : "440px",
         height: props.embedded ? "100%" : undefined,
         maxWidth: "100vw",
-        backgroundColor: "#0b0f19",
-        borderLeft: props.embedded ? "none" : "1px solid #1e293b",
+        backgroundColor: "var(--atlas-bg)",
+        borderLeft: props.embedded ? "none" : "1px solid var(--atlas-surface)",
         zIndex: props.embedded ? 1 : 50,
         display: "flex",
         flexDirection: "column",
         boxShadow: props.embedded ? "none" : undefined,
-        color: "#f8fafc",
+        color: "var(--atlas-text)",
       }}
     >
-      <header style={{ padding: "1rem", borderBottom: "1px solid #1e293b", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <header style={{ padding: "1rem", borderBottom: "1px solid var(--atlas-surface)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: "1.125rem", color: "#f59e0b" }}>Wiki Notes & Handouts</h2>
-          <span style={{ fontSize: "0.75rem", color: "#94a3b8" }}>Role-Filtered Markdown</span>
+          <h2 style={{ margin: 0, fontSize: "1.125rem", color: "var(--atlas-action)" }}>Wiki Notes & Handouts</h2>
+          <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>Role-Filtered Markdown</span>
         </div>
         {!props.embedded && (
           <button
@@ -86,7 +86,7 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
               appSignals.activeDrawerSignal.value = null;
               props.onClose?.();
             }}
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "#334155", color: "#f8fafc", border: "none", borderRadius: "4px", cursor: "pointer" }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-border)", color: "var(--atlas-text)", border: "none", borderRadius: "4px", cursor: "pointer" }}
           >
             Close
           </button>
@@ -94,13 +94,13 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
       </header>
 
       {statusMessage && (
-        <div role="status" style={{ backgroundColor: "#064e3b", color: "#6ee7b7", padding: "0.5rem 1rem", fontSize: "0.75rem" }}>
+        <div role="status" style={{ backgroundColor: "var(--atlas-success)", color: "var(--atlas-success)", padding: "0.5rem 1rem", fontSize: "0.75rem" }}>
           {statusMessage}
         </div>
       )}
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        <div style={{ width: "140px", borderRight: "1px solid #1e293b", overflowY: "auto", padding: "0.5rem" }}>
+        <div style={{ width: "140px", borderRight: "1px solid var(--atlas-surface)", overflowY: "auto", padding: "0.5rem" }}>
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
             {notes.map((note) => (
               <li key={note.slug}>
@@ -112,8 +112,8 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
                     width: "100%",
                     textAlign: "left",
                     padding: "0.5rem",
-                    backgroundColor: selectedNote?.slug === note.slug ? "#1e293b" : "transparent",
-                    color: selectedNote?.slug === note.slug ? "#38bdf8" : "#94a3b8",
+                    backgroundColor: selectedNote?.slug === note.slug ? "var(--atlas-surface)" : "transparent",
+                    color: selectedNote?.slug === note.slug ? "var(--atlas-info)" : "var(--atlas-text-muted)",
                     border: "none",
                     borderRadius: "4px",
                     fontSize: "0.75rem",
@@ -130,10 +130,10 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
         <div style={{ flex: 1, overflowY: "auto", padding: "1rem" }}>
           {selectedNote ? (
             <div>
-              <h3 style={{ margin: "0 0 0.5rem 0", color: "#f59e0b" }}>{selectedNote.title}</h3>
+              <h3 style={{ margin: "0 0 0.5rem 0", color: "var(--atlas-action)" }}>{selectedNote.title}</h3>
               <div
                 data-testid="note-content-display"
-                style={{ backgroundColor: "#0f172a", padding: "0.75rem", borderRadius: "4px", border: "1px solid #1e293b", marginBottom: "1rem", whiteSpace: "pre-wrap", fontSize: "0.875rem" }}
+                style={{ backgroundColor: "var(--atlas-bg)", padding: "0.75rem", borderRadius: "4px", border: "1px solid var(--atlas-surface)", marginBottom: "1rem", whiteSpace: "pre-wrap", fontSize: "0.875rem" }}
               >
                 {selectedNote.contentMarkdown}
               </div>
@@ -145,8 +145,8 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
                   onClick={() => handleRevealHandout(`handout-${selectedNote.slug}`, selectedNote.title, selectedNote.contentMarkdown)}
                   style={{
                     padding: "0.5rem 1rem",
-                    backgroundColor: "#7c3aed",
-                    color: "#ffffff",
+                    backgroundColor: "var(--atlas-info)",
+                    color: "var(--atlas-text)",
                     border: "none",
                     borderRadius: "4px",
                     fontWeight: 600,
@@ -158,7 +158,7 @@ export function WikiNotesDrawer(props: WikiNotesDrawerProps): JSX.Element {
               )}
             </div>
           ) : (
-            <p style={{ color: "#94a3b8", fontSize: "0.875rem" }}>No note selected.</p>
+            <p style={{ color: "var(--atlas-text-muted)", fontSize: "0.875rem" }}>No note selected.</p>
           )}
         </div>
       </div>

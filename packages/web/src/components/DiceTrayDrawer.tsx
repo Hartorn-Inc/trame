@@ -31,9 +31,9 @@ export function DiceTrayDrawer(props: DiceTrayDrawerProps): JSX.Element {
     const render = () => {
       frame++;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#0f172a";
+      ctx.fillStyle = "var(--atlas-bg)";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.strokeStyle = "#38bdf8";
+      ctx.strokeStyle = "var(--atlas-info)";
       ctx.lineWidth = 2;
 
       const angle = (frame * 15 * Math.PI) / 180;
@@ -78,17 +78,17 @@ export function DiceTrayDrawer(props: DiceTrayDrawerProps): JSX.Element {
         width: props.embedded ? "100%" : "360px",
         height: props.embedded ? "100%" : undefined,
         maxWidth: "100vw",
-        backgroundColor: "#0b0f19",
-        borderLeft: props.embedded ? "none" : "1px solid #1e293b",
+        backgroundColor: "var(--atlas-bg)",
+        borderLeft: props.embedded ? "none" : "1px solid var(--atlas-surface)",
         zIndex: props.embedded ? 1 : 50,
         display: "flex",
         flexDirection: "column",
         boxShadow: props.embedded ? "none" : undefined,
-        color: "#f8fafc",
+        color: "var(--atlas-text)",
       }}
     >
-      <header style={{ padding: "1rem", borderBottom: "1px solid #1e293b", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h2 style={{ margin: 0, fontSize: "1.125rem", color: "#f59e0b" }}>Dice Tray</h2>
+      <header style={{ padding: "1rem", borderBottom: "1px solid var(--atlas-surface)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h2 style={{ margin: 0, fontSize: "1.125rem", color: "var(--atlas-action)" }}>Dice Tray</h2>
         {!props.embedded && (
           <button
             type="button"
@@ -97,36 +97,36 @@ export function DiceTrayDrawer(props: DiceTrayDrawerProps): JSX.Element {
               appSignals.activeDrawerSignal.value = null;
               props.onClose?.();
             }}
-            style={{ padding: "0.375rem 0.625rem", backgroundColor: "#334155", color: "#f8fafc", border: "none", borderRadius: "4px", cursor: "pointer" }}
+            style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-border)", color: "var(--atlas-text)", border: "none", borderRadius: "4px", cursor: "pointer" }}
           >
             Close
           </button>
         )}
       </header>
 
-      <div style={{ padding: "1rem", borderBottom: "1px solid #1e293b" }}>
+      <div style={{ padding: "1rem", borderBottom: "1px solid var(--atlas-surface)" }}>
         <canvas
           ref={canvasRef}
           data-testid="dice-canvas-animation"
           width={320}
           height={100}
-          style={{ width: "100%", height: "100px", backgroundColor: "#070b12", borderRadius: "6px", display: "block", marginBottom: "0.75rem" }}
+          style={{ width: "100%", height: "100px", backgroundColor: "var(--atlas-bg)", borderRadius: "6px", display: "block", marginBottom: "0.75rem" }}
         />
 
         <form onSubmit={handleRollSubmit} data-testid="dice-roll-form">
-          <label htmlFor="dice-formula-input" style={{ display: "block", fontSize: "0.75rem", color: "#94a3b8", marginBottom: "0.25rem" }}>Dice Formula</label>
+          <label htmlFor="dice-formula-input" style={{ display: "block", fontSize: "0.75rem", color: "var(--atlas-text-muted)", marginBottom: "0.25rem" }}>Dice Formula</label>
           <input
             id="dice-formula-input"
             type="text"
             value={formula}
             onInput={(e) => setFormula((e.target as HTMLInputElement).value)}
             data-testid="dice-formula-input"
-            style={{ width: "100%", padding: "0.5rem", backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: "4px", color: "#f8fafc", marginBottom: "0.5rem" }}
+            style={{ width: "100%", padding: "0.5rem", backgroundColor: "var(--atlas-bg)", border: "1px solid var(--atlas-border)", borderRadius: "4px", color: "var(--atlas-text)", marginBottom: "0.5rem" }}
           />
           <button
             type="submit"
             data-testid="roll-dice-btn"
-            style={{ width: "100%", padding: "0.5rem", backgroundColor: "#f59e0b", color: "#0f172a", fontWeight: 600, border: "none", borderRadius: "4px", cursor: "pointer" }}
+            style={{ width: "100%", padding: "0.5rem", backgroundColor: "var(--atlas-action)", color: "var(--atlas-bg)", fontWeight: 600, border: "none", borderRadius: "4px", cursor: "pointer" }}
           >
             Roll Dice
           </button>
@@ -134,7 +134,7 @@ export function DiceTrayDrawer(props: DiceTrayDrawerProps): JSX.Element {
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "1rem" }}>
-        <h3 style={{ margin: "0 0 0.5rem 0", fontSize: "0.875rem", color: "#94a3b8" }}>Roll Log</h3>
+        <h3 style={{ margin: "0 0 0.5rem 0", fontSize: "0.875rem", color: "var(--atlas-text-muted)" }}>Roll Log</h3>
         <div role="log" aria-label="Dice Log Entries" data-testid="dice-log-list">
           {diceLogs.map((log) => (
             <div
@@ -142,9 +142,9 @@ export function DiceTrayDrawer(props: DiceTrayDrawerProps): JSX.Element {
               data-testid={`dice-log-${log.rollId}`}
               style={{
                 padding: "0.5rem",
-                backgroundColor: "#131a2a",
+                backgroundColor: "var(--atlas-surface)",
                 borderRadius: "4px",
-                border: "1px solid #1e293b",
+                border: "1px solid var(--atlas-surface)",
                 marginBottom: "0.5rem",
                 display: "flex",
                 justifyContent: "space-between",
@@ -152,10 +152,10 @@ export function DiceTrayDrawer(props: DiceTrayDrawerProps): JSX.Element {
               }}
             >
               <div>
-                <span style={{ fontSize: "0.75rem", color: "#94a3b8" }}>{log.reason || "Roll"}</span>
-                <div style={{ fontSize: "0.875rem", color: "#38bdf8" }}>{log.expression}</div>
+                <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>{log.reason || "Roll"}</span>
+                <div style={{ fontSize: "0.875rem", color: "var(--atlas-info)" }}>{log.expression}</div>
               </div>
-              <div style={{ fontSize: "1.25rem", fontWeight: 700, color: "#f59e0b" }}>
+              <div style={{ fontSize: "1.25rem", fontWeight: 700, color: "var(--atlas-action)" }}>
                 {log.total ?? "?"}
               </div>
             </div>

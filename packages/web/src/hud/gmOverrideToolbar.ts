@@ -1,3 +1,4 @@
+import { CANVAS_AMBIENT_TINTS } from "../canvas/CanvasThemePalette.ts";
 import type { Point2D } from "../engine/wasmBridge.ts";
 
 export type ActionEconomyType =
@@ -38,10 +39,10 @@ export interface AmbientPresetConfig {
 }
 
 export const AMBIENT_PRESETS: Record<"DAYLIGHT" | "DUSK" | "NIGHT_MOONLIGHT" | "PITCH_DARKNESS", AmbientPresetConfig> = {
-  DAYLIGHT: { preset: "DAYLIGHT", ambientLight: 1.0, darknessRadius: 0, tint: "#ffffff" },
-  DUSK: { preset: "DUSK", ambientLight: 0.45, darknessRadius: 0, tint: "#ff9944" },
-  NIGHT_MOONLIGHT: { preset: "NIGHT_MOONLIGHT", ambientLight: 0.15, darknessRadius: 30, tint: "#223366" },
-  PITCH_DARKNESS: { preset: "PITCH_DARKNESS", ambientLight: 0.0, darknessRadius: 60, tint: "#000000" },
+  DAYLIGHT: { preset: "DAYLIGHT", ambientLight: 1.0, darknessRadius: 0, tint: CANVAS_AMBIENT_TINTS.DAYLIGHT },
+  DUSK: { preset: "DUSK", ambientLight: 0.45, darknessRadius: 0, tint: CANVAS_AMBIENT_TINTS.DUSK },
+  NIGHT_MOONLIGHT: { preset: "NIGHT_MOONLIGHT", ambientLight: 0.15, darknessRadius: 30, tint: CANVAS_AMBIENT_TINTS.NIGHT_MOONLIGHT },
+  PITCH_DARKNESS: { preset: "PITCH_DARKNESS", ambientLight: 0.0, darknessRadius: 60, tint: CANVAS_AMBIENT_TINTS.PITCH_DARKNESS },
 };
 
 export function normalizeAmbientPreset(preset: AmbientPreset): "DAYLIGHT" | "DUSK" | "NIGHT_MOONLIGHT" | "PITCH_DARKNESS" {

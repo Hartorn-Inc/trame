@@ -22,15 +22,15 @@ export function MobileCompanionView(_props: MobileCompanionViewProps): JSX.Eleme
       data-testid="mobile-companion-view"
       style={{
         minHeight: "100vh",
-        backgroundColor: "#070b12",
-        color: "#f8fafc",
+        backgroundColor: "var(--atlas-bg)",
+        color: "var(--atlas-text)",
         display: "flex",
         flexDirection: "column",
       }}
     >
-      <header style={{ padding: "0.75rem 1rem", backgroundColor: "#0f172a", borderBottom: "1px solid #1e293b", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <header style={{ padding: "0.75rem 1rem", backgroundColor: "var(--atlas-bg)", borderBottom: "1px solid var(--atlas-surface)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <strong>TRAME Companion</strong>
-        <span style={{ fontSize: "0.75rem", color: "#38bdf8" }}>{actor?.name || "Touch View"}</span>
+        <span style={{ fontSize: "0.75rem", color: "var(--atlas-info)" }}>{actor?.name || "Touch View"}</span>
       </header>
 
       <div style={{ flex: 1, overflowY: "auto", position: "relative" }}>
@@ -56,8 +56,8 @@ export function MobileCompanionView(_props: MobileCompanionViewProps): JSX.Eleme
         aria-label="Companion Tabs"
         style={{
           display: "flex",
-          backgroundColor: "#0f172a",
-          borderTop: "1px solid #1e293b",
+          backgroundColor: "var(--atlas-bg)",
+          borderTop: "1px solid var(--atlas-surface)",
         }}
       >
         {(['sheet', 'dice', 'notes'] as MobileTab[]).map((tab) => (
@@ -71,10 +71,10 @@ export function MobileCompanionView(_props: MobileCompanionViewProps): JSX.Eleme
             style={{
               flex: 1,
               padding: "0.75rem",
-              backgroundColor: activeTab === tab ? "#1e293b" : "transparent",
-              color: activeTab === tab ? "#38bdf8" : "#94a3b8",
+              backgroundColor: activeTab === tab ? "var(--atlas-surface)" : "transparent",
+              color: activeTab === tab ? "var(--atlas-info)" : "var(--atlas-text-muted)",
               border: "none",
-              borderTop: activeTab === tab ? "2px solid #38bdf8" : "2px solid transparent",
+              borderTop: activeTab === tab ? "2px solid var(--atlas-info)" : "2px solid transparent",
               fontWeight: 600,
               fontSize: "0.875rem",
               cursor: "pointer",

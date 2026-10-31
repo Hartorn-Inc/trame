@@ -5,7 +5,7 @@ import { appSignals, resetAppSignals } from "../src/state/appSignals.ts";
 import { ApiClient } from "../src/api/client.ts";
 import { CompendiumDragDropManager } from "../src/dnd/CompendiumDragDropManager.ts";
 import { CharacterBuilderWizard } from "../src/builder/CharacterBuilderWizard.ts";
-import { DND5E_SHEET_LAYOUT } from "@trame/game-system-dnd5e/src/sheetLayout.ts";
+import { DND5E_SHEET_LAYOUT } from "../../game-systems/dnd5e/src/sheetLayout.ts";
 import { DeclarativeSheetRenderer } from "../src/sheet/DeclarativeSheetRenderer.ts";
 import { WidgetRegistry } from "../src/sheet/WidgetRegistry.ts";
 import { registerAllCanonicalWidgets } from "../src/sheet/widgets/index.ts";
@@ -71,6 +71,12 @@ class SimpleDomNode {
       node.parentNode = null;
     }
     return node;
+  }
+
+  remove(): void {
+    if (this.parentNode) {
+      this.parentNode.removeChild(this);
+    }
   }
 
   insertBefore(newNode: SimpleDomNode, refNode: SimpleDomNode | null): SimpleDomNode {
@@ -158,6 +164,7 @@ class SimpleDomNode {
 function setupTestDom() {
   const doc = {
     createElement(name: string) { return new SimpleDomNode(1, name); },
+    createElementNS(_ns: string, name: string) { return new SimpleDomNode(1, name); },
     createTextNode(text: string) { const tn = new SimpleDomNode(3, "#text"); tn.data = text; return tn; },
     body: new SimpleDomNode(1, "body"),
   };

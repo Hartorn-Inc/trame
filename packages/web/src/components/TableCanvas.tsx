@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { ComponentChildren, JSX } from "preact";
 import { Application } from "pixi.js";
+import { getCanvasThemePalette } from "../canvas/CanvasThemePalette.ts";
 import { client as defaultClient, type ApiClient } from "../api/client.ts";
 import { ViewportCamera, measureRulerWaypointsFt, type Waypoint3D } from "../canvas/SceneGraph.ts";
 import { Bvh2D, type Point2D, type WallSegmentDto } from "../engine/wasmBridge.ts";
@@ -138,7 +139,7 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
         canvas: canvasRef.current,
         width: 1200,
         height: 800,
-        backgroundColor: 0x070b12,
+        backgroundColor: getCanvasThemePalette("dark").fogUnexploredHex,
       })
       .then(() => {
         if (isDestroyed) {
@@ -181,7 +182,7 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
           id: pingId,
           x: pos.x,
           y: pos.y,
-          colorHex: detail?.colorHex || detail?.color_hex || "#38bdf8",
+          colorHex: detail?.colorHex || detail?.color_hex || "var(--atlas-info)",
           timestamp: Date.now(),
         };
         setPings((prev) => [...prev, newPing]);
@@ -253,7 +254,7 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
     });
   };
 
-  const triggerPointerPing = (x: number, y: number, colorHex = "#38bdf8") => {
+  const triggerPointerPing = (x: number, y: number, colorHex = "var(--atlas-info)") => {
     const newPing = {
       id: `ping-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       x,
@@ -326,9 +327,9 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
         width: "100%",
         height: "100%",
         minHeight: "600px",
-        backgroundColor: "#070b12",
+        backgroundColor: "var(--atlas-bg)",
         overflow: "hidden",
-        outline: "2px solid #38bdf8",
+        outline: "2px solid var(--atlas-info)",
       }}
     >
       {isHeadless ? (
@@ -343,11 +344,11 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            color: "#94a3b8",
+            color: "var(--atlas-text-muted)",
             cursor: draggingTokenId ? "crosshair" : "default",
           }}
         >
-          <div data-testid="headless-status-badge" style={{ fontSize: "0.875rem", color: "#38bdf8" }}>
+          <div data-testid="headless-status-badge" style={{ fontSize: "0.875rem", color: "var(--atlas-info)" }}>
             HeadlessCanvasMock Active (Zero-GPU Safe)
           </div>
         </div>
@@ -372,13 +373,13 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
             top: "1rem",
             left: "50%",
             transform: "translateX(-50%)",
-            backgroundColor: "#7f1d1d",
-            color: "#fecaca",
+            backgroundColor: "var(--atlas-danger)",
+            color: "var(--atlas-danger)",
             padding: "0.5rem 1rem",
             borderRadius: "4px",
             zIndex: 30,
             fontSize: "0.875rem",
-            border: "1px solid #dc2626",
+            border: "1px solid var(--atlas-danger)",
           }}
         >
           {collisionAlert}
@@ -450,13 +451,13 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
                 width: `${(token.gridW || 1) * cellSizePx * camera.getTransform().scale}px`,
                 height: `${(token.gridH || 1) * cellSizePx * camera.getTransform().scale}px`,
                 borderRadius: "50%",
-                backgroundColor: isSelected ? "#d97706" : "#0369a1",
-                border: isSelected ? "3px solid #f59e0b" : "2px solid #38bdf8",
-                boxShadow: isSelected ? "0 0 0 3px rgba(245, 158, 11, 0.4), 0 0 12px #f59e0b" : undefined,
+                backgroundColor: isSelected ? "var(--atlas-action)" : "var(--atlas-info)",
+                border: isSelected ? "3px solid var(--atlas-action)" : "2px solid var(--atlas-info)",
+                boxShadow: isSelected ? "0 0 0 3px var(--atlas-surface-raised), 0 0 12px var(--atlas-action)" : undefined,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                color: isSelected ? "#0f172a" : "#ffffff",
+                color: isSelected ? "var(--atlas-bg)" : "var(--atlas-text)",
                 fontWeight: 600,
                 fontSize: "0.75rem",
                 cursor: isSelected ? "grabbing" : "grab",
@@ -493,9 +494,9 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
                 width: "24px",
                 height: "24px",
                 borderRadius: "4px",
-                backgroundColor: isOpen ? "#10b981" : "#f59e0b",
-                color: "#0f172a",
-                border: "2px solid #ffffff",
+                backgroundColor: isOpen ? "var(--atlas-success)" : "var(--atlas-action)",
+                color: "var(--atlas-bg)",
+                border: "2px solid var(--atlas-text)",
                 fontSize: "0.625rem",
                 fontWeight: 700,
                 display: "flex",
@@ -519,21 +520,21 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
             position: "absolute",
             top: "1rem",
             right: "1rem",
-            backgroundColor: "#1e293b",
-            color: "#f8fafc",
+            backgroundColor: "var(--atlas-surface)",
+            color: "var(--atlas-text)",
             padding: "0.5rem 0.875rem",
             borderRadius: "6px",
-            border: "1px solid #38bdf8",
-            boxShadow: "0 4px 6px rgba(0,0,0,0.3)",
+            border: "1px solid var(--atlas-info)",
+            boxShadow: "0 4px 6px var(--atlas-surface-raised)",
             fontSize: "0.875rem",
             zIndex: 40,
           }}
         >
-          <div style={{ fontWeight: 600, color: "#38bdf8" }}>3D Elevation Ruler</div>
+          <div style={{ fontWeight: 600, color: "var(--atlas-info)" }}>3D Elevation Ruler</div>
           <div data-testid="ruler-distance-value" style={{ marginTop: "0.25rem" }}>
             Distance: <strong>{rulerDistanceFt.toFixed(1)} ft</strong> (Euclidean)
           </div>
-          <div style={{ fontSize: "0.75rem", color: "#94a3b8", marginTop: "0.125rem" }}>
+          <div style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)", marginTop: "0.125rem" }}>
             Formula: sqrt(dx^2 + dy^2 + dz^2)
           </div>
         </div>
@@ -592,9 +593,9 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
           }}
           style={{
             padding: "0.5rem 0.75rem",
-            backgroundColor: rulerActive ? "#0284c7" : "#1e293b",
-            color: "#f8fafc",
-            border: "1px solid #38bdf8",
+            backgroundColor: rulerActive ? "var(--atlas-info)" : "var(--atlas-surface)",
+            color: "var(--atlas-text)",
+            border: "1px solid var(--atlas-info)",
             borderRadius: "4px",
             fontSize: "0.875rem",
             cursor: "pointer",
@@ -612,9 +613,9 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
           }}
           style={{
             padding: "0.5rem 0.75rem",
-            backgroundColor: "#1e293b",
-            color: "#38bdf8",
-            border: "1px solid #334155",
+            backgroundColor: "var(--atlas-surface)",
+            color: "var(--atlas-info)",
+            border: "1px solid var(--atlas-border)",
             borderRadius: "4px",
             fontSize: "0.875rem",
             cursor: "pointer",
@@ -629,9 +630,9 @@ export function TableCanvas(props: TableCanvasProps): JSX.Element {
           onClick={recenter}
           style={{
             padding: "0.5rem 0.75rem",
-            backgroundColor: "#1e293b",
-            color: "#cbd5e1",
-            border: "1px solid #334155",
+            backgroundColor: "var(--atlas-surface)",
+            color: "var(--atlas-text-muted)",
+            border: "1px solid var(--atlas-border)",
             borderRadius: "4px",
             fontSize: "0.875rem",
             cursor: "pointer",

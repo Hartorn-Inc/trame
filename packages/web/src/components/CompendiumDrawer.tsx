@@ -55,19 +55,19 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
         bottom: 0,
         width: "360px",
         maxWidth: "100vw",
-        backgroundColor: "#0b0f19",
-        borderRight: "1px solid #1e293b",
+        backgroundColor: "var(--atlas-bg)",
+        borderRight: "1px solid var(--atlas-surface)",
         zIndex: 50,
         display: "flex",
         flexDirection: "column",
-        boxShadow: "4px 0 16px rgba(0,0,0,0.5)",
-        color: "#f8fafc",
+        boxShadow: "4px 0 16px var(--atlas-surface-raised)",
+        color: "var(--atlas-text)",
       }}
     >
-      <header style={{ padding: "1rem", borderBottom: "1px solid #1e293b", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <header style={{ padding: "1rem", borderBottom: "1px solid var(--atlas-surface)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: "1.125rem", color: "#f59e0b" }}>SRD 5.1 Compendium</h2>
-          <span style={{ fontSize: "0.75rem", color: "#94a3b8" }}>Drag spells/items onto Actor Sheet</span>
+          <h2 style={{ margin: 0, fontSize: "1.125rem", color: "var(--atlas-action)" }}>SRD 5.1 Compendium</h2>
+          <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>Drag spells/items onto Actor Sheet</span>
         </div>
         <button
           type="button"
@@ -76,13 +76,13 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
             appSignals.activeDrawerSignal.value = null;
             props.onClose?.();
           }}
-          style={{ padding: "0.375rem 0.625rem", backgroundColor: "#334155", color: "#f8fafc", border: "none", borderRadius: "4px", cursor: "pointer" }}
+          style={{ padding: "0.375rem 0.625rem", backgroundColor: "var(--atlas-border)", color: "var(--atlas-text)", border: "none", borderRadius: "4px", cursor: "pointer" }}
         >
           Close
         </button>
       </header>
 
-      <div style={{ padding: "0.75rem 1rem", borderBottom: "1px solid #1e293b" }}>
+      <div style={{ padding: "0.75rem 1rem", borderBottom: "1px solid var(--atlas-surface)" }}>
         <input
           type="text"
           aria-label="Search SRD compendium"
@@ -90,7 +90,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
           value={query}
           onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
           data-testid="compendium-search-input"
-          style={{ width: "100%", padding: "0.5rem", backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: "4px", color: "#f8fafc", marginBottom: "0.5rem" }}
+          style={{ width: "100%", padding: "0.5rem", backgroundColor: "var(--atlas-bg)", border: "1px solid var(--atlas-border)", borderRadius: "4px", color: "var(--atlas-text)", marginBottom: "0.5rem" }}
         />
         <div style={{ display: "flex", gap: "0.5rem" }}>
           {['all', 'spell', 'item'].map((t) => (
@@ -101,8 +101,8 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
               data-testid={`filter-${t}-btn`}
               style={{
                 padding: "0.25rem 0.5rem",
-                backgroundColor: filterType === t ? "#38bdf8" : "#1e293b",
-                color: filterType === t ? "#0f172a" : "#cbd5e1",
+                backgroundColor: filterType === t ? "var(--atlas-info)" : "var(--atlas-surface)",
+                color: filterType === t ? "var(--atlas-bg)" : "var(--atlas-text-muted)",
                 border: "none",
                 borderRadius: "4px",
                 fontSize: "0.75rem",
@@ -125,20 +125,20 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
             data-testid={`compendium-card-${item.id}`}
             style={{
               padding: "0.75rem",
-              backgroundColor: "#131a2a",
-              border: "1px solid #1e293b",
+              backgroundColor: "var(--atlas-surface)",
+              border: "1px solid var(--atlas-surface)",
               borderRadius: "6px",
               marginBottom: "0.5rem",
               cursor: "grab",
             }}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <strong style={{ color: item.entityType === "spell" ? "#c084fc" : "#38bdf8" }}>{item.name}</strong>
-              <span style={{ fontSize: "0.625rem", padding: "0.125rem 0.375rem", backgroundColor: "#1e293b", borderRadius: "4px" }}>
+              <strong style={{ color: item.entityType === "spell" ? "var(--atlas-info)" : "var(--atlas-info)" }}>{item.name}</strong>
+              <span style={{ fontSize: "0.625rem", padding: "0.125rem 0.375rem", backgroundColor: "var(--atlas-surface)", borderRadius: "4px" }}>
                 {item.entityType.toUpperCase()}
               </span>
             </div>
-            <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.75rem", color: "#94a3b8" }}>{item.description}</p>
+            <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>{item.description}</p>
             <div style={{ marginTop: "0.5rem", display: "flex", justifyContent: "flex-end" }}>
               <button
                 type="button"
@@ -159,9 +159,9 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): JSX.Element {
                 }}
                 style={{
                   padding: "0.25rem 0.5rem",
-                  backgroundColor: "#1e293b",
-                  color: "#38bdf8",
-                  border: "1px solid #0284c7",
+                  backgroundColor: "var(--atlas-surface)",
+                  color: "var(--atlas-info)",
+                  border: "1px solid var(--atlas-info)",
                   borderRadius: "4px",
                   fontSize: "0.75rem",
                   cursor: "pointer",
