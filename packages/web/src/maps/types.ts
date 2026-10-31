@@ -36,19 +36,23 @@ export interface StudioLightSource {
   dimRadiusFt: number;
   colorHex: string;
   intensity: number;
+  elevationFt?: number;
 }
 
 export interface StagedToken {
   id: string;
   name: string;
-  templateKey: 'Goblin' | 'Bandit' | 'Guard' | 'Skeleton' | 'Wolf' | 'Ogre' | 'Boss';
+  templateKey?: 'Goblin' | 'Bandit' | 'Guard' | 'Skeleton' | 'Wolf' | 'Ogre' | 'Boss' | string;
+  monsterTemplateId?: string;
   x: number;
   y: number;
   elevationFt: number;
   visibilityChannel: 'Public' | 'GmHidden';
   ownerUserId: string | null;
-  hpCurrent: number;
-  hpMax: number;
+  hpCurrent?: number;
+  hpMax?: number;
+  sizeCells?: number;
+  tokenAvatarUrl?: string;
 }
 
 export interface AudioEmitterConfig {
@@ -57,12 +61,19 @@ export interface AudioEmitterConfig {
   x: number;
   y: number;
   elevationFt: number;
-  refDistanceFt: number;
+  refDistanceFt?: number;
   maxDistanceFt: number;
-  rolloff: number;
-  loopPlayback: boolean;
+  rolloff?: number;
+  loopPlayback?: boolean;
   volume: number;
   gmOnly?: boolean;
+}
+
+export interface SpawnPointConfig {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
 }
 
 export interface CampaignMapScene {
@@ -70,15 +81,20 @@ export interface CampaignMapScene {
   campaignId: string;
   title: string;
   revealedToPlayers: boolean;
+  gridType?: string;
   gridCellSizePx: number;
   feetPerCell: number;
   widthPx: number;
   heightPx: number;
+  backgroundImageUrl?: string;
+  defaultGroundElevationFt?: number;
+  spawnPoint?: Point2D;
+  spawnPoints?: SpawnPointConfig[];
   walls: StudioWallSegment[];
   lights: StudioLightSource[];
   audioEmitters: AudioEmitterConfig[];
   stagedTokens: StagedToken[];
-  spawnPoint: Point2D;
+  exploredFogTexture?: number[];
 }
 
 export interface ActiveTableRoomState {

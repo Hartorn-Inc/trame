@@ -23,6 +23,8 @@ import {
   type WallType,
   activateSceneTransition,
   filterScenesForRole,
+  mapBackendSceneToFrontend,
+  mapFrontendSceneToBackend,
   parseUvttImport,
   toggleDoorState,
 } from "../../src/maps/index.ts";
@@ -70,14 +72,18 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
       const imported = parseUvttImport(mockUvtt);
       assert.equal(imported.walls.length, 3);
       assert.equal(imported.walls[0].wallType, "Normal");
+      assert.equal(imported.walls[0].a.x, 100 * 70);
+      assert.equal(imported.walls[0].a.y, 100 * 70);
       assert.equal(imported.walls[2].wallType, "Door");
       assert.equal(imported.walls[2].blocksVision, true);
       assert.equal(imported.walls[2].doorState?.isOpen, false);
 
       assert.equal(imported.lights.length, 2);
+      assert.equal(imported.lights[0].origin.x, 150 * 70);
+      assert.equal(imported.lights[0].origin.y, 150 * 70);
       assert.equal(imported.lights[0].colorHex, "#ffaa44");
-      assert.equal(imported.lights[0].brightRadiusFt, 15);
-      assert.equal(imported.lights[0].dimRadiusFt, 30);
+      assert.equal(imported.lights[0].brightRadiusFt, 15 * 70);
+      assert.equal(imported.lights[0].dimRadiusFt, 30 * 70);
       assert.equal(imported.lights[1].colorHex, "#44aaff");
       assert.equal(imported.lights[1].intensity, 0.8);
     });
@@ -117,6 +123,7 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
       { type: "Normal", blocksVision: true, blocksMovement: true, blocksLight: true, blocksSound: true },
       { type: "Window", blocksVision: false, blocksMovement: true, blocksLight: false, blocksSound: true },
       { type: "Terrain", blocksVision: true, blocksMovement: true, blocksLight: true, blocksSound: false },
+      { type: "OneWay", blocksVision: true, blocksMovement: true, blocksLight: true, blocksSound: true },
       { type: "Illusion", blocksVision: true, blocksMovement: false, blocksLight: true, blocksSound: false },
       { type: "Door", blocksVision: true, blocksMovement: true, blocksLight: true, blocksSound: true },
       { type: "SecretDoor", blocksVision: true, blocksMovement: true, blocksLight: true, blocksSound: true },
@@ -555,6 +562,184 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
       assert.ok(bossToken);
       assert.equal(bossToken.name, "Lich Lord");
       assert.equal(deadWolf, undefined, "Old non-hero tokens must not carry over");
+    });
+
+    it("WHEN ADR-0034 spawn_points array is defined, hero tokens cycle through spawn_points and adopt default ground elevation.", () => {
+      const currentTable: ActiveTableRoomState = {
+        activeSceneId: "scene-prev",
+        walls: [],
+        lights: [],
+        tokens: [
+          {
+            id: "hero-1",
+            name: "Hero One",
+            templateKey: "Guard",
+            x: 0,
+            y: 0,
+            elevationFt: 10,
+            visibilityChannel: "Public",
+            ownerUserId: "user-1",
+            hpCurrent: 20,
+            hpMax: 20,
+          },
+          {
+            id: "hero-2",
+            name: "Hero Two",
+            templateKey: "Guard",
+            x: 0,
+            y: 0,
+            elevationFt: 15,
+            visibilityChannel: "Public",
+            ownerUserId: "user-2",
+            hpCurrent: 25,
+            hpMax: 25,
+          },
+          {
+            id: "hero-3",
+            name: "Hero Three",
+            templateKey: "Guard",
+            x: 0,
+            y: 0,
+            elevationFt: 5,
+            visibilityChannel: "Public",
+            ownerUserId: "user-3",
+            hpCurrent: 30,
+            hpMax: 30,
+          },
+        ],
+      };
+
+      const sceneWithSpawns: CampaignMapScene = {
+        id: "scene-spawns",
+        campaignId: "camp-1",
+        title: "Multi Spawn Arena",
+        revealedToPlayers: true,
+        gridCellSizePx: 70,
+        feetPerCell: 5,
+        widthPx: 1000,
+        heightPx: 1000,
+        defaultGroundElevationFt: 12.5,
+        spawnPoints: [
+          { id: "sp-1", name: "North Gate", x: 100, y: 150 },
+          { id: "sp-2", name: "South Gate", x: 800, y: 850 },
+        ],
+        walls: [],
+        lights: [],
+        audioEmitters: [],
+        stagedTokens: [],
+      };
+
+      const transitioned = activateSceneTransition(currentTable, sceneWithSpawns);
+      const h1 = transitioned.tokens.find((t) => t.id === "hero-1")!;
+      const h2 = transitioned.tokens.find((t) => t.id === "hero-2")!;
+      const h3 = transitioned.tokens.find((t) => t.id === "hero-3")!;
+
+      assert.equal(h1.x, 100);
+      assert.equal(h1.y, 150);
+      assert.equal(h1.elevationFt, 12.5);
+
+      assert.equal(h2.x, 800);
+      assert.equal(h2.y, 850);
+      assert.equal(h2.elevationFt, 12.5);
+
+      assert.equal(h3.x, 100);
+      assert.equal(h3.y, 150);
+      assert.equal(h3.elevationFt, 12.5);
+
+      const sceneWithEmptySpawns: CampaignMapScene = {
+        ...sceneWithSpawns,
+        spawnPoints: [],
+        defaultGroundElevationFt: 5,
+      };
+      const transitionedEmpty = activateSceneTransition(currentTable, sceneWithEmptySpawns);
+      const emptyH1 = transitionedEmpty.tokens.find((t) => t.id === "hero-1")!;
+      assert.equal(emptyH1.x, 0);
+      assert.equal(emptyH1.y, 0);
+      assert.equal(emptyH1.elevationFt, 5);
+    });
+  });
+
+  describe("REST Client-Server Serialization Parity", () => {
+    it("maps frontend scene structure to backend REST DTO and back without data corruption", () => {
+      const frontendScene: CampaignMapScene = {
+        id: "scene-contract-1",
+        campaignId: "camp-contract-1",
+        title: "Catacombs Entrance",
+        revealedToPlayers: true,
+        gridType: "square",
+        gridCellSizePx: 70,
+        feetPerCell: 5,
+        widthPx: 1400,
+        heightPx: 1400,
+        defaultGroundElevationFt: 0,
+        spawnPoints: [{ id: "sp-1", name: "Entrance", x: 140, y: 140 }],
+        walls: [
+          {
+            id: "w-1",
+            a: { x: 0, y: 0 },
+            b: { x: 100, y: 0 },
+            wallType: "Door",
+            blocksMovement: true,
+            blocksVision: true,
+            blocksLight: true,
+            blocksSound: true,
+            bottomElevationFt: 0,
+            topElevationFt: 10,
+            doorState: { isOpen: false, isLocked: true },
+          },
+        ],
+        lights: [
+          {
+            id: "l-1",
+            origin: { x: 200, y: 200 },
+            brightRadiusFt: 15,
+            dimRadiusFt: 30,
+            colorHex: "var(--atlas-action)",
+            intensity: 1.0,
+          },
+        ],
+        audioEmitters: [
+          {
+            id: "a-1",
+            url: "crypt.ogg",
+            x: 250,
+            y: 250,
+            elevationFt: 0,
+            maxDistanceFt: 60,
+            volume: 0.8,
+            loopPlayback: true,
+            gmOnly: false,
+          },
+        ],
+        stagedTokens: [
+          {
+            id: "t-1",
+            name: "Sentry Skeleton",
+            templateKey: "Skeleton",
+            x: 300,
+            y: 300,
+            elevationFt: 0,
+            visibilityChannel: "Public",
+            ownerUserId: null,
+            hpCurrent: 13,
+            hpMax: 13,
+          },
+        ],
+      };
+
+      const backendDto = mapFrontendSceneToBackend(frontendScene);
+      assert.equal(backendDto.name, "Catacombs Entrance");
+      assert.equal(backendDto.wall_segments[0].door_state, "Locked");
+      assert.equal(backendDto.wall_segments[0].p1.x, 0);
+      assert.equal(backendDto.wall_segments[0].p2.x, 100);
+
+      const remappedFrontend = mapBackendSceneToFrontend(backendDto);
+      assert.equal(remappedFrontend.title, "Catacombs Entrance");
+      assert.equal(remappedFrontend.walls[0].wallType, "Door");
+      assert.equal(remappedFrontend.walls[0].doorState?.isLocked, true);
+      assert.equal(remappedFrontend.walls[0].doorState?.isOpen, false);
+      assert.equal(remappedFrontend.walls[0].a.x, 0);
+      assert.equal(remappedFrontend.walls[0].b.x, 100);
     });
   });
 });

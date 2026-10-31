@@ -29,6 +29,7 @@ pub enum WallType {
     Normal,
     Window,
     Terrain,
+    OneWay,
     Door,
     SecretDoor,
     Illusion,
@@ -56,15 +57,26 @@ pub struct Point2D {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WallSegment {
     pub id: Uuid,
+    #[serde(alias = "a")]
     pub p1: Point2D,
+    #[serde(alias = "b")]
     pub p2: Point2D,
+    #[serde(alias = "wallType")]
     pub wall_type: WallType,
+    #[serde(default, alias = "doorState")]
     pub door_state: Option<DoorState>,
+    #[serde(alias = "bottomElevationFt")]
     pub bottom_elevation_ft: f32,
+    #[serde(alias = "topElevationFt")]
     pub top_elevation_ft: f32,
+    #[serde(default, alias = "blocksLight")]
     pub blocks_light: bool,
+    #[serde(default, alias = "blocksMovement")]
     pub blocks_movement: bool,
+    #[serde(default, alias = "blocksSound")]
     pub blocks_sound: bool,
+    #[serde(default, alias = "blocksVision")]
+    pub blocks_vision: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,9 +84,13 @@ pub struct LightSource {
     pub id: Uuid,
     pub x: f32,
     pub y: f32,
+    #[serde(default, alias = "elevationFt")]
     pub elevation_ft: f32,
+    #[serde(default, alias = "radiusFt")]
     pub radius_ft: f32,
+    #[serde(alias = "colorHex")]
     pub color_hex: String,
+    #[serde(default)]
     pub intensity: f32,
 }
 
@@ -83,11 +99,17 @@ pub struct SpatialAudioEmitter {
     pub id: Uuid,
     pub x: f32,
     pub y: f32,
+    #[serde(default, alias = "elevationFt")]
     pub elevation_ft: f32,
+    #[serde(default, alias = "radiusFt")]
     pub radius_ft: f32,
+    #[serde(default)]
     pub volume: f32,
+    #[serde(default)]
     pub looping: bool,
+    #[serde(default, alias = "gmOnly")]
     pub gm_only: bool,
+    #[serde(default, alias = "audioClipUrl", alias = "url")]
     pub audio_clip_url: String,
 }
 
@@ -95,13 +117,24 @@ pub struct SpatialAudioEmitter {
 pub struct StagedToken {
     pub id: Uuid,
     pub name: String,
+    #[serde(default, alias = "monsterTemplateId", alias = "templateKey")]
     pub monster_template_id: Option<String>,
     pub x: f32,
     pub y: f32,
+    #[serde(default, alias = "elevationFt")]
     pub elevation_ft: f32,
+    #[serde(default, alias = "sizeCells")]
     pub size_cells: u32,
+    #[serde(default, alias = "tokenAvatarUrl")]
     pub token_avatar_url: Option<String>,
+    #[serde(default, alias = "visibilityChannel")]
     pub visibility: VisibilityChannel,
+}
+
+impl Default for VisibilityChannel {
+    fn default() -> Self {
+        Self::Public
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,24 +145,44 @@ pub struct SpawnPoint {
     pub y: f32,
 }
 
+fn default_grid_type() -> String {
+    "square".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CampaignMapScene {
     pub id: Uuid,
+    #[serde(alias = "campaignId")]
     pub campaign_id: Uuid,
+    #[serde(alias = "title")]
     pub name: String,
+    #[serde(default = "default_grid_type", alias = "gridType")]
     pub grid_type: String,
+    #[serde(alias = "gridCellSizePx")]
     pub grid_size_px: u32,
+    #[serde(alias = "feetPerCell")]
     pub grid_cell_distance_ft: f32,
+    #[serde(alias = "widthPx")]
     pub width_px: u32,
+    #[serde(alias = "heightPx")]
     pub height_px: u32,
+    #[serde(default, alias = "backgroundImageUrl")]
     pub background_image_url: Option<String>,
+    #[serde(default, alias = "defaultGroundElevationFt")]
     pub default_ground_elevation_ft: f32,
+    #[serde(alias = "revealedToPlayers")]
     pub revealed_to_players: bool,
+    #[serde(default, alias = "spawnPoints")]
     pub spawn_points: Vec<SpawnPoint>,
+    #[serde(alias = "walls", alias = "wallSegments")]
     pub wall_segments: Vec<WallSegment>,
+    #[serde(default, alias = "lights", alias = "lightSources")]
     pub light_sources: Vec<LightSource>,
+    #[serde(default, alias = "audioEmitters", alias = "spatialAudioEmitters")]
     pub spatial_audio_emitters: Vec<SpatialAudioEmitter>,
+    #[serde(default, alias = "stagedTokens")]
     pub staged_tokens: Vec<StagedToken>,
+    #[serde(default, alias = "exploredFogTexture")]
     pub explored_fog_texture: Option<Vec<u8>>,
 }
 
@@ -175,9 +228,13 @@ pub fn sanitize_scene_for_player(mut scene: CampaignMapScene) -> CampaignMapScen
         if wall.wall_type == WallType::SecretDoor && wall.door_state != Some(DoorState::Open) {
             wall.wall_type = WallType::Normal;
             wall.door_state = None;
+            wall.blocks_vision = true;
+            wall.blocks_movement = true;
         }
         if wall.wall_type == WallType::Illusion {
             wall.wall_type = WallType::Normal;
+            wall.blocks_vision = true;
+            wall.blocks_movement = true;
         }
     }
     scene

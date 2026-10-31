@@ -1,4 +1,4 @@
-import { signal } from '@preact/signals';
+import { useSignal } from '@preact/signals';
 import type { CampaignMapScene, UserRole } from '../maps/types.ts';
 import { MapsStudioTab } from '../maps/MapsStudioTab.tsx';
 import { SceneAtlas } from '../maps/SceneAtlas.tsx';
@@ -20,7 +20,12 @@ export function CampaignWorkspace({
   onActivateScene,
   onSaveScene,
 }: CampaignWorkspaceProps) {
-  const activeTabSignal = signal<number>(activeTab);
+  let activeTabSignal: { value: number };
+  try {
+    activeTabSignal = useSignal<number>(activeTab);
+  } catch {
+    activeTabSignal = { value: activeTab };
+  }
 
   const tabs = [
     { id: 0, label: 'Table' },
@@ -30,11 +35,20 @@ export function CampaignWorkspace({
 
   return (
     <div class="campaign-workspace" data-testid="campaign-workspace" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <nav class="workspace-tab-bar" style={{ display: 'flex', borderBottom: '1px solid var(--atlas-border)', gap: 'var(--atlas-space-sm)', padding: '0 var(--atlas-space-md)' }}>
+      <nav
+        class="workspace-tab-bar"
+        role="tablist"
+        aria-label="Campaign workspace tabs"
+        style={{ display: 'flex', borderBottom: '1px solid var(--atlas-border)', gap: 'var(--atlas-space-sm)', padding: '0 var(--atlas-space-md)' }}
+      >
         {tabs.map((tab) => (
           <button
             key={tab.id}
+            id={`tab-${tab.id}`}
             type="button"
+            role="tab"
+            aria-selected={activeTabSignal.value === tab.id}
+            aria-controls={`tab-content-${tab.id}`}
             data-testid={`tab-${tab.id}`}
             onClick={() => { activeTabSignal.value = tab.id; }}
             style={{
@@ -44,6 +58,7 @@ export function CampaignWorkspace({
               borderBottom: activeTabSignal.value === tab.id ? '2px solid var(--atlas-action)' : '2px solid transparent',
               fontWeight: activeTabSignal.value === tab.id ? 'bold' : 'normal',
               cursor: 'pointer',
+              color: 'inherit',
             }}
           >
             {tab.label}
@@ -51,23 +66,29 @@ export function CampaignWorkspace({
         ))}
       </nav>
       <div class="workspace-tab-content" style={{ flex: 1, padding: 'var(--atlas-space-md)', minHeight: 0 }}>
-        {activeTabSignal.value === 0 && <div data-testid="tab-content-0">Table View</div>}
-        {activeTabSignal.value === 1 && <div data-testid="tab-content-1">Journal View</div>}
+        {activeTabSignal.value === 0 && (
+          <div id="tab-content-0" role="tabpanel" aria-labelledby="tab-0" data-testid="tab-content-0">Table View</div>
+        )}
+        {activeTabSignal.value === 1 && (
+          <div id="tab-content-1" role="tabpanel" aria-labelledby="tab-1" data-testid="tab-content-1">Journal View</div>
+        )}
         {activeTabSignal.value === 2 && (
-          userRole === 'GM' ? (
-            <MapsStudioTab
-              campaignId={campaignId}
-              userRole={userRole}
-              initialScenes={scenes}
-              onActivateScene={onActivateScene}
-              onSaveScene={onSaveScene}
-            />
-          ) : (
-            <SceneAtlas
-              campaignId={campaignId}
-              scenes={scenes}
-            />
-          )
+          <div id="tab-content-2" role="tabpanel" aria-labelledby="tab-2" style={{ height: '100%' }}>
+            {userRole === 'GM' ? (
+              <MapsStudioTab
+                campaignId={campaignId}
+                userRole={userRole}
+                initialScenes={scenes}
+                onActivateScene={onActivateScene}
+                onSaveScene={onSaveScene}
+              />
+            ) : (
+              <SceneAtlas
+                campaignId={campaignId}
+                scenes={scenes}
+              />
+            )}
+          </div>
         )}
       </div>
     </div>
