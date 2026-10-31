@@ -1,4 +1,4 @@
-# Managed by Giskard-AI/epure@be7b657e450fc96e0e4911ea129444af55be71e8 # v1.6.2
+# Managed by Giskard-AI/epure@e88a04514ffdb76f004b21148aea70640e9c51c7 # v1.8.0
 # Continuous Integration: Zizmor workflow security audit + Rust/WASM/Node Format, Lint, Typecheck, Tests & Build.
 name: "CI"
 
@@ -29,6 +29,8 @@ jobs:
           node-version: "24"
       - name: Domain Glossary & ADR Integrity check
         run: python3 scripts/check-glossary-and-adrs.py
+      - name: Impeccable Design System & WCAG AA Contrast check
+        run: node scripts/check-impeccable-design.mjs
       - name: Rust Format check (cargo fmt)
         run: cargo fmt --all -- --check
       - name: Rust Lint check (cargo clippy)

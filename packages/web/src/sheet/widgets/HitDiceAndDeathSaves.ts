@@ -47,40 +47,52 @@ export function HitDiceAndDeathSaves(context: WidgetRenderContext): HitDiceAndDe
 
   const evaluateDeathSaveResult = (rollResult: number) => {
     if (rollResult === 1) {
+      const nextFailures = Math.min(3, deathFailures + 2);
+      const isDeceased = nextFailures >= 3;
       context.dispatchCommand?.(
         TrameCommand.UpdateActorSheet({
           path: "deathFailures",
-          deathFailures: deathFailures + 2,
-          value: deathFailures + 2,
+          deathFailures: nextFailures,
+          value: nextFailures,
           increment: 2,
+          ...(isDeceased ? { condition: "deceased", status: "deceased" } : {}),
         }),
       );
     } else if (rollResult >= 2 && rollResult <= 9) {
+      const nextFailures = Math.min(3, deathFailures + 1);
+      const isDeceased = nextFailures >= 3;
       context.dispatchCommand?.(
         TrameCommand.UpdateActorSheet({
           path: "deathFailures",
-          deathFailures: deathFailures + 1,
-          value: deathFailures + 1,
+          deathFailures: nextFailures,
+          value: nextFailures,
           increment: 1,
+          ...(isDeceased ? { condition: "deceased", status: "deceased" } : {}),
         }),
       );
     } else if (rollResult >= 10 && rollResult <= 19) {
+      const nextSuccesses = Math.min(3, deathSuccesses + 1);
+      const isStable = nextSuccesses >= 3;
       context.dispatchCommand?.(
         TrameCommand.UpdateActorSheet({
           path: "deathSuccesses",
-          deathSuccesses: deathSuccesses + 1,
-          value: deathSuccesses + 1,
+          deathSuccesses: nextSuccesses,
+          value: nextSuccesses,
           increment: 1,
+          ...(isStable ? { condition: "stable", status: "stable" } : {}),
         }),
       );
     } else if (rollResult === 20) {
       context.dispatchCommand?.(
         TrameCommand.UpdateActorSheet({
+          path: "hp.current",
           deathSuccesses: 0,
           deathFailures: 0,
-          hpCurrent: currentHp + 1,
-          currentHp: currentHp + 1,
-          value: currentHp + 1,
+          hpCurrent: Math.max(1, currentHp + 1),
+          currentHp: Math.max(1, currentHp + 1),
+          value: Math.max(1, currentHp + 1),
+          condition: "stable",
+          status: "stable",
         }),
       );
     }

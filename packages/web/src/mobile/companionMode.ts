@@ -267,7 +267,7 @@ export class TrameAppRoot {
     modalEl.setAttribute("class", "modal-backdrop fullscreen");
 
     const cardEl = new LightweightElement("div");
-    cardEl.setAttribute("class", "modal-card");
+    cardEl.setAttribute("class", "modal-card ds-overlay-modal");
 
     const titleEl = new LightweightElement("h2");
     titleEl.setAttribute("data-testid", "handout-title");
@@ -281,6 +281,7 @@ export class TrameAppRoot {
 
     const closeBtn = new LightweightElement("button");
     closeBtn.setAttribute("data-testid", "modal-close-button");
+    closeBtn.setAttribute("class", "ds-btn ds-btn-secondary");
     closeBtn.textContent = "Close";
     closeBtn.addEventListener("click", () => {
       this.handoutManager.closeModal();
@@ -327,7 +328,11 @@ export class MobileCompanionLayout {
     for (const tab of tabs) {
       const btn = new LightweightElement("button");
       btn.setAttribute("data-testid", tab.buttonId);
-      btn.setAttribute("class", `nav-tab-btn ${this.activeTab === tab.id ? "active" : ""}`);
+      btn.setAttribute(
+        "class",
+        `nav-tab-btn ds-btn ds-btn-secondary ${this.activeTab === tab.id ? "active" : ""}`,
+      );
+      btn.setAttribute("aria-pressed", this.activeTab === tab.id ? "true" : "false");
       btn.textContent = tab.label;
       btn.addEventListener("click", () => {
         this.setActiveTab(tab.id);

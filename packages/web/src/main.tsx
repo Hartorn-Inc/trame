@@ -5,7 +5,8 @@
  *
  * PURPOSE:
  * --------
- * Mounts the root Preact application into `#app` inside `index.html`.
+ * Mounts the root Preact application into `#app` inside `index.html` and loads
+ * the ATLAS v1.1 design token stylesheet (`tokens.css`).
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -------------------------------
@@ -13,15 +14,11 @@
  *      - Uses `render` from `preact` and reactive `@preact/signals` state
  *        (`PreactSignalState`) so high-frequency WebSocket updates bypass
  *        full-tree Virtual DOM reconciliation.
- *
- * EXECUTION LIFECYCLE:
- * --------------------
- *   1. Locate `#app` mount container in DOM.
- *   2. Render root `<App />` component.
  * ============================================================================
  */
 
 import { render } from 'preact';
+import './styles/tokens.css';
 import { App } from './App.tsx';
 
 const container = document.getElementById('app');

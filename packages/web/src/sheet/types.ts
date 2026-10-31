@@ -53,6 +53,7 @@ export interface ViewerContext {
   role?: string;
   userId?: string;
   actorOwnerId?: string | null;
+  padlockUnlocked?: boolean;
 }
 
 export class DuplicateNodeIdError extends Error {
@@ -152,6 +153,13 @@ export const TrameCommand = {
       ...payload,
     };
   },
+  UpdateActorField(payload: Record<string, unknown>): UpdateActorSheetCommand {
+    return {
+      cmd: "UPDATE_ACTOR_SHEET",
+      type: "UPDATE_ACTOR_SHEET",
+      ...payload,
+    };
+  },
   ProjectAoE(payload: Record<string, unknown>): ProjectAoECommand {
     return {
       cmd: "PROJECT_AOE",
@@ -217,8 +225,17 @@ export type RenderedLayoutNode =
   | RenderedTabsNode
   | RenderedWidgetNode;
 
+export interface PadlockHeaderViewModel {
+  testId: "sheet-padlock-toggle";
+  unlocked: boolean;
+  ariaPressed: "true" | "false";
+  iconName: "PadlockUnlockedIcon" | "PadlockLockedIcon";
+  cssClass: string;
+}
+
 export interface RenderedSheetTree {
   systemId: string;
   version: string;
   root: RenderedLayoutNode | null;
+  padlockEditMode?: PadlockHeaderViewModel;
 }

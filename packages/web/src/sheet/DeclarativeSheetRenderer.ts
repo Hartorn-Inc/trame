@@ -182,14 +182,22 @@ export class DeclarativeSheetRenderer {
     dispatcher?: CommandDispatcher,
   ): RenderedSheetTree {
     const parsed = DeclarativeSheetRenderer.parse(tree, viewer);
+    const unlocked = Boolean(viewer?.padlockUnlocked);
     const renderedRoot = parsed.root
-      ? DeclarativeSheetRenderer.renderNode(parsed.root, actorState, dispatcher)
+      ? DeclarativeSheetRenderer.renderNode(parsed.root, actorState, dispatcher, unlocked)
       : null;
 
     return {
       systemId: parsed.systemId,
       version: parsed.version,
       root: renderedRoot,
+      padlockEditMode: {
+        testId: "sheet-padlock-toggle",
+        unlocked,
+        ariaPressed: unlocked ? "true" : "false",
+        iconName: unlocked ? "PadlockUnlockedIcon" : "PadlockLockedIcon",
+        cssClass: "ds-btn ds-btn-secondary",
+      },
     };
   }
 
@@ -197,17 +205,20 @@ export class DeclarativeSheetRenderer {
     node: SheetLayoutNode,
     actorState: unknown,
     dispatcher?: CommandDispatcher,
+    padlockUnlocked = false,
   ): RenderedLayoutNode {
     if (node.kind === "section" || node.kind === "column" || node.kind === "row") {
       const renderedChildren = (node.children || []).map((child) =>
-        DeclarativeSheetRenderer.renderNode(child, actorState, dispatcher),
+        DeclarativeSheetRenderer.renderNode(child, actorState, dispatcher, padlockUnlocked),
       );
+      const baseClass = node.kind === "section" ? "ds-panel" : "";
+      const combinedClass = [node.cssClass, baseClass].filter(Boolean).join(" ") || undefined;
       return {
         id: node.id,
         kind: node.kind,
         title: node.title,
         visibilityTier: node.visibilityTier,
-        cssClass: node.cssClass,
+        cssClass: combinedClass,
         children: renderedChildren,
       };
     }
@@ -219,7 +230,7 @@ export class DeclarativeSheetRenderer {
         icon: tab.icon,
         visibilityTier: tab.visibilityTier,
         children: (tab.children || []).map((child) =>
-          DeclarativeSheetRenderer.renderNode(child, actorState, dispatcher),
+          DeclarativeSheetRenderer.renderNode(child, actorState, dispatcher, padlockUnlocked),
         ),
       }));
       return {
@@ -234,7 +245,10 @@ export class DeclarativeSheetRenderer {
 
     const widgetNode = node as import("./types.ts").WidgetLayoutNode;
     const boundValues = BindingResolver.resolveBindings(actorState, widgetNode.bindings || {});
-    const options = (widgetNode.options as Record<string, unknown>) || {};
+    const options = {
+      ...((widgetNode.options as Record<string, unknown>) || {}),
+      padlockUnlocked,
+    };
 
     const widgetImpl = WidgetRegistry.get(widgetNode.widgetType);
     let renderedOutput: unknown = undefined;
@@ -260,6 +274,9 @@ export class DeclarativeSheetRenderer {
       });
     }
 
+    const combinedWidgetClass =
+      [widgetNode.cssClass, "atlas-tabular-nums"].filter(Boolean).join(" ") || undefined;
+
     return {
       id: widgetNode.id,
       kind: "widget",
@@ -267,7 +284,7 @@ export class DeclarativeSheetRenderer {
       boundValues,
       options,
       visibilityTier: widgetNode.visibilityTier,
-      cssClass: widgetNode.cssClass,
+      cssClass: combinedWidgetClass,
       renderedOutput,
     };
   }
