@@ -24,7 +24,11 @@ import {
 import type { CampaignRoomState } from "../src/types/index.ts";
 
 if (typeof module.register === "function") {
-  module.register("./tsx-loader.mjs", import.meta.url);
+  try {
+    module.register("./tsx-loader.mjs", import.meta.url);
+  } catch {
+    // Optional tsx-loader registration hook
+  }
 }
 
 import { h, options, render } from "preact";
