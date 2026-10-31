@@ -26,13 +26,6 @@ export function StatBlock6Widget(props: WidgetProps): VNode<any> {
     );
   };
 
-  const handleKeyDown = (e: KeyboardEvent, key: string, mod: number) => {
-    if (isLocked && (e.key === 'Enter' || e.key === ' ')) {
-      e.preventDefault();
-      handleAbilityClick(key, mod);
-    }
-  };
-
   const handleScoreChange = (abilityKey: string, currentScore: number, delta: number) => {
     const newScore = Math.max(1, Math.min(30, currentScore + delta));
     props.dispatchCommand?.(
@@ -72,14 +65,21 @@ export function StatBlock6Widget(props: WidgetProps): VNode<any> {
             'data-testid': `ability-card-${key}`,
             role: isLocked ? 'button' : undefined,
             tabIndex: isLocked ? 0 : undefined,
-            'aria-label': isLocked ? `Roll ${key.toUpperCase()} check` : undefined,
+            'aria-label': isLocked ? `Roll ${key.toUpperCase()} check (${modDisplay}, score ${score})` : undefined,
             onClick: () => isLocked && handleAbilityClick(key, mod),
-            onKeyDown: (e: KeyboardEvent) => handleKeyDown(e, key, mod),
+            onKeyDown: isLocked
+              ? (e: KeyboardEvent) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleAbilityClick(key, mod);
+                  }
+                }
+              : undefined,
           },
           h('span', { class: 'ds-ability-name' }, key.toUpperCase()),
-          h('span', { class: 'ds-ability-mod atlas-tabular-nums', 'data-testid': `ability-mod-${key}` }, modDisplay),
+          h('span', { class: 'ds-ability-mod', 'data-testid': `ability-mod-${key}` }, modDisplay),
           isLocked
-            ? h('span', { class: 'ds-ability-score atlas-tabular-nums', 'data-testid': `ability-score-${key}` }, score)
+            ? h('span', { class: 'ds-ability-score', 'data-testid': `ability-score-${key}` }, score)
             : h(
                 'div',
                 { class: 'ds-ability-stepper', 'data-testid': `ability-stepper-${key}` },
@@ -89,7 +89,7 @@ export function StatBlock6Widget(props: WidgetProps): VNode<any> {
                     type: 'button',
                     class: 'ds-stepper-btn ds-stepper-dec',
                     'data-testid': `ability-dec-${key}`,
-                    'aria-label': `Decrease ${key.toUpperCase()}`,
+                    'aria-label': `Decrease ${key.toUpperCase()} score`,
                     onClick: (e: Event) => {
                       e.stopPropagation();
                       handleScoreChange(key, score, -1);
@@ -97,14 +97,14 @@ export function StatBlock6Widget(props: WidgetProps): VNode<any> {
                   },
                   '-',
                 ),
-                h('span', { class: 'ds-ability-score-val atlas-tabular-nums' }, score),
+                h('span', { class: 'ds-ability-score-val' }, score),
                 h(
                   'button',
                   {
                     type: 'button',
                     class: 'ds-stepper-btn ds-stepper-inc',
                     'data-testid': `ability-inc-${key}`,
-                    'aria-label': `Increase ${key.toUpperCase()}`,
+                    'aria-label': `Increase ${key.toUpperCase()} score`,
                     onClick: (e: Event) => {
                       e.stopPropagation();
                       handleScoreChange(key, score, 1);

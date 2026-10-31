@@ -6,6 +6,7 @@ import type { CompendiumEntry } from '../../../game-systems/dnd5e/src/compendium
 
 export const isSheetDrawerOpenSignal = signal<boolean>(false);
 export const isCompendiumDrawerOpenSignal = signal<boolean>(false);
+export const coreStatsLockedSignal = signal<boolean>(true);
 
 export interface HudDrawersProps {
   actorState?: unknown;
@@ -17,7 +18,7 @@ export interface HudDrawersProps {
   isTableCanvasMounted?: boolean;
 }
 
-export function HudDrawers(props: HudDrawersProps): VNode<any> {
+export function HudDrawers(props: HudDrawersProps): VNode {
   const closeSheet = () => {
     isSheetDrawerOpenSignal.value = false;
   };
@@ -37,21 +38,15 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
             'header',
             { class: 'ds-drawer-header' },
             h('h2', null, 'Character Sheet'),
-            h(
-              'button',
-              {
-                type: 'button',
-                'data-testid': 'btn-close-sheet-drawer',
-                'aria-label': 'Close character sheet drawer',
-                onClick: closeSheet,
-              },
-              '×',
-            ),
+            h('button', { type: 'button', 'data-testid': 'btn-close-sheet-drawer', 'aria-label': 'Close character sheet drawer', onClick: closeSheet }, '×'),
           ),
           h(DeclarativeSheetView, {
             actorState: props.actorState ?? {},
             gm_core_locked: props.gm_core_locked,
-            coreStatsLocked: props.coreStatsLocked,
+            coreStatsLocked: props.coreStatsLocked ?? coreStatsLockedSignal.value,
+            onToggleCoreStatsLocked: () => {
+              coreStatsLockedSignal.value = !coreStatsLockedSignal.value;
+            },
             dispatchCommand: props.dispatchCommand,
             onCloseDrawer: closeSheet,
             isTableCanvasMounted: props.isTableCanvasMounted,

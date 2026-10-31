@@ -96,8 +96,8 @@ export function AttackActionTableWidget(props: WidgetProps): VNode<any> {
                 ? h('span', { class: 'ds-depleted-badge', 'data-testid': `depleted-badge-${atk.id}` }, ' [Depleted]')
                 : null,
             ),
-            h('td', { class: 'atlas-tabular-nums' }, bonusDisplay),
-            h('td', { class: 'atlas-tabular-nums' }, `${atk.damageFormula} ${atk.damageType ?? ''}`),
+            h('td', null, bonusDisplay),
+            h('td', null, `${atk.damageFormula} ${atk.damageType ?? ''}`),
             h(
               'td',
               null,
@@ -107,6 +107,7 @@ export function AttackActionTableWidget(props: WidgetProps): VNode<any> {
                   type: 'button',
                   class: 'ds-btn-atk-roll',
                   'data-testid': `btn-atk-roll-${atk.id}`,
+                  'aria-label': `Roll attack with ${atk.name}`,
                   disabled: isDepleted,
                   onClick: () => handleAttackRoll(atk),
                 },
@@ -118,6 +119,7 @@ export function AttackActionTableWidget(props: WidgetProps): VNode<any> {
                   type: 'button',
                   class: 'ds-btn-dmg-roll',
                   'data-testid': `btn-dmg-roll-${atk.id}`,
+                  'aria-label': `Roll damage for ${atk.name}`,
                   onClick: () => handleDamageRoll(atk),
                 },
                 'Dmg',

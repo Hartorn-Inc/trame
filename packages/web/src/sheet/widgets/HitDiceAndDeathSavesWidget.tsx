@@ -35,24 +35,24 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
     );
   };
 
-  const handleToggleSuccess = (idx: number) => {
-    const nextSuccesses = (idx + 1 === deathSuccesses) ? idx : idx + 1;
+  const handleToggleDeathSuccess = (idx: number) => {
+    const nextVal = idx < deathSuccesses ? idx : idx + 1;
     props.dispatchCommand?.(
       TrameCommand.UpdateActorSheet({
-        path: 'deathSuccesses',
-        deathSuccesses: nextSuccesses,
-        value: nextSuccesses,
+        path: 'deathSaves.successes',
+        deathSuccesses: nextVal,
+        value: nextVal,
       }),
     );
   };
 
-  const handleToggleFailure = (idx: number) => {
-    const nextFailures = (idx + 1 === deathFailures) ? idx : idx + 1;
+  const handleToggleDeathFailure = (idx: number) => {
+    const nextVal = idx < deathFailures ? idx : idx + 1;
     props.dispatchCommand?.(
       TrameCommand.UpdateActorSheet({
-        path: 'deathFailures',
-        deathFailures: nextFailures,
-        value: nextFailures,
+        path: 'deathSaves.failures',
+        deathFailures: nextVal,
+        value: nextVal,
       }),
     );
   };
@@ -75,7 +75,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
       'div',
       { class: 'ds-hitdice-pane', 'data-testid': 'hitdice-pane' },
       h('span', { class: 'ds-pane-label' }, 'Hit Dice'),
-      h('span', { class: 'ds-hitdice-val atlas-tabular-nums', 'data-testid': 'hitdice-count' }, `${hitDiceCurrent} / ${hitDiceMax} (d${hitDieSides})`),
+      h('span', { class: 'ds-hitdice-val', 'data-testid': 'hitdice-count' }, `${hitDiceCurrent} / ${hitDiceMax} (d${hitDieSides})`),
       h(
         'button',
         {
@@ -95,41 +95,53 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
           h('span', { class: 'ds-pane-label' }, 'Death Saves'),
           h(
             'div',
-            { class: 'ds-deathsave-row' },
+            {
+              class: 'ds-deathsave-row',
+              role: 'group',
+              'aria-label': `Death save successes: ${deathSuccesses} of 3`,
+            },
             h('span', { class: 'ds-label-success' }, 'Successes: '),
-            [0, 1, 2].map((idx) =>
-              h(
+            [0, 1, 2].map((idx) => {
+              const isFilled = idx < deathSuccesses;
+              return h(
                 'button',
                 {
                   key: `succ-${idx}`,
                   type: 'button',
-                  class: `ds-pip ${idx < deathSuccesses ? 'is-filled' : ''}`,
+                  class: `ds-pip ds-pip-btn ${isFilled ? 'is-filled' : ''}`,
                   'data-testid': `death-success-pip-${idx}`,
-                  'aria-label': `Death save success ${idx + 1}`,
-                  'aria-pressed': idx < deathSuccesses,
-                  onClick: () => handleToggleSuccess(idx),
+                  'aria-label': `Death save success ${idx + 1}, currently ${isFilled ? 'marked' : 'empty'}`,
+                  'aria-pressed': isFilled ? 'true' : 'false',
+                  onClick: () => handleToggleDeathSuccess(idx),
                 },
-              ),
-            ),
+                isFilled ? '●' : '○',
+              );
+            }),
           ),
           h(
             'div',
-            { class: 'ds-deathsave-row' },
+            {
+              class: 'ds-deathsave-row',
+              role: 'group',
+              'aria-label': `Death save failures: ${deathFailures} of 3`,
+            },
             h('span', { class: 'ds-label-failure' }, 'Failures: '),
-            [0, 1, 2].map((idx) =>
-              h(
+            [0, 1, 2].map((idx) => {
+              const isFilled = idx < deathFailures;
+              return h(
                 'button',
                 {
                   key: `fail-${idx}`,
                   type: 'button',
-                  class: `ds-pip ${idx < deathFailures ? 'is-filled' : ''}`,
+                  class: `ds-pip ds-pip-btn ${isFilled ? 'is-filled' : ''}`,
                   'data-testid': `death-failure-pip-${idx}`,
-                  'aria-label': `Death save failure ${idx + 1}`,
-                  'aria-pressed': idx < deathFailures,
-                  onClick: () => handleToggleFailure(idx),
+                  'aria-label': `Death save failure ${idx + 1}, currently ${isFilled ? 'marked' : 'empty'}`,
+                  'aria-pressed': isFilled ? 'true' : 'false',
+                  onClick: () => handleToggleDeathFailure(idx),
                 },
-              ),
-            ),
+                isFilled ? '●' : '○',
+              );
+            }),
           ),
           h(
             'button',

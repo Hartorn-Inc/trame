@@ -23,13 +23,6 @@ export function SavingThrowListWidget(props: WidgetProps): VNode<any> {
     );
   };
 
-  const handleKeyDown = (e: KeyboardEvent, key: string, mod: number) => {
-    if (isLocked && (e.key === 'Enter' || e.key === ' ')) {
-      e.preventDefault();
-      handleSaveClick(key, mod);
-    }
-  };
-
   const handleToggleProficiency = (key: string, currentProf: boolean) => {
     props.dispatchCommand?.(
       TrameCommand.UpdateActorSheet({
@@ -67,24 +60,36 @@ export function SavingThrowListWidget(props: WidgetProps): VNode<any> {
             'data-testid': `save-row-${key}`,
             role: isLocked ? 'button' : undefined,
             tabIndex: isLocked ? 0 : undefined,
-            'aria-label': isLocked ? `Roll ${key.toUpperCase()} saving throw` : undefined,
+            'aria-label': isLocked ? `Roll ${key.toUpperCase()} saving throw (${modDisplay})` : undefined,
             onClick: () => isLocked && handleSaveClick(key, mod),
-            onKeyDown: (e: KeyboardEvent) => handleKeyDown(e, key, mod),
+            onKeyDown: isLocked
+              ? (e: KeyboardEvent) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleSaveClick(key, mod);
+                  }
+                }
+              : undefined,
           },
-          h('button', {
-            type: 'button',
-            class: `ds-prof-pip ${proficient ? 'is-proficient' : ''}`,
-            'data-testid': `save-prof-toggle-${key}`,
-            'aria-label': `Toggle proficiency for ${key.toUpperCase()} saving throw`,
-            'aria-pressed': proficient,
-            disabled: isLocked,
-            onClick: (e: Event) => {
-              e.stopPropagation();
-              if (!isLocked) handleToggleProficiency(key, proficient);
-            },
-          }),
+          isLocked
+            ? h('span', { class: `ds-prof-pip ${proficient ? 'is-proficient' : ''}`, 'aria-hidden': 'true' }, proficient ? '●' : '○')
+            : h(
+                'button',
+                {
+                  type: 'button',
+                  class: `ds-prof-pip ${proficient ? 'is-proficient' : ''}`,
+                  'data-testid': `save-prof-toggle-${key}`,
+                  'aria-label': `Toggle ${key.toUpperCase()} saving throw proficiency`,
+                  'aria-pressed': proficient ? 'true' : 'false',
+                  onClick: (e: Event) => {
+                    e.stopPropagation();
+                    handleToggleProficiency(key, proficient);
+                  },
+                },
+                proficient ? '●' : '○',
+              ),
           h('span', { class: 'ds-save-name' }, key.toUpperCase()),
-          h('span', { class: 'ds-save-mod atlas-tabular-nums', 'data-testid': `save-mod-${key}` }, modDisplay),
+          h('span', { class: 'ds-save-mod', 'data-testid': `save-mod-${key}` }, modDisplay),
         );
       }),
     ),

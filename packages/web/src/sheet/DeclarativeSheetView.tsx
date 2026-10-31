@@ -1,6 +1,6 @@
 import { h, type VNode } from 'preact';
-import { useState } from 'preact/hooks';
-import { DND5E_SHEET_LAYOUT } from '../../../game-systems/dnd5e/src/sheetLayout.ts';
+import { useMemo, useState } from 'preact/hooks';
+import { DND5E_SHEET_LAYOUT } from '../../../game-systems/dnd5e/src/index.ts';
 import { BindingResolver } from './binding.ts';
 import { WidgetRegistry } from './WidgetRegistry.ts';
 import type { CommandDispatcher, SheetLayoutNode, SheetLayoutTree, ViewerContext } from './types.ts';
@@ -58,24 +58,28 @@ export interface DeclarativeSheetViewProps {
   onToggleCoreStatsLocked?: () => void;
 }
 
-export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<any> {
+export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode {
   const layout = props.sheetLayout ?? DND5E_SHEET_LAYOUT;
   const [localLocked, setLocalLocked] = useState(props.coreStatsLocked ?? true);
   const [activeTabId, setActiveTabId] = useState<string>('tab-combat');
 
   const isGmLocked = Boolean(props.gm_core_locked);
-  const effectiveLocked = isGmLocked ? true : (props.coreStatsLocked !== undefined ? props.coreStatsLocked : localLocked);
+  const effectiveLocked = isGmLocked
+    ? true
+    : props.onToggleCoreStatsLocked
+    ? (props.coreStatsLocked ?? true)
+    : localLocked;
 
   const toggleLock = () => {
     if (isGmLocked) return;
     if (props.onToggleCoreStatsLocked) {
       props.onToggleCoreStatsLocked();
     } else {
-      setLocalLocked(!localLocked);
+      setLocalLocked((prev) => !prev);
     }
   };
 
-  const renderNode = (node: SheetLayoutNode): VNode<any> | null => {
+  const renderNode = (node: SheetLayoutNode): VNode | null => {
     if (node.kind === 'section' || node.kind === 'column' || node.kind === 'row') {
       const children = (node.children || []).map((child) => renderNode(child)).filter(Boolean);
       return h(
@@ -95,18 +99,22 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
       const currentTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
       return h(
         'div',
-        {\n          key: node.id,\n          id: node.id,\n          class: 'ds-layout-tabs',\n        },
+        { key: node.id, id: node.id, class: 'ds-layout-tabs' },
         h(
           'div',
-          { class: 'ds-tabs-header' },
+          { class: 'ds-tabs-header', role: 'tablist', 'aria-label': 'Character Sheet Sections' },
           tabs.map((tab) =>
             h(
               'button',
               {
                 key: tab.id,
+                id: `tab-btn-${tab.id}`,
                 type: 'button',
+                role: 'tab',
                 class: `ds-tab-button ${tab.id === currentTab?.id ? 'is-active' : ''}`,
                 'data-testid': `tab-btn-${tab.id}`,
+                'aria-selected': tab.id === currentTab?.id ? 'true' : 'false',
+                'aria-controls': `tab-body-${tab.id}`,
                 onClick: () => setActiveTabId(tab.id),
               },
               tab.label,
@@ -115,7 +123,13 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
         ),
         h(
           'div',
-          { class: 'ds-tabs-body', 'data-testid': `tab-body-${currentTab?.id}` },
+          {
+            class: 'ds-tabs-body',
+            role: 'tabpanel',
+            id: `tab-body-${currentTab?.id}`,
+            'aria-labelledby': `tab-btn-${currentTab?.id}`,
+            'data-testid': `tab-body-${currentTab?.id}`,
+          },
           (currentTab?.children || []).map((child) => renderNode(child)),
         ),
       );
@@ -154,10 +168,12 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
           type: 'button',
           class: `ds-lock-toggle ${effectiveLocked ? 'is-locked' : 'is-unlocked'}`,
           'data-testid': 'sheet-padlock-toggle',
-          'aria-pressed': String(!effectiveLocked),
+          'aria-pressed': effectiveLocked ? 'false' : 'true',
           'aria-label': isGmLocked
             ? 'Character sheet locked by GM'
-            : (effectiveLocked ? 'Unlock character build mode' : 'Lock character build mode'),
+            : effectiveLocked
+            ? 'Character sheet locked in roll mode. Activate to enter edit mode.'
+            : 'Character sheet unlocked in edit mode. Activate to enter roll mode.',
           disabled: isGmLocked,
           title: isGmLocked ? 'Locked by GM' : (effectiveLocked ? 'Unlock Build Mode' : 'Lock Play Mode'),
           onClick: toggleLock,

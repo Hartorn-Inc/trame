@@ -25,13 +25,6 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
     );
   };
 
-  const handleKeyDown = (e: KeyboardEvent, key: string, mod: number) => {
-    if (isLocked && (e.key === 'Enter' || e.key === ' ')) {
-      e.preventDefault();
-      handleSkillClick(key, mod);
-    }
-  };
-
   const handleCycleRank = (key: string, currentRank: number) => {
     const nextRank = (currentRank + 1) % 3;
     const rankLabels = ['none', 'proficient', 'expertise'];
@@ -69,6 +62,7 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
         }
         const modDisplay = mod >= 0 ? `+${mod}` : `${mod}`;
 
+        const rankGlyph = rank === 2 ? '★' : rank === 1 ? '●' : '○';
         return h(
           'li',
           {
@@ -77,25 +71,37 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
             'data-testid': `skill-row-${key}`,
             role: isLocked ? 'button' : undefined,
             tabIndex: isLocked ? 0 : undefined,
-            'aria-label': isLocked ? `Roll ${key} check` : undefined,
+            'aria-label': isLocked ? `Roll ${key} skill check (${modDisplay})` : undefined,
             onClick: () => isLocked && handleSkillClick(key, mod),
-            onKeyDown: (e: KeyboardEvent) => handleKeyDown(e, key, mod),
+            onKeyDown: isLocked
+              ? (e: KeyboardEvent) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleSkillClick(key, mod);
+                  }
+                }
+              : undefined,
           },
-          h('button', {
-            type: 'button',
-            class: `ds-prof-pip rank-${rank}`,
-            'data-testid': `skill-prof-cycle-${key}`,
-            'data-rank': rank,
-            'aria-label': `Cycle proficiency rank for ${key} (currently ${['unproficient', 'proficient', 'expertise'][rank]})`,
-            disabled: isLocked,
-            onClick: (e: Event) => {
-              e.stopPropagation();
-              if (!isLocked) handleCycleRank(key, rank);
-            },
-          }),
+          isLocked
+            ? h('span', { class: `ds-prof-pip rank-${rank}`, 'aria-hidden': 'true' }, rankGlyph)
+            : h(
+                'button',
+                {
+                  type: 'button',
+                  class: `ds-prof-pip rank-${rank}`,
+                  'data-testid': `skill-prof-cycle-${key}`,
+                  'data-rank': rank,
+                  'aria-label': `Cycle proficiency rank for ${key}, current rank: ${rank}`,
+                  onClick: (e: Event) => {
+                    e.stopPropagation();
+                    handleCycleRank(key, rank);
+                  },
+                },
+                rankGlyph,
+              ),
           h('span', { class: 'ds-skill-name' }, key),
-          h('span', { class: 'ds-skill-passive atlas-tabular-nums', 'data-testid': `skill-passive-${key}` }, `(${passive})`),
-          h('span', { class: 'ds-skill-mod atlas-tabular-nums', 'data-testid': `skill-mod-${key}` }, modDisplay),
+          h('span', { class: 'ds-skill-passive', 'data-testid': `skill-passive-${key}` }, `(${passive})`),
+          h('span', { class: 'ds-skill-mod', 'data-testid': `skill-mod-${key}` }, modDisplay),
         );
       }),
     ),
