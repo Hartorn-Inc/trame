@@ -1,0 +1,20 @@
+{
+  "designSystem": {
+    "path": "DESIGN.md",
+    "sidecar": ".impeccable/design.json"
+  },
+  "detector": {
+    "designSystem": {
+      "enabled": true
+    },
+    "ignore": [
+      "**/dist/**",
+      "**/node_modules/**",
+      "**/target/**",
+      "packages/web/src/wasm/**"
+    ]
+  },
+  "hook": {
+    "perEditRules": "all"
+  }
+}

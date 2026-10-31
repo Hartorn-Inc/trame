@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" fill="none" role="img" aria-label="TRAME ATLAS v1.1 Cartographic Workspace Overview">
+  <rect width="1280" height="720" fill="#0F1A25"/>
+  <!-- Top Bar Chrome -->
+  <rect x="0" y="0" width="1280" height="48" fill="#182736"/>
+  <line x1="0" y1="48" x2="1280" y2="48" stroke="#405466" stroke-width="1"/>
+  <!-- T Brand Mark (route-intersection) -->
+  <path d="M20 16h16M28 16v16" stroke="#F1F4F3" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="28" cy="24" r="2.5" fill="#F3BB71"/>
+  <!-- Left Map Tool Rail -->
+  <rect x="0" y="48" width="48" height="672" fill="#182736"/>
+  <line x1="48" y1="48" x2="48" y2="720" stroke="#405466" stroke-width="1"/>
+  <rect x="4" y="60" width="40" height="40" rx="4" fill="#203243" stroke="#F3BB71" stroke-width="1.5"/>
+  <rect x="4" y="108" width="40" height="40" rx="4" fill="#203243" stroke="#405466" stroke-width="1"/>
+  <rect x="4" y="156" width="40" height="40" rx="4" fill="#203243" stroke="#405466" stroke-width="1"/>
+  <!-- Tactical Battlemap Canvas Grid (75%+ Viewport Primacy) -->
+  <g stroke="#B8C7D1" stroke-opacity="0.16" stroke-width="1">
+    <line x1="168" y1="48" x2="168" y2="720"/>
+    <line x1="288" y1="48" x2="288" y2="720"/>
+    <line x1="408" y1="48" x2="408" y2="720"/>
+    <line x1="528" y1="48" x2="528" y2="720"/>
+    <line x1="648" y1="48" x2="648" y2="720"/>
+    <line x1="768" y1="48" x2="768" y2="720"/>
+    <line x1="48" y1="168" x2="900" y2="168"/>
+    <line x1="48" y1="288" x2="900" y2="288"/>
+    <line x1="48" y1="408" x2="900" y2="408"/>
+    <line x1="48" y1="528" x2="900" y2="528"/>
+    <line x1="48" y1="648" x2="900" y2="648"/>
+  </g>
+  <!-- Topographic Contours & Tactical Tokens (Ally Solid Circle vs Hostile Dashed Hexagon) -->
+  <path d="M180 520C280 360 440 340 580 420C700 488 780 420 840 280" stroke="#405466" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="348" cy="348" r="24" fill="#182736" stroke="#80CBE2" stroke-width="2.5"/>
+  <circle cx="366" cy="330" r="6" fill="#80CBE2"/>
+  <circle cx="588" cy="408" r="24" fill="#182736" stroke="#D57973" stroke-width="2.5" stroke-dasharray="6 4"/>
+  <polygon points="606,382 614,387 614,395 606,400 598,395 598,387" fill="#D57973"/>
+  <!-- Right Contextual Sheet Drawer (Single-Drawer Rule) -->
+  <rect x="900" y="48" width="380" height="672" fill="#182736"/>
+  <line x1="900" y1="48" x2="900" y2="720" stroke="#405466" stroke-width="1"/>
+  <rect x="924" y="72" width="332" height="56" rx="8" fill="#203243" stroke="#405466" stroke-width="1"/>
+  <rect x="924" y="144" width="332" height="120" rx="8" fill="#182736" stroke="#405466" stroke-width="1"/>
+  <rect x="924" y="280" width="332" height="180" rx="8" fill="#182736" stroke="#405466" stroke-width="1"/>
+</svg>
