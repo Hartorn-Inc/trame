@@ -15,44 +15,40 @@ However, the full combat and progression rules of SRD 5.1 introduce requirements
 5. Deterministically managing `ShortRest` and `LongRest`, including spending hit dice, resetting `ResourcePool` counters, recovering half of maximum hit dice on a long rest, and handling spell slots according to caster type (standard spellcasting vs. Warlock Pact Magic).
 6. Expiring active `Condition` entries in strict temporal order across three `TurnTrigger` checkpoints (`ROUNDS`, `TURNS_START`, `TURNS_END`) correlated with the active turn actor.
 7. Providing a 3-tier hierarchical compendium (`SYSTEM_SRD` read-only base, `INSTANCE_LIBRARY` shared layer, `CAMPAIGN_HOMEBREW` priority override) compliant with the CC-BY-4.0 license.
-8. Deterministically evaluating character level advancement from level 1 to 20 (`applyLevelUp`), including subclass selection, Ability Score Improvements (capped at 20) versus feats, and progression tables (`FULL_CASTER_SPELL_SLOTS`, `HALF_CASTER_SPELL_SLOTS`, `PACT_MAGIC_SPELL_SLOTS`).
-9. Eliminating client-side `Math.random()` by requiring server-authoritative `ChaCha20Rng` dice roll evaluations for HP advancement and rest recoveries.
-10. Unifying actor sheet mutations across live table sessions (`TrameCommand::UpdateActorData` via WebSocket to `TableRoomActor`) and out-of-session preparation (`CampaignWorkspace` via REST).
-11. Supporting bilingual localization (`en`/`fr`) and weightless magical containers (`contentWeightMultiplier: 0`) within the compendium schema.
+8. Supporting deterministic progression from level 1 to 20 (`applyLevelUp`), including subclass selection milestones, Ability Score Improvements (ASI) capped at 20 vs. Feat selection, spell learning, and canonical spell slot progression matrices.
+9. Enforcing server-side cryptographic authority (`ChaCha20Rng`) for all hit dice and hit point recovery rolls during level-up and rests.
+10. Providing bilingual metadata support (`en`/`fr`) under universal canonical ASCII slugs and container tare cancellation (`contentWeightMultiplier: 0`).
 
 ## Decision
-1. **Rust/WASM vs. TypeScript Execution Boundary and Module Layout**:
+1. **Rust/WASM vs. TypeScript Execution Boundary and Module Organization**:
    - `crates/trame-engine` remains 100% agnostic to D&D 5e and provides the generic `derivedDAG` engine and elementary `DamageMitigation` primitive.
    - All D&D 5e domain logic is encapsulated in `packages/game-systems/dnd5e` as pure, strictly typed TypeScript modules: `system.json`, `manifest.ts`, `pipeline.ts`, `progression.ts`, `rest.ts`, and `compendium.ts`.
 2. **Deterministic Multi-Type Damage Pipeline**:
    - `resolveDamagePipeline(actor, damageInstances, options)` computes `DamageMitigation` per instance (`IMMUNE` 0x -> `RESISTANT` `Math.floor(amount * 0.5)` -> `VULNERABLE` 2x), deducts from `TempHP` first, applies `InstantDeath` or `DeathSavingThrow` failures at 0 HP, and emits `ConcentrationCheckPrompt` when applicable.
-3. **Deterministic Resource Pools and Rests (`packages/game-systems/dnd5e/src/rest.ts`)**:
-   - Pure, synchronous rest functions reside in `packages/game-systems/dnd5e/src/rest.ts`.
-   - `applyShortRest(actor, options)` validates available hit dice, computes HP recovery per die as `Math.max(1, roll + conMod)`, resets `SHORT_REST` `ResourcePool` entries, and recharges Pact Magic slots.
-   - `applyLongRest(actor)` restores HP to `hp.max`, resets `TempHP` to 0, recovers `Math.max(1, Math.floor(hitDiceMax / 2))` hit dice, decrements exhaustion by 1, and resets all spell slots and resource pools.
-4. **Deterministic Progression Engine (`packages/game-systems/dnd5e/src/progression.ts`)**:
-   - `applyLevelUp(actor, options)` advances actor level incrementally up to maximum level 20 (`1 <= level <= 20`).
-   - Validates mandatory subclass selection at designated class milestone levels.
-   - Validates Ability Score Improvements (`+2` or `+1/+1`), capping scores strictly at 20, or attaches valid feat identifiers from `SystemSRD`.
-   - Exports canonical progression tables: `FULL_CASTER_SPELL_SLOTS`, `HALF_CASTER_SPELL_SLOTS`, and `PACT_MAGIC_SPELL_SLOTS`, reconciling current and max slot capacities via `reconcileSlots`.
-5. **Server-Authoritative Dice Rolls and Dual Persistence Channels**:
-   - UI components never use `Math.random()`. Hit points advancement and hit dice recovery query the server-authoritative `ChaCha20Rng` service via REST (`POST /api/v1/campaigns/{id}/dice/roll`) outside active sessions or CQRS command (`TrameCommand::RollDice`) in active table rooms.
-   - Every roll produces a signed `TrameEvent` appended to the public session timeline.
-   - Character sheet updates dispatch `TrameCommand::UpdateActorData` over WebSocket to `TableRoomActor` (`SqlxPostgresStore`) during live sessions, or `PUT /api/v1/campaigns/{id}/actors/{actor_id}` when editing in `CampaignWorkspace`.
-6. **3-Tier Hierarchical Compendium, Bilingual i18n, and CC-BY-4.0 License**:
+3. **Deterministic Resource Pools and Rests**:
+   - `applyShortRest(actor, options)` spends hit dice (`hitDieRoll + conMod`, min 1 HP), resets `SHORT_REST` `ResourcePool` entries, and recharges Pact Magic slots.
+   - `applyLongRest(actor)` restores full HP, resets `TempHP` to 0, recovers `Math.max(1, Math.floor(hitDiceMax / 2))` hit dice, decrements exhaustion by 1, and resets all spell slots and resource pools.
+   - Rests execute as pure functions in `rest.ts`. All hit dice rolls require certified server-side `ChaCha20Rng` random numbers (`POST /api/v1/campaigns/{id}/dice/roll` or WebSocket `TrameCommand::RollDice`).
+4. **Deterministic Level-Up Progression (Levels 1 to 20)**:
+   - `applyLevelUp(actor, options)` in `progression.ts` validates level increments up to level 20, enforces subclass selection milestones, validates ASI limits (`+2` or `+1/+1` with each ability score capped at 20) vs. Feat selection, and synchronizes spell slot capacity.
+   - The module exports static progression matrices: `FULL_CASTER_SPELL_SLOTS`, `HALF_CASTER_SPELL_SLOTS`, and `PACT_MAGIC_SPELL_SLOTS`.
+   - Hit point increases enforce a minimum gain of 1 HP (`Math.max(1, baseGain + conMod)`), using either fixed average or server-certified `ChaCha20Rng` rolls.
+5. **3-Tier Hierarchical Compendium, Bilingual Localization, and CC-BY-4.0 License**:
    - `CompendiumResolver` enforces `CAMPAIGN_HOMEBREW` > `INSTANCE_LIBRARY` > `SYSTEM_SRD` priority and exposes the mandatory Wizards of the Coast LLC SRD 5.1 CC-BY-4.0 attribution notice.
-   - Canonical compendium keys maintain universal ASCII slugs (e.g., `srd:spell:fireball`, `srd:item:bag_of_holding`).
-   - Compendium entries support optional bilingual metadata (`i18n?: { en: { name: string, description: string }, fr: { name: string, description: string } }`).
-   - Magic container items define `contentWeightMultiplier: 0` to negate content weight calculation in container hierarchies.
+   - Compendium entries use universal untranslated ASCII slugs (`srd:spell:fireball`, `srd:item:bag_of_holding`) and support optional bilingual metadata (`i18n?: { en: LocalizedDisplayMetadata, fr: LocalizedDisplayMetadata }`).
+   - Magic containers declare `contentWeightMultiplier: 0` to negate content weight.
+6. **Dual-Channel Actor Persistence (CQRS WebSocket / REST)**:
+   - In active tabletop sessions (`HudDrawers.tsx`), modifications dispatch `TrameCommand::UpdateActorData` via WebSocket, processed by `TableRoomActor` and stored in `SqlxPostgresStore`.
+   - Out-of-session modifications in `CampaignWorkspace` dispatch REST requests (`PUT /api/v1/campaigns/{id}/actors/{actor_id}`).
 
 ## Consequences
 ### Positive
 - `crates/trame-engine` remains generic and reusable across tabletop RPG systems.
 - All D&D 5e rules are pure, deterministic functions verified under `node --test`.
 - CC-BY-4.0 legal attribution is built directly into `CompendiumResolver`.
-- Server-authoritative `ChaCha20Rng` eliminates dice roll tampering for character advancement and recovery.
-- State persistence guarantees consistency across live table sessions and offline workspace preparation.
+- Server-authoritative `ChaCha20Rng` prevents client-side roll manipulation during level-up and rests.
+- Progression matrices and rest rules cover the complete level 1 to 20 SRD 5.1 lifecycle.
 
 ### Negative
 - Combat turn evaluation requires explicitly passing `currentTurnActorId` when invoking `decrementConditionDurations`.
-- Client components must support dual persistence channels depending on live room connection status.
+- UI components must support dual persistence adapters depending on whether the session is live or in workspace view.
