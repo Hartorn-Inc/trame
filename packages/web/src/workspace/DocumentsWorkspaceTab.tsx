@@ -53,14 +53,32 @@ export function HandoutRevealModal() {
   const activeModal = activeHandoutModalSignal.value;
 
   useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
+    const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         activeHandoutModalSignal.value = null;
+      } else if (e.key === "Tab" && activeHandoutModalSignal.value) {
+        const closeBtn = typeof document !== "undefined"
+          ? (document.querySelector('[data-testid="close-handout-modal"]') as HTMLElement | null)
+          : null;
+        if (closeBtn) {
+          e.preventDefault();
+          closeBtn.focus();
+        }
       }
     };
-    window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
+
+  useEffect(() => {
+    if (!activeModal) return;
+    const prevFocused = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+    return () => {
+      if (prevFocused && typeof prevFocused.focus === "function") {
+        prevFocused.focus();
+      }
+    };
+  }, [activeModal]);
 
   if (!activeModal) return null;
 
