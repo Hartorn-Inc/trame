@@ -1,3 +1,5 @@
+#![allow(clippy::doc_lazy_continuation, clippy::collapsible_if)]
+
 //! ============================================================================
 //! TRAME CLI ARCHIVE SUBCOMMANDS: INSPECT, EXPORT, AND IMPORT (archive.rs)
 //! ============================================================================
@@ -663,18 +665,25 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use trame_server::archive::CampaignImportTarget;
     use trame_server::assets::store::InMemoryAssetStore;
     use trame_server::auth::magic_link::MagicLinkService;
-    use trame_server::auth::session::{CampaignMemberRecord, InMemorySessionStore, SessionStore};
+    use trame_server::auth::session::{AuthState, InMemorySessionStore, SessionStore};
     use trame_server::auth::totp::TotpService;
-    use trame_server::http::{AppState, InMemoryMembershipValidator, build_app_router};
+    use trame_server::http::{
+        AppState, InMemoryBlobStore, InMemoryMembershipValidator, build_router_with_state,
+        seed_campaign_for_export,
+    };
     use trame_server::room::RoomLeaseManager;
     use trame_server::storage::blob::{BlobStore, slice_to_stream};
+    use trame_server::timeline::InMemoryTimelineStorage;
     use trame_server::wal::InMemoryWalStorage;
 
     #[test]
     fn test_parse_archive_args_parameterized_subcommands_and_flags() {
         let cid = Uuid::new_v4();
+        let cid_str = cid.to_string();
         let cases = vec![
             (
                 "inspect_standard",
@@ -695,7 +704,7 @@ mod tests {
                 vec![
                     "export",
                     "--campaign",
-                    &cid.to_string(),
+                    &cid_str,
                     "--output",
                     "/tmp/out.trame",
                     "--server",
@@ -799,15 +808,19 @@ mod tests {
         let author_id = Uuid::new_v4();
         let asset_id = Uuid::new_v4();
 
-        source_store.seed_campaign(
-            CampaignMetadata {
+        source_store
+            .save_campaign(&CampaignMetadata {
                 id: campaign_id,
                 name: "Shadows of Saltmarsh".to_string(),
                 system: "dnd5e".to_string(),
                 description: Some("CLI roundtrip test".to_string()),
                 created_at: "2026-10-31T00:00:00Z".to_string(),
-            },
-            vec![
+            })
+            .await
+            .unwrap();
+
+        source_store
+            .save_entities(&[
                 ExportEntity {
                     entity_type: "scene".to_string(),
                     data: json!({
@@ -824,8 +837,12 @@ mod tests {
                         "name": "Sanbalet"
                     }),
                 },
-            ],
-            vec![NoteRecord {
+            ])
+            .await
+            .unwrap();
+
+        source_store
+            .save_notes(&[NoteRecord {
                 id: note_id,
                 title: "Smuggler Signals".to_string(),
                 folder: Some("secrets".to_string()),
@@ -833,8 +850,9 @@ mod tests {
                 created_at: "2026-10-31T00:00:00Z".to_string(),
                 updated_at: "2026-10-31T00:00:00Z".to_string(),
                 content_markdown: format!("Watch [[{actor_id}|Sanbalet]] in [[{scene_id}]]."),
-            }],
-        );
+            }])
+            .await
+            .unwrap();
 
         source_blobs
             .put_stream(
@@ -919,8 +937,7 @@ mod tests {
         let lease_manager = Arc::new(RoomLeaseManager::new(wal, 16, 900_000));
         let asset_store = Arc::new(InMemoryAssetStore::new());
         let membership = Arc::new(InMemoryMembershipValidator::new());
-        let campaign_store = Arc::new(InMemoryCampaignStore::new());
-        let blob_store = Arc::new(LocalFsStore::new(temp_dir.join("server_blobs")));
+        let timeline_storage = Arc::new(InMemoryTimelineStorage::new());
         let session_store = Arc::new(InMemorySessionStore::new());
         let magic_link_service = Arc::new(MagicLinkService::new(
             b"cli_http_test_secret_key_32bytes!",
@@ -929,25 +946,39 @@ mod tests {
 
         let gm_id = Uuid::new_v4();
         let campaign_id = Uuid::new_v4();
-        membership.add_member(campaign_id, gm_id);
+        membership.add_gm(campaign_id, gm_id);
         session_store
-            .upsert_campaign_member(CampaignMemberRecord {
-                campaign_id,
-                user_id: gm_id,
-                character_id: None,
-                role: "GM".to_string(),
-            })
+            .assign_campaign_member(campaign_id, gm_id, None, "GM")
             .await
             .unwrap();
 
         let raw_session_token = "cli_test_bearer_token_123456";
         let token_hash = trame_server::auth::session::hash_session_token(raw_session_token);
         session_store
-            .create_session(&token_hash, gm_id, 9_999_999_999)
+            .create_session(gm_id, &token_hash, 3600)
             .await
             .unwrap();
 
-        campaign_store.seed_campaign(
+        let auth_state = AuthState {
+            magic_link_service,
+            session_store,
+            totp_service: Arc::new(TotpService::default()),
+        };
+
+        let app_state = AppState {
+            lease_manager,
+            asset_store,
+            membership,
+            instance_id: Uuid::new_v4(),
+            timeline_storage,
+            campaign_store: InMemoryCampaignStore::new(),
+            blob_store: InMemoryBlobStore::new(),
+            auth_state,
+            db_healthy: Arc::new(AtomicBool::new(true)),
+        };
+
+        seed_campaign_for_export(
+            &app_state,
             CampaignMetadata {
                 id: campaign_id,
                 name: "HTTP Server Campaign".to_string(),
@@ -964,22 +995,12 @@ mod tests {
                 }),
             }],
             Vec::new(),
-        );
+            Vec::new(),
+        )
+        .await
+        .unwrap();
 
-        let app_state = AppState {
-            lease_manager,
-            asset_store,
-            membership,
-            instance_id: Uuid::new_v4(),
-            campaign_store: campaign_store.clone(),
-            blob_store,
-            session_store,
-            magic_link_service,
-            totp_service: Arc::new(TotpService::default()),
-            database_healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        };
-
-        let router = build_app_router(app_state);
+        let router = build_router_with_state(app_state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server_url = format!("http://{addr}");
