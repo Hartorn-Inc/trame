@@ -122,21 +122,6 @@ function setupMockDom() {
       return false;
     }
 
-    closest(selector: string): MockNode | null {
-      let cur: MockNode | null = this;
-      while (cur && cur.nodeType === 1) {
-        if (selector.startsWith("#")) {
-          if (cur.id === selector.slice(1) || cur.getAttribute("id") === selector.slice(1)) return cur;
-        } else if (selector.startsWith(".")) {
-          if (cur.classList.contains(selector.slice(1))) return cur;
-        } else if (cur.nodeName.toLowerCase() === selector.toLowerCase()) {
-          return cur;
-        }
-        cur = cur.parentNode;
-      }
-      return null;
-    }
-
     setAttribute(name: string, value: any) {
       const strVal = String(value);
       this.attributes[name] = strVal;
@@ -186,6 +171,43 @@ function setupMockDom() {
       return true;
     }
 
+    matches(selector: string): boolean {
+      if (!selector || this.nodeType !== 1) return false;
+      if (selector.startsWith("#")) {
+        return this.id === selector.slice(1) || this.getAttribute("id") === selector.slice(1);
+      }
+      if (selector.startsWith(".")) {
+        return this.classList.contains(selector.slice(1));
+      }
+      const bracketIdx = selector.indexOf("[");
+      if (bracketIdx !== -1 && selector.endsWith("]")) {
+        const tagPart = selector.slice(0, bracketIdx).trim();
+        if (tagPart && this.nodeName.toLowerCase() !== tagPart.toLowerCase()) {
+          return false;
+        }
+        const inner = selector.slice(bracketIdx + 1, -1);
+        if (inner.includes("=")) {
+          const eqIdx = inner.indexOf("=");
+          const attr = inner.slice(0, eqIdx).trim();
+          const val = inner.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, "");
+          return this.getAttribute(attr) === val || (this as any)[attr] === val;
+        }
+        return this.hasAttribute(inner);
+      }
+      return this.nodeName.toLowerCase() === selector.toLowerCase();
+    }
+
+    closest(selector: string): MockNode | null {
+      let cur: MockNode | null = this;
+      while (cur) {
+        if (cur.matches(selector)) {
+          return cur;
+        }
+        cur = cur.parentNode;
+      }
+      return null;
+    }
+
     querySelector(selector: string): MockNode | null {
       const all = this.querySelectorAll(selector);
       return all[0] || null;
@@ -193,35 +215,10 @@ function setupMockDom() {
 
     querySelectorAll(selector: string): MockNode[] {
       const results: MockNode[] = [];
-      const match = (node: MockNode): boolean => {
-        if (selector.startsWith("#")) {
-          return node.id === selector.slice(1) || node.getAttribute("id") === selector.slice(1);
-        }
-        if (selector.startsWith(".")) {
-          return node.classList.contains(selector.slice(1));
-        }
-        const bracketIdx = selector.indexOf("[");
-        if (bracketIdx !== -1 && selector.endsWith("]")) {
-          const tagPart = selector.slice(0, bracketIdx).trim();
-          if (tagPart && node.nodeName.toLowerCase() !== tagPart.toLowerCase()) {
-            return false;
-          }
-          const inner = selector.slice(bracketIdx + 1, -1);
-          if (inner.includes("=")) {
-            const eqIdx = inner.indexOf("=");
-            const attr = inner.slice(0, eqIdx).trim();
-            const val = inner.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, "");
-            return node.getAttribute(attr) === val || (node as any)[attr] === val;
-          }
-          return node.hasAttribute(inner);
-        }
-        return node.nodeName.toLowerCase() === selector.toLowerCase();
-      };
-
       const walk = (current: MockNode) => {
         for (const child of current.childNodes) {
           if (child.nodeType === 1) {
-            if (match(child)) results.push(child);
+            if (child.matches(selector)) results.push(child);
             walk(child);
           }
         }
