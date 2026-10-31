@@ -354,6 +354,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
           Import Archive (.trame)
           <input
             type="file"
+            tabIndex={-1}
             aria-label="Import Archive (.trame)"
             accept=".trame,.zip"
             onChange={handleImportArchiveChange}
@@ -379,7 +380,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
         </h2>
 
         {campaigns.length === 0 ? (
-          <p data-testid="empty-campaigns-msg" style={{ color: "#64748b" }}>
+          <p data-testid="empty-campaigns-msg" style={{ color: "#94a3b8" }}>
             No campaigns available. Click "Create Campaign" to bootstrap your adventure.
           </p>
         ) : (
@@ -423,8 +424,9 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                     data-testid={`enter-campaign-${camp.id}`}
                     style={{
                       padding: "0.375rem 0.75rem",
-                      backgroundColor: "#0284c7",
-                      color: "#ffffff",
+                      backgroundColor: "#38bdf8",
+                      color: "#0f172a",
+                      fontWeight: 600,
                       border: "none",
                       borderRadius: "4px",
                       cursor: "pointer",
@@ -459,8 +461,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                       style={{
                         padding: "0.375rem 0.75rem",
                         backgroundColor: "#1e293b",
-                        color: "#a855f7",
-                        border: "1px solid #a855f7",
+                        color: "#d8b4fe",
+                        border: "1px solid #d8b4fe",
                         borderRadius: "4px",
                         cursor: "pointer",
                       }}
@@ -666,8 +668,8 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                   data-testid="generate-invite-btn"
                   style={{
                     padding: "0.5rem 1rem",
-                    backgroundColor: "#a855f7",
-                    color: "#ffffff",
+                    backgroundColor: "#d8b4fe",
+                    color: "#0f172a",
                     fontWeight: 600,
                     border: "none",
                     borderRadius: "4px",
@@ -679,7 +681,11 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
               </div>
             </form>
             {mintedInviteUrl && (
-              <div style={{ marginTop: "1rem", padding: "0.75rem", backgroundColor: "#0f172a", borderRadius: "4px" }}>
+              <div
+                role="status"
+                aria-live="polite"
+                style={{ marginTop: "1rem", padding: "0.75rem", backgroundColor: "#0f172a", borderRadius: "4px" }}
+              >
                 <label
                   htmlFor="minted-invite-url-input"
                   style={{ fontSize: "0.75rem", color: "#94a3b8", display: "block" }}
@@ -809,7 +815,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
 
             <div style={{ maxHeight: "200px", overflowY: "auto", marginBottom: "1rem" }}>
               {patList.length === 0 ? (
-                <p style={{ color: "#64748b", fontSize: "0.875rem" }}>No active access tokens.</p>
+                <p style={{ color: "#94a3b8", fontSize: "0.875rem" }}>No active access tokens.</p>
               ) : (
                 <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
                   {patList.map((pat) => (
@@ -824,7 +830,7 @@ export function CampaignLobby(props: CampaignLobbyProps): JSX.Element {
                       }}
                     >
                       <span>{pat.name || "Token"}</span>
-                      <span style={{ color: "#64748b" }}>Scopes: {pat.scopes.join(", ")}</span>
+                      <span style={{ color: "#94a3b8" }}>Scopes: {pat.scopes.join(", ")}</span>
                     </li>
                   ))}
                 </ul>

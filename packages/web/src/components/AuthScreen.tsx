@@ -220,7 +220,7 @@ export function AuthScreen(props: AuthScreenProps): JSX.Element {
                 boxSizing: "border-box",
               }}
             />
-            <small style={{ color: "#64748b", fontSize: "0.75rem", display: "block", marginTop: "0.25rem" }}>
+            <small style={{ color: "#94a3b8", fontSize: "0.75rem", display: "block", marginTop: "0.25rem" }}>
               Minimum 8 characters (OWASP Argon2id protected)
             </small>
           </div>

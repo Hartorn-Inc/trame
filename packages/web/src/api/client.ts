@@ -1,5 +1,5 @@
 import { decode, encode } from "@msgpack/msgpack";
-import { appSignals, mutateActorPosition } from "../state/appSignals.ts";
+import { appSignals, mutateActorPosition, resetAppSignals } from "../state/appSignals.ts";
 import type {
   ActorRecord,
   AuthUser,
@@ -302,7 +302,7 @@ export class ApiClient {
     await this.requestJson<{ status: string }>(`${this.baseUrl}/api/v1/auth/logout`, {
       method: "POST",
     });
-    appSignals.authUserSignal.value = null;
+    resetAppSignals();
   }
 
   public async getMe(): Promise<AuthUser> {
