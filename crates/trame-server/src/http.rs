@@ -704,6 +704,7 @@ pub struct CampaignDto {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CreateCampaignRequest {
     pub name: String,
+    #[serde(alias = "system_id")]
     pub system: Option<String>,
     pub description: Option<String>,
 }
@@ -2593,6 +2594,14 @@ pub async fn import_campaign_handler(
                 if let Some(meta) = state.campaign_store.get_campaign(&campaign_id) {
                     let _ = pg.save_campaign(&meta).await;
                 }
+                let entities = state.campaign_store.all_entities();
+                if !entities.is_empty() {
+                    let _ = pg.save_entities(&entities).await;
+                }
+                let notes = state.campaign_store.all_notes();
+                if !notes.is_empty() {
+                    let _ = pg.save_notes(&notes).await;
+                }
             }
             if let Some(uid) = caller_user_id {
                 state.membership.add_member(campaign_id, uid);
@@ -2797,13 +2806,6 @@ pub async fn ws_campaign_handler(
             }
         } else {
             member_role
-        }
-    } else if query.user_id.is_some() {
-        // Preserve compatibility with direct unit tests passing `?user_id=...&role=...`
-        match query.role.as_deref() {
-            Some("gm") | Some("GM") => CampaignRole::Gm,
-            Some("spectator") | Some("Spectator") => CampaignRole::Spectator,
-            _ => CampaignRole::Player,
         }
     } else {
         return (
