@@ -19,7 +19,7 @@ Atomic widgets and drag-and-drop handlers do not mutate Actor records directly. 
 - `TrameCommand.CreateActor`: Dispatched when the user finalizes the `CharacterBuilderWizard`.
 
 ### 1.3 Test Framework Contract
-In accordance with ADR-0006 and the project architecture, `packages/web` uses the native Node 24 test runner (`node:test` and `node:assert/strict`) with native TypeScript support. No browser mock libraries (`@testing-library/react`, Vitest, jsdom) are permitted. All unit and integration tests execute headlessly through `npm test`.
+In accordance with ADR-0007 and the project architecture, `packages/web` uses the native Node 24 test runner (`node:test` and `node:assert/strict`) with native TypeScript support. No browser mock libraries (`@testing-library/react`, Vitest, jsdom) are permitted. All unit and integration tests execute headlessly through `npm test`.
 
 ---
 
