@@ -40,6 +40,7 @@
 //! ============================================================================
 
 use crate::dice::{ProjectedDiceRoll, RollVisibility};
+use crate::notes::HandoutRevealedBroadcast;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use trame_engine::aoe::AoeTemplate;
@@ -107,6 +108,15 @@ pub struct ProjectedTableState {
     pub active_turn_index: usize,
     /// Current 1-based combat round counter.
     pub round: u32,
+    /// Optional SHA-256 hash of the active background battlemap asset.
+    #[serde(default)]
+    pub background_asset_hash: Option<String>,
+    /// Active battlemap width in pixels (`px`).
+    #[serde(default)]
+    pub map_width_px: u32,
+    /// Active battlemap height in pixels (`px`).
+    #[serde(default)]
+    pub map_height_px: u32,
 }
 
 /// Outbound binary MessagePack payload broadcast or unicast from `TableRoomActor` to connected clients.
@@ -135,6 +145,8 @@ pub enum ServerEnvelope {
     },
     /// Broadcast (or unicast according to `RollVisibility`) when a dice roll completes.
     DiceRolled(ProjectedDiceRoll),
+    /// Broadcast to all connected clients when the GM reveals a `:::handout` document.
+    HandoutRevealed(HandoutRevealedBroadcast),
     /// Broadcasts a transient canvas pointer ping to all connected sessions in the room.
     PointerPingBroadcast {
         /// User UUID who triggered the ping.
@@ -177,7 +189,7 @@ pub fn visible_token_ids_for_recipient(
         return state.data.tokens.keys().copied().collect();
     }
 
-    let owned_tokens: Vec<&TokenState> = state
+    let mut owned_tokens: Vec<&TokenState> = state
         .data
         .tokens
         .values()
@@ -186,6 +198,29 @@ pub fn visible_token_ids_for_recipient(
                 && (t.visibility_channel & CHANNEL_GM_HIDDEN) == 0
         })
         .collect();
+
+    // Shared party vision fallback: if a Player has not yet been assigned a dedicated
+    // token on the map, let them perceive through non-hidden party hero tokens (`owner_user_id.is_some()`),
+    // or if no hero tokens have been placed on the scene yet, perceive all non-hidden (`!CHANNEL_GM_HIDDEN`) tokens.
+    if owned_tokens.is_empty() && recipient_role == CampaignRole::Player {
+        owned_tokens = state
+            .data
+            .tokens
+            .values()
+            .filter(|t| {
+                t.owner_user_id.is_some() && (t.visibility_channel & CHANNEL_GM_HIDDEN) == 0
+            })
+            .collect();
+        if owned_tokens.is_empty() {
+            return state
+                .data
+                .tokens
+                .values()
+                .filter(|t| (t.visibility_channel & CHANNEL_GM_HIDDEN) == 0 && !t.invisible)
+                .map(|t| t.id)
+                .collect();
+        }
+    }
 
     let mut visible = HashSet::new();
     for observer in &owned_tokens {
@@ -279,6 +314,9 @@ pub fn project_state_for_recipient(
         initiative_order,
         active_turn_index: state.data.active_turn_index,
         round: state.data.round,
+        background_asset_hash: state.data.background_asset_hash.clone(),
+        map_width_px: state.data.map_width_px,
+        map_height_px: state.data.map_height_px,
     }
 }
 
@@ -301,10 +339,13 @@ pub fn filter_events_for_recipient(
             TrameEvent::TokenMoved { token_id, .. }
             | TrameEvent::TokenSqueezeToggled { token_id, .. }
             | TrameEvent::DamageApplied { token_id, .. }
-            | TrameEvent::TokenResourcesOverridden { token_id, .. } => {
-                visible_ids.contains(token_id)
-            }
-            TrameEvent::DoorToggled { .. }
+            | TrameEvent::TokenResourcesOverridden { token_id, .. }
+            | TrameEvent::TokenVisibilityChanged { token_id, .. }
+            | TrameEvent::TokenOwnerAssigned { token_id, .. } => visible_ids.contains(token_id),
+            TrameEvent::TokenSpawned { token } => visible_ids.contains(&token.id),
+            TrameEvent::TokenRemoved { .. }
+            | TrameEvent::DoorToggled { .. }
+            | TrameEvent::DoorConfigured { .. }
             | TrameEvent::TableModeChanged { .. }
             | TrameEvent::TurnAdvanced { .. }
             | TrameEvent::AoeProjected { .. }

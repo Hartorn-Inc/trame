@@ -70,10 +70,7 @@ fn create_test_app_state() -> (AppState, Arc<InMemoryMembershipValidator>) {
     let membership = Arc::new(InMemoryMembershipValidator::new());
     let timeline_storage = Arc::new(InMemoryTimelineStorage::new());
     let session_store = Arc::new(InMemorySessionStore::new());
-    let magic_link_service = Arc::new(MagicLinkService::new(
-        signing_secret,
-        "trame-test",
-    ));
+    let magic_link_service = Arc::new(MagicLinkService::new(signing_secret, "trame-test"));
     let auth_state = AuthState {
         magic_link_service,
         session_store,

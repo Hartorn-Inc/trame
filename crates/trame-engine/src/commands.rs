@@ -301,6 +301,43 @@ pub enum TrameCommand {
         /// Map wall segments.
         walls: Vec<WallSegment>,
     },
+    /// Spawns a new token (or updates its spatial placement) onto the tabletop.
+    SpawnToken {
+        /// Complete token state to place on the map.
+        token: TokenState,
+    },
+    /// Removes a token from the tabletop and initiative order (GM only).
+    RemoveToken {
+        /// Target token ID to remove.
+        token_id: Uuid,
+    },
+    /// Toggles a token's GM-hidden channel (`CHANNEL_GM_HIDDEN`) and invisibility state (GM only).
+    SetTokenVisibility {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Whether the token is hidden from players (`CHANNEL_GM_HIDDEN`).
+        gm_hidden: bool,
+        /// Whether the token has the `invisible` condition.
+        invisible: bool,
+    },
+    /// Assigns or clears the player owner (`owner_user_id`) of a token (GM only).
+    AssignTokenOwner {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Player user UUID who controls and sees through this token (`None` for NPC/shared).
+        owner_user_id: Option<Uuid>,
+    },
+    /// Configures a door's open, locked, or secret state (GM only).
+    ConfigureDoor {
+        /// Target wall segment ID.
+        wall_id: Uuid,
+        /// Optional new open state.
+        is_open: Option<bool>,
+        /// Optional new locked state.
+        is_locked: Option<bool>,
+        /// Optional conversion between `SecretDoor` (`true`) and regular `Door` (`false`).
+        is_secret: Option<bool>,
+    },
     /// Restores the most recent pre-mutation `TableSnapshotData` from the 50-action ring buffer (GM only).
     UndoLastAction,
 }
@@ -415,6 +452,43 @@ pub enum TrameEvent {
         /// Map asset hash/ID.
         map_asset_id: String,
     },
+    /// Emitted when a token is spawned onto the tabletop.
+    TokenSpawned {
+        /// Spawned token state.
+        token: TokenState,
+    },
+    /// Emitted when a token is removed from the tabletop.
+    TokenRemoved {
+        /// Removed token ID.
+        token_id: Uuid,
+    },
+    /// Emitted when a token's GM-hidden or invisibility state changes.
+    TokenVisibilityChanged {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Updated visibility channel bitmask.
+        visibility_channel: u8,
+        /// Updated invisible flag.
+        invisible: bool,
+    },
+    /// Emitted when a token's player owner (`owner_user_id`) is updated.
+    TokenOwnerAssigned {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Assigned player user UUID (`None` if unassigned).
+        owner_user_id: Option<Uuid>,
+    },
+    /// Emitted when a door's open, lock, or secret configuration is modified by the GM.
+    DoorConfigured {
+        /// Target wall segment ID.
+        wall_id: Uuid,
+        /// Whether the door is open.
+        is_open: bool,
+        /// Whether the door is locked.
+        is_locked: bool,
+        /// Whether the door is a secret door.
+        is_secret: bool,
+    },
 }
 
 /// Single compensating snapshot entry stored in the `TableState::undo_stack` ring buffer.
@@ -424,6 +498,14 @@ pub struct UndoEntry {
     pub description: String,
     /// Full serializable tabletop state captured prior to the command mutation.
     pub snapshot: TableSnapshotData,
+}
+
+fn default_map_width_px() -> u32 {
+    1200
+}
+
+fn default_map_height_px() -> u32 {
+    800
 }
 
 /// Purely serializable tabletop state payload persisted in snapshots and the undo ring buffer.
@@ -447,6 +529,15 @@ pub struct TableSnapshotData {
     pub walls: Vec<WallSegment>,
     /// Active persistent Area of Effect zones keyed by `AoeTemplate::id`.
     pub persistent_aoes: BTreeMap<Uuid, AoeTemplate>,
+    /// Optional SHA-256 hash of the active background battlemap asset.
+    #[serde(default)]
+    pub background_asset_hash: Option<String>,
+    /// Active battlemap width in pixels (`px`).
+    #[serde(default = "default_map_width_px")]
+    pub map_width_px: u32,
+    /// Active battlemap height in pixels (`px`).
+    #[serde(default = "default_map_height_px")]
+    pub map_height_px: u32,
 }
 
 /// Authoritative in-memory tabletop state machine combining serializable `TableSnapshotData`,
@@ -528,6 +619,9 @@ impl TableState {
                 tokens: BTreeMap::new(),
                 walls,
                 persistent_aoes: BTreeMap::new(),
+                background_asset_hash: None,
+                map_width_px: 1200,
+                map_height_px: 800,
             },
             bvh,
             undo_stack: VecDeque::with_capacity(MAX_UNDO_HISTORY),
@@ -978,8 +1072,8 @@ impl TableState {
             TrameCommand::LoadScene {
                 scene_id,
                 map_asset_id,
-                width_px: _,
-                height_px: _,
+                width_px,
+                height_px,
                 pixels_per_grid,
                 walls,
             } => {
@@ -988,9 +1082,150 @@ impl TableState {
                 self.cell_size_px = pixels_per_grid;
                 self.bvh = Bvh2D::build(walls.clone());
                 self.data.walls = walls;
+                self.data.background_asset_hash = Some(map_asset_id.clone());
+                self.data.map_width_px = width_px.max(100);
+                self.data.map_height_px = height_px.max(100);
                 Ok(vec![TrameEvent::SceneLoaded {
                     scene_id,
                     map_asset_id,
+                }])
+            }
+
+            TrameCommand::SpawnToken { token } => {
+                if actor.role == CampaignRole::Spectator {
+                    return Err(CommandError::PermissionDenied(
+                        "spectators cannot spawn tokens".to_string(),
+                    ));
+                }
+                if actor.role == CampaignRole::Player && token.owner_user_id != Some(actor.user_id)
+                {
+                    return Err(CommandError::PermissionDenied(
+                        "players may only spawn tokens they own".to_string(),
+                    ));
+                }
+                self.push_undo(format!("Spawn token {}", token.name));
+                self.data.tokens.insert(token.id, token.clone());
+                Ok(vec![TrameEvent::TokenSpawned { token }])
+            }
+
+            TrameCommand::RemoveToken { token_id } => {
+                Self::require_gm(actor)?;
+                let removed = self
+                    .data
+                    .tokens
+                    .get(&token_id)
+                    .ok_or_else(|| CommandError::NotFound(format!("token {token_id}")))?
+                    .name
+                    .clone();
+                self.push_undo(format!("Remove token {removed}"));
+                self.data.tokens.remove(&token_id);
+                self.data.initiative_order.retain(|id| *id != token_id);
+                if self.data.active_turn_index >= self.data.initiative_order.len() {
+                    self.data.active_turn_index = 0;
+                }
+                Ok(vec![TrameEvent::TokenRemoved { token_id }])
+            }
+
+            TrameCommand::SetTokenVisibility {
+                token_id,
+                gm_hidden,
+                invisible,
+            } => {
+                Self::require_gm(actor)?;
+                let token_name = self
+                    .data
+                    .tokens
+                    .get(&token_id)
+                    .ok_or_else(|| CommandError::NotFound(format!("token {token_id}")))?
+                    .name
+                    .clone();
+                self.push_undo(format!("Set visibility for {token_name}"));
+                let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
+                if gm_hidden {
+                    tok.visibility_channel |= crate::geometry::CHANNEL_GM_HIDDEN;
+                } else {
+                    tok.visibility_channel &= !crate::geometry::CHANNEL_GM_HIDDEN;
+                    if tok.visibility_channel == 0 {
+                        tok.visibility_channel = crate::geometry::CHANNEL_MATERIAL;
+                    }
+                }
+                tok.invisible = invisible;
+                let visibility_channel = tok.visibility_channel;
+                Ok(vec![TrameEvent::TokenVisibilityChanged {
+                    token_id,
+                    visibility_channel,
+                    invisible,
+                }])
+            }
+
+            TrameCommand::AssignTokenOwner {
+                token_id,
+                owner_user_id,
+            } => {
+                Self::require_gm(actor)?;
+                let token_name = self
+                    .data
+                    .tokens
+                    .get(&token_id)
+                    .ok_or_else(|| CommandError::NotFound(format!("token {token_id}")))?
+                    .name
+                    .clone();
+                self.push_undo(format!("Assign owner for {token_name}"));
+                let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
+                tok.owner_user_id = owner_user_id;
+                Ok(vec![TrameEvent::TokenOwnerAssigned {
+                    token_id,
+                    owner_user_id,
+                }])
+            }
+
+            TrameCommand::ConfigureDoor {
+                wall_id,
+                is_open,
+                is_locked,
+                is_secret,
+            } => {
+                Self::require_gm(actor)?;
+                let idx = self
+                    .data
+                    .walls
+                    .iter()
+                    .position(|w| w.id == wall_id)
+                    .ok_or_else(|| CommandError::NotFound(format!("wall {wall_id}")))?;
+
+                let (cur_open, cur_locked, cur_secret) = match &self.data.walls[idx].kind {
+                    WallKind::Door {
+                        is_open: o,
+                        is_locked: l,
+                    } => (*o, *l, false),
+                    WallKind::SecretDoor { is_open: o } => (*o, false, true),
+                    _ => {
+                        return Err(CommandError::PermissionDenied(
+                            "wall is not a door".to_string(),
+                        ));
+                    }
+                };
+
+                let next_open = is_open.unwrap_or(cur_open);
+                let next_locked = is_locked.unwrap_or(cur_locked);
+                let next_secret = is_secret.unwrap_or(cur_secret);
+
+                self.push_undo(format!("Configure door {wall_id}"));
+                self.data.walls[idx].kind = if next_secret {
+                    WallKind::SecretDoor { is_open: next_open }
+                } else {
+                    WallKind::Door {
+                        is_open: next_open,
+                        is_locked: next_locked,
+                    }
+                };
+                self.bvh = Bvh2D::build(self.data.walls.clone());
+
+                Ok(vec![TrameEvent::DoorConfigured {
+                    wall_id,
+                    is_open: next_open,
+                    is_locked: next_locked,
+                    is_secret: next_secret,
                 }])
             }
 

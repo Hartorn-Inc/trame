@@ -87,8 +87,8 @@ async fn main() {
         .filter(|s| !s.trim().is_empty());
 
     let (app, lease_manager) = if let Some(db_url) = database_url {
-        let base_url = std::env::var("TRAME_PUBLIC_URL")
-            .unwrap_or_else(|_| "/assets/download".to_string());
+        let base_url =
+            std::env::var("TRAME_PUBLIC_URL").unwrap_or_else(|_| "/assets/download".to_string());
         match SqlxPostgresStore::connect_and_migrate(&db_url, base_url).await {
             Ok(pg_store) => {
                 println!("Connected to PostgreSQL 18 and applied sqlx migrations");

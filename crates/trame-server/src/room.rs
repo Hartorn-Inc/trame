@@ -145,6 +145,16 @@ pub enum RoomActorMessage {
         /// Oneshot channel receiving the current `RoomMetrics`.
         reply: oneshot::Sender<RoomMetrics>,
     },
+    /// Retrieves a clone of the current authoritative in-memory `TableState`.
+    GetTableState {
+        /// Oneshot channel receiving the current `TableState`.
+        reply: oneshot::Sender<TableState>,
+    },
+    /// Broadcasts a `ServerEnvelope::HandoutRevealed` frame to all connected clients in the room.
+    BroadcastHandout {
+        /// Revealed handout payload.
+        broadcast: crate::notes::HandoutRevealedBroadcast,
+    },
     /// Replaces the room's `TableState` (e.g. after importing a starter dungeon or `.uvtt` map),
     /// increments `seq_id`, flushes a snapshot to `WalStorage`, and broadcasts `StateSnapshot` to all connected clients.
     ReplaceTableState {
@@ -232,6 +242,27 @@ impl TableRoomHandle {
             .await
             .map_err(|_| RoomError::ActorClosed)?;
         reply_rx.await.map_err(|_| RoomError::ActorClosed)
+    }
+
+    /// Retrieves a clone of the live in-memory `TableState` from the room actor.
+    pub async fn get_table_state(&self) -> Result<TableState, RoomError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(RoomActorMessage::GetTableState { reply: reply_tx })
+            .await
+            .map_err(|_| RoomError::ActorClosed)?;
+        reply_rx.await.map_err(|_| RoomError::ActorClosed)
+    }
+
+    /// Broadcasts a `ServerEnvelope::HandoutRevealed` frame to all connected clients in the room.
+    pub async fn broadcast_handout(
+        &self,
+        broadcast: crate::notes::HandoutRevealedBroadcast,
+    ) -> Result<(), RoomError> {
+        self.tx
+            .send(RoomActorMessage::BroadcastHandout { broadcast })
+            .await
+            .map_err(|_| RoomError::ActorClosed)
     }
 
     /// Commands the room actor to replace its `TableState`, persist a snapshot, and broadcast `StateSnapshot` to all clients.
@@ -340,11 +371,26 @@ impl TableRoomActor {
                         last_activity_ms: self.last_activity_ms,
                     });
                 }
+                RoomActorMessage::GetTableState { reply } => {
+                    let _ = reply.send(self.state.clone());
+                }
+                RoomActorMessage::BroadcastHandout { broadcast } => {
+                    self.last_activity_ms = now_ms();
+                    let env = ServerEnvelope::HandoutRevealed(broadcast);
+                    if let Ok(bytes) = encode_server_envelope(&env) {
+                        for client in self.clients.values() {
+                            let _ = client.tx.send(OutboundClientFrame::Binary(bytes.clone()));
+                        }
+                    }
+                }
                 RoomActorMessage::ReplaceTableState { new_state, reply } => {
                     self.last_activity_ms = now_ms();
                     self.state = *new_state;
                     self.seq_id += 1;
-                    let res = self.flush_snapshot().map(|()| self.seq_id).map_err(RoomError::Wal);
+                    let res = self
+                        .flush_snapshot()
+                        .map(|()| self.seq_id)
+                        .map_err(RoomError::Wal);
                     if res.is_ok() {
                         for client in self.clients.values() {
                             let projected = project_state_for_recipient(
