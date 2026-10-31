@@ -16,7 +16,9 @@
 use super::magic_link::{MagicLinkClaims, MagicLinkError, MagicLinkService, now_epoch_seconds};
 pub use super::oauth::{OAuthError, OAuthProvider, OAuthStore, PendingOAuthState};
 pub use super::password::IdentityStore;
-use super::password::{PasswordError, PasswordService, bind_account_handler, extract_session_token};
+use super::password::{
+    PasswordError, PasswordService, bind_account_handler, extract_session_token,
+};
 pub use super::pat::{
     PatError, PatMiddleware, PatRecord, PatStore, create_pat_handler, list_pats_handler,
 };
@@ -976,7 +978,8 @@ pub async fn me_handler(State(state): State<AuthState>, headers: HeaderMap) -> R
             if token.starts_with(crate::auth::pat::PAT_PREFIX) {
                 let pat_mw = PatMiddleware::new(state.session_store.clone());
                 if let Ok(pat_record) = pat_mw.authenticate_header(trimmed).await
-                    && let Ok(Some(user)) = state.session_store.get_user_by_id(pat_record.user_id).await
+                    && let Ok(Some(user)) =
+                        state.session_store.get_user_by_id(pat_record.user_id).await
                 {
                     return (
                         StatusCode::OK,
@@ -1116,7 +1119,12 @@ pub async fn magic_link_login_handler(
         }
     };
 
-    if let Some(nick) = payload.nickname.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(nick) = payload
+        .nickname
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         guest_user.username = nick.to_string();
         let _ = state.session_store.save_user(guest_user.clone()).await;
     }

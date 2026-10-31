@@ -516,10 +516,7 @@ pub fn build_router_with_state(state: AppState) -> Router {
             "/api/v1/campaigns",
             get(list_campaigns_handler).post(create_campaign_handler),
         )
-        .route(
-            "/api/v1/campaigns/{campaign_id}",
-            get(get_campaign_handler),
-        )
+        .route("/api/v1/campaigns/{campaign_id}", get(get_campaign_handler))
         .route(
             "/api/v1/campaigns/{campaign_id}/actors/{actor_id}",
             put(update_actor_handler),
@@ -548,10 +545,7 @@ pub fn build_router_with_state(state: AppState) -> Router {
             "/api/v1/campaigns/{campaign_id}/assets/{hash}/presign",
             get(presign_asset_handler),
         )
-        .route(
-            "/assets/download/{*key}",
-            get(download_asset_handler),
-        )
+        .route("/assets/download/{*key}", get(download_asset_handler))
         .route(
             "/api/campaigns/{campaign_id}/sessions/{session_num}/timeline",
             get(timeline_handler),
@@ -707,10 +701,7 @@ pub struct CreateCampaignRequest {
 }
 
 /// Lists campaigns where the authenticated caller is a member (`GET /api/v1/campaigns`).
-pub async fn list_campaigns_handler(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-) -> Response {
+pub async fn list_campaigns_handler(headers: HeaderMap, State(state): State<AppState>) -> Response {
     let user_id = match resolve_authenticated_user(&state, &headers, None).await {
         Ok(uid) => uid,
         Err(status) => {
@@ -932,11 +923,7 @@ pub async fn get_campaign_handler(
         actors,
     };
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({ "campaign": dto })),
-    )
-        .into_response()
+    (StatusCode::OK, Json(serde_json::json!({ "campaign": dto }))).into_response()
 }
 
 /// Request payload for `PUT /api/v1/campaigns/{campaign_id}/actors/{actor_id}`.
@@ -1034,7 +1021,8 @@ pub async fn update_actor_handler(
             existing.hp = hp;
             existing.max_hp = max_hp;
         } else {
-            let mut tok = TokenState::new_default(actor_id, name.clone(), Point2D::new(250.0, 250.0));
+            let mut tok =
+                TokenState::new_default(actor_id, name.clone(), Point2D::new(250.0, 250.0));
             tok.owner_user_id = Some(user_id);
             tok.hp = hp;
             tok.max_hp = max_hp;
@@ -1361,10 +1349,7 @@ pub async fn starter_map_handler(
         goblin_archer_entity,
     ];
 
-    let _ = state
-        .campaign_store
-        .save_entities(&entities_to_save)
-        .await;
+    let _ = state.campaign_store.save_entities(&entities_to_save).await;
     if let Some(ref pg) = state.pg_store {
         let _ = pg.save_entities(&entities_to_save).await;
     }
@@ -1379,7 +1364,10 @@ pub async fn starter_map_handler(
         content_markdown: "# Obsidian Vault Antechamber\n\nTorchlight flickers across ancient basalt tiles.\n\n:::dm\nGM Secret: Two goblins wait in ambush behind the central stone portal (DC 14 Perception).\n:::\n\n:::handout{id=\"vault-inscription\" title=\"Ancient Dwarven Rune\" revealed=\"false\"}\n\"Only those who bear the Ember Crest may pass unharmed.\"\n:::"
             .to_string(),
     };
-    let _ = state.campaign_store.save_notes(&[starter_note.clone()]).await;
+    let _ = state
+        .campaign_store
+        .save_notes(&[starter_note.clone()])
+        .await;
     if let Some(ref pg) = state.pg_store {
         let _ = pg
             .upsert_campaign_note_async(
@@ -2053,11 +2041,7 @@ pub async fn export_campaign_handler(
             .await
             .unwrap_or_default()
     } else {
-        state
-            .campaign_store
-            .all_notes()
-            .into_iter()
-            .collect()
+        state.campaign_store.all_notes().into_iter().collect()
     };
     let asset_ids: Vec<Uuid> = state
         .blob_store
@@ -2354,7 +2338,8 @@ pub async fn ws_campaign_handler(
         }
     };
 
-    let role = if let Some(member_role) = resolve_campaign_role(&state, campaign_id, user_id).await {
+    let role = if let Some(member_role) = resolve_campaign_role(&state, campaign_id, user_id).await
+    {
         if let Some(q_role) = query.role.as_deref() {
             match q_role.to_uppercase().as_str() {
                 "GM" | "GAME_MASTER" if member_role == CampaignRole::Gm => CampaignRole::Gm,
@@ -2383,13 +2368,7 @@ pub async fn ws_campaign_handler(
     };
 
     ws.on_upgrade(move |socket| {
-        handle_ws_connection(
-            socket,
-            state.lease_manager,
-            campaign_id,
-            user_id,
-            role,
-        )
+        handle_ws_connection(socket, state.lease_manager, campaign_id, user_id, role)
     })
     .into_response()
 }
