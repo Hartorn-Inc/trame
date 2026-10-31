@@ -6,7 +6,14 @@ license.workspace = true
 
 [dependencies]
 trame-engine = { path = "../trame-engine" }
+trame-server = { path = "../trame-server" }
+axum.workspace = true
+async_zip = { version = "0.0.17", features = ["tokio", "deflate"] }
+bytes = "1.12"
+futures-lite = "2"
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 uuid.workspace = true
