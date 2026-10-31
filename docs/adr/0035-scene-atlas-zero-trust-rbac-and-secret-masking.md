@@ -1,17 +1,14 @@
 # ADR 0035: Galerie SceneAtlas, Contrôle d'Accès Zero-Trust et Masquage des Secrets
 
-## Statut
-Accepté
+## Status
+Accepted
 
-## Contexte
-La consultation de cartes régionales, de plans de ville ou d'étages explorés enrichit l'expérience des joueurs via l'onglet `SceneAtlas`. Cependant, une scène de carte contient des informations sensibles réservées au meneur de jeu :
-- Des segments de mur secrets (`WallType::SecretDoor`) dissimulés dans les maçonneries ;
-- Des pièges ou murs d'illusion (`WallType::Illusion`) apparaissant comme solides aux aventuriers ;
-- Des monstres et PNJ pré-positionnés masqués (`VisibilityChannel::GmHidden`) ;
-- Des émetteurs audio réservés aux coulisses de mise en scène (`SpatialAudioEmitter` avec `gm_only = true`) ;
-- Les zones non explorées recouvertes par le brouillard de guerre.
+## Context
+Players use `SceneAtlas` to inspect regional maps and explored dungeon floors. However, raw `CampaignMapScene` records contain GM-only secrets (`WallType::SecretDoor`, `WallType::Illusion`, `VisibilityChannel::GmHidden` tokens, `gm_only` audio emitters, and unexplored areas). Filtering these solely on the client would leak secrets in network responses.
 
-Transmettre la scène brute au client web et masquer les secrets via du code JavaScript frontal violerait le principe de sécurité zero-trust et permettrait l'exfiltration de secrets via l'inspecteur réseau.
+## Decision
+1. **Strict Server-Side RBAC**: `GET /api/v1/campaigns/{id}/maps` and `GET /api/v1/campaigns/{id}/maps/{map_id}` return full scenes to `CampaignRole::Gm` and reject unrevealed scenes (`revealed_to_players == false`) with `HTTP 403 Forbidden` for `CampaignRole::Player`.
+2. **Active Secret Masking**: Before serializing a revealed scene to a player, the server transforms unopened `WallType::SecretDoor` and `WallType::Illusion` segments into `WallType::Normal` (`door_state = None`), strips all `VisibilityChannel::GmHidden` tokens and `gm_only` audio emitters, and includes only the consolidated `explored_fog_texture`.
 
 ## Décision
 1. **Filtrage RBAC Strict Côté Serveur** : Le contrôleur backend `GET /api/v1/campaigns/{id}/maps` et `GET /api/v1/campaigns/{id}/maps/{map_id}` évalue le rôle de l'utilisateur demandeur :
