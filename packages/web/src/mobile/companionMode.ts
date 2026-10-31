@@ -145,8 +145,8 @@ export class HandoutRevealManager {
 
   public onHandoutRevealed(event: HandoutRevealedEvent): void {
     this.activeModal = event;
-    // Append to Party Journal
-    this.partyJournal.push({
+    // Prepend to Party Journal to maintain newest-first descending order (revealed_at DESC)
+    this.partyJournal.unshift({
       handoutId: event.handout_id,
       title: event.title,
       content: event.content,

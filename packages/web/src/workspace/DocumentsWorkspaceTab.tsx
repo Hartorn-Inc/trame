@@ -19,12 +19,17 @@ export interface NoteHierarchyNode {
   folder: string;
   visibility: "PRIVATE" | "PARTY" | "DM_ONLY";
   ownerUserId: string;
+  content?: string;
 }
+
+export type NoteScopeFilter = "ALL" | "PRIVATE" | "PARTY" | "DM_ONLY";
 
 export const documentsNotesSignal = signal<NoteHierarchyNode[]>([]);
 export const documentsHandoutsSignal = signal<PartyJournalEntry[]>([]);
 export const documentsTimelineSignal = signal<SessionTimelineEventItem[]>([]);
 export const activeHandoutModalSignal = signal<PartyJournalEntry | null>(null);
+export const selectedNoteIdSignal = signal<string | null>(null);
+export const noteScopeFilterSignal = signal<NoteScopeFilter>("ALL");
 
 export function groupNotesByFolder(notes: NoteHierarchyNode[]): Map<string, NoteHierarchyNode[]> {
   const groups = new Map<string, NoteHierarchyNode[]>();
@@ -40,31 +45,18 @@ export function groupNotesByFolder(notes: NoteHierarchyNode[]): Map<string, Note
   return groups;
 }
 
-function formatVisibilityLabel(visibility: NoteHierarchyNode["visibility"]): string {
-  if (visibility === "PRIVATE") return t("note.scope.private");
-  if (visibility === "PARTY") return t("note.scope.party");
-  return t("note.scope.dm_only");
-}
-
 export function HandoutRevealModal() {
   const activeModal = activeHandoutModalSignal.value;
 
-  try {
-    useEffect(() => {
-      if (!activeModal || typeof window === "undefined") return;
-      const handleEscape = (e: KeyboardEvent) => {
-        if (e.key === "Escape") {
-          activeHandoutModalSignal.value = null;
-        }
-      };
-      window.addEventListener("keydown", handleEscape);
-      return () => {
-        window.removeEventListener("keydown", handleEscape);
-      };
-    }, [activeModal]);
-  } catch {
-    // Fallback when invoked outside a Preact render cycle in headless unit tests
-  }
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        activeHandoutModalSignal.value = null;
+      }
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, []);
 
   if (!activeModal) return null;
 
@@ -75,12 +67,6 @@ export function HandoutRevealModal() {
       aria-modal="true"
       aria-labelledby="handout-title"
       class="modal-backdrop fullscreen"
-      onKeyDown={(e) => {
-        if (e.key === "Escape") {
-          e.stopPropagation();
-          activeHandoutModalSignal.value = null;
-        }
-      }}
       style={{
         position: "fixed",
         inset: 0,
@@ -103,22 +89,20 @@ export function HandoutRevealModal() {
         }}
       >
         <h3 id="handout-title" data-testid="handout-title">{activeModal.title}</h3>
-        <div
-          data-testid="handout-content"
-          style={{ marginTop: "0.5rem", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-        >
+        <div data-testid="handout-content" style={{ marginTop: "0.5rem" }}>
           {activeModal.content}
         </div>
         <button
           type="button"
-          data-testid="modal-close-button"
+          autoFocus
+          data-testid="close-handout-modal"
           class="ds-btn ds-btn-secondary"
           onClick={() => {
             activeHandoutModalSignal.value = null;
           }}
-          style={{ marginTop: "1rem", minHeight: "40px" }}
+          style={{ marginTop: "1rem" }}
         >
-          Close
+          {t("action.close")}
         </button>
       </div>
     </div>
@@ -126,24 +110,103 @@ export function HandoutRevealModal() {
 }
 
 export function DocumentsWorkspaceTab() {
-  const groupedNotes = groupNotesByFolder(documentsNotesSignal.value);
+  const activeFilter = noteScopeFilterSignal.value;
+  const allNotes = documentsNotesSignal.value;
+  const filteredNotes = activeFilter === "ALL"
+    ? allNotes
+    : allNotes.filter((n) => n.visibility === activeFilter);
+  const groupedNotes = groupNotesByFolder(filteredNotes);
+  const selectedNote = allNotes.find((n) => n.id === selectedNoteIdSignal.value) ?? null;
+
+  const getLocalizedScope = (vis: NoteHierarchyNode["visibility"]) => {
+    switch (vis) {
+      case "PRIVATE":
+        return t("note.scope.private");
+      case "PARTY":
+        return t("note.scope.party");
+      case "DM_ONLY":
+        return t("note.scope.dm_only");
+      default:
+        return vis;
+    }
+  };
+
+  const handleCreateNote = () => {
+    const newId = `note-${Date.now()}`;
+    const defaultScope: NoteHierarchyNode["visibility"] =
+      activeFilter === "ALL" ? "PARTY" : activeFilter;
+    const newNote: NoteHierarchyNode = {
+      id: newId,
+      title: `${t("action.create_note")} ${allNotes.length + 1}`,
+      folder: "Root",
+      visibility: defaultScope,
+      ownerUserId: "",
+      content: "",
+    };
+    documentsNotesSignal.value = [...allNotes, newNote];
+    selectedNoteIdSignal.value = newId;
+  };
+
+  const toggleFilter = (scope: NoteScopeFilter) => {
+    noteScopeFilterSignal.value = noteScopeFilterSignal.value === scope ? "ALL" : scope;
+  };
 
   return (
     <section
       data-testid="tab-documents"
       style={{ display: "flex", flexDirection: "column", gap: "1rem", padding: "1rem" }}
     >
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h2>Documents & Handouts</h2>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" }}>
+        <h2>{t("docs.title")}</h2>
+        <button
+          type="button"
+          data-testid="create-note-btn"
+          class="ds-btn ds-btn-primary"
+          onClick={handleCreateNote}
+        >
+          {t("action.create_note")}
+        </button>
       </header>
 
       <div
         data-testid="notes-hierarchy-tree"
         style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}
       >
-        <h3>Notes</h3>
-        {documentsNotesSignal.value.length === 0 ? (
-          <p data-testid="empty-notes-hint">No notes available</p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" }}>
+          <h3>{t("docs.notes")}</h3>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <button
+              type="button"
+              data-testid="filter-private"
+              aria-pressed={activeFilter === "PRIVATE"}
+              class={`ds-btn ${activeFilter === "PRIVATE" ? "ds-btn-primary" : "ds-btn-secondary"}`}
+              onClick={() => toggleFilter("PRIVATE")}
+            >
+              {t("note.scope.private")}
+            </button>
+            <button
+              type="button"
+              data-testid="filter-party"
+              aria-pressed={activeFilter === "PARTY"}
+              class={`ds-btn ${activeFilter === "PARTY" ? "ds-btn-primary" : "ds-btn-secondary"}`}
+              onClick={() => toggleFilter("PARTY")}
+            >
+              {t("note.scope.party")}
+            </button>
+            <button
+              type="button"
+              data-testid="filter-dm-only"
+              aria-pressed={activeFilter === "DM_ONLY"}
+              class={`ds-btn ${activeFilter === "DM_ONLY" ? "ds-btn-primary" : "ds-btn-secondary"}`}
+              onClick={() => toggleFilter("DM_ONLY")}
+            >
+              {t("note.scope.dm_only")}
+            </button>
+          </div>
+        </div>
+
+        {filteredNotes.length === 0 ? (
+          <p data-testid="empty-notes-hint">{t("docs.notes.empty")}</p>
         ) : (
           Array.from(groupedNotes.entries()).map(([folderName, folderNotes]) => (
             <div
@@ -180,7 +243,7 @@ export function DocumentsWorkspaceTab() {
                   📁 {folderName}
                 </span>
                 <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
-                  {folderNotes.length} {folderNotes.length === 1 ? "note" : "notes"}
+                  {folderNotes.length} {folderNotes.length === 1 ? t("docs.notes.count.singular") : t("docs.notes.count.plural")}
                 </span>
               </div>
               <div
@@ -195,14 +258,26 @@ export function DocumentsWorkspaceTab() {
                   <div
                     key={note.id}
                     data-testid={`note-item-${note.id}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => {
+                      selectedNoteIdSignal.value = note.id;
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        selectedNoteIdSignal.value = note.id;
+                      }
+                    }}
                     style={{
                       padding: "0.5rem",
-                      background: "var(--atlas-surface)",
-                      border: "1px solid var(--atlas-border)",
+                      background: selectedNoteIdSignal.value === note.id ? "var(--atlas-surface-raised)" : "var(--atlas-surface)",
+                      border: selectedNoteIdSignal.value === note.id ? "1px solid var(--atlas-action)" : "1px solid var(--atlas-border)",
                       borderRadius: "var(--atlas-radius-sm, 4px)",
                       display: "flex",
                       justifyContent: "space-between",
                       alignItems: "center",
+                      cursor: "pointer",
                     }}
                   >
                     <strong>{note.title}</strong>
@@ -213,7 +288,7 @@ export function DocumentsWorkspaceTab() {
                         color: "var(--atlas-text-muted)",
                       }}
                     >
-                      [{formatVisibilityLabel(note.visibility)}]
+                      [{getLocalizedScope(note.visibility)}]
                     </span>
                   </div>
                 ))}
@@ -223,13 +298,60 @@ export function DocumentsWorkspaceTab() {
         )}
       </div>
 
+      {selectedNote && (
+        <div
+          data-testid="note-editor-pane"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.5rem",
+            padding: "1rem",
+            background: "var(--atlas-surface)",
+            border: "1px solid var(--atlas-border)",
+            borderRadius: "var(--atlas-radius-md, 6px)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <input
+              data-testid="note-title-input"
+              class="ds-input"
+              value={selectedNote.title}
+              onInput={(e) => {
+                const val = (e.target as HTMLInputElement).value;
+                documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
+                  n.id === selectedNote.id ? { ...n, title: val } : n
+                );
+              }}
+              style={{ fontWeight: 600, fontSize: "1.1rem", flex: 1, marginRight: "1rem" }}
+            />
+            <span style={{ fontSize: "0.85rem", color: "var(--atlas-text-muted)" }}>
+              [{getLocalizedScope(selectedNote.visibility)}]
+            </span>
+          </div>
+          <textarea
+            data-testid="note-content-editor"
+            class="ds-input"
+            rows={6}
+            value={selectedNote.content ?? ""}
+            onInput={(e) => {
+              const val = (e.target as HTMLTextAreaElement).value;
+              documentsNotesSignal.value = documentsNotesSignal.value.map((n) =>
+                n.id === selectedNote.id ? { ...n, content: val } : n
+              );
+            }}
+            placeholder={t("docs.notes")}
+            style={{ width: "100%", resize: "vertical", fontFamily: "var(--atlas-font-sans, inherit)" }}
+          />
+        </div>
+      )}
+
       <div
         data-testid="past-handouts-gallery"
         style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
       >
-        <h3>Past Handouts</h3>
+        <h3>{t("docs.handouts")}</h3>
         {documentsHandoutsSignal.value.length === 0 ? (
-          <p data-testid="empty-handouts-hint">No revealed handouts</p>
+          <p data-testid="empty-handouts-hint">{t("docs.handouts.empty")}</p>
         ) : (
           documentsHandoutsSignal.value.map((handout) => (
             <div
@@ -237,7 +359,6 @@ export function DocumentsWorkspaceTab() {
               data-testid={`handout-card-${handout.handoutId}`}
               role="button"
               tabIndex={0}
-              aria-label={`Open handout: ${handout.title}`}
               onClick={() => {
                 activeHandoutModalSignal.value = handout;
               }}
@@ -250,7 +371,7 @@ export function DocumentsWorkspaceTab() {
               style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)", cursor: "pointer" }}
             >
               <h4>{handout.title}</h4>
-              <p style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{handout.content}</p>
+              <p>{handout.content}</p>
             </div>
           ))
         )}
@@ -260,24 +381,21 @@ export function DocumentsWorkspaceTab() {
         data-testid="session-timeline-feed"
         style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
       >
-        <h3>Session Timeline</h3>
+        <h3>{t("docs.timeline")}</h3>
         {documentsTimelineSignal.value.length === 0 ? (
-          <p data-testid="empty-timeline-hint">No events recorded</p>
+          <p data-testid="empty-timeline-hint">{t("docs.timeline.empty")}</p>
         ) : (
-          documentsTimelineSignal.value.map((event) => {
-            const titleText = typeof event.payload?.title === "string" ? `: ${event.payload.title}` : "";
-            return (
-              <div
-                key={event.id}
-                data-testid={`timeline-event-${event.seqId}`}
-                style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}
-              >
-                <span>
-                  #{event.seqId} {event.eventType}{titleText}
-                </span>
-              </div>
-            );
-          })
+          documentsTimelineSignal.value.map((event) => (
+            <div
+              key={event.id}
+              data-testid={`timeline-event-${event.seqId}`}
+              style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}
+            >
+              <span>
+                #{event.seqId} {event.eventType}
+              </span>
+            </div>
+          ))
         )}
       </div>
     </section>
