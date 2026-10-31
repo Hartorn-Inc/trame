@@ -45,8 +45,6 @@
     "minimumReleaseAge": "0 days",
     "automerge": false
   },
-  "prHourlyLimit": 2,
-  "prConcurrentLimit": 5,
   "customManagers": [
     {
       "customType": "regex",
