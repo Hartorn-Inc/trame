@@ -1,5 +1,5 @@
 import { decode, encode } from "@msgpack/msgpack";
-import { appSignals, mutateActorPosition, resetAppSignals } from "../state/appSignals.ts";
+import { appSignals, mutateActorPosition } from "../state/appSignals.ts";
 import type {
   ActorRecord,
   AuthUser,
@@ -29,6 +29,52 @@ import type {
   TrameCommand,
   TrameEvent,
 } from "../types/index.ts";
+
+export function normalizeAuthUser(raw: Record<string, unknown> | null | undefined): AuthUser {
+  if (!raw || typeof raw !== "object") {
+    return {
+      id: "",
+      email: "",
+      displayName: "Guest",
+      username: "Guest",
+      role: "PLAYER",
+      isGuest: true,
+      isEphemeral: true,
+    };
+  }
+  return {
+    id: String(raw.id || ""),
+    email: String(raw.email || ""),
+    displayName: String(raw.displayName ?? raw.display_name ?? raw.username ?? "Guest"),
+    username: String(raw.username ?? raw.displayName ?? raw.display_name ?? "Guest"),
+    role: String(raw.role || "PLAYER"),
+    isGuest: Boolean(raw.isGuest ?? raw.is_guest ?? raw.isEphemeral ?? raw.is_ephemeral ?? false),
+    isEphemeral: Boolean(raw.isEphemeral ?? raw.is_ephemeral ?? raw.isGuest ?? raw.is_guest ?? false),
+    mfaEnabled: raw.mfaEnabled !== undefined ? Boolean(raw.mfaEnabled) : (raw.mfa_enabled !== undefined ? Boolean(raw.mfa_enabled) : undefined),
+  };
+}
+
+export function normalizeCampaign(raw: Record<string, unknown> | null | undefined): Campaign {
+  if (!raw || typeof raw !== "object") {
+    return {
+      id: "",
+      name: "",
+      system: "dnd5e",
+      role: "PLAYER",
+      createdAt: new Date().toISOString(),
+    };
+  }
+  return {
+    id: String(raw.id || ""),
+    name: String(raw.name || ""),
+    system: String(raw.system ?? raw.system_id ?? "dnd5e"),
+    role: String(raw.role || "PLAYER"),
+    createdAt: String(raw.createdAt ?? raw.created_at ?? new Date().toISOString()),
+    description: (raw.description ?? null) as string | null,
+    activeMapHash: (raw.activeMapHash ?? raw.active_map_hash ?? null) as string | null,
+    actors: Array.isArray(raw.actors) ? (raw.actors as import("../types/index.ts").ActorRecord[]) : undefined,
+  };
+}
 
 export function normalizeToken(id: string, raw: Record<string, unknown>): Token {
   const rawTopLeft = (raw.topLeft || raw.top_left) as { x?: number; y?: number } | undefined;
@@ -281,36 +327,48 @@ export class ApiClient {
   }
 
   public async register(data: RegisterRequest): Promise<AuthUser> {
-    const res = await this.requestJson<{ user: AuthUser }>(`${this.baseUrl}/api/v1/auth/register`, {
+    const payload = {
+      email: data.email,
+      display_name: data.displayName ?? (data as unknown as Record<string, unknown>).display_name,
+      displayName: data.displayName,
+      password: data.password,
+    };
+    const res = await this.requestJson<Record<string, unknown>>(`${this.baseUrl}/api/v1/auth/register`, {
       method: "POST",
-      body: JSON.stringify(data),
+      body: JSON.stringify(payload),
     });
-    appSignals.authUserSignal.value = res.user;
-    return res.user;
+    const rawUser = (res.user || res) as Record<string, unknown>;
+    const normalized = normalizeAuthUser(rawUser);
+    appSignals.authUserSignal.value = normalized;
+    return normalized;
   }
 
   public async login(data: LoginRequest): Promise<AuthUser> {
-    const res = await this.requestJson<{ user: AuthUser }>(`${this.baseUrl}/api/v1/auth/login`, {
+    const res = await this.requestJson<Record<string, unknown>>(`${this.baseUrl}/api/v1/auth/login`, {
       method: "POST",
       body: JSON.stringify(data),
     });
-    appSignals.authUserSignal.value = res.user;
-    return res.user;
+    const rawUser = (res.user || res) as Record<string, unknown>;
+    const normalized = normalizeAuthUser(rawUser);
+    appSignals.authUserSignal.value = normalized;
+    return normalized;
   }
 
   public async logout(): Promise<void> {
     await this.requestJson<{ status: string }>(`${this.baseUrl}/api/v1/auth/logout`, {
       method: "POST",
     });
-    resetAppSignals();
+    appSignals.authUserSignal.value = null;
   }
 
   public async getMe(): Promise<AuthUser> {
-    const res = await this.requestJson<{ user: AuthUser }>(`${this.baseUrl}/api/v1/auth/me`, {
+    const res = await this.requestJson<Record<string, unknown>>(`${this.baseUrl}/api/v1/auth/me`, {
       method: "GET",
     });
-    appSignals.authUserSignal.value = res.user;
-    return res.user;
+    const rawUser = (res.user || res) as Record<string, unknown>;
+    const normalized = normalizeAuthUser(rawUser);
+    appSignals.authUserSignal.value = normalized;
+    return normalized;
   }
 
   public async redeemMagicLink(token: string, nickname?: string): Promise<MagicLinkLoginResponse> {
@@ -319,15 +377,7 @@ export class ApiClient {
       body: JSON.stringify({ token, nickname }),
     });
     const rawUser = (raw.user || {}) as Record<string, unknown>;
-    const user: AuthUser = {
-      id: String(rawUser.id ?? raw.userId ?? raw.user_id ?? ""),
-      email: String(rawUser.email ?? ""),
-      displayName: String(rawUser.displayName ?? rawUser.display_name ?? raw.username ?? "Guest"),
-      username: String(rawUser.username ?? raw.username ?? "Guest"),
-      role: String(rawUser.role ?? raw.role ?? "PLAYER"),
-      isGuest: Boolean(rawUser.isGuest ?? rawUser.is_guest ?? rawUser.is_ephemeral ?? true),
-      isEphemeral: Boolean(rawUser.isEphemeral ?? rawUser.is_ephemeral ?? rawUser.is_guest ?? true),
-    };
+    const user: AuthUser = normalizeAuthUser(rawUser);
     const res: MagicLinkLoginResponse = {
       userId: String(raw.userId ?? raw.user_id ?? user.id),
       username: String(raw.username ?? user.username),
@@ -342,28 +392,31 @@ export class ApiClient {
   }
 
   public async listCampaigns(): Promise<Campaign[]> {
-    const res = await this.requestJson<{ campaigns: Campaign[] }>(`${this.baseUrl}/api/v1/campaigns`, {
+    const res = await this.requestJson<{ campaigns: Record<string, unknown>[] }>(`${this.baseUrl}/api/v1/campaigns`, {
       method: "GET",
     });
-    appSignals.campaignsSignal.value = res.campaigns;
-    return res.campaigns;
+    const normalized = (res.campaigns || []).map((c) => normalizeCampaign(c));
+    appSignals.campaignsSignal.value = normalized;
+    return normalized;
   }
 
   public async createCampaign(data: CreateCampaignRequest): Promise<Campaign> {
-    const res = await this.requestJson<{ campaign: Campaign }>(`${this.baseUrl}/api/v1/campaigns`, {
+    const res = await this.requestJson<{ campaign: Record<string, unknown> }>(`${this.baseUrl}/api/v1/campaigns`, {
       method: "POST",
       body: JSON.stringify(data),
     });
-    appSignals.campaignsSignal.value = [...appSignals.campaignsSignal.value, res.campaign];
-    return res.campaign;
+    const normalized = normalizeCampaign(res.campaign);
+    appSignals.campaignsSignal.value = [...appSignals.campaignsSignal.value, normalized];
+    return normalized;
   }
 
   public async getCampaign(campaignId: string): Promise<Campaign> {
-    const res = await this.requestJson<{ campaign: Campaign }>(`${this.baseUrl}/api/v1/campaigns/${campaignId}`, {
+    const res = await this.requestJson<{ campaign: Record<string, unknown> }>(`${this.baseUrl}/api/v1/campaigns/${campaignId}`, {
       method: "GET",
     });
-    appSignals.activeCampaignSignal.value = res.campaign;
-    return res.campaign;
+    const normalized = normalizeCampaign(res.campaign);
+    appSignals.activeCampaignSignal.value = normalized;
+    return normalized;
   }
 
   public async createCampaignInvite(
