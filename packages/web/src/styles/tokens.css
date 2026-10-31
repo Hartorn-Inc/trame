@@ -1,0 +1,289 @@
+/**
+ * ============================================================================
+ * TRAME ATLAS v1.1 DESIGN TOKENS & TYPOGRAPHY (tokens.css)
+ * ============================================================================
+ *
+ * Canonical semantic CSS custom properties for TRAME DOM chrome across
+ * [data-theme="dark"] (default), [data-theme="light"], and [data-theme="system"].
+ *
+ * INVARIANTS (DESIGN.md & ADR-0011):
+ *   1. Only this file (for DOM CSS) and `src/canvas/CanvasThemePalette.ts`
+ *      (for PixiJS v8 SceneGraph) may declare raw hex/RGB color literals.
+ *   2. Uploaded battlemap art on `backgroundMap` is NEVER filtered by theme.
+ *   3. All numeric combat, ruler, dice, and character sheet fields use
+ *      `.atlas-tabular-nums` (`font-variant-numeric: tabular-nums`).
+ * ============================================================================
+ */
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/SpaceGrotesk-Medium.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/SpaceGrotesk-SemiBold.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/IBMPlexSans-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/IBMPlexSans-Medium.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/IBMPlexSans-SemiBold.woff2") format("woff2");
+}
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Core Semantic Palette (Dark — Deep Cartographic Slate) */
+  --atlas-bg: #0F1A25;
+  --atlas-surface: #182736;
+  --atlas-surface-raised: #203243;
+  --atlas-text: #F1F4F3;
+  --atlas-text-muted: #B8C7D1;
+  --atlas-border: #405466;
+  --atlas-action: #F3BB71;
+  --atlas-on-action: #172535;
+  --atlas-focus: #80CBE2;
+  --atlas-danger: #D57973;
+  --atlas-grid: rgba(184, 199, 209, 0.16);
+  --atlas-shadow: rgba(5, 10, 16, 0.42);
+
+  /* Typography Families & Scale */
+  --atlas-font-display: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  --atlas-font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+
+  /* Utilitarian Border Radii */
+  --atlas-radius-sm: 4px;
+  --atlas-radius-md: 6px;
+  --atlas-radius-lg: 8px;
+
+  /* 4px Spatial Rhythm */
+  --atlas-space-xs: 4px;
+  --atlas-space-sm: 8px;
+  --atlas-space-md: 16px;
+  --atlas-space-lg: 24px;
+  --atlas-space-xl: 32px;
+
+  /* Hit Target & Elevation Contracts */
+  --atlas-hit-desktop: 40px;
+  --atlas-hit-touch: 44px;
+  --atlas-elevation-overlay: 0 10px 30px var(--atlas-shadow);
+  --atlas-transition-fast: 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* Core Semantic Palette (Light — Daylight Parchment) */
+  --atlas-bg: #F4F7F9;
+  --atlas-surface: #FFFFFF;
+  --atlas-surface-raised: #E8EFF3;
+  --atlas-text: #1C3041;
+  --atlas-text-muted: #465D6D;
+  --atlas-border: #ACBFCB;
+  --atlas-action: #995817;
+  --atlas-on-action: #FFFFFF;
+  --atlas-focus: #155D77;
+  --atlas-danger: #A3333B;
+  --atlas-grid: rgba(28, 48, 65, 0.14);
+  --atlas-shadow: rgba(15, 26, 37, 0.12);
+}
+
+@media (prefers-color-scheme: light) {
+  [data-theme="system"] {
+    color-scheme: light;
+    --atlas-bg: #F4F7F9;
+    --atlas-surface: #FFFFFF;
+    --atlas-surface-raised: #E8EFF3;
+    --atlas-text: #1C3041;
+    --atlas-text-muted: #465D6D;
+    --atlas-border: #ACBFCB;
+    --atlas-action: #995817;
+    --atlas-on-action: #FFFFFF;
+    --atlas-focus: #155D77;
+    --atlas-danger: #A3333B;
+    --atlas-grid: rgba(28, 48, 65, 0.14);
+    --atlas-shadow: rgba(15, 26, 37, 0.12);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--atlas-bg);
+  color: var(--atlas-text);
+  font-family: var(--atlas-font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background-color: var(--atlas-focus);
+  color: var(--atlas-bg);
+}
+
+:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+.atlas-tabular-nums {
+  font-family: var(--atlas-font-sans);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Canonical Design System Primitives (ds-*) */
+.ds-app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--atlas-bg);
+  color: var(--atlas-text);
+}
+
+.ds-topbar {
+  min-height: 48px;
+  padding: var(--atlas-space-sm) var(--atlas-space-md);
+  border-bottom: 1px solid var(--atlas-border);
+  background-color: var(--atlas-surface);
+  color: var(--atlas-text);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--atlas-space-md);
+}
+
+.ds-brand-title {
+  font-family: var(--atlas-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-panel {
+  background-color: var(--atlas-surface);
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-lg);
+  padding: var(--atlas-space-md);
+}
+
+.ds-overlay-modal {
+  background-color: var(--atlas-surface);
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-lg);
+  box-shadow: var(--atlas-elevation-overlay);
+  padding: var(--atlas-space-lg);
+}
+
+.ds-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--atlas-space-sm);
+  min-height: var(--atlas-hit-desktop);
+  min-width: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-sm) var(--atlas-space-md);
+  border-radius: var(--atlas-radius-sm);
+  font-family: var(--atlas-font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+  cursor: pointer;
+  transition: background-color var(--atlas-transition-fast), border-color var(--atlas-transition-fast);
+}
+
+.ds-btn-primary {
+  background-color: var(--atlas-action);
+  color: var(--atlas-on-action);
+  border: 1px solid transparent;
+}
+
+.ds-btn-secondary {
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border);
+}
+
+.ds-btn-secondary[aria-pressed="true"] {
+  border-color: var(--atlas-action);
+}
+
+.ds-btn-danger {
+  background-color: transparent;
+  color: var(--atlas-danger);
+  border: 1px solid var(--atlas-danger);
+}
+
+.ds-input {
+  min-height: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-sm) 12px;
+  border-radius: var(--atlas-radius-md);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border);
+  font-family: var(--atlas-font-sans);
+  font-size: 14px;
+}
+
+/* Map-Art Independence Rule: Never apply theme filters to PixiJS battlemap canvas */
+.trame-pixijs-canvas {
+  filter: none;
+}
+
+@media (max-width: 767px) {
+  .ds-btn,
+  .ds-input,
+  .nav-tab-btn {
+    min-height: var(--atlas-hit-touch);
+    min-width: var(--atlas-hit-touch);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

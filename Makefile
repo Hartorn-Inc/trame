@@ -42,7 +42,7 @@ test-rust: ## Run Cargo workspace tests inside the Rust Docker container
 test-web: ## Run Web frontend tests inside the Node Docker container
 	$(DEV_COMPOSE) run --rm --no-deps web-dev npm test
 
-lint: lint-rust lint-web ## Run all linters and format checks (glossary/ADR integrity, rustfmt, clippy, eslint, tsc) inside Docker
+lint: lint-rust lint-web ## Run all linters and format checks (glossary/ADR integrity, Impeccable design audit, rustfmt, clippy, eslint, tsc) inside Docker
 	python3 "$(REPO_DIR)/scripts/check-glossary-and-adrs.py"
 
 lint-rust: ## Run cargo fmt check and clippy inside the Rust Docker container
