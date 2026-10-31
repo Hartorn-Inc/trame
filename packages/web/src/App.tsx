@@ -23,7 +23,7 @@
  * ============================================================================
  */
 
-import { signal } from '@preact/signals';
+import { computed, signal } from '@preact/signals';
 import {
   localeSignal,
   mobileCompanionOverrideSignal,
@@ -39,6 +39,9 @@ export const appStatusSignal = signal<'ready' | 'connecting' | 'connected'>('rea
 export const windowWidthSignal = signal<number>(
   typeof window !== 'undefined' ? window.innerWidth : 1024,
 );
+export const shouldMountCanvas = computed(
+  () => !mobileCompanionOverrideSignal.value && windowWidthSignal.value >= 768,
+);
 
 if (typeof window !== 'undefined') {
   window.addEventListener('resize', () => {
@@ -47,7 +50,7 @@ if (typeof window !== 'undefined') {
 }
 
 export function App() {
-  const isMobile = mobileCompanionOverrideSignal.value || windowWidthSignal.value < 768;
+  const isMobile = !shouldMountCanvas.value;
 
   return (
     <>
