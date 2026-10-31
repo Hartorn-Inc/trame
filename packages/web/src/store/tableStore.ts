@@ -1,4 +1,5 @@
 import { DualBufferFogOfWar } from "../canvas/LightingShader.ts";
+import { CANVAS_RADIAL_PING_COLORS } from "../canvas/CanvasThemePalette.ts";
 import {
   type DrawingEntity,
   type Point2D,
@@ -58,11 +59,8 @@ export interface RadarPing {
   timestamp: number;
 }
 
-export const RADIAL_PING_COLORS: Record<"ALERT" | "ATTENTION" | "QUESTION", string> = {
-  ALERT: "#ff3333",
-  ATTENTION: "#ffaa00",
-  QUESTION: "#3388ff",
-};
+export const RADIAL_PING_COLORS: Record<"ALERT" | "ATTENTION" | "QUESTION", string> =
+  CANVAS_RADIAL_PING_COLORS;
 
 export function normalizePingType(type: PingType): "ALERT" | "ATTENTION" | "QUESTION" {
   const upper = String(type).toUpperCase();
