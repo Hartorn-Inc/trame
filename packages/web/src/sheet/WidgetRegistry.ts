@@ -8,6 +8,18 @@ export interface WidgetRenderContext<TOptions = Record<string, unknown>> {
   dispatchCommand?: CommandDispatcher;
 }
 
+export interface WidgetProps<TOptions = Record<string, unknown>> {
+  id: string;
+  boundValues: Record<string, unknown>;
+  bindings?: Record<string, string>;
+  options?: TOptions;
+  isLocked?: boolean;
+  dispatchCommand?: CommandDispatcher;
+  actorId?: string;
+  onCloseDrawer?: () => void;
+  isTableCanvasMounted?: boolean;
+}
+
 export type WidgetComponent<TOptions = Record<string, unknown>, TOutput = unknown> = (
   context: WidgetRenderContext<TOptions>,
 ) => TOutput;
