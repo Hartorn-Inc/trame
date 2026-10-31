@@ -31,7 +31,6 @@ import {
   revealedHandoutsSignal,
   activeRevealedHandoutSignal,
   selectedNoteIdSignal,
-  noteScopeFilterSignal,
   DocumentsWorkspaceTab,
   type NoteHierarchyNode,
 } from "../src/workspace/DocumentsWorkspaceTab.tsx";
@@ -518,8 +517,8 @@ describe("[Ticket #89 - Acceptance Criterion 5] Folder-Organized Notes Hierarchy
     const findDescendant = (node: any, testId: string): any => {
       if (!node) return null;
       if (Array.isArray(node)) {
-        for (const item of node) {
-          const found = findDescendant(item, testId);
+        for (const child of node) {
+          const found = findDescendant(child, testId);
           if (found) return found;
         }
         return null;
@@ -537,7 +536,6 @@ describe("[Ticket #89 - Acceptance Criterion 5] Folder-Organized Notes Hierarchy
       return null;
     };
 
-    noteScopeFilterSignal.value = "ALL";
     documentsNotesSignal.value = [
       { id: "note-a11y-1", title: "A11y Note", folder: "Root", visibility: "PARTY", ownerUserId: "u1" },
     ];
