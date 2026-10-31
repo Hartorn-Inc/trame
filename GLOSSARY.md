@@ -339,48 +339,80 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: Game Master HUD, action history inspection, and rollback execution.
 - **_Avoid_**: HistorySidebar, RollbackPanel.
 
+### Campaign
+
+- **Definition**: Persistent gaming table workspace aggregating scenes, actors, wiki notes, party journals, and rule settings.
+- **Allowed Context**: `Campaign`, `campaign_id`.
+- **_Avoid_**: Room, SessionWorkspace, GameState.
+
 ### DocumentsWorkspaceTab
 
-- **Definition**: Third navigation tab inside `CampaignWorkspace` (`[data-testid="tab-documents"]`) grouping the folder-scoped 3-scope wiki notes explorer, the revealed handouts gallery, and the chronological `SessionTimelineEvent` feed.
-- **_Avoid_**: NotesOnlyTab, HandoutsPanel.
+- **Definition**: Third navigation tab inside `CampaignWorkspace` (`[data-testid="tab-documents"]`) rendering folder note hierarchy, revealed handouts gallery, and session timeline feed.
+- **Allowed Context**: `DocumentsWorkspaceTab`, `documents tab`.
+- **_Avoid_**: NotesPanel, DocumentsDrawer.
 
 ### FilteredNoteDocument
 
-- **Definition**: Server-side (`trame-server`) Markdown AST projection and sanitization unit that strips unauthorized confidential blocks (`:::dm` and unrevealed `:::handout`) before any HTTP or WebSocket serialization to non-GM clients.
-- **_Avoid_**: RawMarkdownResponse, ClientSideSecretFilter.
+- **Definition**: Server-side AST projection and sanitization module in `trame-server` stripping confidential blocks (`:::dm` and unrevealed `:::handout`) prior to serialization for non-GM users.
+- **Allowed Context**: Note queries, Markdown processing, role filtering.
+- **_Avoid_**: NoteSanitizer, CleanMarkdown.
+
+### Handout
+
+- **Definition**: Textual or visual artifact shared with players, hidden initially until explicitly revealed by the Game Master.
+- **Allowed Context**: `Handout`, `handout_id`.
+- **_Avoid_**: SecretClue, DistributableDocument.
 
 ### HandoutRevealModal
 
-- **Definition**: Foreground Preact modal component (`[data-testid="handout-reveal-modal"]`) automatically triggered on all connected clients upon receiving a `ServerEnvelope::HandoutRevealed` broadcast.
-- **_Avoid_**: HandoutToast, InlineHandoutBanner.
+- **Definition**: Foreground Preact modal component (`[data-testid="handout-reveal-modal"]`) mounted on connected clients upon receiving a `ServerEnvelope::HandoutRevealed` broadcast.
+- **Allowed Context**: Handout broadcasts, reveal notifications.
+- **_Avoid_**: CluePopup, HandoutDialog.
 
-### LocaleSignal
+### Note
 
-- **Definition**: Reactive `@preact/signals` state (`localeSignal`) storing the active UI language (`'en' | 'fr'`), initialized from `localStorage` with fallback to `navigator.language`.
-- **_Avoid_**: HardcodedLocale, GlobalLangVar.
-
-### MobileCompanionView
-
-- **Definition**: Touch-optimized Preact viewport rendered on mobile screens (`< 768px`) or when `mobileCompanionOverrideSignal` is active, bypassing WebGL `TableCanvas` allocation and presenting 5 dedicated tabs (`Sheet`, `Dice`, `Inventory`, `Tracker`, `Journal`).
-- **_Avoid_**: shrunkDesktopCanvas, MobileWebGlTable.
+- **Definition**: Markdown document stored in a campaign, organized in optional folder paths and governed by a 3-tier `NoteVisibility` scope.
+- **Allowed Context**: `Note`, `note_id`.
+- **_Avoid_**: WikiPage, DocumentEntry.
 
 ### NoteVisibility
 
-- **Definition**: Strict 3-tier access scope enum (`PRIVATE`, `PARTY`, `DM_ONLY`) governing read/write authorization on a campaign wiki note.
-- **_Avoid_**: BooleanIsPublic, LegacyGmOnlyFlag.
+- **Definition**: Three-tier access control enumeration (`PRIVATE`, `PARTY`, `DM_ONLY`) governing read and write permissions for campaign notes.
+- **Allowed Context**: Note permissions, campaign wiki RBAC.
+- **_Avoid_**: NoteScope, VisibilityLevel.
+
+### MobileCompanionView
+
+- **Definition**: Touch-optimized Preact view mounted on mobile viewports (`< 768px`) or via `mobileCompanionOverrideSignal`, bypassing WebGL canvas allocation.
+- **Allowed Context**: Responsive UI shell, mobile tablet and phone interface.
+- **_Avoid_**: MobileMode, PhoneLayout.
 
 ### PartyJournalEntry
 
-- **Definition**: Persistent, immutable SQL record in `party_journal_entries` representing a handout formally revealed to the party, decoupled from the lifecycle of the source note.
-- **_Avoid_**: EphemeralHandoutState.
+- **Definition**: Immutable persistent record in `party_journal_entries` representing a revealed handout decoupled from the source note lifecycle.
+- **Allowed Context**: Party journal, revealed handouts gallery.
+- **_Avoid_**: JournalNote, SavedClue.
 
 ### SessionTimelineEvent
 
-- **Definition**: Append-only SQL record in `session_events` capturing a notable session milestone (combat started, attack, creature defeated, door opened, handout revealed) indexed by a monotonic `seq_id`.
-- **_Avoid_**: UnorderedChatLog.
+- **Definition**: Append-only event in `session_events` recording significant session occurrences indexed by a monotonic sequence identifier.
+- **Allowed Context**: Session timeline, event auditing, MCP timeline querying.
+- **_Avoid_**: SessionHistoryLog, GameLogEntry.
 
-### UnitSystemSignal
+### UserRole
 
-- **Definition**: Reactive `@preact/signals` state (`unitSystemSignal`) storing the active tactical measurement unit system (`'imperial_ft' | 'metric_m'`).
-- **_Avoid_**: HardcodedFeetString.
+- **Definition**: Campaign participant authorization role (`GameMaster`, `Player`, or `Spectator`) governing note visibility and table mutations.
+- **Allowed Context**: RBAC checks, session tokens.
+- **_Avoid_**: MemberRole, PlayerPrivilege.
 
+### localeSignal
+
+- **Definition**: Global reactive Preact signal holding the active interface language (`'en' | 'fr'`), initialized from `localStorage` with fallback to `navigator.language`.
+- **Allowed Context**: UI localization, i18n presentation layer.
+- **_Avoid_**: currentLocale, langSignal.
+
+### unitSystemSignal
+
+- **Definition**: Global reactive Preact signal holding the active tactical measurement system (`'imperial_ft' | 'metric_m'`).
+- **Allowed Context**: Distance formatting, tactical measurement display.
+- **_Avoid_**: measurementSignal, unitsSignal.

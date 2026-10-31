@@ -6,54 +6,55 @@
  * PURPOSE:
  * --------
  * Provides the root Preact shell for the TRAME browser client (`CampaignLobby`
- * and `CampaignWorkspace`) using ATLAS v1.1 semantic tokens (`tokens.css`).
+ * and live tabletop workspace).
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -------------------------------
  *   1. `PreactSignalState`:
- *      - Top-level reactive signals drive view transitions and theme switching
- *        (`dark`, `light`, `system`) without full-tree re-renders.
- *   2. Zero inline raw hex colors: all colors resolve via `var(--atlas-*)`.
+ *      - Top-level reactive signals drive view transitions without full-tree
+ *        re-renders.
+ *
+ * EXECUTION LIFECYCLE:
+ * --------------------
+ *   1. Initialize reactive application state.
+ *   2. Render active view (`CampaignLobby` or active campaign table).
  * ============================================================================
  */
 
-import { signal } from '@preact/signals';
-import type { AtlasThemeMode } from './canvas/CanvasThemePalette.ts';
+import { signal, computed } from '@preact/signals';
+import { mobileCompanionOverrideSignal } from './i18n/index.ts';
+import { MobileCompanionView } from './mobile/MobileCompanionView.tsx';
 
 export const appStatusSignal = signal<'ready' | 'connecting' | 'connected'>('ready');
-export const appThemeSignal = signal<AtlasThemeMode>('dark');
+export const windowWidthSignal = signal<number>(typeof window !== 'undefined' ? window.innerWidth : 1024);
 
-export function setAppTheme(mode: AtlasThemeMode): void {
-  appThemeSignal.value = mode;
-  if (typeof document !== 'undefined' && document.documentElement) {
-    document.documentElement.setAttribute('data-theme', mode);
-  }
+if (typeof window !== 'undefined') {
+  window.addEventListener('resize', () => {
+    windowWidthSignal.value = window.innerWidth;
+  });
 }
 
 export function App() {
+  const isMobile = computed(() => mobileCompanionOverrideSignal.value || windowWidthSignal.value < 768);
+
+  if (isMobile.value) {
+    return <MobileCompanionView />;
+  }
+
   return (
-    <main
-      data-testid="trame-app-root"
-      data-theme={appThemeSignal.value}
-      class="ds-app-shell"
-      style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}
-    >
+    <main data-testid="trame-app-root" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       <header
-        class="ds-topbar"
         style={{
-          padding: 'var(--atlas-space-sm) var(--atlas-space-md)',
-          borderBottom: '1px solid var(--atlas-border)',
+          padding: '0.75rem 1.25rem',
+          borderBottom: '1px solid #1e293b',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          background: 'var(--atlas-surface)',
-          color: 'var(--atlas-text)',
+          background: '#131722',
         }}
       >
-        <strong class="ds-brand-title">TRAME VTT</strong>
-        <span data-testid="trame-status-badge" class="atlas-tabular-nums">
-          {appStatusSignal.value}
-        </span>
+        <strong>TRAME VTT</strong>
+        <span data-testid="trame-status-badge">{appStatusSignal.value}</span>
       </header>
     </main>
   );

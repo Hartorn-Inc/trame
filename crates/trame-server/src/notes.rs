@@ -8,6 +8,53 @@ use trame_engine::commands::CampaignRole;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum NoteVisibility {
+    Private,
+    Party,
+    DmOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteAccessDecision {
+    Ok,
+    Forbidden,
+    NotFound,
+}
+
+pub fn evaluate_note_access(
+    visibility: NoteVisibility,
+    owner_user_id: &str,
+    requesting_user_id: &str,
+    requesting_role: UserRole,
+    is_write: bool,
+) -> NoteAccessDecision {
+    match visibility {
+        NoteVisibility::Private => {
+            if owner_user_id == requesting_user_id {
+                NoteAccessDecision::Ok
+            } else {
+                NoteAccessDecision::NotFound
+            }
+        }
+        NoteVisibility::DmOnly => {
+            if requesting_role == UserRole::GameMaster {
+                NoteAccessDecision::Ok
+            } else {
+                NoteAccessDecision::Forbidden
+            }
+        }
+        NoteVisibility::Party => {
+            if is_write && requesting_role == UserRole::Spectator {
+                NoteAccessDecision::Forbidden
+            } else {
+                NoteAccessDecision::Ok
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum UserRole {
     GameMaster,
     Player,

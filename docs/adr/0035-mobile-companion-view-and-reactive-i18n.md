@@ -1,23 +1,30 @@
-# ADR-0035: MobileCompanionView Architecture and Reactive i18n / Unit Presentation Layer
+# ADR-0035: MobileCompanionView Architecture and Reactive i18n Presentation Layer
 
 - **Status**: Accepted
-- **Date**: 2026-10-31
+- **Date**: 2025-05-18
+- **Authors**: TRAME Architecture Team
 - **Context**: Issue #80, ADR-0009
 
 ## Context
 
-Smartphones and small tablets (`< 768px`) require a touch-first companion UI that does not allocate a WebGL/PixiJS context, preserving battery life and GPU memory. Furthermore, bilingual tables (`en` / `fr`) require reactive UI localization and imperial/metric distance formatting (`5 ft` vs `1.5 m`) without altering canonical Rust engine rules or network payloads.
+Mobile devices on viewports under 768px require a touch interface that bypasses WebGL initialization to conserve battery and GPU memory. Furthermore, bilingual tables require localized labels (`FR` and `EN`) and metric tactical measurement formatting without altering underlying English rule slugs or network protocol identifiers.
 
 ## Decision
 
-1. **WebGL Lifecycle and `MobileCompanionView` Mounting**:
-   - `App.tsx` computes `shouldMountCanvas = computed(() => !mobileCompanionOverrideSignal.value && windowWidthSignal.value >= 768)`.
-   - When `shouldMountCanvas.value === false`, `TableCanvas` is unmounted (destroying the PixiJS application) and `MobileCompanionView` is mounted with 5 touch tabs (`Sheet`, `Dice`, `Inventory`, `Tracker`, `Journal`).
-2. **Reactive Presentation-Layer i18n and Distance Conversion**:
-   - `packages/web/src/i18n/index.ts` exposes `localeSignal` (`'en' | 'fr'`), `unitSystemSignal` (`'imperial_ft' | 'metric_m'`), `t(key, vars)`, `formatDistanceFt(feet)`, and bilingual compendium search resolution.
-   - All Rust engine calculations and WebSocket envelopes remain strictly in canonical English and feet.
+1. **Responsive Viewport Decoupling**:
+   - `App.tsx` evaluates viewport width and `mobileCompanionOverrideSignal`.
+   - Viewports under 768px or with active override mount `MobileCompanionView` with dedicated tabs (`Sheet`, `Dice`, `Inventory`, `Tracker`, `Journal`).
+
+2. **Reactive i18n Presentation Layer**:
+   - `packages/web/src/i18n/index.ts` provides `localeSignal` (`'en' | 'fr'`) and `unitSystemSignal` (`'imperial_ft' | 'metric_m'`).
+   - `formatDistanceFt` converts distances into metric values with grid square counts while network payloads remain in imperial feet.
+   - Compendium search queries map bilingual French terms to canonical English keys.
 
 ## Consequences
 
-- Zero WebGL memory overhead on `< 768px` companion devices.
-- Seamless runtime switching between English/French and imperial/metric display units.
+### Positive
+- Zero WebGL resource consumption on mobile screens.
+- Clean localization presentation decoupled from core engine computation.
+
+### Negative
+- Switching between desktop and mobile modes reconstructs the WebGL context.

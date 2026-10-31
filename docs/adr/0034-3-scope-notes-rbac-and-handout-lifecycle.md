@@ -1,25 +1,36 @@
 # ADR-0034: Zero-Trust 3-Scope Notes RBAC and Transactional Handout Lifecycle
 
 - **Status**: Accepted
-- **Date**: 2026-10-31
+- **Date**: 2025-05-18
+- **Authors**: TRAME Architecture Team
 - **Context**: Issue #80, ADR-0004, ADR-0009
 
 ## Context
 
-Campaign participants require three distinct note scopes: personal player notes (`PRIVATE`) hidden from all other users (including the GM), collaborative party wiki notes (`PARTY`), and secret GM prep notes (`DM_ONLY`). Additionally, when a player edits a `PARTY` note that originally contained GM-only inline directives (`:::dm` or unrevealed `:::handout`), saving the player's edit must never overwrite or erase the hidden GM blocks.
+Players previously could not author or edit campaign notes because Markdown editing was gated behind GameMaster role checks. Furthermore, note storage lacked isolation between private player logs, shared team wikis, and GameMaster secret lore.
+
+Players must document personal history without surveillance from other players or the Game Master. Players also collaborate on a shared wiki. The Game Master must keep secret notes and embed confidential directive blocks (`:::dm` and `:::handout`) without network leakage to player clients.
 
 ## Decision
 
-1. **Three-Scope Visibility Model (`NoteVisibility`)**:
-   - `PRIVATE`: Bound strictly to `owner_user_id`. Unauthorized access returns `HTTP 404 Not Found` to prevent enumeration.
-   - `PARTY`: Readable and editable by `UserRole::GameMaster` and `UserRole::Player`; read-only for `UserRole::Spectator`.
-   - `DM_ONLY`: Accessible exclusively to `UserRole::GameMaster`; non-GM requests return `HTTP 403 Forbidden`.
-2. **Structural Preservation of Masked Directives on Player Edits**:
-   - When a player submits `PUT /api/v1/campaigns/{id}/notes/{note_id}` on a `PARTY` note, `trame-server` preserves existing `:::dm` and unrevealed `:::handout` blocks from the stored document AST.
-3. **Transactional Handout Lifecycle**:
-   - Revealing a handout atomically marks `revealed="true"` on the source directive, upserts an immutable entry in `party_journal_entries`, appends a `handout_revealed` record to `session_events`, and broadcasts `ServerEnvelope::HandoutRevealed`.
+1. **3-Scope Note Visibility Model (`NoteVisibility`)**:
+   - `PRIVATE`: Bound strictly to `owner_user_id`. Unauthorized queries return `HTTP 404 Not Found` to prevent enumeration.
+   - `PARTY`: Read and write access for `UserRole::GameMaster` and `UserRole::Player`. `UserRole::Spectator` has strict read-only access.
+   - `DM_ONLY`: Accessible exclusively to `UserRole::GameMaster`. Non-GM queries return `HTTP 403 Forbidden`.
+
+2. **Directive Preservation on Player Note Updates**:
+   - When non-GM users update a `PARTY` note, `trame-server` preserves existing confidential blocks (`:::dm` and unrevealed `:::handout`) at their original AST positions.
+
+3. **Decoupled Handout Persistence**:
+   - Revealed handouts persist in `party_journal_entries` independently of future edits or deletions of the source note.
+   - Broadcast frames (`ServerEnvelope::HandoutRevealed`) notify connected clients.
 
 ## Consequences
 
-- Zero-trust confidentiality is enforced server-side for both `PRIVATE` player notes and `DM_ONLY` / inline GM secrets.
-- Revealed handouts remain permanently accessible in the Party Journal even if the source note is later modified.
+### Positive
+- Strict zero-trust privacy for player personal notes.
+- Safe collaborative editing on shared party notes without secret block deletion.
+- Durable persistence of revealed handouts in party journal storage.
+
+### Negative
+- Server must execute structural AST merging for player updates on shared notes containing confidential blocks.
