@@ -44,7 +44,7 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), "..");
 
-const CANONICAL_SECTIONS = [
+export const CANONICAL_SECTIONS = [
   "## Overview",
   "## Colors",
   "## Typography",
@@ -54,6 +54,182 @@ const CANONICAL_SECTIONS = [
   "## Components",
   "## Do's and Don'ts",
 ];
+
+export const CANONICAL_SECTION_TITLES = CANONICAL_SECTIONS.map((s) =>
+  s.replace(/^##\s+/, ""),
+);
+
+function unquote(str) {
+  const trimmed = str.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+export function parseYamlSubset(yamlText) {
+  const lines = yamlText.split(/\r?\n/);
+  const root = {};
+  const stack = [{ indent: -1, node: root }];
+
+  for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+    const rawLine = lines[lineNum];
+    if (!rawLine.trim() || rawLine.trim().startsWith("#")) {
+      continue;
+    }
+    const indent = rawLine.search(/\S/);
+    const trimmed = rawLine.trim();
+
+    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
+      stack.pop();
+    }
+    const current = stack[stack.length - 1].node;
+
+    if (trimmed.startsWith("- ")) {
+      const val = unquote(trimmed.slice(2));
+      if (Array.isArray(current)) {
+        current.push(val);
+      } else {
+        throw new Error(`Unexpected list item at line ${lineNum + 1}`);
+      }
+      continue;
+    }
+
+    const colonIdx = trimmed.indexOf(":");
+    if (colonIdx === -1) {
+      throw new Error(`Invalid YAML line at ${lineNum + 1}: ${rawLine}`);
+    }
+    const key = trimmed.slice(0, colonIdx).trim();
+    const rest = trimmed.slice(colonIdx + 1).trim();
+
+    if (rest === "") {
+      let nextIsList = false;
+      for (let j = lineNum + 1; j < lines.length; j++) {
+        const nextTrimmed = lines[j].trim();
+        if (!nextTrimmed || nextTrimmed.startsWith("#")) continue;
+        if (nextTrimmed.startsWith("- ")) {
+          nextIsList = true;
+        }
+        break;
+      }
+      const child = nextIsList ? [] : {};
+      current[key] = child;
+      stack.push({ indent, node: child });
+    } else {
+      current[key] = unquote(rest);
+    }
+  }
+
+  return root;
+}
+
+export function parseDesignMdFrontmatter(content) {
+  if (typeof content !== "string") {
+    throw new TypeError("content must be a string");
+  }
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
+  if (!match) {
+    throw new Error("Missing YAML frontmatter block enclosed in '---'");
+  }
+  const parsed = parseYamlSubset(match[1]);
+
+  const requiredFields = [
+    "name",
+    "description",
+    "colors",
+    "typography",
+    "rounded",
+    "spacing",
+    "components",
+  ];
+  const missing = requiredFields.filter((field) => parsed[field] === undefined);
+  if (missing.length > 0) {
+    throw new Error(`YAML frontmatter missing required fields: ${missing.join(", ")}`);
+  }
+
+  return parsed;
+}
+
+export function extractCanonicalHeadings(content) {
+  if (typeof content !== "string") {
+    return [];
+  }
+  const stripped = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
+  const headingRegex = /^##\s+(.+)$/gm;
+  const headings = [];
+  let match;
+  while ((match = headingRegex.exec(stripped)) !== null) {
+    headings.push(match[1].trim());
+  }
+  return headings;
+}
+
+export function validateCanonicalHeadings(headings) {
+  const errors = [];
+  if (!Array.isArray(headings)) {
+    return ["Headings must be an array"];
+  }
+  if (headings.length !== CANONICAL_SECTION_TITLES.length) {
+    errors.push(
+      `Expected ${CANONICAL_SECTION_TITLES.length} canonical sections, found ${headings.length}`,
+    );
+  }
+  const max = Math.max(headings.length, CANONICAL_SECTION_TITLES.length);
+  for (let i = 0; i < max; i++) {
+    const expected = CANONICAL_SECTION_TITLES[i];
+    const actual = headings[i];
+    if (expected && actual && actual !== expected) {
+      errors.push(`Section #${i + 1}: expected '${expected}', got '${actual}'`);
+    } else if (expected && !actual) {
+      errors.push(`Missing canonical section #${i + 1}: '${expected}'`);
+    } else if (!expected && actual) {
+      errors.push(`Unexpected extra section #${i + 1}: '${actual}'`);
+    }
+  }
+  return errors;
+}
+
+export function validateDesignJson(parsed) {
+  const errors = [];
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return [".impeccable/design.json must be an object"];
+  }
+  if (parsed.schemaVersion !== "2.0") {
+    errors.push(
+      `.impeccable/design.json: expected schemaVersion '2.0', got '${parsed.schemaVersion}'`,
+    );
+  }
+  if (!Array.isArray(parsed.components) || parsed.components.length < 4) {
+    errors.push(".impeccable/design.json: expected at least 4 canonical ds-* component definitions");
+  }
+
+  const requiredProps = ["colorMeta", "typographyMeta", "shadows", "motion", "breakpoints"];
+  for (const prop of requiredProps) {
+    const val = parsed[prop] || parsed.extensions?.[prop];
+    if (!val || typeof val !== "object") {
+      errors.push(
+        `.impeccable/design.json: missing required Schema v2 property '${prop}' (or 'extensions.${prop}')`,
+      );
+    }
+  }
+
+  const colorMeta = parsed.colorMeta || parsed.extensions?.colorMeta;
+  if (colorMeta) {
+    const ramps = ["slateRamp", "parchmentRamp", "amberRamp", "cyanFocusRamp", "dangerRamp"];
+    for (const ramp of ramps) {
+      if (!Array.isArray(colorMeta[ramp]) || colorMeta[ramp].length !== 8) {
+        errors.push(
+          `.impeccable/design.json: colorMeta.${ramp} must be an 8-step tonal array`,
+        );
+      }
+    }
+  }
+
+  return errors;
+}
 
 const IMPECCABLE_SHA256 = "736ed785e74ae2344d3036127f614ddde5ab520a527d8bc82a891612ef71f648";
 
@@ -198,20 +374,14 @@ export function runAudit(repoRoot = ROOT) {
     errors.push("Missing root DESIGN.md");
   } else {
     const designMd = fs.readFileSync(designMdPath, "utf8");
-    if (!designMd.startsWith("---\n")) {
-      errors.push("DESIGN.md: missing YAML frontmatter block");
+    try {
+      parseDesignMdFrontmatter(designMd);
+    } catch (err) {
+      errors.push(`DESIGN.md: ${err.message}`);
     }
-    let lastIdx = -1;
-    for (const heading of CANONICAL_SECTIONS) {
-      const idx = designMd.indexOf(heading);
-      if (idx === -1) {
-        errors.push(`DESIGN.md: missing canonical section '${heading}'`);
-      } else if (idx < lastIdx) {
-        errors.push(`DESIGN.md: section '${heading}' is out of canonical Impeccable order`);
-      } else {
-        lastIdx = idx;
-      }
-    }
+    const headings = extractCanonicalHeadings(designMd);
+    const headingErrors = validateCanonicalHeadings(headings);
+    errors.push(...headingErrors.map((e) => `DESIGN.md: ${e}`));
   }
 
   // 2. Verify .impeccable/design.json, config.json, and surface briefs
@@ -221,12 +391,7 @@ export function runAudit(repoRoot = ROOT) {
   } else {
     try {
       const parsed = JSON.parse(fs.readFileSync(designJsonPath, "utf8"));
-      if (parsed.schemaVersion !== "2.0") {
-        errors.push(`.impeccable/design.json: expected schemaVersion '2.0', got '${parsed.schemaVersion}'`);
-      }
-      if (!Array.isArray(parsed.components) || parsed.components.length < 4) {
-        errors.push(".impeccable/design.json: expected at least 4 canonical ds-* component definitions");
-      }
+      errors.push(...validateDesignJson(parsed));
     } catch (err) {
       errors.push(`.impeccable/design.json: invalid JSON (${err.message})`);
     }
