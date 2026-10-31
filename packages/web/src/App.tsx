@@ -54,7 +54,7 @@ export function App() {
       {isMobile ? (
         <MobileCompanionView />
       ) : (
-        <main
+        <div
           data-testid="trame-app-root"
           style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}
         >
@@ -113,10 +113,10 @@ export function App() {
             </div>
           </header>
 
-          <div style={{ flex: 1, overflowY: 'auto' }}>
+          <main style={{ flex: 1, overflowY: 'auto' }}>
             <DocumentsWorkspaceTab />
-          </div>
-        </main>
+          </main>
+        </div>
       )}
       <HandoutRevealModal />
     </>

@@ -1,4 +1,6 @@
 import { signal } from "@preact/signals";
+import { useEffect } from "preact/hooks";
+import { t } from "../i18n/index.ts";
 import { type PartyJournalEntry } from "../mobile/companionMode.ts";
 
 export interface SessionTimelineEventItem {
@@ -38,19 +40,33 @@ export function groupNotesByFolder(notes: NoteHierarchyNode[]): Map<string, Note
   return groups;
 }
 
+function formatVisibilityLabel(visibility: NoteHierarchyNode["visibility"]): string {
+  if (visibility === "PRIVATE") return t("note.scope.private");
+  if (visibility === "PARTY") return t("note.scope.party");
+  return t("note.scope.dm_only");
+}
+
 export function HandoutRevealModal() {
   const activeModal = activeHandoutModalSignal.value;
 
-  if (!activeModal) return null;
-
-  if (typeof window !== "undefined") {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && activeHandoutModalSignal.value) {
-        activeHandoutModalSignal.value = null;
-      }
-    };
-    window.addEventListener("keydown", handleEscape, { once: true });
+  try {
+    useEffect(() => {
+      if (!activeModal || typeof window === "undefined") return;
+      const handleEscape = (e: KeyboardEvent) => {
+        if (e.key === "Escape") {
+          activeHandoutModalSignal.value = null;
+        }
+      };
+      window.addEventListener("keydown", handleEscape);
+      return () => {
+        window.removeEventListener("keydown", handleEscape);
+      };
+    }, [activeModal]);
+  } catch {
+    // Fallback when invoked outside a Preact render cycle in headless unit tests
   }
+
+  if (!activeModal) return null;
 
   return (
     <div
@@ -59,6 +75,12 @@ export function HandoutRevealModal() {
       aria-modal="true"
       aria-labelledby="handout-title"
       class="modal-backdrop fullscreen"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          activeHandoutModalSignal.value = null;
+        }
+      }}
       style={{
         position: "fixed",
         inset: 0,
@@ -81,7 +103,10 @@ export function HandoutRevealModal() {
         }}
       >
         <h3 id="handout-title" data-testid="handout-title">{activeModal.title}</h3>
-        <div data-testid="handout-content" style={{ marginTop: "0.5rem" }}>
+        <div
+          data-testid="handout-content"
+          style={{ marginTop: "0.5rem", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+        >
           {activeModal.content}
         </div>
         <button
@@ -91,7 +116,7 @@ export function HandoutRevealModal() {
           onClick={() => {
             activeHandoutModalSignal.value = null;
           }}
-          style={{ marginTop: "1rem" }}
+          style={{ marginTop: "1rem", minHeight: "40px" }}
         >
           Close
         </button>
@@ -188,7 +213,7 @@ export function DocumentsWorkspaceTab() {
                         color: "var(--atlas-text-muted)",
                       }}
                     >
-                      [{note.visibility}]
+                      [{formatVisibilityLabel(note.visibility)}]
                     </span>
                   </div>
                 ))}
@@ -212,6 +237,7 @@ export function DocumentsWorkspaceTab() {
               data-testid={`handout-card-${handout.handoutId}`}
               role="button"
               tabIndex={0}
+              aria-label={`Open handout: ${handout.title}`}
               onClick={() => {
                 activeHandoutModalSignal.value = handout;
               }}
@@ -224,7 +250,7 @@ export function DocumentsWorkspaceTab() {
               style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)", cursor: "pointer" }}
             >
               <h4>{handout.title}</h4>
-              <p>{handout.content}</p>
+              <p style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{handout.content}</p>
             </div>
           ))
         )}
@@ -238,17 +264,20 @@ export function DocumentsWorkspaceTab() {
         {documentsTimelineSignal.value.length === 0 ? (
           <p data-testid="empty-timeline-hint">No events recorded</p>
         ) : (
-          documentsTimelineSignal.value.map((event) => (
-            <div
-              key={event.id}
-              data-testid={`timeline-event-${event.seqId}`}
-              style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}
-            >
-              <span>
-                #{event.seqId} {event.eventType}
-              </span>
-            </div>
-          ))
+          documentsTimelineSignal.value.map((event) => {
+            const titleText = typeof event.payload?.title === "string" ? `: ${event.payload.title}` : "";
+            return (
+              <div
+                key={event.id}
+                data-testid={`timeline-event-${event.seqId}`}
+                style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}
+              >
+                <span>
+                  #{event.seqId} {event.eventType}{titleText}
+                </span>
+              </div>
+            );
+          })
         )}
       </div>
     </section>
