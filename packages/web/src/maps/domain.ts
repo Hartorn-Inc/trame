@@ -57,17 +57,22 @@ export function activateSceneTransition(
   const heroTokens = currentTable.tokens.filter((t) => t.ownerUserId !== null);
   const defaultElevation = targetScene.defaultGroundElevationFt ?? targetScene.default_ground_elevation_ft ?? 0;
   const rawSpawns = targetScene.spawnPoints || targetScene.spawn_points;
+  const spawnPoints = rawSpawns && rawSpawns.length > 0
+    ? rawSpawns
+    : targetScene.spawnPoint
+    ? [{ id: 'sp-default', name: 'Default Spawn', x: targetScene.spawnPoint.x, y: targetScene.spawnPoint.y }]
+    : [];
 
   const preservedHeroes = heroTokens.map((hero, index) => {
     let x = 0;
     let y = 0;
-    if (rawSpawns && rawSpawns.length > 0) {
-      const sp = rawSpawns[index % rawSpawns.length];
+    if (spawnPoints.length > 0) {
+      const sp = spawnPoints[index % spawnPoints.length];
       x = sp.x;
       y = sp.y;
-    } else if (targetScene.spawnPoint) {
-      x = targetScene.spawnPoint.x + index * 10;
-      y = targetScene.spawnPoint.y;
+    } else {
+      x = 0;
+      y = 0;
     }
     return {
       ...hero,

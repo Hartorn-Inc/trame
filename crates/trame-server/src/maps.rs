@@ -83,7 +83,7 @@ impl<'de> Deserialize<'de> for DoorState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum VisibilityChannel {
     #[default]
     Public,

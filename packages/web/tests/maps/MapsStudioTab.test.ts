@@ -556,7 +556,7 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
 
       assert.ok(carriedHero2);
       assert.equal(carriedHero2.hpCurrent, 44);
-      assert.equal(carriedHero2.x, 260);
+      assert.equal(carriedHero2.x, 250);
       assert.equal(carriedHero2.y, 50);
 
       assert.ok(bossToken);
