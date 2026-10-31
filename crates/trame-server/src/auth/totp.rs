@@ -1,4 +1,25 @@
-//! RFC 6238 TOTP MFA generation, verification, and AES-256-GCM secret persistence.
+//! ============================================================================
+//! PURPOSE:
+//!   Implements RFC 6238 TOTP Multi-Factor Authentication (HMAC-SHA1, 30-second
+//!   time steps, 6 digits, 20-byte Base32 secrets) with AES-256-GCM encryption
+//!   at rest using `MASTER_ENCRYPTION_KEY`.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//!   - TOTP secrets are never persisted in plaintext; `TotpService::encrypt_secret`
+//!     uses AES-256-GCM with a random 12-byte nonce and stores
+//!     `<nonce_hex>:<ciphertext_hex>`.
+//!   - Candidate TOTP codes are compared in constant time via
+//!     `constant_time_eq` and strictly enforce 6-digit numeric formatting on
+//!     the current 30-second RFC 6238 step.
+//!
+//! EXECUTION LIFECYCLE:
+//!   1. `totp_setup_handler` generates a 20-byte secret, encrypts it with
+//!      AES-256-GCM, stores it as pending, and returns Base32 + `otpauth://` URL.
+//!   2. `totp_enable_handler` decrypts the pending secret, verifies the
+//!      submitted 6-digit code, and promotes MFA to enabled on the user record.
+//!   3. `totp_verify_handler` validates the active TOTP code during login and
+//!      issues an `HttpOnly; Secure; SameSite=Lax` session cookie.
+//! ============================================================================
 
 use super::password::{IdentityStore, extract_session_token};
 use super::session::{
@@ -237,6 +258,7 @@ pub fn hmac_sha1(key: &[u8], message: &[u8]) -> [u8; 20] {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TotpSetupResponse {
     pub secret: String,
+    pub secret_base32: String,
     pub otpauth_url: String,
 }
 
@@ -249,6 +271,7 @@ pub struct TotpEnableRequest {
 /// Response payload for POST /api/v1/auth/totp/enable.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TotpEnableResponse {
+    pub status: String,
     pub mfa_enabled: bool,
 }
 
@@ -352,7 +375,8 @@ pub async fn totp_setup_handler(State(state): State<AuthState>, headers: HeaderM
     (
         StatusCode::OK,
         Json(TotpSetupResponse {
-            secret: base32_secret,
+            secret: base32_secret.clone(),
+            secret_base32: base32_secret,
             otpauth_url,
         }),
     )
@@ -468,7 +492,10 @@ pub async fn totp_enable_handler(
 
     (
         StatusCode::OK,
-        Json(TotpEnableResponse { mfa_enabled: true }),
+        Json(TotpEnableResponse {
+            status: "enabled".to_string(),
+            mfa_enabled: true,
+        }),
     )
         .into_response()
 }

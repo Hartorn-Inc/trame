@@ -1,4 +1,17 @@
-//! Integration and unit tests for Argon2id password hashing and identity binding.
+//! ============================================================================
+//! PURPOSE:
+//!   Integration and unit test suite for Argon2id password hashing, entropy
+//!   validation, and guest-to-permanent account identity binding.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//!   - Verifies OWASP Argon2id parameters (m=19456, t=2, p=1, 32-byte digest).
+//!   - Verifies campaign memberships and assigned characters persist across
+//!     account binding, and duplicate emails return HTTP 409 Conflict.
+//!
+//! EXECUTION LIFECYCLE:
+//!   1. Execute parameterized entropy and Argon2id PHC verification tests.
+//!   2. Drive `/api/v1/auth/bind-account` through Axum `oneshot` requests.
+//! ============================================================================
 
 use argon2::password_hash::PasswordHash;
 use axum::body::Body;

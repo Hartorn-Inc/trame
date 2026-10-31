@@ -1,4 +1,18 @@
-//! Unit and integration tests for RFC 6238 TOTP MFA, AES-256-GCM secret encryption, and endpoints.
+//! ============================================================================
+//! PURPOSE:
+//!   Unit and integration test suite for RFC 6238 TOTP MFA, AES-256-GCM secret
+//!   encryption at rest, and `/api/v1/auth/totp/*` HTTP endpoints.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//!   - Validates RFC 6238 Appendix B reference vectors and 30-second windows.
+//!   - Verifies `<nonce_hex>:<ciphertext_hex>` AES-256-GCM round-trip storage.
+//!   - Verifies invalid/expired codes are rejected and valid codes issue a
+//!     `trame_session` cookie.
+//!
+//! EXECUTION LIFECYCLE:
+//!   1. Run RFC 6238 test vectors and AES-256-GCM encryption assertions.
+//!   2. Exercise `/api/v1/auth/totp/setup`, `enable`, and `verify` handlers.
+//! ============================================================================
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

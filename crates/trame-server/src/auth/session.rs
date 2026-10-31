@@ -1,4 +1,20 @@
-//! Session management, guest user provisioning, and cookie issuance.
+//! ============================================================================
+//! PURPOSE:
+//!   Manages authenticated user sessions, guest user provisioning from Magic
+//!   Link invites, campaign membership records, and `trame_session` cookies.
+//!
+//! INVARIANTS & SAFETY BOUNDARIES:
+//!   - Raw 256-bit session tokens are returned only via `HttpOnly; Secure;
+//!     SameSite=Lax` cookies; only the SHA-256 hex digest is stored in
+//!     `SessionStore`.
+//!   - Revoked or expired Magic Link invite `jti` claims are rejected with
+//!     HTTP 401 Unauthorized.
+//!
+//! EXECUTION LIFECYCLE:
+//!   1. Validate incoming invite token or session credential against `SessionStore`.
+//!   2. Provision guest user and campaign membership or update identity state.
+//!   3. Mint 256-bit session token, persist SHA-256 digest, and attach cookie.
+//! ============================================================================
 
 use super::magic_link::{MagicLinkClaims, MagicLinkError, MagicLinkService, now_epoch_seconds};
 pub use super::password::IdentityStore;
