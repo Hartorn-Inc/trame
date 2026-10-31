@@ -1,5 +1,5 @@
 import { h, type VNode } from "preact";
-import { useState, useId, useEffect, useRef } from "preact/hooks";
+import { useState, useId, useRef, useEffect } from "preact/hooks";
 import {
   applyLevelUp,
   calculateProficiencyBonus,
@@ -95,6 +95,32 @@ function formatSlotLabel(slotKey: string): string {
   return slotKey.toUpperCase();
 }
 
+function getFocusableElements(container: HTMLElement | null): HTMLElement[] {
+  if (!container) return [];
+  const focusables: HTMLElement[] = [];
+  const tags = ["BUTTON", "INPUT", "SELECT", "TEXTAREA", "A"];
+  const walk = (node: any) => {
+    if (!node) return;
+    if (node.nodeType === 1) {
+      const tag = (node.nodeName || "").toUpperCase();
+      const hasTabIndex = typeof node.hasAttribute === "function" && node.hasAttribute("tabindex");
+      const tabIndexVal = hasTabIndex ? node.getAttribute("tabindex") : null;
+      const isInteractive = tags.includes(tag) || (hasTabIndex && tabIndexVal !== "-1");
+      const isDisabled = Boolean(node.disabled || (typeof node.getAttribute === "function" && node.getAttribute("disabled") === "true"));
+      if (isInteractive && !isDisabled) {
+        focusables.push(node);
+      }
+    }
+    if (node.childNodes) {
+      for (let i = 0; i < node.childNodes.length; i++) {
+        walk(node.childNodes[i]);
+      }
+    }
+  };
+  walk(container);
+  return focusables;
+}
+
 export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
   if (!props.isOpen) return null;
 
@@ -102,20 +128,14 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
   const titleId = useId();
   const descId = useId();
   const dialogRef = useRef<HTMLDivElement | null>(null);
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
-    if (props.isOpen) {
-      if (closeButtonRef.current && typeof closeButtonRef.current.focus === "function") {
-        closeButtonRef.current.focus();
-      } else if (dialogRef.current) {
-        const focusables = dialogRef.current.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        );
-        if (focusables.length > 0 && typeof focusables[0].focus === "function") {
-          focusables[0].focus();
-        }
-      }
+    if (!props.isOpen) return;
+    const focusables = getFocusableElements(dialogRef.current);
+    if (focusables.length > 0) {
+      focusables[0].focus();
+    } else if (dialogRef.current) {
+      dialogRef.current.focus();
     }
   }, [props.isOpen]);
 
@@ -311,41 +331,33 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
     }
   };
 
-  // Escape key closes modal & Tab cycles focus within dialog
+  // Keyboard handlers: Escape closes modal, Tab is trapped inside
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       e.stopPropagation();
       onClose();
       return;
     }
-
-    if (e.key === "Tab" && dialogRef.current) {
-      const candidates = dialogRef.current.querySelectorAll<HTMLElement>(
-        "button, [href], input, select, textarea, [tabindex]"
-      );
-      const focusable = Array.from(candidates).filter((el) => {
-        if ((el as any).disabled) return false;
-        if (el.getAttribute("disabled") !== null) return false;
-        if (el.getAttribute("aria-hidden") === "true") return false;
-        if (el.getAttribute("tabindex") === "-1") return false;
-        return true;
-      });
-
-      if (focusable.length === 0) return;
-
-      const firstElement = focusable[0];
-      const lastElement = focusable[focusable.length - 1];
-      const activeEl = typeof document !== "undefined" ? (document.activeElement as HTMLElement) : null;
+    if (e.key === "Tab") {
+      const focusables = getFocusableElements(dialogRef.current);
+      if (focusables.length === 0) {
+        if (typeof e.preventDefault === "function") e.preventDefault();
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const doc = typeof document !== "undefined" ? document : null;
+      const active = (doc && (doc as any).activeElement ? (doc as any).activeElement : e.target) as HTMLElement | null;
 
       if (e.shiftKey) {
-        if (activeEl === firstElement || !dialogRef.current.contains(activeEl)) {
-          e.preventDefault();
-          lastElement.focus?.();
+        if (!active || active === first || (dialogRef.current && !dialogRef.current.contains(active))) {
+          if (typeof e.preventDefault === "function") e.preventDefault();
+          last.focus();
         }
       } else {
-        if (activeEl === lastElement || !dialogRef.current.contains(activeEl)) {
-          e.preventDefault();
-          firstElement.focus?.();
+        if (!active || active === last || (dialogRef.current && !dialogRef.current.contains(active))) {
+          if (typeof e.preventDefault === "function") e.preventDefault();
+          first.focus();
         }
       }
     }
@@ -379,6 +391,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
       "aria-modal": "true",
       "aria-labelledby": titleId,
       "aria-describedby": descId,
+      tabIndex: -1,
       onKeyDown: handleKeyDown,
     },
     h(
@@ -407,7 +420,6 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
         h(
           "button",
           {
-            ref: closeButtonRef,
             type: "button",
             class: "inline-flex items-center justify-center min-w-[40px] min-h-[40px] p-2 text-zinc-400 hover:text-zinc-100 text-lg rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
             onClick: onClose,
@@ -429,22 +441,25 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           { step: 2, label: "2. Points de Vie" },
           { step: 3, label: isAsi ? "3. Carac. / Don" : "3. Aptitudes" },
           { step: 4, label: isSpellcaster ? "4. Sorts" : "4. Récapitulatif" },
-        ].map((item) =>
-          h(
+        ].map((item) => {
+          const isCurrent = currentStep === item.step;
+          const isCompleted = currentStep > item.step;
+          return h(
             "div",
             {
               key: item.step,
+              "aria-current": isCurrent ? "step" : undefined,
               class: `py-2.5 px-1 border-b-2 transition-colors ${
-                currentStep === item.step
+                isCurrent
                   ? "border-amber-500 text-amber-400 bg-amber-500/10"
-                  : currentStep > item.step
+                  : isCompleted
                   ? "border-zinc-500 text-zinc-300"
                   : "border-transparent text-zinc-500"
               }`,
             },
-            item.label
-          )
-        )
+            isCompleted ? `✓ ${item.label}` : item.label
+          );
+        })
       ),
 
       // Modal Body
@@ -486,7 +501,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     "select",
                     {
                       id: "subclass-select",
-                      class: "w-full bg-zinc-800 border border-zinc-700 rounded-md p-2.5 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                      class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded-md p-2.5 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
                       value: subclassId,
                       onChange: (e: any) => setSubclassId(e.target.value),
                     },
@@ -594,7 +609,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     "button",
                     {
                       type: "button",
-                      class: "min-h-[40px] min-w-[40px] inline-flex items-center justify-center px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white rounded font-medium text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                      class: "min-h-[40px] px-4 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-50 text-[var(--atlas-on-action)] rounded font-medium text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center justify-center",
                       onClick: handleRollDice,
                       disabled: rollLoading,
                     },
@@ -638,161 +653,179 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 h("h3", { class: "text-base font-semibold text-zinc-200" }, "Étape 3 : Amélioration de Caractéristiques ou Don"),
                 h(
                   "div",
-                  { class: "flex space-x-4 border-b border-zinc-800 pb-2 text-sm" },
+                  {
+                    role: "tablist",
+                    "aria-label": "Mode de progression",
+                    class: "flex space-x-4 border-b border-zinc-800 pb-2 text-sm",
+                  },
                   h(
                     "button",
                     {
                       type: "button",
-                      "aria-pressed": asiOrFeatMode === "asi",
-                      class: `min-h-[40px] min-w-[40px] px-3 py-2 font-medium border-b-2 inline-flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 ${
-                        asiOrFeatMode === "asi" ? "border-amber-500 text-amber-400" : "border-transparent text-zinc-400 hover:text-zinc-200"
+                      role: "tab",
+                      id: "tab-asi",
+                      "aria-selected": asiOrFeatMode === "asi" ? "true" : "false",
+                      "aria-controls": "tabpanel-asi-or-feat",
+                      class: `min-h-[40px] px-3 py-2 font-medium border-b-2 rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center gap-1.5 ${
+                        asiOrFeatMode === "asi" ? "border-amber-500 text-amber-400" : "border-transparent text-zinc-400"
                       }`,
                       onClick: () => setAsiOrFeatMode("asi"),
                     },
-                    h("span", { "aria-hidden": "true", class: "mr-1.5 font-bold" }, asiOrFeatMode === "asi" ? "●" : "○"),
+                    h("span", { "aria-hidden": "true" }, asiOrFeatMode === "asi" ? "●" : "○"),
                     "Amélioration de Caractéristiques (ASI)"
                   ),
                   h(
                     "button",
                     {
                       type: "button",
-                      "aria-pressed": asiOrFeatMode === "feat",
-                      class: `min-h-[40px] min-w-[40px] px-3 py-2 font-medium border-b-2 inline-flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 ${
-                        asiOrFeatMode === "feat" ? "border-amber-500 text-amber-400" : "border-transparent text-zinc-400 hover:text-zinc-200"
+                      role: "tab",
+                      id: "tab-feat",
+                      "aria-selected": asiOrFeatMode === "feat" ? "true" : "false",
+                      "aria-controls": "tabpanel-asi-or-feat",
+                      class: `min-h-[40px] px-3 py-2 font-medium border-b-2 rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center gap-1.5 ${
+                        asiOrFeatMode === "feat" ? "border-amber-500 text-amber-400" : "border-transparent text-zinc-400"
                       }`,
                       onClick: () => setAsiOrFeatMode("feat"),
                     },
-                    h("span", { "aria-hidden": "true", class: "mr-1.5 font-bold" }, asiOrFeatMode === "feat" ? "●" : "○"),
+                    h("span", { "aria-hidden": "true" }, asiOrFeatMode === "feat" ? "●" : "○"),
                     "Choisir un Don"
                   )
                 ),
-                asiOrFeatMode === "asi"
-                  ? h(
-                      "div",
-                      { class: "space-y-4 pt-2" },
-                      h(
+                h(
+                  "div",
+                  {
+                    id: "tabpanel-asi-or-feat",
+                    role: "tabpanel",
+                    "aria-labelledby": asiOrFeatMode === "asi" ? "tab-asi" : "tab-feat",
+                  },
+                  asiOrFeatMode === "asi"
+                    ? h(
                         "div",
-                        { class: "flex space-x-4 text-xs" },
+                        { class: "space-y-4 pt-2" },
                         h(
-                          "label",
-                          { class: "flex items-center space-x-1.5 cursor-pointer" },
-                          h("input", {
-                            type: "radio",
-                            name: "asiSubMode",
-                            value: "plusTwo",
-                            checked: asiSubMode === "plusTwo",
-                            onChange: () => setAsiSubMode("plusTwo"),
-                          }),
-                          h("span", null, "+2 à une caractéristique")
-                        ),
-                        h(
-                          "label",
-                          { class: "flex items-center space-x-1.5 cursor-pointer" },
-                          h("input", {
-                            type: "radio",
-                            name: "asiSubMode",
-                            value: "plusOneOne",
-                            checked: asiSubMode === "plusOneOne",
-                            onChange: () => setAsiSubMode("plusOneOne"),
-                          }),
-                          h("span", null, "+1 à deux caractéristiques")
-                        )
-                      ),
-                      asiSubMode === "plusTwo"
-                        ? h(
-                            "div",
-                            { class: "space-y-1" },
-                            h("label", { for: "asi-single-ability", class: "block text-xs text-zinc-400" }, "Caractéristique (+2, max 20) :"),
-                            h(
-                              "select",
-                              {
-                                id: "asi-single-ability",
-                                "aria-label": "Caractéristique à augmenter de +2",
-                                class: "w-full bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
-                                value: asiSingleAbility,
-                                onChange: (e: any) => setAsiSingleAbility(e.target.value as AbilityId),
-                              },
-                              ABILITY_KEYS.map((k) =>
-                                h(
-                                  "option",
-                                  { key: k, value: k },
-                                  `${ABILITY_LABELS[k]} (Actuel : ${actor.abilities[k].score})`
-                                )
-                              )
-                            )
+                          "div",
+                          { class: "flex space-x-4 text-xs" },
+                          h(
+                            "label",
+                            { class: "flex items-center space-x-1.5 cursor-pointer" },
+                            h("input", {
+                              type: "radio",
+                              name: "asiSubMode",
+                              value: "plusTwo",
+                              checked: asiSubMode === "plusTwo",
+                              onChange: () => setAsiSubMode("plusTwo"),
+                            }),
+                            h("span", null, "+2 à une caractéristique")
+                          ),
+                          h(
+                            "label",
+                            { class: "flex items-center space-x-1.5 cursor-pointer" },
+                            h("input", {
+                              type: "radio",
+                              name: "asiSubMode",
+                              value: "plusOneOne",
+                              checked: asiSubMode === "plusOneOne",
+                              onChange: () => setAsiSubMode("plusOneOne"),
+                            }),
+                            h("span", null, "+1 à deux caractéristiques")
                           )
-                        : h(
-                            "div",
-                            { class: "grid grid-cols-2 gap-4" },
-                            h(
+                        ),
+                        asiSubMode === "plusTwo"
+                          ? h(
                               "div",
                               { class: "space-y-1" },
-                              h("label", { for: "asi-first-ability", class: "block text-xs text-zinc-400" }, "Première caractéristique (+1) :"),
+                              h("label", { for: "asi-single-ability", class: "block text-xs text-zinc-400" }, "Caractéristique (+2, max 20) :"),
                               h(
                                 "select",
                                 {
-                                  id: "asi-first-ability",
-                                  "aria-label": "Première caractéristique à augmenter de +1",
-                                  class: "w-full bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
-                                  value: asiFirstAbility,
-                                  onChange: (e: any) => setAsiFirstAbility(e.target.value as AbilityId),
+                                  id: "asi-single-ability",
+                                  "aria-label": "Caractéristique à augmenter de +2",
+                                  class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                                  value: asiSingleAbility,
+                                  onChange: (e: any) => setAsiSingleAbility(e.target.value as AbilityId),
                                 },
                                 ABILITY_KEYS.map((k) =>
                                   h(
                                     "option",
                                     { key: k, value: k },
                                     `${ABILITY_LABELS[k]} (Actuel : ${actor.abilities[k].score})`
+                                  )
+                                )
+                              )
+                            )
+                          : h(
+                              "div",
+                              { class: "grid grid-cols-2 gap-4" },
+                              h(
+                                "div",
+                                { class: "space-y-1" },
+                                h("label", { for: "asi-first-ability", class: "block text-xs text-zinc-400" }, "Première caractéristique (+1) :"),
+                                h(
+                                  "select",
+                                  {
+                                    id: "asi-first-ability",
+                                    "aria-label": "Première caractéristique à augmenter de +1",
+                                    class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                                    value: asiFirstAbility,
+                                    onChange: (e: any) => setAsiFirstAbility(e.target.value as AbilityId),
+                                  },
+                                  ABILITY_KEYS.map((k) =>
+                                    h(
+                                      "option",
+                                      { key: k, value: k },
+                                      `${ABILITY_LABELS[k]} (Actuel : ${actor.abilities[k].score})`
+                                    )
+                                  )
+                                )
+                              ),
+                              h(
+                                "div",
+                                { class: "space-y-1" },
+                                h("label", { for: "asi-second-ability", class: "block text-xs text-zinc-400" }, "Deuxième caractéristique (+1) :"),
+                                h(
+                                  "select",
+                                  {
+                                    id: "asi-second-ability",
+                                    "aria-label": "Deuxième caractéristique à augmenter de +1",
+                                    class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                                    value: asiSecondAbility,
+                                    onChange: (e: any) => setAsiSecondAbility(e.target.value as AbilityId),
+                                  },
+                                  ABILITY_KEYS.map((k) =>
+                                    h(
+                                      "option",
+                                      { key: k, value: k },
+                                      `${ABILITY_LABELS[k]} (Actuel : ${actor.abilities[k].score})`
+                                    )
                                   )
                                 )
                               )
                             ),
-                            h(
-                              "div",
-                              { class: "space-y-1" },
-                              h("label", { for: "asi-second-ability", class: "block text-xs text-zinc-400" }, "Deuxième caractéristique (+1) :"),
-                              h(
-                                "select",
-                                {
-                                  id: "asi-second-ability",
-                                  "aria-label": "Deuxième caractéristique à augmenter de +1",
-                                  class: "w-full bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
-                                  value: asiSecondAbility,
-                                  onChange: (e: any) => setAsiSecondAbility(e.target.value as AbilityId),
-                                },
-                                ABILITY_KEYS.map((k) =>
-                                  h(
-                                    "option",
-                                    { key: k, value: k },
-                                    `${ABILITY_LABELS[k]} (Actuel : ${actor.abilities[k].score})`
-                                  )
-                                )
-                              )
-                            )
-                          ),
-                      asiErrorMessage &&
-                        h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-rose-400 font-medium" }, asiErrorMessage)
-                    )
-                  : h(
-                      "div",
-                      { class: "space-y-2 pt-2" },
-                      h("label", { for: "asi-feat-select", class: "block text-xs text-zinc-400" }, "Sélectionner un Don du compendium :"),
-                      h(
-                        "select",
-                        {
-                          id: "asi-feat-select",
-                          "aria-label": "Sélectionner un Don du compendium",
-                          class: "w-full bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
-                          value: selectedFeatId,
-                          onChange: (e: any) => setSelectedFeatId(e.target.value),
-                        },
-                        h("option", { value: "" }, "-- Choisir un Don --"),
-                        availableFeats.map((feat) =>
-                          h("option", { key: feat.id, value: feat.id }, feat.i18n?.fr?.name || feat.name)
-                        )
-                      ),
-                      !selectedFeatId &&
-                        h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-amber-300/80 font-medium" }, "Veuillez sélectionner un Don pour valider l'étape.")
-                    )
+                        asiErrorMessage &&
+                          h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-rose-400 font-medium" }, asiErrorMessage)
+                      )
+                    : h(
+                        "div",
+                        { class: "space-y-2 pt-2" },
+                        h("label", { for: "asi-feat-select", class: "block text-xs text-zinc-400" }, "Sélectionner un Don du compendium :"),
+                        h(
+                          "select",
+                          {
+                            id: "asi-feat-select",
+                            "aria-label": "Sélectionner un Don du compendium",
+                            class: "w-full min-h-[40px] bg-zinc-800 border border-zinc-700 rounded p-2 text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                            value: selectedFeatId,
+                            onChange: (e: any) => setSelectedFeatId(e.target.value),
+                          },
+                          h("option", { value: "" }, "-- Choisir un Don --"),
+                          availableFeats.map((feat) =>
+                            h("option", { key: feat.id, value: feat.id }, feat.i18n?.fr?.name || feat.name)
+                          )
+                        ),
+                        !selectedFeatId &&
+                          h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-amber-300/80 font-medium" }, "Veuillez sélectionner un Don pour valider l'étape.")
+                      )
+                )
               )
             : h(
                 "div",
@@ -887,7 +920,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                             }),
                             h("span", null, spell.i18n?.fr?.name || spell.name)
                           ),
-                          h("span", { class: "text-zinc-400 text-xs" }, `Niv. ${spell.data.level}`)
+                          h("span", { class: "text-zinc-500 text-[10px]" }, `Niv. ${spell.data.level}`)
                         );
                       })
                     ),
@@ -919,7 +952,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           "button",
           {
             type: "button",
-            class: "min-h-[40px] min-w-[40px] inline-flex items-center justify-center px-4 py-2 border border-zinc-700 hover:bg-zinc-800 text-zinc-300 rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:opacity-30",
+            class: "min-h-[40px] px-4 py-2 border border-zinc-700 hover:bg-zinc-800 text-zinc-300 rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:opacity-30 inline-flex items-center justify-center",
             onClick: () => setCurrentStep((s) => Math.max(1, s - 1)),
             disabled: currentStep === 1 || isSubmitting,
           },
@@ -932,7 +965,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
             "button",
             {
               type: "button",
-              class: "min-h-[40px] min-w-[40px] inline-flex items-center justify-center px-4 py-2 text-zinc-400 hover:text-zinc-200 text-xs font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:opacity-30",
+              class: "min-h-[40px] px-4 py-2 text-zinc-400 hover:text-zinc-200 text-xs font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:opacity-30 inline-flex items-center justify-center",
               onClick: onClose,
               disabled: isSubmitting,
             },
@@ -943,7 +976,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 "button",
                 {
                   type: "button",
-                  class: "min-h-[40px] min-w-[40px] inline-flex items-center justify-center px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                  class: "min-h-[40px] px-4 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center justify-center",
                   onClick: () => setCurrentStep((s) => Math.min(4, s + 1)),
                   disabled: !canProceed() || isSubmitting,
                 },
@@ -953,7 +986,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                 "button",
                 {
                   type: "button",
-                  class: "min-h-[40px] min-w-[40px] inline-flex items-center justify-center px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+                  class: "min-h-[40px] px-5 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 inline-flex items-center justify-center",
                   onClick: handleConfirmLevelUp,
                   disabled: !canProceed() || isSubmitting,
                 },

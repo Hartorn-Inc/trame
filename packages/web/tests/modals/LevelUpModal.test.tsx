@@ -107,6 +107,12 @@ function setupMockDom() {
       }
     }
 
+    blur() {
+      if (typeof document !== "undefined" && (document as any).activeElement === this) {
+        (document as any).activeElement = null;
+      }
+    }
+
     contains(other: MockNode | null): boolean {
       let cur = other;
       while (cur) {
@@ -171,19 +177,8 @@ function setupMockDom() {
     }
 
     querySelectorAll(selector: string): MockNode[] {
-      if (selector.includes(",")) {
-        const parts = selector.split(",").map((s) => s.trim());
-        const matchedSet = new Set<MockNode>();
-        for (const p of parts) {
-          for (const m of this.querySelectorAll(p)) {
-            matchedSet.add(m);
-          }
-        }
-        return Array.from(matchedSet);
-      }
       const results: MockNode[] = [];
       const match = (node: MockNode): boolean => {
-        if (selector === "*") return true;
         if (selector.startsWith("#")) {
           return node.id === selector.slice(1) || node.getAttribute("id") === selector.slice(1);
         }
@@ -224,6 +219,7 @@ function setupMockDom() {
   const mockDoc = {
     nodeType: 9,
     nodeName: "#document",
+    activeElement: null as MockNode | null,
     createElement(tag: string) {
       return new MockNode(tag, 1);
     },
@@ -239,7 +235,6 @@ function setupMockDom() {
       return new MockNode("#document-fragment", 11);
     },
     body: new MockNode("BODY", 1),
-    activeElement: null as MockNode | null,
   };
 
   (globalThis as any).document = mockDoc;
@@ -263,10 +258,12 @@ async function renderModal(props: LevelUpModalProps) {
   const container = doc.createElement("div");
   doc.body.appendChild(container);
   render(h(LevelUpModal, props), container);
+  await new Promise((r) => setTimeout(r, 10));
 
   const unmount = () => {
     render(null, container);
     doc.body.removeChild(container);
+    doc.activeElement = null;
   };
 
   const findByText = (text: string): any => {
@@ -635,10 +632,73 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     unmount();
   });
 
-  it("WHEN LevelUpModal renders, LevelUpModal satisfies WCAG 2.2 focus trap, hit targets >= 40px, contrast, and ARIA toggle state", async () => {
+  it("WHEN LevelUpModal mounts with isOpen=true, initial focus moves programmatically to the first interactive element (WCAG 2.4.3)", async () => {
+    const actor = createDefaultActorData("actor-1", "Test Actor");
+    const { container, unmount } = await renderModal({
+      isOpen: true,
+      actor,
+      onClose: () => {},
+      onSave: () => {},
+    });
+
+    const closeBtn = container.querySelector("button[aria-label='Fermer la fenêtre de montée de niveau']");
+    assert.ok(closeBtn, "Close button must exist");
+    assert.equal((globalThis as any).document.activeElement, closeBtn, "Initial focus must be placed on the close button");
+
+    unmount();
+  });
+
+  it("WHEN keyboard Tab and Shift+Tab are pressed, focus is trapped inside the active modal dialog (WCAG 2.4.3)", async () => {
     const actor = createDefaultActorData("actor-wizard", "Galdor");
     actor.classId = "wizard";
-    actor.attributes.level = 3; // Advancing to lvl 4 (ASI level)
+    actor.attributes.level = 1;
+
+    const { container, unmount } = await renderModal({
+      isOpen: true,
+      actor,
+      onClose: () => {},
+      onSave: () => {},
+    });
+
+    const dialog = container.querySelector("[role='dialog']");
+    assert.ok(dialog, "Dialog element must exist");
+
+    const closeBtn = container.querySelector("button[aria-label='Fermer la fenêtre de montée de niveau']");
+    const cancelBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Annuler"));
+    assert.ok(closeBtn, "Close button must exist");
+    assert.ok(cancelBtn, "Cancel button must exist");
+
+    closeBtn.focus();
+    let shiftPrevented = false;
+    dialog.dispatchEvent({
+      type: "keydown",
+      key: "Tab",
+      shiftKey: true,
+      preventDefault: () => { shiftPrevented = true; },
+      stopPropagation: () => {},
+    });
+    assert.equal(shiftPrevented, true, "Shift+Tab on first element must prevent default");
+    assert.equal((globalThis as any).document.activeElement, cancelBtn, "Shift+Tab on first element must wrap to last element");
+
+    cancelBtn.focus();
+    let tabPrevented = false;
+    dialog.dispatchEvent({
+      type: "keydown",
+      key: "Tab",
+      shiftKey: false,
+      preventDefault: () => { tabPrevented = true; },
+      stopPropagation: () => {},
+    });
+    assert.equal(tabPrevented, true, "Tab on last element must prevent default");
+    assert.equal((globalThis as any).document.activeElement, closeBtn, "Tab on last element must wrap to first element");
+
+    unmount();
+  });
+
+  it("WHEN Stepper Bar renders, active step has aria-current='step' and completed steps show checkmark glyph '✓' (WCAG 1.4.1 & Non-Color Redundancy)", async () => {
+    const actor = createDefaultActorData("actor-1", "Test Actor");
+    actor.classId = "fighter";
+    actor.attributes.level = 1;
 
     const { container, getNextButton, unmount } = await renderModal({
       isOpen: true,
@@ -647,85 +707,136 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
       onSave: () => {},
     });
 
-    // Verify initial focus set to close button
-    const closeBtn = container.querySelector("button[aria-label='Fermer la fenêtre de montée de niveau']");
-    assert.ok(closeBtn, "Close button exists");
-    assert.equal((document as any).activeElement, closeBtn, "Close button should receive initial focus upon modal mount");
+    const nav = container.querySelector("nav[aria-label='Étapes de progression']");
+    assert.ok(nav, "Stepper nav element must exist");
 
-    // Verify all footer buttons have min-h-[40px] and min-w-[40px]
-    const footerButtons = container.querySelectorAll("footer button");
-    for (const btn of footerButtons) {
-      assert.ok(btn.classList.contains("min-h-[40px]"), "Footer button must have min-h-[40px]");
-      assert.ok(btn.classList.contains("min-w-[40px]"), "Footer button must have min-w-[40px]");
-    }
+    const stepNodes = nav.childNodes.filter((c: any) => c.nodeType === 1);
+    assert.equal(stepNodes.length, 4, "Must have 4 steps");
 
-    // Advance to Step 3 (ASI / Feat)
+    assert.equal(stepNodes[0].getAttribute("aria-current"), "step");
+    assert.equal(stepNodes[0].textContent.includes("✓"), false, "Step 1 should not have checkmark while active");
+    assert.equal(stepNodes[1].getAttribute("aria-current"), null);
+
+    const nextBtn = getNextButton();
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+
+    assert.equal(stepNodes[0].getAttribute("aria-current"), null);
+    assert.ok(stepNodes[0].textContent.includes("✓"), "Past step 1 must have checkmark glyph");
+    assert.equal(stepNodes[1].getAttribute("aria-current"), "step", "Current step 2 must have aria-current='step'");
+    assert.equal(stepNodes[1].textContent.includes("✓"), false, "Step 2 should not have checkmark while active");
+
+    unmount();
+  });
+
+  it("WHEN Step 3 ASI/Feat mode switcher renders, it exposes role='tablist', role='tab' buttons, aria-selected, and visual indicator glyphs (WCAG 1.4.1 & 4.1.2)", async () => {
+    const actor = createDefaultActorData("actor-1", "Test Rogue");
+    actor.classId = "rogue";
+    actor.attributes.level = 3;
+
+    const { container, getNextButton, unmount } = await renderModal({
+      isOpen: true,
+      actor,
+      onClose: () => {},
+      onSave: () => {},
+    });
+
     const nextBtn = getNextButton();
     nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
     nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
 
-    // Verify ASI and Feat buttons have aria-pressed, visual glyph, min-h-[40px], and focus ring
-    const asiBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("ASI"));
-    const featBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Choisir un Don"));
-    assert.ok(asiBtn && featBtn, "ASI and Feat toggle buttons must be rendered");
+    const tablist = container.querySelector("[role='tablist']");
+    assert.ok(tablist, "Tablist container must have role='tablist'");
 
-    assert.equal(asiBtn.getAttribute("aria-pressed"), "true", "ASI button must have aria-pressed='true' when active");
-    assert.equal(featBtn.getAttribute("aria-pressed"), "false", "Feat button must have aria-pressed='false' when inactive");
-    assert.ok(asiBtn.textContent.includes("●"), "Active button must include non-color visual indicator (●)");
-    assert.ok(featBtn.textContent.includes("○"), "Inactive button must include non-color visual indicator (○)");
+    const tabs = tablist.querySelectorAll("[role='tab']");
+    assert.equal(tabs.length, 2, "Must have 2 tab buttons");
 
-    assert.ok(asiBtn.classList.contains("min-h-[40px]"), "ASI button must have min-h-[40px]");
-    assert.ok(asiBtn.classList.contains("focus-visible:ring-[var(--atlas-focus)]"), "ASI button must have var(--atlas-focus) ring");
-    assert.ok(featBtn.classList.contains("focus-visible:ring-[var(--atlas-focus)]"), "Feat button must have var(--atlas-focus) ring");
+    const asiTab = tabs.find((t: any) => t.textContent.includes("ASI"));
+    const featTab = tabs.find((t: any) => t.textContent.includes("Choisir un Don"));
+    assert.ok(asiTab, "ASI tab must exist");
+    assert.ok(featTab, "Feat tab must exist");
 
-    // Verify select elements have var(--atlas-focus) ring
-    const asiSingleSelect = container.querySelector("#asi-single-ability");
-    assert.ok(asiSingleSelect, "Single ability select rendered");
-    assert.ok(asiSingleSelect.classList.contains("focus-visible:ring-[var(--atlas-focus)]"), "Ability select must have var(--atlas-focus) ring");
+    assert.equal(asiTab.getAttribute("aria-selected"), "true");
+    assert.ok(asiTab.textContent.includes("●"), "Selected tab must display active glyph ●");
+    assert.equal(featTab.getAttribute("aria-selected"), "false");
+    assert.ok(featTab.textContent.includes("○"), "Inactive tab must display inactive glyph ○");
 
-    // Switch to feat mode and test feat select focus ring
-    featBtn.dispatchEvent(new (globalThis as any).Event("click"));
-    assert.equal(featBtn.getAttribute("aria-pressed"), "true");
-    assert.equal(asiBtn.getAttribute("aria-pressed"), "false");
-    const featSelect = container.querySelector("#asi-feat-select");
-    assert.ok(featSelect, "Feat select rendered");
-    assert.ok(featSelect.classList.contains("focus-visible:ring-[var(--atlas-focus)]"), "Feat select must have var(--atlas-focus) ring");
+    featTab.dispatchEvent(new (globalThis as any).Event("click"));
+    assert.equal(asiTab.getAttribute("aria-selected"), "false");
+    assert.ok(asiTab.textContent.includes("○"), "Deselected tab must display inactive glyph ○");
+    assert.equal(featTab.getAttribute("aria-selected"), "true");
+    assert.ok(featTab.textContent.includes("●"), "Selected tab must display active glyph ●");
 
-    // Verify Tab focus trap keydown wraps from last element to first element
-    const dialog = container.querySelector("[role='dialog']");
-    assert.ok(dialog, "Dialog element exists");
+    unmount();
+  });
 
-    let defaultPrevented = false;
-    const mockTabEvent = {
-      type: "keydown",
-      key: "Tab",
-      shiftKey: false,
-      preventDefault: () => {
-        defaultPrevented = true;
-      },
-      stopPropagation: () => {},
-    };
-    const allButtons = container.querySelectorAll("button");
-    const lastButton = allButtons[allButtons.length - 1];
-    (document as any).activeElement = lastButton;
-    dialog.dispatchEvent(mockTabEvent);
-    assert.equal(defaultPrevented, true, "Tab from last element should prevent default");
-    assert.equal((document as any).activeElement, closeBtn, "Tab from last element should wrap focus to first element");
+  it("WHEN interactive buttons and select controls render, they satisfy min-h-[40px] and focus-visible styling (WCAG 2.5.8, 2.4.7, 2.4.11)", async () => {
+    const actor = createDefaultActorData("actor-1", "Test Actor");
+    actor.classId = "wizard";
+    actor.attributes.level = 1;
+    delete (actor as any).subclassId;
+    delete (actor.attributes as any).subclassId;
 
-    // Verify Shift+Tab wraps from first element to last element
-    let shiftDefaultPrevented = false;
-    const mockShiftTabEvent = {
-      type: "keydown",
-      key: "Tab",
-      shiftKey: true,
-      preventDefault: () => {
-        shiftDefaultPrevented = true;
-      },
-      stopPropagation: () => {},
-    };
-    (document as any).activeElement = closeBtn;
-    dialog.dispatchEvent(mockShiftTabEvent);
-    assert.equal(shiftDefaultPrevented, true, "Shift+Tab from first element should prevent default");
+    const { container, unmount } = await renderModal({
+      isOpen: true,
+      actor,
+      onClose: () => {},
+      onSave: () => {},
+    });
+
+    const closeBtn = container.querySelector("button[aria-label='Fermer la fenêtre de montée de niveau']");
+    assert.ok(closeBtn.getAttribute("class")?.includes("min-h-[40px]"), "Close button must have min-h-[40px]");
+
+    const subclassSelect = container.querySelector("#subclass-select");
+    assert.ok(subclassSelect.getAttribute("class")?.includes("min-h-[40px]"), "Subclass select must have min-h-[40px]");
+    assert.ok(subclassSelect.getAttribute("class")?.includes("focus-visible:ring-[var(--atlas-focus)]"), "Subclass select must have atlas-focus ring");
+
+    const buttons = container.querySelectorAll("button");
+    for (const btn of buttons) {
+      const cls = btn.getAttribute("class") || "";
+      assert.ok(cls.includes("min-h-[40px]"), `Button '${btn.textContent.trim()}' must satisfy min-h-[40px]`);
+      assert.ok(cls.includes("focus-visible:ring-[var(--atlas-focus)]"), `Button '${btn.textContent.trim()}' must have atlas-focus ring`);
+    }
+
+    unmount();
+  });
+
+  it("WHEN primary action and confirmation buttons render, they pair var(--atlas-action) with var(--atlas-on-action) for compliant contrast (WCAG 1.4.3)", async () => {
+    const actor = createDefaultActorData("actor-1", "Test Actor");
+    actor.classId = "fighter";
+    actor.attributes.level = 1;
+
+    const { container, getNextButton, unmount } = await renderModal({
+      isOpen: true,
+      actor,
+      onClose: () => {},
+      onSave: () => {},
+    });
+
+    const nextBtn = getNextButton();
+    const nextCls = nextBtn.getAttribute("class") || "";
+    assert.ok(nextCls.includes("bg-[var(--atlas-action)]"), "Next button must use var(--atlas-action)");
+    assert.ok(nextCls.includes("text-[var(--atlas-on-action)]"), "Next button must use var(--atlas-on-action)");
+
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+    const rolledRadio = container.querySelectorAll("input[name='hpMode']").find((r: any) => r.value === "rolled");
+    rolledRadio.dispatchEvent(new (globalThis as any).Event("change"));
+
+    const rollBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Lancer 1d"));
+    assert.ok(rollBtn, "Roll button must exist");
+    const rollCls = rollBtn.getAttribute("class") || "";
+    assert.ok(rollCls.includes("bg-[var(--atlas-action)]"), "Roll button must use var(--atlas-action)");
+    assert.ok(rollCls.includes("text-[var(--atlas-on-action)]"), "Roll button must use var(--atlas-on-action)");
+
+    const fixedRadio = container.querySelectorAll("input[name='hpMode']").find((r: any) => r.value === "fixed");
+    fixedRadio.dispatchEvent(new (globalThis as any).Event("change"));
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
+
+    const confirmBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Confirmer et Appliquer"));
+    assert.ok(confirmBtn, "Confirm button must exist");
+    const confirmCls = confirmBtn.getAttribute("class") || "";
+    assert.ok(confirmCls.includes("bg-[var(--atlas-action)]"), "Confirm button must use var(--atlas-action)");
+    assert.ok(confirmCls.includes("text-[var(--atlas-on-action)]"), "Confirm button must use var(--atlas-on-action)");
 
     unmount();
   });
