@@ -196,6 +196,9 @@ describe("[Ticket #89 - Acceptance Criterion 2] Live HandoutRevealed Broadcast &
 
     const modalEl = container.querySelector('[data-testid="handout-reveal-modal"]');
     assert.ok(modalEl);
+    assert.equal(modalEl.getAttribute("role"), "dialog");
+    assert.equal(modalEl.getAttribute("aria-modal"), "true");
+    assert.equal(modalEl.getAttribute("aria-labelledby"), "handout-title");
     const titleEl = container.querySelector('[data-testid="handout-title"]');
     assert.equal(titleEl?.textContent, "Royal Seal of Cormyr");
 

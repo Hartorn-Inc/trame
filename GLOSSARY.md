@@ -338,3 +338,81 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Game Master history drawer displaying recent table mutations and triggering single-click rollbacks.
 - **Allowed Context**: Game Master HUD, action history inspection, and rollback execution.
 - **_Avoid_**: HistorySidebar, RollbackPanel.
+
+### Campaign
+
+- **Definition**: Persistent game workspace that groups scenes, actors, wiki notes, party journals, and ruleset settings for a gaming group.
+- **Allowed Context**: `Campaign`, `campaign`, workspace boundaries, and database record association.
+- **_Avoid_**: GameSession, AdventureWorld, TableInstance.
+
+### DocumentsWorkspaceTab
+
+- **Definition**: Navigation tab within `CampaignWorkspace` (`[data-testid="tab-documents"]`) containing folder-organized notes, the past handouts gallery, and the session timeline feed.
+- **Allowed Context**: Campaign navigation, note hierarchy inspection, and handout gallery browsing.
+- **_Avoid_**: NotesTab, LoreView, JournalDrawer.
+
+### FilteredNoteDocument
+
+- **Definition**: Server-side sanitizer and AST projection component in `trame-server` that purges confidential blocks (`:::dm` and unrevealed `:::handout`) prior to network transmission to non-GM recipients.
+- **Allowed Context**: Note serialization, collaborative note merging, and role-based view projection.
+- **_Avoid_**: NoteSanitizer, MarkdownFilter, SecretStripper.
+
+### Handout
+
+- **Definition**: Visual, textual, or map document intended for distribution to campaign players, initialized as unrevealed (`revealed="false"`) until the Game Master explicitly reveals it.
+- **Allowed Context**: Clue distribution, party journal persistence, and player reveal interactions.
+- **_Avoid_**: SharedClue, PlayerDocument, RevealedArtifact.
+
+### HandoutRevealModal
+
+- **Definition**: Modal dialog component (`[data-testid="handout-reveal-modal"]`) displayed to connected players upon receiving a `HandoutRevealed` broadcast event or clicking an archived handout card.
+- **Allowed Context**: Handout inspection, live reveal notification, and keyboard-accessible dialog dismissal.
+- **_Avoid_**: CluePopup, RevealDialog, HandoutOverlay.
+
+### LocaleSignal
+
+- **Definition**: Reactive Preact signal (`localeSignal`) storing the active client interface language (`'en' | 'fr'`) with fallback to browser language.
+- **Allowed Context**: Reactive UI localization, bilingual compendium search queries, and language switcher buttons.
+- **_Avoid_**: LanguageStore, ActiveLocaleState, I18nContext.
+
+### MobileCompanionView
+
+- **Definition**: Touch-optimized Preact view activated on viewports under 768 pixels or through manual override, bypassing PixiJS WebGL initialization and offering 5 touch navigation tabs.
+- **Allowed Context**: Mobile companion mode, responsive layout switching, and physical table reference.
+- **_Avoid_**: PhoneView, MobileShell, ResponsiveCompanion.
+
+### Note
+
+- **Definition**: Markdown document stored within a campaign, assigned to an optional folder, and governed by a 3-tier visibility scope (`NoteVisibility`).
+- **Allowed Context**: Campaign lore documentation, player journals, and collaborative wikis.
+- **_Avoid_**: LoreEntry, WikiArticle, CampaignDoc.
+
+### NoteVisibility
+
+- **Definition**: 3-tier access control enumeration (`PRIVATE`, `PARTY`, `DM_ONLY`) governing read and write permissions for campaign notes.
+- **Allowed Context**: Note access evaluation, zero-trust RBAC queries, and document serialization filtering.
+- **_Avoid_**: NoteScope, PrivacyLevel, NotePermission.
+
+### PartyJournalEntry
+
+- **Definition**: Persistent and immutable record in `party_journal_entries` representing a handout revealed to the campaign group, decoupled from the source note lifecycle.
+- **Allowed Context**: Revealed handout archiving, past handouts gallery, and campaign timeline history.
+- **_Avoid_**: JournalItem, ArchivedHandout, SharedNoteRecord.
+
+### SessionTimelineEvent
+
+- **Definition**: Append-only event in `session_events` recording a significant campaign milestone indexed by a monotonically increasing sequence identifier.
+- **Allowed Context**: Session timeline querying, MCP timeline inspection, and campaign activity feeds.
+- **_Avoid_**: AuditLogEntry, CampaignEvent, HistoryRecord.
+
+### UnitSystemSignal
+
+- **Definition**: Reactive Preact signal (`unitSystemSignal`) storing the active tactical measurement system (`'imperial_ft' | 'metric_m'`).
+- **Allowed Context**: Tactical grid distance formatting, ruler measurements, and unit switcher toggles.
+- **_Avoid_**: MeasurementState, MetricSystemSignal, DistanceUnitContext.
+
+### UserRole
+
+- **Definition**: Campaign role enumeration (`GameMaster`, `Player`, `Spectator`) governing authority over notes, handouts, tokens, and table state mutations.
+- **Allowed Context**: Note RBAC evaluation, command dispatch permissions, and WebSocket envelope filtering.
+- **_Avoid_**: PlayerRole, CampaignRank, UserPrivilege.

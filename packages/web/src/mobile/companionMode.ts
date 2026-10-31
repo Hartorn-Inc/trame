@@ -266,12 +266,16 @@ export class TrameAppRoot {
 
     const modalEl = new LightweightElement("div");
     modalEl.setAttribute("data-testid", "handout-reveal-modal");
+    modalEl.setAttribute("role", "dialog");
+    modalEl.setAttribute("aria-modal", "true");
+    modalEl.setAttribute("aria-labelledby", "handout-title");
     modalEl.setAttribute("class", "modal-backdrop fullscreen");
 
     const cardEl = new LightweightElement("div");
     cardEl.setAttribute("class", "modal-card ds-overlay-modal");
 
     const titleEl = new LightweightElement("h2");
+    titleEl.setAttribute("id", "handout-title");
     titleEl.setAttribute("data-testid", "handout-title");
     titleEl.textContent = modal.title;
     cardEl.appendChild(titleEl);

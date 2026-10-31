@@ -250,6 +250,6 @@ export function renderWikiLinksToHtml(text: string): string {
   return text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match, target, label) => {
     const linkTarget = escapeHtml((target as string).trim());
     const linkLabel = escapeHtml(label ? (label as string).trim() : (target as string).trim());
-    return `<a class="wiki-entity-link" data-entity="${linkTarget}">${linkLabel}</a>`;
+    return `<a class="wiki-entity-link" href="#entity/${linkTarget}" data-entity="${linkTarget}">${linkLabel}</a>`;
   });
 }
