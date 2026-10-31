@@ -335,6 +335,25 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### UndoDrawer
 
-- **Definition**: Game Master history drawer displaying recent table mutations and triggering single-click rollbacks.
-- **Allowed Context**: Game Master HUD, action history inspection, and rollback execution.
-- **_Avoid_**: HistorySidebar, RollbackPanel.
+- **Definition**: The domain aggregate representing a playable hero, non-player creature, or monster in the campaign ruleset.
+- **Allowed Context**: Character sheets, combat tracking, tactical token placement, and rule engine evaluations.
+- **_Avoid_**: character, entity, token, avatar, player-character.
+
+### AoETemplate
+
+## 1. Purpose & Governance
+This document defines the ubiquitous domain vocabulary for Project TRAME. Developers and automated agents must adhere to these definitions across specifications, source code identifiers, test suites, and documentation. No synonymous, colloquial, or overlapping terms may replace the canonical terms recorded below.
+
+## 2. Ubiquitous Language Architecture
+The vocabulary enforces strict technical alignment between the Rust core engine (`crates/trame-engine`, `crates/trame-server`), the TypeScript/Preact web client (`packages/web`), and the EPURE governance framework.
+
+## 3. Core Domain Boundaries
+1. **Engine Core**: WebAssembly deterministic rules, BVH spatial raycasting, field-of-view, and pathfinding.
+2. **Server Runtime**: State synchronization, binary protocol serialization, and workspace persistence.
+3. **Web Presentation**: Reactive DOM application chrome, PixiJS v8 2.5D spatial SceneGraph, and declarative Actor sheet widgets.
+4. **Design & Craft Governance**: ATLAS v1.1 design system, accessibility compliance, and fail-closed CI verification.
+
+## 4. Forbidden Synonyms & Semantic Rules
+- Every technical concept maps to exactly one canonical name.
+- Code identifiers, CSS class names, and UI labels must directly reflect domain terms.
+- Specifications and pull requests violating these definitions fail automated lint checks.
