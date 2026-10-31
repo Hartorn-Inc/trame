@@ -51,13 +51,37 @@ export function HandoutRevealModal() {
 
   useEffect(() => {
     if (!activeModal || typeof window === "undefined") return;
-    const handleEscape = (e: KeyboardEvent) => {
+    const previousActiveElement =
+      typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         activeHandoutModalSignal.value = null;
+        return;
+      }
+      if (e.key === "Tab" && typeof document !== "undefined") {
+        const modalEl = document.querySelector?.('[data-testid="handout-reveal-modal"]');
+        const focusable = modalEl?.querySelectorAll?.(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusable && focusable.length > 0) {
+          const first = focusable[0] as HTMLElement;
+          const last = focusable[focusable.length - 1] as HTMLElement;
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus?.();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus?.();
+          }
+        }
       }
     };
-    window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      previousActiveElement?.focus?.();
+    };
   }, [activeModal]);
 
   if (!activeModal) return null;
@@ -105,7 +129,7 @@ export function HandoutRevealModal() {
           onClick={() => {
             activeHandoutModalSignal.value = null;
           }}
-          style={{ marginTop: "1rem", minHeight: "40px" }}
+          style={{ marginTop: "1rem" }}
         >
           {t("action.close")}
         </button>
@@ -313,9 +337,9 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                   class="folder-breadcrumb"
                   data-testid={`folder-breadcrumb-${folderName.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`}
                 >
-                  📁 {folderName}
+                  <span aria-hidden="true">📁</span> {folderName}
                 </span>
-                <span style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
+                <span class="atlas-tabular-nums" style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
                   {folderNotes.length} {folderNotes.length === 1 ? t("docs.notes.count.singular") : t("docs.notes.count.plural")}
                 </span>
               </div>
