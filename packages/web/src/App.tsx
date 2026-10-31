@@ -46,11 +46,11 @@ export function App() {
       <header
         style={{
           padding: '0.75rem 1.25rem',
-          borderBottom: '1px solid #1e293b',
+          borderBottom: '1px solid var(--atlas-border)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          background: '#131722',
+          background: 'var(--atlas-surface)',
         }}
       >
         <strong>TRAME VTT</strong>

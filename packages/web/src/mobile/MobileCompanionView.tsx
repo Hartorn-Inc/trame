@@ -18,7 +18,7 @@ export function MobileCompanionView() {
         {activeTab === "journal" && <div data-testid="tab-journal">{t("nav.journal")}</div>}
       </main>
 
-      <nav data-testid="mobile-companion-nav" style={{ display: "flex", borderTop: "1px solid #334155", background: "#0f172a" }}>
+      <nav data-testid="mobile-companion-nav" style={{ display: "flex", borderTop: "1px solid var(--atlas-border)", background: "var(--atlas-surface)" }}>
         <button data-testid="tab-button-sheet" onClick={() => { activeCompanionTabSignal.value = "sheet"; }} style={{ flex: 1, padding: "0.75rem" }}>{t("nav.sheet")}</button>
         <button data-testid="tab-button-dice" onClick={() => { activeCompanionTabSignal.value = "dice"; }} style={{ flex: 1, padding: "0.75rem" }}>{t("nav.dice")}</button>
         <button data-testid="tab-button-inventory" onClick={() => { activeCompanionTabSignal.value = "inventory"; }} style={{ flex: 1, padding: "0.75rem" }}>{t("nav.inventory")}</button>

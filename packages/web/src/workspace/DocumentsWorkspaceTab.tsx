@@ -37,9 +37,9 @@ export function DocumentsWorkspaceTab() {
           <p data-testid="empty-notes-hint">No notes available</p>
         ) : (
           documentsNotesSignal.value.map((note) => (
-            <div key={note.id} data-testid={`note-item-${note.id}`} style={{ padding: "0.5rem", border: "1px solid #334155" }}>
+            <div key={note.id} data-testid={`note-item-${note.id}`} style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}>
               <strong>{note.title}</strong>
-              <span style={{ marginLeft: "0.5rem", fontSize: "0.8rem", color: "#94a3b8" }}>[{note.visibility}]</span>
+              <span style={{ marginLeft: "0.5rem", fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>[{note.visibility}]</span>
             </div>
           ))
         )}
@@ -51,7 +51,7 @@ export function DocumentsWorkspaceTab() {
           <p data-testid="empty-handouts-hint">No revealed handouts</p>
         ) : (
           documentsHandoutsSignal.value.map((handout) => (
-            <div key={handout.handoutId} data-testid={`handout-card-${handout.handoutId}`} style={{ padding: "0.5rem", border: "1px solid #334155" }}>
+            <div key={handout.handoutId} data-testid={`handout-card-${handout.handoutId}`} style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}>
               <h4>{handout.title}</h4>
               <p>{handout.content}</p>
             </div>
@@ -65,7 +65,7 @@ export function DocumentsWorkspaceTab() {
           <p data-testid="empty-timeline-hint">No events recorded</p>
         ) : (
           documentsTimelineSignal.value.map((event) => (
-            <div key={event.id} data-testid={`timeline-event-${event.seqId}`} style={{ padding: "0.5rem", border: "1px solid #334155" }}>
+            <div key={event.id} data-testid={`timeline-event-${event.seqId}`} style={{ padding: "0.5rem", border: "1px solid var(--atlas-border)" }}>
               <span>#{event.seqId} {event.eventType}</span>
             </div>
           ))
@@ -73,8 +73,8 @@ export function DocumentsWorkspaceTab() {
       </div>
 
       {activeHandoutModalSignal.value && (
-        <div data-testid="handout-reveal-modal" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ background: "#0f172a", padding: "1.5rem", maxWidth: "600px", width: "90%", borderRadius: "8px" }}>
+        <div data-testid="handout-reveal-modal" style={{ position: "fixed", inset: 0, background: "var(--atlas-bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "var(--atlas-surface)", padding: "1.5rem", maxWidth: "600px", width: "90%", borderRadius: "8px" }}>
             <h3 data-testid="handout-title">{activeHandoutModalSignal.value.title}</h3>
             <div data-testid="handout-content">{activeHandoutModalSignal.value.content}</div>
             <button data-testid="modal-close-button" onClick={() => { activeHandoutModalSignal.value = null; }} style={{ marginTop: "1rem" }}>Close</button>
