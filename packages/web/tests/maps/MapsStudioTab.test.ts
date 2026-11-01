@@ -737,7 +737,7 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
             origin: { x: 200, y: 200 },
             brightRadiusFt: 15,
             dimRadiusFt: 30,
-            colorHex: "var(--atlas-action)",
+            colorHex: "#F3BB71",
             intensity: 1.0,
           },
         ],

@@ -3,7 +3,7 @@ import { useEffect } from 'preact/hooks';
 import type { CampaignMapScene, StudioWallSegment, StagedToken, StudioLightSource, AudioEmitterConfig, UserRole, WallType } from './types.ts';
 import { createStarterDungeonScene, generateEntityUuid, mapBackendSceneToFrontend, toggleDoorState } from './domain.ts';
 import { SceneAtlas } from './SceneAtlas.tsx';
-import { SHARED_WALL_KINDS, type CanonicalWallKind } from '../canvas/CanvasThemePalette.ts';
+import { DARK_CANVAS_PALETTE, SHARED_WALL_KINDS, type CanonicalWallKind } from '../canvas/CanvasThemePalette.ts';
 import { t, type MessageKey } from '../i18n/index.ts';
 
 const WALL_TYPE_LABEL_KEYS: Record<WallType, MessageKey> = {
@@ -265,7 +265,8 @@ export function MapsStudioTab({
       origin: { x: lightXSignal.value, y: lightYSignal.value },
       brightRadiusFt: radius * 0.5,
       dimRadiusFt: radius,
-      colorHex: 'var(--atlas-action)',
+      // Stored scene data: must be a literal hex the table renderer can parse, not a CSS variable.
+      colorHex: DARK_CANVAS_PALETTE.actionCss,
       intensity: 1.0,
       elevationFt: selectedScene.defaultGroundElevationFt ?? 0,
     };
