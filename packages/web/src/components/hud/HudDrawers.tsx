@@ -1,14 +1,22 @@
 import { h, type VNode } from 'preact';
-import { signal, useSignal } from '@preact/signals';
+import { useSignal } from '@preact/signals';
 import type { Dnd5eActorData } from '../../../../game-systems/dnd5e/src/index.ts';
 import { CharacterSheetHeader } from '../character-sheet/CharacterSheetHeader.tsx';
 import { DeclarativeSheetView } from '../../sheet/DeclarativeSheetView.tsx';
 import { CompendiumDrawer, type CompendiumEntry } from '../../compendium/CompendiumDrawer.tsx';
+import {
+  isSheetDrawerOpenSignal,
+  isCompendiumDrawerOpenSignal,
+  coreStatsLockedSignal,
+  activeHudActorSignal,
+} from '../../hud/HudDrawers.tsx';
 
-export const isSheetDrawerOpenSignal = signal<boolean>(false);
-export const isCompendiumDrawerOpenSignal = signal<boolean>(false);
-export const coreStatsLockedSignal = signal<boolean>(true);
-export const activeHudActorSignal = signal<Dnd5eActorData | null>(null);
+export {
+  isSheetDrawerOpenSignal,
+  isCompendiumDrawerOpenSignal,
+  coreStatsLockedSignal,
+  activeHudActorSignal,
+};
 
 export interface HudDrawersProps {
   actor?: Dnd5eActorData | null;
@@ -80,16 +88,6 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
       resolvedActorSignal.value = updatedActor;
     }
     activeHudActorSignal.value = updatedActor;
-
-    if (props.dispatchCommand) {
-      props.dispatchCommand({
-        type: 'UpdateActorData',
-        actorId: updatedActor.id,
-        actor_id: updatedActor.id,
-        actor: updatedActor,
-        data: updatedActor,
-      });
-    }
 
     if (props.onSaveActor) {
       await props.onSaveActor(updatedActor);

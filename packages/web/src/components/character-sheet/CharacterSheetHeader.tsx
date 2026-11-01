@@ -66,11 +66,31 @@ export async function persistActorUpdate(
 export function handleUpdateActorDataEvent(event: any, actorSignal?: { value: any }): void {
   if (!event || !actorSignal) return;
   const eventType = event.type || event.event;
-  if (eventType === 'UpdateActorData' || eventType === 'ActorUpdated') {
+  if (
+    eventType === 'UpdateActorData' ||
+    eventType === 'ActorUpdated' ||
+    eventType === 'update_actor_data' ||
+    eventType === 'actor_updated'
+  ) {
     const data = event.actor ?? event.data ?? event.payload;
-    if (data) {
-      actorSignal.value = data;
+    if (!data) return;
+
+    const incomingActorId = event.actorId ?? event.actor_id ?? data.id;
+    const currentActorId = actorSignal.value?.id;
+
+    if (currentActorId) {
+      if (incomingActorId && incomingActorId !== currentActorId) {
+        return;
+      }
+      if (data.id && data.id !== currentActorId) {
+        return;
+      }
+      if (!incomingActorId && !data.id) {
+        return;
+      }
     }
+
+    actorSignal.value = data;
   }
 }
 

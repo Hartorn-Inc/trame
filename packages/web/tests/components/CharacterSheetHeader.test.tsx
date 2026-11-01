@@ -15,6 +15,10 @@ import {
   activeHudActorSignal,
   coreStatsLockedSignal,
 } from "../../src/components/hud/HudDrawers.tsx";
+import {
+  HudDrawers as CanonicalHudDrawers,
+  isSheetDrawerOpenSignal as canonicalSheetDrawerOpenSignal,
+} from "../../src/hud/HudDrawers.tsx";
 
 // Minimal DOM mock to allow Preact render and event dispatch in Node.js
 function setupMockDom() {
@@ -588,6 +592,78 @@ describe("CharacterSheetHeader & HudDrawers REST/CQRS Dual Persistence Suite (#8
     unmount();
   });
 
+  it("handleUpdateActorDataEvent ignores events targeting other actors without clobbering local actorSignal (AC5)", () => {
+    const localActor = createDefaultActorData("actor-local-1", "Local Hero");
+    const actorSignal = signal<Dnd5eActorData>(localActor);
+
+    // Incoming event for a foreign actor with mismatched event.actorId
+    handleUpdateActorDataEvent(
+      {
+        type: "UpdateActorData",
+        actorId: "actor-foreign-99",
+        actor: { ...localActor, id: "actor-foreign-99", name: "Foreign Intruder" },
+      },
+      actorSignal
+    );
+    assert.equal(actorSignal.value.id, "actor-local-1");
+    assert.equal(actorSignal.value.name, "Local Hero", "Foreign event must not clobber local actor name");
+
+    // Incoming event with mismatched actor_id
+    handleUpdateActorDataEvent(
+      {
+        event: "ActorUpdated",
+        actor_id: "actor-foreign-99",
+        payload: { ...localActor, id: "actor-foreign-99", name: "Foreign Intruder 2" },
+      },
+      actorSignal
+    );
+    assert.equal(actorSignal.value.id, "actor-local-1");
+    assert.equal(actorSignal.value.name, "Local Hero");
+
+    // Incoming event with mismatched data.id only
+    handleUpdateActorDataEvent(
+      {
+        type: "UpdateActorData",
+        data: { ...localActor, id: "actor-foreign-99", name: "Foreign Intruder 3" },
+      },
+      actorSignal
+    );
+    assert.equal(actorSignal.value.id, "actor-local-1");
+    assert.equal(actorSignal.value.name, "Local Hero");
+
+    // Incoming event matching local actorId updates actorSignal
+    handleUpdateActorDataEvent(
+      {
+        type: "UpdateActorData",
+        actorId: "actor-local-1",
+        actor: { ...localActor, name: "Local Hero Promoted" },
+      },
+      actorSignal
+    );
+    assert.equal(actorSignal.value.name, "Local Hero Promoted");
+
+    // Incoming event with matching envelope actorId but conflicting data.id does not clobber
+    handleUpdateActorDataEvent(
+      {
+        type: "UpdateActorData",
+        actorId: "actor-local-1",
+        actor: { ...localActor, id: "actor-foreign-different", name: "Spoofed Actor" },
+      },
+      actorSignal
+    );
+    assert.equal(actorSignal.value.name, "Local Hero Promoted");
+
+    // Incoming event with missing IDs does not clobber local actor
+    handleUpdateActorDataEvent(
+      {
+        type: "UpdateActorData",
+        actor: { name: "Anonymous Update" } as any,
+      },
+      actorSignal
+    );
+    assert.equal(actorSignal.value.name, "Local Hero Promoted");
+  });
+
   it("Affichage explicite des garde-fous métier et accessibilité clavier/ARIA complète (WCAG 2.1 AA) (AC6)", async () => {
     const maxLevelActor = createDefaultActorData("actor-paladin", "Seelah");
     maxLevelActor.classId = "paladin";
@@ -663,10 +739,53 @@ describe("CharacterSheetHeader & HudDrawers REST/CQRS Dual Persistence Suite (#8
     assert.ok(levelUpBtn);
     assert.equal(levelUpBtn.textContent, "Level Up", "In HudDrawers, button text must be 'Level Up'");
 
+    // Verify Long Rest save in HudDrawers dispatches exactly one UpdateActorData command
+    const longRestBtn = container.querySelector("[data-testid='btn-long-rest']");
+    assert.ok(longRestBtn, "Long Rest button must be present in sheet header");
+    longRestBtn.dispatchEvent(new (globalThis as any).Event("click"));
+    await new Promise((r) => setTimeout(r, 15));
+
+    const restModal = container.querySelector("[data-testid='rest-modal']");
+    assert.ok(restModal, "RestModal must open upon clicking Long Rest");
+
+    const buttons = restModal.querySelectorAll("button");
+    const confirmBtn = Array.from(buttons).find((b: any) =>
+      b.textContent?.includes("Confirmer le Repos Long")
+    );
+    assert.ok(confirmBtn, "Confirm Long Rest button must be rendered in RestModal");
+    confirmBtn.dispatchEvent(new (globalThis as any).Event("click"));
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(dispatched.length, 1, "Must dispatch exactly one UpdateActorData command without duplicates");
+    assert.equal(dispatched[0].type, "UpdateActorData");
+    assert.equal(dispatched[0].actorId, "actor-hud-1");
+
     // Verify Escape key closes the sheet drawer
     drawerEl.dispatchEvent(new (globalThis as any).Event("keydown", { key: "Escape" }));
     assert.equal(isSheetDrawerOpenSignal.value, false, "Escape key must close sheet drawer");
 
+    unmount();
+  });
+
+  it("canonical packages/web/src/hud/HudDrawers.tsx mounts CharacterSheetHeader and shares reactive signals", async () => {
+    assert.equal(canonicalSheetDrawerOpenSignal, isSheetDrawerOpenSignal, "Drawer signals must be singletons");
+
+    canonicalSheetDrawerOpenSignal.value = true;
+    const actor = createDefaultActorData("actor-can-1", "Canonical Hero");
+    const { container, unmount } = await renderToDom(
+      h(CanonicalHudDrawers, {
+        actor,
+        actorId: actor.id,
+      })
+    );
+
+    const headerEl = container.querySelector("[data-testid='character-sheet-header']");
+    assert.ok(headerEl, "CharacterSheetHeader must be rendered inside canonical HudDrawers");
+    assert.ok(container.querySelector("[data-testid='btn-level-up']"), "Level Up button must be mounted");
+    assert.ok(container.querySelector("[data-testid='btn-short-rest']"), "Short Rest button must be mounted");
+    assert.ok(container.querySelector("[data-testid='btn-long-rest']"), "Long Rest button must be mounted");
+
+    canonicalSheetDrawerOpenSignal.value = false;
     unmount();
   });
 });
