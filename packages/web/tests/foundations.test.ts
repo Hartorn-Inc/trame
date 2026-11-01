@@ -33,7 +33,7 @@ describe("[F3] @trame/game-system-dnd5e canonical rules & pipeline", () => {
     const cases = [
       { level: 1, exhaustion: 0, expectedPb: 2, expectedPerception: 15, expectedDc: 15 },
       { level: 5, exhaustion: 0, expectedPb: 3, expectedPerception: 17, expectedDc: 16 },
-      { level: 17, exhaustion: 2, expectedPb: 6, expectedPerception: 19, expectedDc: 15 },
+      { level: 17, exhaustion: 2, expectedPb: 6, expectedPerception: 19, expectedDc: 19 },
     ];
 
     for (const tc of cases) {
