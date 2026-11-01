@@ -824,7 +824,7 @@ pub async fn export_campaign_handler(
         description: None,
         created_at: "2026-01-01T00:00:00Z".to_string(),
     };
-    let source = if let Some(pg) = &state.postgres_store {
+    let mut source = if let Some(pg) = &state.postgres_store {
         let loaded = async {
             Ok::<_, String>(ScopedCampaignExportSource {
                 metadata: pg
@@ -854,6 +854,14 @@ pub async fn export_campaign_handler(
             asset_ids: state.campaign_store.asset_ids_for_campaign(campaign_id),
         }
     };
+    let entities = std::mem::take(&mut source.entities);
+    source.entities =
+        match crate::maps::export_entities_with_scenes(&state, campaign_id, entities).await {
+            Ok(entities) => entities,
+            Err(err) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "EXPORT_ERROR", &err);
+            }
+        };
 
     let exporter = ArchiveExporter::new(source, state.blob_store.clone());
     let stream = match exporter.export_stream().await {
@@ -964,6 +972,15 @@ pub async fn import_campaign_handler(
             notes_restored,
             assets_restored,
         }) => {
+            if state.postgres_store.is_none() {
+                let scenes = state
+                    .campaign_store
+                    .entities_for_campaign(campaign_id)
+                    .iter()
+                    .filter_map(|e| crate::maps::restorable_scene(campaign_id, e))
+                    .collect();
+                state.map_storage.restore_campaign_maps(campaign_id, scenes);
+            }
             state.membership.add_member(campaign_id, caller_user_id);
             if let Err(err) = state
                 .auth_state

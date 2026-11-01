@@ -33,8 +33,16 @@
 //!        `expected_version` (missing -> `400 MISSING_EXPECTED_VERSION`, stale ->
 //!        `409 VERSION_CONFLICT` with `current_version`). Every scene write, including
 //!        `POST .../maps/import`, goes through `save_campaign_scenes` and bumps it by one.
+//!      - With PostgreSQL, scenes and version are read by one statement (one snapshot) and
+//!        PostgreSQL is the only source of truth; the in-memory store serves memory-only mode.
+//!   6. `Archive Round Trip`:
+//!      - Export writes the stored scenes as `scene` entities (`export_entities_with_scenes`);
+//!        import restores every entity that parses as a `CampaignMapScene`
+//!        (`restorable_scene`) into scene storage. Import always targets a fresh campaign,
+//!        so the restored set keeps version `0`.
 //! ============================================================================
 
+use crate::archive::ExportEntity;
 use crate::http::{AppState, ErrorResponse};
 use crate::sync::mask_wall_for_player;
 use axum::extract::{Path, State};
@@ -299,12 +307,55 @@ impl InMemoryMapStorage {
         Ok(entry.1)
     }
 
-    /// Overwrites the cached scene set with an already-committed PostgreSQL write.
-    fn mirror_committed(&self, campaign_id: Uuid, scenes: Vec<CampaignMapScene>, version: i64) {
+    /// Sets the scenes restored by an archive import, keeping the current version (`0` for
+    /// the fresh campaign an import always creates) so it never moves backwards.
+    pub fn restore_campaign_maps(&self, campaign_id: Uuid, scenes: Vec<CampaignMapScene>) {
         if let Ok(mut map) = self.scenes.write() {
-            map.insert(campaign_id, (scenes, version));
+            map.entry(campaign_id).or_default().0 = scenes;
         }
     }
+}
+
+/// The map scene carried by an archive entity, scoped to `campaign_id`, or `None` when the
+/// entity is not a `scene` or its payload is not a `CampaignMapScene` (foreign or legacy
+/// archives); such entities stay plain campaign entities.
+pub fn restorable_scene(campaign_id: Uuid, entity: &ExportEntity) -> Option<CampaignMapScene> {
+    if entity.entity_type != "scene" {
+        return None;
+    }
+    let mut scene: CampaignMapScene = serde_json::from_value(entity.data.clone()).ok()?;
+    scene.campaign_id = campaign_id;
+    Some(scene)
+}
+
+/// Archive entities for `campaign_id`: the scene storage's scenes (in scene order) replace
+/// any store `scene` entity with the same ID, so mirrored scene rows are not exported twice.
+pub async fn export_entities_with_scenes(
+    state: &AppState,
+    campaign_id: Uuid,
+    entities: Vec<ExportEntity>,
+) -> Result<Vec<ExportEntity>, String> {
+    let scenes = load_campaign_scenes(state, campaign_id).await?;
+    let scene_ids: std::collections::HashSet<String> =
+        scenes.iter().map(|s| s.id.to_string()).collect();
+    let mut out: Vec<ExportEntity> = entities
+        .into_iter()
+        .filter(|e| {
+            e.entity_type != "scene"
+                || !e
+                    .data
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|id| scene_ids.contains(id))
+        })
+        .collect();
+    for scene in &scenes {
+        out.push(ExportEntity {
+            entity_type: "scene".to_string(),
+            data: serde_json::to_value(scene).map_err(|e| e.to_string())?,
+        });
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -343,8 +394,7 @@ pub fn sanitize_scene_for_player(mut scene: CampaignMapScene) -> CampaignMapScen
     scene
 }
 
-/// Loads the scenes of `campaign_id` from PostgreSQL when configured (falling back to the
-/// in-memory cache when the table is empty), otherwise from memory.
+/// Loads the scenes of `campaign_id` from PostgreSQL when configured, otherwise from memory.
 pub async fn load_campaign_scenes(
     state: &AppState,
     campaign_id: Uuid,
@@ -352,23 +402,20 @@ pub async fn load_campaign_scenes(
     Ok(load_campaign_scene_set(state, campaign_id).await?.0)
 }
 
-/// Like `load_campaign_scenes`, plus the scene-set version. With PostgreSQL the version is
-/// always `campaigns.scenes_version`, even when the scenes come from the in-memory fallback.
+/// Like `load_campaign_scenes`, plus the scene-set version, read as one consistent snapshot
+/// (a single SQL statement with PostgreSQL, one read lock in memory).
 pub async fn load_campaign_scene_set(
     state: &AppState,
     campaign_id: Uuid,
 ) -> Result<(Vec<CampaignMapScene>, i64), String> {
-    let (cached, cached_version) = state.map_storage.get_campaign_map_set(campaign_id);
-    let Some(ref pg) = state.postgres_store else {
-        return Ok((cached, cached_version));
-    };
-    let version = pg.load_scenes_version_async(campaign_id).await?;
-    let scenes = pg.load_campaign_scenes_async(campaign_id).await?;
-    Ok((if scenes.is_empty() { cached } else { scenes }, version))
+    match state.postgres_store {
+        Some(ref pg) => pg.load_campaign_scene_set_async(campaign_id).await,
+        None => Ok(state.map_storage.get_campaign_map_set(campaign_id)),
+    }
 }
 
 /// Replaces the scene set of `campaign_id` if its version still equals `expected_version`,
-/// writing PostgreSQL (when configured, authoritative) then the in-memory cache. Every
+/// in PostgreSQL when configured (the sole source of truth), otherwise in memory. Every
 /// scene-mutating path must go through here so they all bump the same version.
 pub async fn save_campaign_scenes(
     state: &AppState,
@@ -376,20 +423,17 @@ pub async fn save_campaign_scenes(
     scenes: Vec<CampaignMapScene>,
     expected_version: i64,
 ) -> Result<i64, SceneSaveError> {
-    let Some(ref pg) = state.postgres_store else {
-        return state.map_storage.save_campaign_maps_if_version(
-            campaign_id,
-            scenes,
-            expected_version,
-        );
-    };
-    let version = pg
-        .save_campaign_scenes_async(campaign_id, &scenes, expected_version)
-        .await?;
-    state
-        .map_storage
-        .mirror_committed(campaign_id, scenes, version);
-    Ok(version)
+    match state.postgres_store {
+        Some(ref pg) => {
+            pg.save_campaign_scenes_async(campaign_id, &scenes, expected_version)
+                .await
+        }
+        None => {
+            state
+                .map_storage
+                .save_campaign_maps_if_version(campaign_id, scenes, expected_version)
+        }
+    }
 }
 
 /// Converts a persisted scene into the engine `ActivateScene` payload. Staged tokens become
