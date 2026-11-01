@@ -37,6 +37,8 @@
  */
 
 import type { ActionDefinition, Dnd5eActorSheet } from "./pipeline.ts";
+import { getCastableSpellLevels } from "./progression.ts";
+import { SRD_CURATED_CONTENT } from "./srdContent.ts";
 
 /**
  * Hierarchical compendium storage layer ordered from lowest to highest precedence:
@@ -66,6 +68,9 @@ export type CompendiumEntityType =
   | "item"
   | "class"
   | "subclass"
+  | "species"
+  | "background"
+  | "condition"
   | "feat"
   | "weapon"
   | "armor";
@@ -238,6 +243,9 @@ export class CompendiumResolver {
       `srd:monster:${idOrSlug}`,
       `srd:subclass:${idOrSlug}`,
       `srd:class:${idOrSlug}`,
+      `srd:species:${idOrSlug}`,
+      `srd:background:${idOrSlug}`,
+      `srd:condition:${idOrSlug}`,
     ];
     for (const prefixed of fallbackPrefixes) {
       if (this.campaignHomebrew.has(prefixed)) return this.campaignHomebrew.get(prefixed);
@@ -1291,8 +1299,8 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       hitDiceMax: 2,
       hitDieSides: 6,
       armorBaseAc: 15,
-      armorKind: "light",
-      hasShield: true,
+      armorKind: "natural",
+      hasShield: false,
       abilities: { str: 8, dex: 14, con: 10, int: 10, wis: 8, cha: 8 },
       saveProficiencies: { dex: false, con: false, wis: false, cha: false },
       skillProficiencies: { stealth: "expertise" },
@@ -1350,7 +1358,7 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       hitDiceMax: 2,
       hitDieSides: 8,
       armorBaseAc: 12,
-      armorKind: "light",
+      armorKind: "natural",
       hasShield: false,
       abilities: { str: 11, dex: 12, con: 12, int: 10, wis: 10, cha: 10 },
       saveProficiencies: { dex: false, con: false, wis: false, cha: false },
@@ -1409,8 +1417,8 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       hitDiceMax: 2,
       hitDieSides: 8,
       armorBaseAc: 16,
-      armorKind: "medium",
-      hasShield: true,
+      armorKind: "natural",
+      hasShield: false,
       abilities: { str: 13, dex: 12, con: 12, int: 10, wis: 11, cha: 10 },
       saveProficiencies: { dex: false, con: false, wis: false, cha: false },
       skillProficiencies: { perception: "proficient" },
@@ -1462,7 +1470,7 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       hitDiceMax: 2,
       hitDieSides: 8,
       armorBaseAc: 13,
-      armorKind: "armor_scraps",
+      armorKind: "natural",
       hasShield: false,
       abilities: { str: 10, dex: 14, con: 15, int: 6, wis: 8, cha: 5 },
       saveProficiencies: { dex: false, con: false, wis: false, cha: false },
@@ -1575,7 +1583,7 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       hitDiceMax: 7,
       hitDieSides: 10,
       armorBaseAc: 11,
-      armorKind: "hide",
+      armorKind: "natural",
       hasShield: false,
       abilities: { str: 19, dex: 8, con: 16, int: 5, wis: 7, cha: 7 },
       saveProficiencies: { dex: false, con: false, wis: false, cha: false },
@@ -1840,7 +1848,27 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       fr: { name: "École d'évocation", description: "Consacre l'étude magique aux déflagrations élémentaires puissantes." },
     },
   },
+
+  // ==========================================================================
+  // 8. CURATED CLASSES, SPECIES, BACKGROUNDS, CONDITIONS, SPELLS, ITEMS, MONSTERS
+  // ==========================================================================
+  ...SRD_CURATED_CONTENT,
 ];
+
+/**
+ * Spells a class may learn when reaching `targetLevel`: every class spell of a
+ * castable spell level (slots plus Mystic Arcanum) not already in `knownSpellIds`.
+ */
+export function getLevelUpSpellChoices(
+  classId: string,
+  targetLevel: number,
+  knownSpellIds: readonly string[] = [],
+  resolver?: CompendiumResolver
+): CompendiumEntry[] {
+  return getCastableSpellLevels(classId, targetLevel)
+    .flatMap((level) => getSpellsByLevel(level, classId, resolver))
+    .filter((spell) => !knownSpellIds.includes(spell.id));
+}
 
 /**
  * Backward-compatible alias for `SYSTEM_SRD`.

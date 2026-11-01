@@ -31,7 +31,10 @@
  *      - Long rests reset all standard spell slots (levels 1-9), Pact Magic, and
  *        both `"SHORT_REST"` and `"LONG_REST"` resource pools, while clearing
  *        `hp.temp` to `0` and decrementing exhaustion by exactly `1` when `> 0`.
- *   5. `State Immutability`:
+ *   5. `Death Is Final`:
+ *      - `applyLongRest` returns a dead actor (`isDead` / `deathSaves.isDead`)
+ *        unchanged: no HP, Hit Dice, slots or death-save reset can revive it.
+ *   6. `State Immutability`:
  *      - All functions return deep-cloned state records, preserving pure,
  *        deterministic transitions across client-side UI and server pipelines.
  *
@@ -43,6 +46,7 @@
  *     ├── 3. Replenish SHORT_REST resource pools and Pact Magic spell slots.
  *     └── 4. Return updated immutable actor data or recovery metric totals.
  *   `applyLongRest(actorOrSheet)`
+ *     ├── 0. Return immediately (no recovery) when the actor is dead.
  *     ├── 1. Deep-clone actor state and restore current HP to hp.max.
  *     ├── 2. Clear temp HP to 0 and reset death save counters.
  *     ├── 3. Recover max(1, floor(hitDiceMax / 2)) hit dice up to hitDiceMax.
@@ -232,6 +236,9 @@ export function applyLongRest(
 ): Dnd5eActorData | { hpRecovered: number; hitDiceRecovered: number } {
   if ("attributes" in actorOrSheet) {
     const clone: Dnd5eActorData = JSON.parse(JSON.stringify(actorOrSheet));
+    if (clone.isDead) {
+      return clone;
+    }
 
     clone.attributes.hp.current = clone.attributes.hp.max;
     clone.attributes.hp.temp = 0;
@@ -292,6 +299,9 @@ export function applyLongRest(
     return clone;
   } else {
     const sheet = actorOrSheet;
+    if (sheet.deathSaves.isDead) {
+      return { hpRecovered: 0, hitDiceRecovered: 0 };
+    }
     const hpRecovered = sheet.hpMax - sheet.hpCurrent;
     sheet.hpCurrent = sheet.hpMax;
     sheet.tempHp = 0;

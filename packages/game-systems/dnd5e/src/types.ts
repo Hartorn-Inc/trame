@@ -170,16 +170,19 @@ export interface ActiveConditionState {
  * Spellcasting progression archetype used to allocate spell slots upon level-up:
  * - `"full"` / `"FULL_CASTER"`: 9-level progression (Bard, Cleric, Druid, Sorcerer, Wizard)
  * - `"half"` / `"HALF_CASTER"`: 5-level progression starting at level 2 (Paladin, Ranger)
+ * - `"third"` / `"THIRD_CASTER"`: 4-level progression starting at level 3 (one-third casters)
  * - `"pact"` / `"PACT_MAGIC"`: Warlock Pact Magic progression (uniform slot level, short-rest recovery)
  * - `"none"`: Non-spellcasting martial progression
  */
 export type CasterType =
   | "full"
   | "half"
+  | "third"
   | "pact"
   | "none"
   | "FULL_CASTER"
   | "HALF_CASTER"
+  | "THIRD_CASTER"
   | "PACT_MAGIC";
 
 /**
@@ -224,7 +227,11 @@ export interface LevelUpOptions {
   rolledHp?: number;
   /** Archetype/subclass identifier required when `targetLevel` hits the class unlock tier. */
   subclassId?: string;
-  /** ASI score bonuses (+2 or +1/+1 up to 20) or Feat selection at an ASI level. */
+  /**
+   * ASI score bonuses (+2 or +1/+1 up to 20) or Feat selection at an ASI level.
+   * A Constitution increase also raises max HP for every earlier level, and the
+   * Tough feat adds `2 * targetLevel` HP immediately.
+   */
   asiOrFeat?: AsiOrFeatSelection;
   /** Canonical spell identifiers to register on the actor upon leveling up. */
   newSpellIds?: string[];

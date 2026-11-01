@@ -40,7 +40,7 @@
  *     ├── 1. Deep-clone actor state and sum mitigated damage across instances.
  *     ├── 2. If already at `0` HP: apply massive-damage death or `+1`/`+2` death save failures.
  *     ├── 3. If `current > 0`: absorb into `temp`, deduct from `current`, check massive excess.
- *     ├── 4. Append `"unconscious"` condition when dropping to `0` HP while alive.
+ *     ├── 4. Append `CONDITION_UNCONSCIOUS` when dropping to `0` HP while alive.
  *     └── 5. Emit `ConcentrationPrompt` (`DC = max(10, floor(damage / 2))`) or drop concentration.
  * ============================================================================
  */
@@ -54,29 +54,37 @@ import type {
   SkillId,
   TurnTrigger,
 } from "./types.ts";
-import {
-  computeDnd5eSheetDerived,
-  DND5E_SKILLS,
-  type ProficiencyRankString,
-} from "./manifest.ts";
+import { computeDnd5eSheetDerived, type ProficiencyRankString } from "./manifest.ts";
 import { decrementConditionDurations } from "./progression.ts";
 
 export { computeDnd5eSheetDerived, decrementConditionDurations };
 
 /**
- * Armor Class calculation formula selector for `Dnd5eActorSheet`:
+ * Stable compendium identifier of the Unconscious condition applied when an
+ * actor drops to `0` HP. UIs localize it by id (`srd:condition:unconscious`).
+ */
+export const CONDITION_UNCONSCIOUS = "srd:condition:unconscious";
+
+/** Condition ids accepted as Unconscious, including the pre-compendium `"unconscious"` id. */
+const UNCONSCIOUS_IDS = new Set([CONDITION_UNCONSCIOUS, "unconscious"]);
+
+/**
+ * Armor Class calculation selector for `Dnd5eActorSheet`, mapped onto the
+ * `system.json` AC candidates (the best applicable candidate wins):
  * - `"unarmored"`: `10 + DEX`
  * - `"light"`: `armorBaseAc + DEX`
  * - `"medium"`: `armorBaseAc + min(2, DEX)`
  * - `"heavy"`: `armorBaseAc`
- * - `"unarmored_barbarian"`: `10 + DEX + CON`
- * - `"unarmored_monk"`: `10 + DEX + WIS`
+ * - `"natural"`: `armorBaseAc` taken verbatim from a monster stat block
+ * - `"unarmored_barbarian"`: best of `10 + DEX` and `10 + DEX + CON`
+ * - `"unarmored_monk"`: best of `10 + DEX` and `10 + DEX + WIS` (no shield)
  */
 export type ArmorCalculationKind =
   | "unarmored"
   | "light"
   | "medium"
   | "heavy"
+  | "natural"
   | "unarmored_barbarian"
   | "unarmored_monk";
 
@@ -148,7 +156,7 @@ export interface Dnd5eActorSheet {
   hitDiceMax: number;
   /** Die size for Hit Dice recovery rolls (e.g., `6`, `8`, `10`, `12`). */
   hitDieSides: number;
-  /** Exhaustion level (`0..=6`), applying a `-2 * exhaustionLevel` penalty to d20 checks/saves/DCs. */
+  /** Exhaustion level (`0..=6`), applying a `-2 * exhaustionLevel` penalty to d20 tests (never to spell save DC). */
   exhaustionLevel: number;
   /** List of active condition names or identifiers on the sheet. */
   conditions: string[];
@@ -204,27 +212,6 @@ export interface Dnd5eDerivedStats {
  */
 export function abilityModifier(score: number): number {
   return Math.floor((score - 10) / 2);
-}
-
-/**
- * Computes the proficiency bonus (`+2` to `+6`) for a character level clamped to `[1, 20]`.
- */
-export function proficiencyBonusForLevel(level: number): number {
-  const clamped = Math.max(1, Math.min(20, Math.trunc(level)));
-  return Math.floor((clamped - 1) / 4) + 2;
-}
-
-/**
- * Converts a symbolic (`ProficiencyRankString`) or numeric (`ProficiencyRank`)
- * proficiency tier into its numeric multiplier (`0`, `0.5`, `1`, or `2`).
- */
-export function proficiencyMultiplier(
-  rank: ProficiencyRankString | ProficiencyRank | undefined
-): number {
-  if (rank === "expertise" || rank === 2) return 2;
-  if (rank === "proficient" || rank === 1) return 1;
-  if (rank === "half") return 0.5;
-  return 0;
 }
 
 /**
@@ -361,11 +348,11 @@ export function resolveDamagePipeline(
         instantDeath = true;
         deathSavesModified = true;
       } else {
-        const hasUnconscious = clone.conditions.some((c) => c.id === "unconscious");
+        const hasUnconscious = clone.conditions.some((c) => UNCONSCIOUS_IDS.has(c.id));
         if (!hasUnconscious) {
           clone.conditions.push({
-            id: "unconscious",
-            name: "Inconscient",
+            id: CONDITION_UNCONSCIOUS,
+            name: "Unconscious",
             durationRounds: 999,
             trigger: "ROUNDS",
           });
@@ -441,7 +428,7 @@ export function rollDeathSavingThrow(
       clone.attributes.hp.current = 1;
       clone.attributes.deathSaves.successes = 0;
       clone.attributes.deathSaves.failures = 0;
-      clone.conditions = clone.conditions.filter((c) => c.id !== "unconscious");
+      clone.conditions = clone.conditions.filter((c) => !UNCONSCIOUS_IDS.has(c.id));
       outcome = "revived";
     } else if (d20Roll >= 10) {
       clone.attributes.deathSaves.successes += 1;
