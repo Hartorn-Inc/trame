@@ -65,5 +65,7 @@ export default defineConfig({
     target: 'es2022',
     outDir: 'dist',
     sourcemap: true,
+    // The production CSP has no `data:` source, so small imported assets must stay files.
+    assetsInlineLimit: 0,
   },
 });
