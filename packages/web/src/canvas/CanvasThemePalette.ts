@@ -220,7 +220,7 @@ export const SHARED_WALL_KINDS: Record<CanonicalWallKind, WallKindVisualStyle> =
     dashPatternPx: [2, 4],
     endpointMarker: "none",
   },
-});
+};
 
 export const DARK_CANVAS_PALETTE: CanvasThemePaletteSpec = deepFreeze({
   theme: "dark",
