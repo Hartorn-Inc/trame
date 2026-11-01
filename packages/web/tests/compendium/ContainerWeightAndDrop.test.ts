@@ -6,7 +6,7 @@ import {
   calculateContainerWeight,
   calculateTotalInventoryWeight,
   type InventoryContainerItem,
-} from "../../src/dnd/index.ts";
+} from "../../src/compendium/CompendiumDragDropManager.ts";
 
 describe("CompendiumDragDropManager and ContainerWeightCalculator Suite", () => {
   describe("Acyclic Container Weight Calculations", () => {
