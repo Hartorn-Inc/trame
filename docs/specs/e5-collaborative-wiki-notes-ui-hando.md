@@ -137,7 +137,7 @@ Supported event types (`event_type`):
     {
       "seq_id": 2,
       "timestamp": 1717171200000,
-      "event_type": "HandoutRevealed",
+      "event_type": "handout_revealed",
       "actor_id": "user-gm-1",
       "payload": { "handout_id": "h-456", "title": "Intercepted letter" }
     }
