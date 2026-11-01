@@ -20,23 +20,31 @@
 //!        (`can_token_see_target`, eye height at `80%` stature to target torso
 //!        at `50%` stature) before including a candidate token in the recipient's
 //!        `ProjectedTableState` or `initiative_order`.
-//!   2. `Secret Door Wire Masking`:
-//!      - Closed `WallKind::SecretDoor { is_open: false }` segments are
-//!        rewritten to `WallKind::Normal` inside `project_state_for_recipient`
-//!        for all non-GM recipients so wire inspection cannot distinguish a
-//!        closed secret door from a solid dungeon wall.
-//!   3. `Event Stream Filtering`:
-//!      - `filter_events_for_recipient` drops `TokenMoved`, `TokenSqueezeToggled`,
-//!        `DamageApplied`, and `TokenResourcesOverridden` events referencing
-//!        tokens outside the recipient's `visible_token_ids_for_recipient` set.
+//!   2. `Secret Geometry Wire Masking`:
+//!      - Closed `WallKind::SecretDoor { is_open: false }` and `WallKind::Illusion`
+//!        segments are rewritten to fully blocking `WallKind::Normal` walls
+//!        (`mask_wall_for_player`) in snapshots and in `WallAdded` /
+//!        `DoorConfigured` events; closing a secret door emits nothing to players.
+//!   3. `PublicTokenView Redaction (G5)`:
+//!      - Only tokens the recipient controls are sent as full `TokenState`.
+//!        Every other visible token is a `PublicTokenView` carrying a coarse
+//!        `BloodiedState` instead of HP, AC, senses, or action economy, and
+//!        vitality events (`DamageApplied`, `TokenResourcesOverridden`,
+//!        `TokenSpawned`) reach only the controller.
+//!   4. `Per-Recipient Turn Index`:
+//!      - `active_turn_index` indexes the recipient's filtered `initiative_order`
+//!        and is `None` when the active combatant is hidden; turn events clear
+//!        `active_turn_token_id` the same way, so a hidden monster's turn never
+//!        leaks through the tracker.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
 //!   `project_state_for_recipient(campaign_id, state, recipient_user_id, recipient_role)`
 //!     ├── 1. Compute `visible_ids = visible_token_ids_for_recipient(...)` via 2.5D `Bvh2D`.
-//!     ├── 2. Filter `state.data.tokens` and `initiative_order` to `visible_ids` (or all if GM).
-//!     ├── 3. Rewrite closed `WallKind::SecretDoor` to `WallKind::Normal` for non-GMs.
-//!     └── 4. Package `ProjectedTableState` for MessagePack serialization (`rmp_serde`).
+//!     ├── 2. Split visible tokens into controlled `tokens` and `public_tokens`.
+//!     ├── 3. Mask secret doors / illusions and invisible AoE casters for non-GMs.
+//!     ├── 4. Filter `initiative_order` and re-index `active_turn_index`.
+//!     └── 5. Package `ProjectedTableState` for MessagePack serialization (`rmp_serde`).
 //! ============================================================================
 
 use crate::dice::{ProjectedDiceRoll, RollVisibility};
@@ -96,16 +104,25 @@ pub struct ProjectedTableState {
     pub cell_size_px: f64,
     /// Tactical distance per grid cell in feet (`ft`).
     pub feet_per_cell: f64,
-    /// Map of tokens visible to this specific recipient after BVH and `CHANNEL_GM_HIDDEN` filtering.
+    /// Full `TokenState` for every token the recipient controls (`owner_user_id == recipient`).
+    /// GMs receive every token here.
     pub tokens: BTreeMap<Uuid, TokenState>,
-    /// Map walls with closed `SecretDoor` segments masked as `WallKind::Normal` for non-GM recipients.
+    /// Reduced `PublicTokenView` for visible tokens the recipient does not control (G5).
+    /// Always empty for GMs.
+    #[serde(default)]
+    pub public_tokens: BTreeMap<Uuid, PublicTokenView>,
+    /// Map walls with closed `SecretDoor` and `Illusion` segments masked as `WallKind::Normal`
+    /// for non-GM recipients.
     pub walls: Vec<WallSegment>,
-    /// Active persistent Area of Effect templates on the map.
+    /// Active persistent Area of Effect templates; caster IDs of tokens the recipient cannot
+    /// see are cleared.
     pub persistent_aoes: BTreeMap<Uuid, AoeTemplate>,
     /// Combat initiative order filtered to tokens visible to this recipient.
     pub initiative_order: Vec<Uuid>,
-    /// Zero-based index of the active turn in the authoritative initiative list.
-    pub active_turn_index: usize,
+    /// Zero-based index of the active combatant inside this recipient's filtered
+    /// `initiative_order`; `None` when the active combatant is hidden from the recipient or
+    /// the order is empty.
+    pub active_turn_index: Option<usize>,
     /// Current 1-based combat round counter.
     pub round: u32,
     /// Dynamic point light sources placed on the active map.
@@ -129,6 +146,84 @@ pub struct ProjectedTableState {
     /// Queued MCP dry-run staging proposals keyed by `proposal_id` (included only for `Gm` recipients).
     #[serde(default)]
     pub mcp_staging_proposals: BTreeMap<Uuid, McpStagingProposal>,
+}
+
+/// Coarse health tier shown to participants who do not control a token (G5, `GLOSSARY.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum BloodiedState {
+    /// Current HP strictly above half of maximum HP.
+    Unhurt,
+    /// Current HP at or below half of maximum HP, but above `0`.
+    Bloodied,
+    /// Current HP at or below `0`.
+    Down,
+}
+
+impl BloodiedState {
+    /// Classifies `hp` against `max_hp` with integer math (`2 * hp > max_hp` is `Unhurt`),
+    /// widened to `i64` so extreme values cannot overflow.
+    pub fn from_hp(hp: i32, max_hp: i32) -> Self {
+        if hp <= 0 {
+            Self::Down
+        } else if 2 * i64::from(hp) > i64::from(max_hp) {
+            Self::Unhurt
+        } else {
+            Self::Bloodied
+        }
+    }
+}
+
+/// Reduced view of a token sent to a participant who does not control it (G5): no armor
+/// class, hit point numbers, senses, action economy, or active effects.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PublicTokenView {
+    /// Unique identifier of the token.
+    pub id: Uuid,
+    /// Display name shown on the tabletop.
+    pub name: String,
+    /// Controlling user (`None` for GM-controlled NPCs).
+    pub owner_user_id: Option<Uuid>,
+    /// Persistent actor sheet linked to the token, used by clients to resolve the portrait.
+    pub actor_id: Option<Uuid>,
+    /// Top-left canvas coordinate of the footprint in pixels (`px`).
+    pub top_left: Point2D,
+    /// Footprint width in grid cells (`>= 1`).
+    pub grid_w: u8,
+    /// Footprint height in grid cells (`>= 1`).
+    pub grid_h: u8,
+    /// Whether the token is squeezing (footprint shrunk by one cell when `>= 2`).
+    pub is_squeezing: bool,
+    /// Base elevation in feet (`ft`).
+    pub elevation_ft: f64,
+    /// Stature in feet (`ft`).
+    pub height_ft: f64,
+    /// Whether the token has the Invisible condition (only sent when the recipient perceives it).
+    pub invisible: bool,
+    /// Visible D&D 5e condition labels.
+    pub conditions: Vec<String>,
+    /// Coarse health tier derived from `hp` / `max_hp`.
+    pub bloodied: BloodiedState,
+}
+
+impl From<&TokenState> for PublicTokenView {
+    fn from(t: &TokenState) -> Self {
+        Self {
+            id: t.id,
+            name: t.name.clone(),
+            owner_user_id: t.owner_user_id,
+            actor_id: t.actor_id,
+            top_left: t.top_left,
+            grid_w: t.grid_w,
+            grid_h: t.grid_h,
+            is_squeezing: t.is_squeezing,
+            elevation_ft: t.elevation_ft,
+            height_ft: t.height_ft,
+            invisible: t.invisible,
+            conditions: t.conditions.clone(),
+            bloodied: BloodiedState::from_hp(t.hp, t.max_hp),
+        }
+    }
 }
 
 /// Outbound binary MessagePack payload broadcast or unicast from `TableRoomActor` to connected clients.
@@ -261,9 +356,56 @@ pub fn visible_token_ids_for_recipient(
     visible
 }
 
+/// Rewrites walls whose true nature is GM knowledge so non-GM wire payloads cannot tell them
+/// apart from solid masonry: closed `SecretDoor` and `Illusion` segments become fully
+/// blocking `WallKind::Normal` walls. Open secret doors stay revealed.
+pub fn mask_wall_for_player(wall: &WallSegment) -> WallSegment {
+    let mut masked = wall.clone();
+    if matches!(
+        wall.kind,
+        WallKind::SecretDoor { is_open: false } | WallKind::Illusion { .. }
+    ) {
+        masked.kind = WallKind::Normal;
+        masked.blocks_movement = true;
+        masked.blocks_vision = true;
+        masked.blocks_light = true;
+        masked.blocks_sound = true;
+    }
+    masked
+}
+
+fn mask_aoe_caster(template: &AoeTemplate, visible_ids: &HashSet<Uuid>) -> AoeTemplate {
+    let mut masked = template.clone();
+    if masked
+        .concentration_caster_id
+        .is_some_and(|caster| !visible_ids.contains(&caster))
+    {
+        masked.concentration_caster_id = None;
+    }
+    masked
+}
+
+/// Returns `true` when `recipient_user_id` controls `token_id` (`owner_user_id` match).
+fn recipient_controls(state: &TableState, token_id: &Uuid, recipient_user_id: Uuid) -> bool {
+    state
+        .data
+        .tokens
+        .get(token_id)
+        .is_some_and(|t| t.owner_user_id == Some(recipient_user_id))
+}
+
+/// Re-indexes the authoritative active turn into the recipient's filtered initiative list.
+fn recipient_active_turn_index(state: &TableState, filtered_order: &[Uuid]) -> Option<usize> {
+    let active = state.active_turn_token_id()?;
+    filtered_order.iter().position(|id| *id == active)
+}
+
 /// Projects the authoritative `TableState` for a specific connected client:
 /// - Strips `CHANNEL_GM_HIDDEN` tokens and tokens outside 2.5D BVH line-of-sight for non-GMs.
-/// - Masks closed `SecretDoor` walls as `WallKind::Normal` walls so players cannot inspect wire data.
+/// - Sends full `TokenState` only for controlled tokens; other visible tokens become
+///   `PublicTokenView` (G5).
+/// - Masks closed `SecretDoor` and `Illusion` walls as `WallKind::Normal`.
+/// - Re-indexes `active_turn_index` into the filtered initiative order.
 pub fn project_state_for_recipient(
     campaign_id: Uuid,
     state: &TableState,
@@ -273,26 +415,24 @@ pub fn project_state_for_recipient(
     let is_gm = recipient_role == CampaignRole::Gm;
     let visible_ids = visible_token_ids_for_recipient(state, recipient_user_id, recipient_role);
 
-    let tokens: BTreeMap<Uuid, TokenState> = state
-        .data
-        .tokens
-        .iter()
-        .filter(|(id, _)| visible_ids.contains(id))
-        .map(|(id, tok)| (*id, tok.clone()))
-        .collect();
+    let mut tokens = BTreeMap::new();
+    let mut public_tokens = BTreeMap::new();
+    for (id, tok) in &state.data.tokens {
+        if !visible_ids.contains(id) {
+            continue;
+        }
+        if is_gm || tok.owner_user_id == Some(recipient_user_id) {
+            tokens.insert(*id, tok.clone());
+        } else {
+            public_tokens.insert(*id, PublicTokenView::from(tok));
+        }
+    }
 
-    let walls: Vec<WallSegment> = state
-        .data
-        .walls
-        .iter()
-        .map(|w| {
-            let mut cloned = w.clone();
-            if !is_gm && cloned.kind == (WallKind::SecretDoor { is_open: false }) {
-                cloned.kind = WallKind::Normal;
-            }
-            cloned
-        })
-        .collect();
+    let walls: Vec<WallSegment> = if is_gm {
+        state.data.walls.clone()
+    } else {
+        state.data.walls.iter().map(mask_wall_for_player).collect()
+    };
 
     let initiative_order: Vec<Uuid> = state
         .data
@@ -301,6 +441,30 @@ pub fn project_state_for_recipient(
         .filter(|id| is_gm || visible_ids.contains(id))
         .copied()
         .collect();
+    let active_turn_index = recipient_active_turn_index(state, &initiative_order);
+
+    let persistent_aoes = if is_gm {
+        state.data.persistent_aoes.clone()
+    } else {
+        state
+            .data
+            .persistent_aoes
+            .iter()
+            .map(|(id, aoe)| (*id, mask_aoe_caster(aoe, &visible_ids)))
+            .collect()
+    };
+
+    let active_reaction_prompts = if is_gm {
+        state.data.active_reaction_prompts.clone()
+    } else {
+        state
+            .data
+            .active_reaction_prompts
+            .iter()
+            .filter(|(_, p)| recipient_controls(state, &p.reactor_actor_id, recipient_user_id))
+            .map(|(id, p)| (*id, p.clone()))
+            .collect()
+    };
 
     ProjectedTableState {
         campaign_id,
@@ -310,17 +474,18 @@ pub fn project_state_for_recipient(
         cell_size_px: state.cell_size_px,
         feet_per_cell: state.feet_per_cell,
         tokens,
+        public_tokens,
         walls,
-        persistent_aoes: state.data.persistent_aoes.clone(),
+        persistent_aoes,
         initiative_order,
-        active_turn_index: state.data.active_turn_index,
+        active_turn_index,
         round: state.data.round,
         lights: state.data.lights.clone(),
         fog_overrides: state.data.fog_overrides.clone(),
         background_asset_hash: state.data.background_asset_hash.clone(),
         map_width_px: state.data.map_width_px,
         map_height_px: state.data.map_height_px,
-        active_reaction_prompts: state.data.active_reaction_prompts.clone(),
+        active_reaction_prompts,
         mcp_staging_proposals: if is_gm {
             state.data.mcp_staging_proposals.clone()
         } else {
@@ -329,8 +494,16 @@ pub fn project_state_for_recipient(
     }
 }
 
-/// Filters `TrameEvent` notifications so hidden token movements or damage events
-/// are never leaked to non-GM clients without 2.5D line-of-sight.
+/// Filters and redacts `TrameEvent` notifications for a non-GM recipient (GMs get everything):
+/// - Vitality events (`DamageApplied`, `TokenResourcesOverridden`) and full `TokenSpawned`
+///   payloads reach only the token's controller; others learn the outcome through the
+///   `PublicTokenView` in the accompanying state projection.
+/// - Movement, squeeze, visibility, and ownership events require the token to be visible.
+/// - Secret door / illusion geometry in `DoorToggled`, `DoorConfigured`, and `WallAdded` is
+///   masked; closing a secret door is dropped entirely.
+/// - `AoeProjected` keeps only visible affected tokens and hides invisible casters.
+/// - Turn events clear `active_turn_token_id` when the active combatant is hidden.
+/// - MCP staging and undo descriptions are GM-only.
 pub fn filter_events_for_recipient(
     state: &TableState,
     events: &[TrameEvent],
@@ -342,34 +515,99 @@ pub fn filter_events_for_recipient(
     }
 
     let visible_ids = visible_token_ids_for_recipient(state, recipient_user_id, recipient_role);
+    let visible_turn = |active: &Option<Uuid>| active.filter(|id| visible_ids.contains(id));
+    let wall_kind = |wall_id: &Uuid| {
+        state
+            .data
+            .walls
+            .iter()
+            .find(|w| w.id == *wall_id)
+            .map(|w| w.kind.clone())
+    };
+
     events
         .iter()
-        .filter(|ev| match ev {
+        .filter_map(|ev| match ev {
+            TrameEvent::DamageApplied { token_id, .. }
+            | TrameEvent::TokenResourcesOverridden { token_id, .. } => {
+                recipient_controls(state, token_id, recipient_user_id).then(|| ev.clone())
+            }
+            TrameEvent::TokenSpawned { token } => {
+                (token.owner_user_id == Some(recipient_user_id)).then(|| ev.clone())
+            }
             TrameEvent::TokenMoved { token_id, .. }
             | TrameEvent::TokenSqueezeToggled { token_id, .. }
-            | TrameEvent::DamageApplied { token_id, .. }
-            | TrameEvent::TokenResourcesOverridden { token_id, .. }
             | TrameEvent::TokenVisibilityChanged { token_id, .. }
-            | TrameEvent::TokenOwnerAssigned { token_id, .. } => visible_ids.contains(token_id),
-            TrameEvent::TokenSpawned { token } => visible_ids.contains(&token.id),
-            TrameEvent::DoorToggled { .. }
-            | TrameEvent::DoorConfigured { .. }
-            | TrameEvent::TableModeChanged { .. }
-            | TrameEvent::TurnAdvanced { .. }
-            | TrameEvent::AoeProjected { .. }
-            | TrameEvent::ConcentrationBroken { .. }
-            | TrameEvent::AmbientLightingChanged { .. }
+            | TrameEvent::TokenOwnerAssigned { token_id, .. } => {
+                visible_ids.contains(token_id).then(|| ev.clone())
+            }
+            TrameEvent::ConcentrationBroken {
+                caster_token_id, ..
+            } => visible_ids.contains(caster_token_id).then(|| ev.clone()),
+            TrameEvent::DoorToggled { wall_id, .. } => match wall_kind(wall_id) {
+                Some(WallKind::SecretDoor { is_open: false }) | Some(WallKind::Illusion { .. }) => {
+                    None
+                }
+                _ => Some(ev.clone()),
+            },
+            TrameEvent::DoorConfigured { wall_id, kind } => {
+                let masked = match kind {
+                    WallKind::SecretDoor { is_open: false } | WallKind::Illusion { .. } => {
+                        WallKind::Normal
+                    }
+                    other => other.clone(),
+                };
+                Some(TrameEvent::DoorConfigured {
+                    wall_id: *wall_id,
+                    kind: masked,
+                })
+            }
+            TrameEvent::WallAdded { wall } => Some(TrameEvent::WallAdded {
+                wall: mask_wall_for_player(wall),
+            }),
+            TrameEvent::AoeProjected {
+                template,
+                affected_cells,
+                affected_token_ids,
+                persisted,
+            } => Some(TrameEvent::AoeProjected {
+                template: mask_aoe_caster(template, &visible_ids),
+                affected_cells: affected_cells.clone(),
+                affected_token_ids: affected_token_ids
+                    .iter()
+                    .filter(|id| visible_ids.contains(id))
+                    .copied()
+                    .collect(),
+                persisted: *persisted,
+            }),
+            TrameEvent::TableModeChanged {
+                mode,
+                exploration_paused,
+                active_turn_token_id,
+                round,
+            } => Some(TrameEvent::TableModeChanged {
+                mode: *mode,
+                exploration_paused: *exploration_paused,
+                active_turn_token_id: visible_turn(active_turn_token_id),
+                round: *round,
+            }),
+            TrameEvent::TurnAdvanced {
+                active_turn_token_id,
+                round,
+            } => Some(TrameEvent::TurnAdvanced {
+                active_turn_token_id: visible_turn(active_turn_token_id),
+                round: *round,
+            }),
+            TrameEvent::McpStagingCommitted { .. }
+            | TrameEvent::McpStagingRejected { .. }
+            | TrameEvent::ActionUndone { .. } => None,
+            TrameEvent::AmbientLightingChanged { .. }
             | TrameEvent::SceneLoaded { .. }
             | TrameEvent::TokenRemoved { .. }
-            | TrameEvent::WallAdded { .. }
             | TrameEvent::LightAdded { .. }
             | TrameEvent::FogOverrideChanged { .. }
             | TrameEvent::MapConfigChanged { .. }
-            | TrameEvent::ReactionDecided { .. }
-            | TrameEvent::McpStagingCommitted { .. }
-            | TrameEvent::McpStagingRejected { .. }
-            | TrameEvent::ActionUndone { .. } => true,
+            | TrameEvent::ReactionDecided { .. } => Some(ev.clone()),
         })
-        .cloned()
         .collect()
 }

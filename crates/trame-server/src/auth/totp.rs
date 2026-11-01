@@ -17,25 +17,24 @@
 //!      AES-256-GCM, stores it as pending, and returns Base32 + `otpauth://` URL.
 //!   2. `totp_enable_handler` decrypts the pending secret, verifies the
 //!      submitted 6-digit code, and promotes MFA to enabled on the user record.
-//!   3. `totp_verify_handler` validates the active TOTP code during login and
-//!      issues an `HttpOnly; Secure; SameSite=Lax` session cookie.
+//!   3. `totp_verify_handler` re-verifies the active TOTP code for an already
+//!      authenticated session (step-up); it never mints a session. Password
+//!      login checks `totp_code` inline in `login_handler`.
 //! ============================================================================
 
 use super::password::{IdentityStore, extract_session_token};
-use super::session::{
-    AuthState, DEFAULT_SESSION_TTL_SECONDS, SessionStore, build_session_cookie_header,
-    generate_session_token, hash_session_token,
-};
+use super::session::{AuthState, SessionStore, hash_session_token};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::http::header::{HeaderMap, HeaderValue, SET_COOKIE};
+use axum::http::header::HeaderMap;
 use axum::response::{IntoResponse, Json, Response};
 use data_encoding::{BASE32, HEXLOWER};
+use hmac::{Hmac, Mac};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-use sha1::{Digest, Sha1};
+use sha1::Sha1;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use uuid::Uuid;
@@ -220,37 +219,16 @@ pub fn compute_totp_code(secret: &[u8], time_step: u64, digits: u32) -> String {
     format!("{:0width$}", otp, width = digits as usize)
 }
 
-/// RFC 2104 HMAC-SHA1 implementation.
+/// RFC 2104 HMAC-SHA1 via the RustCrypto `hmac` crate (RFC 6238 mandates SHA-1 for
+/// authenticator-app interoperability; HMAC-SHA1 remains sound as a PRF).
 pub fn hmac_sha1(key: &[u8], message: &[u8]) -> [u8; 20] {
-    let mut key_block = [0u8; 64];
-    if key.len() > 64 {
-        let mut hasher = Sha1::new();
-        hasher.update(key);
-        let digest = hasher.finalize();
-        key_block[..20].copy_from_slice(&digest);
-    } else {
-        key_block[..key.len()].copy_from_slice(key);
-    }
-
-    let mut o_key_pad = [0u8; 64];
-    let mut i_key_pad = [0u8; 64];
-    for i in 0..64 {
-        o_key_pad[i] = key_block[i] ^ 0x5c;
-        i_key_pad[i] = key_block[i] ^ 0x36;
-    }
-
-    let mut inner = Sha1::new();
-    inner.update(i_key_pad);
-    inner.update(message);
-    let inner_digest = inner.finalize();
-
-    let mut outer = Sha1::new();
-    outer.update(o_key_pad);
-    outer.update(inner_digest);
-    let result = outer.finalize();
-
+    let mut mac = match <Hmac<Sha1> as hmac::KeyInit>::new_from_slice(key) {
+        Ok(mac) => mac,
+        Err(_) => unreachable!("HMAC-SHA1 accepts keys of any length"),
+    };
+    mac.update(message);
     let mut output = [0u8; 20];
-    output.copy_from_slice(&result);
+    output.copy_from_slice(mac.finalize().into_bytes().as_slice());
     output
 }
 
@@ -500,102 +478,75 @@ pub async fn totp_enable_handler(
         .into_response()
 }
 
-/// Handler for POST /api/v1/auth/totp/verify.
+/// Handler for POST /api/v1/auth/totp/verify: step-up re-verification of the caller's
+/// active TOTP code. Requires an authenticated session whose user matches `user_id` and
+/// never mints a session, so a TOTP code alone cannot bypass the password. Password
+/// login enforces TOTP inline (`login_handler`).
 pub async fn totp_verify_handler(
     State(state): State<AuthState>,
+    headers: HeaderMap,
     Json(payload): Json<TotpVerifyRequest>,
 ) -> Response {
-    let user = match state.session_store.get_user_by_id(payload.user_id).await {
-        Ok(Some(u)) => u,
-        _ => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(TotpErrorResponse {
-                    error: "user not found or mfa not configured".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    if !user.mfa_enabled {
-        return (
+    let unauthorized = |msg: &str| {
+        (
             StatusCode::UNAUTHORIZED,
             Json(TotpErrorResponse {
-                error: "mfa is not enabled for this user".to_string(),
+                error: msg.to_string(),
             }),
         )
-            .into_response();
-    }
-
-    let encrypted_secret = match &user.totp_secret {
-        Some(s) => s.as_str(),
-        None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(TotpErrorResponse {
-                    error: "totp secret missing".to_string(),
-                }),
-            )
-                .into_response();
-        }
+            .into_response()
     };
 
-    let secret_bytes = match state.totp_service.decrypt_secret(encrypted_secret) {
-        Ok(b) => b,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(TotpErrorResponse {
-                    error: "decryption failed".to_string(),
-                }),
-            )
-                .into_response();
-        }
+    let Some(session_token) = extract_session_token(&headers) else {
+        return unauthorized("authentication session required");
     };
-
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    let session = match state
+        .session_store
+        .get_session_by_token_hash(&hash_session_token(&session_token))
+        .await
+    {
+        Ok(Some(s)) if s.expires_at >= now => s,
+        _ => return unauthorized("invalid or expired session"),
+    };
+    if session.user_id != payload.user_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(TotpErrorResponse {
+                error: "session does not belong to user_id".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let user = match state.session_store.get_user_by_id(session.user_id).await {
+        Ok(Some(u)) if u.mfa_enabled => u,
+        _ => return unauthorized("mfa is not enabled for this user"),
+    };
+    let Some(encrypted_secret) = user.totp_secret.as_deref() else {
+        return unauthorized("totp secret missing");
+    };
+    let Ok(secret_bytes) = state.totp_service.decrypt_secret(encrypted_secret) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(TotpErrorResponse {
+                error: "decryption failed".to_string(),
+            }),
+        )
+            .into_response();
+    };
     if !state
         .totp_service
         .verify_code(&secret_bytes, &payload.code, now)
     {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(TotpErrorResponse {
-                error: "invalid or expired totp code".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    let session_token = generate_session_token();
-    let token_hash = hash_session_token(&session_token);
-    if let Err(e) = state
-        .session_store
-        .create_session(user.id, &token_hash, DEFAULT_SESSION_TTL_SECONDS)
-        .await
-    {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(TotpErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    let cookie_val = build_session_cookie_header(&session_token, DEFAULT_SESSION_TTL_SECONDS);
-    let mut headers = HeaderMap::new();
-    if let Ok(val) = HeaderValue::from_str(&cookie_val) {
-        headers.insert(SET_COOKIE, val);
+        return unauthorized("invalid or expired totp code");
     }
 
     (
         StatusCode::OK,
-        headers,
         Json(TotpVerifyResponse {
             status: "success".to_string(),
             user_id: user.id,

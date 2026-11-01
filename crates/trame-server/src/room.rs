@@ -38,6 +38,15 @@
 //!        WebSocket Close frame code `1001` ("Going Away") to all active client
 //!        connections and serializes uncommitted actor state to `WalStorage`
 //!        before terminating the actor task.
+//!   6. `Damage Authority & Bounds (G6)`:
+//!      - `authorize_command` rejects `ApplyDamage` outside `0..=MAX_RAW_DAMAGE`
+//!        and, for non-GM actors, against tokens they do not control or with a
+//!        non-`Normal` affinity, before the command reaches the engine or the WAL.
+//!   7. `Hidden Initiative & Sheet Privacy (G5)`:
+//!      - Auto-rolled initiative for `CHANNEL_GM_HIDDEN` tokens uses
+//!        `RollVisibility::GmOnly`; tokens whose player already rolled
+//!        initiative keep that roll; `ActorUpdated` sheets go only to the GM and
+//!        the controllers of linked tokens.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -64,6 +73,7 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use trame_engine::commands::{
     CampaignRole, CommandActor, TableMode, TableState, TrameCommand, TrameEvent,
 };
+use trame_engine::rules::DamageAffinity;
 use uuid::Uuid;
 
 /// Global atomic boolean flag indicating if the server runtime is in the process of shutting down.
@@ -75,6 +85,14 @@ pub const WS_CLOSE_CODE_GOING_AWAY: u16 = 1001;
 
 /// Standard reason string broadcast alongside close code 1001.
 pub const WS_CLOSE_REASON_GOING_AWAY: &str = "Server Hibernating";
+
+/// Upper bound on `ApplyDamage.raw_damage` (HP). Far above any 5e damage roll while keeping
+/// engine multipliers (`Vulnerable` doubles damage) well inside `i32`.
+pub const MAX_RAW_DAMAGE: i32 = 10_000;
+
+fn is_gm_hidden(token: &trame_engine::commands::TokenState) -> bool {
+    token.visibility_channel & trame_engine::geometry::CHANNEL_GM_HIDDEN != 0
+}
 
 /// Outbound frame sent from a room actor to a connected client's socket transmission task.
 #[derive(Debug, Clone)]
@@ -378,6 +396,10 @@ pub struct TableRoomActor {
     dice_roller: SeededDiceRoller,
     wal: Arc<dyn WalStorage>,
     rx: mpsc::Receiver<RoomActorMessage>,
+    /// Latest initiative total each non-GM user rolled themselves (`RollDice` whose reason
+    /// starts with `"initiative"`, case-insensitive), consumed by the next auto-roll so their
+    /// tokens keep the player's own result instead of being re-rolled.
+    player_initiative_rolls: HashMap<Uuid, i32>,
 }
 
 impl TableRoomActor {
@@ -401,6 +423,7 @@ impl TableRoomActor {
             dice_roller: SeededDiceRoller::from_os_csprng(),
             wal,
             rx,
+            player_initiative_rolls: HashMap::new(),
         };
         tokio::spawn(actor.run());
         Ok(TableRoomHandle { campaign_id, tx })
@@ -545,11 +568,20 @@ impl TableRoomActor {
                 reason,
             } => {
                 self.last_activity_ms = now_ms();
+                let is_player_initiative = actor_role != CampaignRole::Gm
+                    && reason
+                        .trim_start()
+                        .to_ascii_lowercase()
+                        .starts_with("initiative");
                 match self
                     .dice_roller
                     .roll(actor_user_id, &expression, visibility, reason)
                 {
                     Ok(outcome) => {
+                        if is_player_initiative {
+                            self.player_initiative_rolls
+                                .insert(actor_user_id, outcome.total);
+                        }
                         for client in self.clients.values() {
                             if let Some(projected_roll) =
                                 project_roll_for_recipient(&outcome, client.user_id, client.role)
@@ -606,6 +638,8 @@ impl TableRoomActor {
         actor: CommandActor,
         cmd: TrameCommand,
     ) -> Result<(u64, Vec<TrameEvent>), RoomError> {
+        self.authorize_command(&actor, &cmd)
+            .map_err(RoomError::CommandRejected)?;
         let resolved_cmd = self.resolve_authoritative_initiative(&actor, cmd);
         match self.state.apply_command(&actor, resolved_cmd.clone()) {
             Ok(events) => {
@@ -653,6 +687,48 @@ impl TableRoomActor {
         }
     }
 
+    /// Server-side authority checks layered on top of `TableState::apply_command` (G6):
+    /// - `ApplyDamage.raw_damage` must lie in `0..=MAX_RAW_DAMAGE` so engine damage
+    ///   multipliers (vulnerability doubling) can never overflow `i32`.
+    /// - Non-GM actors may only damage tokens they control (`owner_user_id`).
+    /// - Non-GM actors must send `DamageAffinity::Normal`: `TokenState` carries no server-side
+    ///   resistances yet, so a client-chosen `Immune` / `Resistant` would let a player shrug
+    ///   off damage. Only the GM may apply an affinity until the engine stores it per token.
+    fn authorize_command(&self, actor: &CommandActor, cmd: &TrameCommand) -> Result<(), String> {
+        if let TrameCommand::ApplyDamage {
+            token_id,
+            raw_damage,
+            affinity,
+        } = cmd
+        {
+            if !(0..=MAX_RAW_DAMAGE).contains(raw_damage) {
+                return Err(format!(
+                    "invalid configuration: raw_damage must be within 0..={MAX_RAW_DAMAGE}"
+                ));
+            }
+            if actor.role != CampaignRole::Gm {
+                let controls_target = self
+                    .state
+                    .data
+                    .tokens
+                    .get(token_id)
+                    .is_some_and(|t| t.owner_user_id == Some(actor.user_id));
+                if !controls_target {
+                    return Err(
+                        "permission denied: players may only apply damage to tokens they control"
+                            .to_string(),
+                    );
+                }
+                if *affinity != DamageAffinity::Normal {
+                    return Err(
+                        "permission denied: only the GM may apply a damage affinity".to_string()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Rolls `1d20 + dex_mod` for each active combatant token on the table when `StartTurnByTurn` or
     /// `SetTableMode { mode: TurnByTurn }` is submitted by a GM with an empty `initiative_order`.
     fn resolve_authoritative_initiative(
@@ -689,38 +765,57 @@ impl TableRoomActor {
         }
     }
 
+    /// Hidden combatants (`CHANNEL_GM_HIDDEN`) are rolled with `RollVisibility::GmOnly` so their
+    /// names and results never reach player sockets through the public initiative feed.
+    /// Tokens whose owner already rolled initiative themselves (`player_initiative_rolls`)
+    /// reuse that total and are not auto-rolled; the stored rolls are consumed.
     fn roll_table_initiative(&mut self, actor_user_id: Uuid) -> Vec<Uuid> {
-        let combatants: Vec<(Uuid, String, i32)> = self
+        type Candidate = (Uuid, String, i32, bool, Option<Uuid>);
+        let to_candidate = |t: &trame_engine::commands::TokenState| -> Candidate {
+            (
+                t.id,
+                t.name.clone(),
+                t.dex_mod,
+                is_gm_hidden(t),
+                t.owner_user_id,
+            )
+        };
+        let combatants: Vec<Candidate> = self
             .state
             .data
             .tokens
             .values()
             .filter(|t| t.hp > 0)
-            .map(|t| (t.id, t.name.clone(), t.dex_mod))
+            .map(to_candidate)
             .collect();
 
-        let candidates: Vec<(Uuid, String, i32)> = if combatants.is_empty() {
-            self.state
-                .data
-                .tokens
-                .values()
-                .map(|t| (t.id, t.name.clone(), t.dex_mod))
-                .collect()
+        let candidates: Vec<Candidate> = if combatants.is_empty() {
+            self.state.data.tokens.values().map(to_candidate).collect()
         } else {
             combatants
         };
 
+        let self_rolls = std::mem::take(&mut self.player_initiative_rolls);
         let mut rolled: Vec<(i32, i32, Uuid)> = Vec::with_capacity(candidates.len());
-        for (token_id, token_name, dex_mod) in candidates {
+        for (token_id, token_name, dex_mod, hidden, owner) in candidates {
+            if let Some(total) = owner.and_then(|o| self_rolls.get(&o)) {
+                rolled.push((*total, dex_mod, token_id));
+                continue;
+            }
             let expr = match dex_mod.cmp(&0) {
                 std::cmp::Ordering::Greater => format!("1d20+{dex_mod}"),
                 std::cmp::Ordering::Less => format!("1d20{dex_mod}"),
                 std::cmp::Ordering::Equal => "1d20".to_string(),
             };
             let reason = format!("Initiative: {token_name}");
-            if let Ok(outcome) =
-                self.dice_roller
-                    .roll(actor_user_id, &expr, RollVisibility::Public, reason)
+            let visibility = if hidden {
+                RollVisibility::GmOnly
+            } else {
+                RollVisibility::Public
+            };
+            if let Ok(outcome) = self
+                .dice_roller
+                .roll(actor_user_id, &expr, visibility, reason)
             {
                 for client in self.clients.values() {
                     if let Some(projected_roll) =
@@ -756,8 +851,12 @@ impl TableRoomActor {
         sync: ActorTacticalSync,
     ) -> usize {
         let mut updated_count = 0usize;
+        let mut sheet_owners: Vec<Uuid> = Vec::new();
         for token in self.state.data.tokens.values_mut() {
             if token.actor_id == Some(actor_id) || token.id == actor_id {
+                if let Some(owner) = token.owner_user_id {
+                    sheet_owners.push(owner);
+                }
                 if let Some(ref name) = sync.name {
                     token.name = name.clone();
                 }
@@ -799,9 +898,13 @@ impl TableRoomActor {
             version,
             data,
         };
+        // Full sheets carry HP/AC numbers, so only the GM and the linked tokens' controllers
+        // receive them (G5).
         if let Ok(bytes) = encode_server_envelope(&out) {
             for client in self.clients.values() {
-                let _ = client.tx.send(OutboundClientFrame::Binary(bytes.clone()));
+                if client.role == CampaignRole::Gm || sheet_owners.contains(&client.user_id) {
+                    let _ = client.tx.send(OutboundClientFrame::Binary(bytes.clone()));
+                }
             }
         }
 

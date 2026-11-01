@@ -17,10 +17,10 @@
 //! 2. `Magic Link Revocation & Expiration`:
 //!    - Revoked or expired Magic Link invite `jti` claims are rejected with
 //!      HTTP 401 Unauthorized.
-//! 3. `Authenticated GM Invite Minting & 32-Byte Secret Enforcement`:
-//!    - `POST /api/v1/auth/invites` requires an authenticated `GameMaster` of
-//!      the target `campaign_id` and verifies the HS256 signing key is at least
-//!      32 bytes (`MIN_JWT_SECRET_BYTES`).
+//! 3. `Single Invite Minting Route`:
+//!    - Invites are minted only by `POST /api/v1/campaigns/{id}/invites`
+//!      (`http.rs`), which requires the campaign `GameMaster` and a signing key
+//!      of at least 32 bytes (`MIN_JWT_SECRET_BYTES`). This router mints none.
 //! 4. `TOTP MFA Enforcement on Password Login`:
 //!    - When a user has `mfa_enabled` or a configured `totp_secret`,
 //!      `login_handler` verifies the submitted 6-digit RFC 6238 `totp_code`
@@ -28,7 +28,7 @@
 //!      or invalid.
 //! ============================================================================
 
-use super::magic_link::{MagicLinkClaims, MagicLinkError, MagicLinkService, now_epoch_seconds};
+use super::magic_link::{MagicLinkError, MagicLinkService, now_epoch_seconds};
 pub use super::oauth::{OAuthError, OAuthProvider, OAuthStore, PendingOAuthState};
 pub use super::password::IdentityStore;
 use super::password::{
@@ -38,6 +38,7 @@ pub use super::pat::{
     PatError, PatMiddleware, PatRecord, PatStore, create_pat_handler, list_pats_handler,
 };
 use super::totp::{TotpService, totp_enable_handler, totp_setup_handler, totp_verify_handler};
+use crate::security::{SecurityPolicy, auth_rate_limit_middleware};
 use crate::storage::blob::Sha256Hasher;
 use axum::Router;
 use axum::extract::State;
@@ -658,10 +659,12 @@ pub fn hash_session_token(token: &str) -> String {
     Sha256Hasher::digest(token.as_bytes())
 }
 
-/// Constructs the Set-Cookie header value for `trame_session`.
-pub fn build_session_cookie_header(token: &str, ttl_seconds: u64) -> String {
+/// Constructs the Set-Cookie header value for `trame_session`. `secure` adds the `Secure`
+/// attribute (`TRAME_COOKIE_SECURE`, on by default; disable only for plain-HTTP LAN tables).
+pub fn build_session_cookie_header(token: &str, ttl_seconds: u64, secure: bool) -> String {
+    let secure_attr = if secure { " Secure;" } else { "" };
     format!(
-        "{SESSION_COOKIE_NAME}={token}; Path=/; Max-Age={ttl_seconds}; HttpOnly; Secure; SameSite=Lax"
+        "{SESSION_COOKIE_NAME}={token}; Path=/; Max-Age={ttl_seconds}; HttpOnly;{secure_attr} SameSite=Lax"
     )
 }
 
@@ -671,6 +674,44 @@ pub struct AuthState {
     pub magic_link_service: Arc<MagicLinkService>,
     pub session_store: Arc<dyn FullAuthStore>,
     pub totp_service: Arc<TotpService>,
+    /// Cookie, origin, WebSocket, and rate-limit policy.
+    pub security: Arc<SecurityPolicy>,
+}
+
+impl AuthState {
+    /// Builds auth state with the default (development) `SecurityPolicy`.
+    pub fn new(
+        magic_link_service: Arc<MagicLinkService>,
+        session_store: Arc<dyn FullAuthStore>,
+        totp_service: Arc<TotpService>,
+    ) -> Self {
+        Self::with_security(
+            magic_link_service,
+            session_store,
+            totp_service,
+            Arc::new(SecurityPolicy::default()),
+        )
+    }
+
+    /// Builds auth state with an explicit `SecurityPolicy`.
+    pub fn with_security(
+        magic_link_service: Arc<MagicLinkService>,
+        session_store: Arc<dyn FullAuthStore>,
+        totp_service: Arc<TotpService>,
+        security: Arc<SecurityPolicy>,
+    ) -> Self {
+        Self {
+            magic_link_service,
+            session_store,
+            totp_service,
+            security,
+        }
+    }
+
+    /// Session cookie header honoring `security.cookie_secure`.
+    pub fn session_cookie(&self, token: &str, ttl_seconds: u64) -> String {
+        build_session_cookie_header(token, ttl_seconds, self.security.cookie_secure)
+    }
 }
 
 /// User summary returned by `/register`, `/login`, `/me`, and `/magic-link/redeem`.
@@ -836,7 +877,7 @@ pub async fn register_handler(
     let user = UserRecord {
         id: Uuid::new_v4(),
         username: display_name,
-        role: "GM".to_string(),
+        role: "PLAYER".to_string(),
         is_guest: false,
         created_at: now_epoch_seconds(),
         email: Some(email),
@@ -874,7 +915,7 @@ pub async fn register_handler(
             .into_response();
     }
 
-    let cookie_val = build_session_cookie_header(&session_token, DEFAULT_SESSION_TTL_SECONDS);
+    let cookie_val = state.session_cookie(&session_token, DEFAULT_SESSION_TTL_SECONDS);
     let mut headers = HeaderMap::new();
     if let Ok(val) = HeaderValue::from_str(&cookie_val) {
         headers.insert(SET_COOKIE, val);
@@ -1001,7 +1042,7 @@ pub async fn login_handler(
             .into_response();
     }
 
-    let cookie_val = build_session_cookie_header(&session_token, DEFAULT_SESSION_TTL_SECONDS);
+    let cookie_val = state.session_cookie(&session_token, DEFAULT_SESSION_TTL_SECONDS);
     let mut headers = HeaderMap::new();
     if let Ok(val) = HeaderValue::from_str(&cookie_val) {
         headers.insert(SET_COOKIE, val);
@@ -1027,7 +1068,7 @@ pub async fn logout_handler(State(state): State<AuthState>, headers: HeaderMap) 
         let _ = state.session_store.delete_session(&token_hash).await;
     }
 
-    let cookie_val = build_session_cookie_header("", 0);
+    let cookie_val = state.session_cookie("", 0);
     let mut resp_headers = HeaderMap::new();
     if let Ok(val) = HeaderValue::from_str(&cookie_val) {
         resp_headers.insert(SET_COOKIE, val);
@@ -1244,7 +1285,7 @@ pub async fn magic_link_login_handler(
         }
     };
 
-    let cookie_val = build_session_cookie_header(&session_token, DEFAULT_SESSION_TTL_SECONDS);
+    let cookie_val = state.session_cookie(&session_token, DEFAULT_SESSION_TTL_SECONDS);
     let mut headers = HeaderMap::new();
     if let Ok(val) = HeaderValue::from_str(&cookie_val) {
         headers.insert(SET_COOKIE, val);
@@ -1264,147 +1305,31 @@ pub async fn magic_link_login_handler(
     (StatusCode::OK, headers, Json(resp)).into_response()
 }
 
-/// Request payload for GM/Admin creating an invite link.
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub struct CreateInviteLinkRequest {
-    pub campaign_id: Uuid,
-    pub character_id: Option<Uuid>,
-    pub role: Option<String>,
-    pub ttl_seconds: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_seconds: Option<u64>,
-}
-
-/// Response payload returning the minted JWT invite token.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateInviteLinkResponse {
-    pub invite_url: String,
-    pub token: String,
-    pub claims: MagicLinkClaims,
-}
-
-fn is_gm_role_str(role: &str) -> bool {
-    matches!(
-        role.trim().to_uppercase().as_str(),
-        "GM" | "GAME_MASTER" | "GAMEMASTER"
-    )
-}
-
-/// Handler for creating invite links (requires authenticated `GameMaster` of `campaign_id` and >= 32-byte JWT secret).
-pub async fn create_invite_link_handler(
-    State(state): State<AuthState>,
-    headers: HeaderMap,
-    Json(payload): Json<CreateInviteLinkRequest>,
-) -> Response {
-    if let Err(err) = state.magic_link_service.validate_secret() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(AuthErrorResponse {
-                code: Some("WEAK_JWT_SECRET".to_string()),
-                error: err.to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    let caller = match authenticate_user_from_headers(&state, &headers).await {
-        Ok(u) => u,
-        Err((status, err)) => return (status, Json(err)).into_response(),
-    };
-
-    match state
-        .session_store
-        .get_campaign_member(payload.campaign_id, caller.id)
-        .await
-    {
-        Ok(Some(member)) if is_gm_role_str(&member.role) => {}
-        Ok(Some(_)) => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(AuthErrorResponse {
-                    code: Some("FORBIDDEN".to_string()),
-                    error: "only the campaign Game Master can mint invite links".to_string(),
-                }),
-            )
-                .into_response();
-        }
-        Ok(None) => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(AuthErrorResponse {
-                    code: Some("FORBIDDEN".to_string()),
-                    error: "caller is not a Game Master of the target campaign".to_string(),
-                }),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(AuthErrorResponse {
-                    code: Some("STORAGE_ERROR".to_string()),
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
-        }
-    }
-
-    let role = payload.role.unwrap_or_else(|| "PLAYER".to_string());
-    let ttl = payload
-        .duration_seconds
-        .or(payload.ttl_seconds)
-        .unwrap_or(DEFAULT_SESSION_TTL_SECONDS);
-
-    match state.magic_link_service.create_invite_token(
-        caller.id,
-        payload.campaign_id,
-        payload.character_id,
-        &role,
-        ttl,
-    ) {
-        Ok((token, claims)) => (
-            StatusCode::OK,
-            Json(CreateInviteLinkResponse {
-                invite_url: format!("/lobby?invite={token}"),
-                token,
-                claims,
-            }),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(AuthErrorResponse {
-                code: Some("INVITE_ERROR".to_string()),
-                error: err.to_string(),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-/// Builds the Axum router for authentication endpoints.
+/// Builds the Axum router for authentication endpoints. Credential endpoints (`login`,
+/// `register`, `totp/*`, `magic-link*`) sit behind `auth_rate_limit_middleware`. Invite
+/// minting lives only at `POST /api/v1/campaigns/{id}/invites` (`http.rs`).
 pub fn build_auth_router(state: AuthState) -> Router {
-    Router::new()
+    let rate_limited = Router::new()
         .route("/api/v1/auth/register", post(register_handler))
         .route("/api/v1/auth/login", post(login_handler))
-        .route("/api/v1/auth/logout", post(logout_handler))
-        .route("/api/v1/auth/me", get(me_handler))
         .route("/api/v1/auth/magic-link", post(magic_link_login_handler))
         .route(
             "/api/v1/auth/magic-link/redeem",
             post(magic_link_login_handler),
         )
-        .route("/api/v1/auth/invites", post(create_invite_link_handler))
-        .route(
-            "/api/v1/auth/magic-link/mint",
-            post(create_invite_link_handler),
-        )
-        .route("/api/v1/auth/bind", post(bind_account_handler))
-        .route("/api/v1/auth/bind-account", post(bind_account_handler))
         .route("/api/v1/auth/totp/setup", post(totp_setup_handler))
         .route("/api/v1/auth/totp/enable", post(totp_enable_handler))
         .route("/api/v1/auth/totp/verify", post(totp_verify_handler))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_rate_limit_middleware,
+        ));
+
+    Router::new()
+        .route("/api/v1/auth/logout", post(logout_handler))
+        .route("/api/v1/auth/me", get(me_handler))
+        .route("/api/v1/auth/bind", post(bind_account_handler))
+        .route("/api/v1/auth/bind-account", post(bind_account_handler))
         .route(
             "/api/v1/auth/pat",
             post(create_pat_handler).get(list_pats_handler),
@@ -1413,5 +1338,6 @@ pub fn build_auth_router(state: AuthState) -> Router {
             "/api/v1/auth/pats",
             post(create_pat_handler).get(list_pats_handler),
         )
+        .merge(rate_limited)
         .with_state(state)
 }

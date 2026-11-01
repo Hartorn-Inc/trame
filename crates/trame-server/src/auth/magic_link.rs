@@ -1,10 +1,11 @@
 //! Magic link JWT generation and validation using HS256 signatures.
 
 use super::session::SessionStore;
-use crate::storage::blob::Sha256Hasher;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use uuid::Uuid;
@@ -161,13 +162,12 @@ impl MagicLinkService {
         let signature_b64 = parts[2];
 
         let signing_input = format!("{header_b64}.{payload_b64}");
-        let expected_signature = hmac_sha256(&self.jwt_secret, signing_input.as_bytes());
 
         let signature = URL_SAFE_NO_PAD
             .decode(signature_b64)
             .map_err(|_| MagicLinkError::Base64DecodeError)?;
 
-        if !constant_time_eq(&signature, &expected_signature) {
+        if !verify_hmac_sha256(&self.jwt_secret, signing_input.as_bytes(), &signature) {
             return Err(MagicLinkError::InvalidSignature);
         }
 
@@ -200,34 +200,28 @@ impl MagicLinkService {
     }
 }
 
-/// Computes RFC 2104 HMAC-SHA256 using `Sha256Hasher`.
+/// Computes RFC 2104 HMAC-SHA256 with the RustCrypto `hmac` crate.
 pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
-    let mut key_block = [0u8; 64];
-    if key.len() > 64 {
-        let mut h = Sha256Hasher::new();
-        h.update(key);
-        let digest = h.finalize();
-        key_block[..32].copy_from_slice(&digest);
-    } else {
-        key_block[..key.len()].copy_from_slice(key);
+    let mut mac = new_hmac(key);
+    mac.update(message);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(mac.finalize().into_bytes().as_slice());
+    out
+}
+
+/// Verifies an HMAC-SHA256 tag in constant time (`Mac::verify_slice`).
+pub fn verify_hmac_sha256(key: &[u8], message: &[u8], tag: &[u8]) -> bool {
+    let mut mac = new_hmac(key);
+    mac.update(message);
+    mac.verify_slice(tag).is_ok()
+}
+
+fn new_hmac(key: &[u8]) -> Hmac<Sha256> {
+    // HMAC accepts keys of any length (long keys are pre-hashed), so this never fails.
+    match <Hmac<Sha256> as KeyInit>::new_from_slice(key) {
+        Ok(mac) => mac,
+        Err(_) => unreachable!("HMAC-SHA256 accepts keys of any length"),
     }
-
-    let mut o_key_pad = [0u8; 64];
-    let mut i_key_pad = [0u8; 64];
-    for i in 0..64 {
-        o_key_pad[i] = key_block[i] ^ 0x5c;
-        i_key_pad[i] = key_block[i] ^ 0x36;
-    }
-
-    let mut inner_hasher = Sha256Hasher::new();
-    inner_hasher.update(&i_key_pad);
-    inner_hasher.update(message);
-    let inner_digest = inner_hasher.finalize();
-
-    let mut outer_hasher = Sha256Hasher::new();
-    outer_hasher.update(&o_key_pad);
-    outer_hasher.update(&inner_digest);
-    outer_hasher.finalize()
 }
 
 /// Constant-time slice equality comparison to prevent timing attacks.

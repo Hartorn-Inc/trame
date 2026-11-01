@@ -295,7 +295,7 @@ pub async fn get_campaign_maps_handler(
     Path(campaign_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
-    let user_id = match crate::http::resolve_authenticated_user(&state, &headers, None).await {
+    let user_id = match crate::http::resolve_authenticated_user(&state, &headers).await {
         Ok(uid) => uid,
         Err(status) => {
             return (
@@ -348,7 +348,7 @@ pub async fn put_campaign_maps_handler(
     headers: HeaderMap,
     Json(payload): Json<PutCampaignMapsPayload>,
 ) -> Response {
-    let user_id = match crate::http::resolve_authenticated_user(&state, &headers, None).await {
+    let user_id = match crate::http::resolve_authenticated_user(&state, &headers).await {
         Ok(uid) => uid,
         Err(status) => {
             return (

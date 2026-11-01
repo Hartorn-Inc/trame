@@ -157,7 +157,7 @@ async fn authenticate_mcp_caller(
         }
     }
 
-    let user_id = resolve_authenticated_user(state, headers, None).await?;
+    let user_id = resolve_authenticated_user(state, headers).await?;
     Ok(McpCaller {
         user_id,
         scoped_campaign_id: None,
