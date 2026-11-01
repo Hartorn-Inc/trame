@@ -21,7 +21,12 @@
  *    - Player secrecy (monster HP/AC, GM-hidden tokens, secret doors, GM
  *      notes) is asserted on the decoded socket frames and REST payloads the
  *      player received, not only on what the UI rendered.
- * 3. `Synchronized Recordings`:
+ * 3. `Production Hardening Observed From The Browser`:
+ *    - Every `securitypolicyviolation` and CSP console message in either
+ *      context fails the run, as do brand font faces that are not `loaded`
+ *      or font decode errors; index.html must carry the app CSP while API
+ *      responses keep the strict one.
+ * 4. `Synchronized Recordings`:
  *    - Both contexts are created and closed together, so `gm.webm` and
  *      `player.webm` share one timeline for the side-by-side video.
  *
@@ -30,8 +35,9 @@
  * GM signs up -> campaign -> invite -> player redeems -> characters (both)
  * -> sheet edit + version conflict -> UVTT import + background + secret door
  * + hidden goblin -> activate -> tokens -> projection checks -> combat ->
- * movement / opportunity attack -> damage, undo, heal -> dice (WS + REST)
- * -> documents + handout -> videos saved under `artifacts/`.
+ * player reload (initiative after reconnect) -> movement / opportunity
+ * attack -> damage, undo, heal -> dice (WS + REST) -> documents + handout
+ * -> fonts + CSP checks -> videos saved under `artifacts/`.
  * ============================================================================
  */
 import { expect, test, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
@@ -109,13 +115,27 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
   const gmFrames = recordRoomFrames(gm);
   const plFrames = recordRoomFrames(pl);
   const consoleLog: string[] = [];
+  const cspViolations: string[] = [];
+  const fontErrors: string[] = [];
+  for (const ctx of [gmCtx, plCtx]) {
+    await ctx.addInitScript(() => {
+      document.addEventListener('securitypolicyviolation', (e) => {
+        console.error(`[e2e-csp] ${e.violatedDirective} blocked ${e.blockedURI || '(inline)'} at ${e.sourceFile}:${e.lineNumber}`);
+      });
+    });
+  }
   for (const [who, page] of Object.entries(both)) {
     page.on('pageerror', (err) => consoleLog.push(`[${who}] pageerror ${err.message}`));
     page.on('console', (msg) => {
-      if (msg.type() === 'error' || msg.type() === 'warning') consoleLog.push(`[${who}] ${msg.type()} ${msg.text()}`);
+      const text = msg.text();
+      if (msg.type() === 'error' || msg.type() === 'warning') consoleLog.push(`[${who}] ${msg.type()} ${text}`);
+      if (/\[e2e-csp\]|Content Security Policy|Refused to (load|execute|apply|connect|compile)/.test(text)) cspViolations.push(`[${who}] ${text}`);
+      if (/OTS parsing error|Failed to decode downloaded font/.test(text)) fontErrors.push(`[${who}] ${text}`);
     });
-    page.on('response', (res) => {
-      if (res.url().includes('/api/') && res.status() >= 400) consoleLog.push(`[${who}] HTTP ${res.status()} ${res.request().method()} ${res.url()}`);
+    page.on('response', async (res) => {
+      if (!res.url().includes('/api/') || res.status() < 400) return;
+      const body = res.status() >= 500 ? ` ${(await res.text().catch(() => '')).slice(0, 300)}` : '';
+      consoleLog.push(`[${who}] HTTP ${res.status()} ${res.request().method()} ${res.url()}${body}`);
     });
   }
 
@@ -158,7 +178,21 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
       .toBe(200);
     const root = await gm.request.get('/');
     expect(root.status()).toBe(200);
-    expect(await root.text()).toContain('<div id="app"');
+    const html = await root.text();
+    expect(html).toContain('<div id="app"');
+    const appCsp = root.headers()['content-security-policy'] ?? '';
+    expect(appCsp, 'index.html carries the app CSP').toContain("script-src 'self'");
+    const bundle = /\/assets\/[^"]+\.js/.exec(html)?.[0];
+    expect(bundle, 'index.html references a hashed bundle').toBeTruthy();
+    const js = await gm.request.get(bundle!);
+    expect(js.status()).toBe(200);
+    expect(js.headers()['content-type']).toMatch(/javascript/);
+    const api = await gm.request.get('/api/v1/auth/me');
+    expect(api.status()).toBe(401);
+    const apiCsp = api.headers()['content-security-policy'] ?? '';
+    expect(apiCsp, 'API responses keep the strict CSP').toContain("default-src 'none'");
+    expect(apiCsp).not.toContain('script-src');
+    return `bundle ${bundle} served by trame-server; app CSP: ${appCsp}`;
   });
 
   await phase('GM signs up through the auth screen', async () => {
@@ -426,9 +460,23 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     }
     await expect(gm.getByTestId('combat-active')).toContainText(PC_NAME);
     await expect(pl.getByTestId('combat-active')).toContainText(PC_NAME);
+    await expect(pl.getByTestId(`initiative-value-${pcTokenId}`), 'player sees the GM-set initiative total live').toHaveText('25');
+    await expect(pl.getByTestId(`initiative-value-${monsterTokenId}`)).toHaveText('2');
     await shot(both, 'combat-pc-turn');
-    await expect(pl.getByTestId(`initiative-value-${pcTokenId}`), 'player sees the GM-set initiative total').toHaveText('25');
     return (await gm.getByTestId('combat-round').innerText()).trim();
+  });
+
+  await phase('Player reloads mid-combat; initiative totals survive the reconnect', async () => {
+    await pl.reload();
+    const open = pl.getByTestId(`lobby-open-${campaignId}`);
+    await expect(pl.getByTestId('campaign-workspace').or(open)).toBeVisible();
+    if (await open.isVisible()) await open.click();
+    await expect(pl.getByTestId('campaign-workspace')).toBeVisible();
+    await openTab(pl, 'table');
+    await expect(pl.getByTestId('combat-active')).toContainText(PC_NAME);
+    await expect(pl.getByTestId(`initiative-value-${pcTokenId}`), 'GM-set total after reconnect').toHaveText('25');
+    await expect(pl.getByTestId(`initiative-value-${monsterTokenId}`)).toHaveText('2');
+    await shot({ player: pl }, 'player-reloaded-combat');
   });
 
   await phase('Player moves away from the monster; opportunity attack prompt', async () => {
@@ -614,8 +662,31 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await shot(both, 'final');
   });
 
+  await phase('Brand fonts load in both browsers', async () => {
+    const summaries: string[] = [];
+    for (const [who, page] of Object.entries(both)) {
+      const faces = await page.evaluate(async () => {
+        await document.fonts.ready;
+        return [...document.fonts].map((f) => ({ family: f.family.replace(/"/g, ''), weight: f.weight, status: f.status }));
+      });
+      for (const family of ['Space Grotesk', 'IBM Plex Sans']) {
+        expect(faces.some((f) => f.family === family && f.status === 'loaded'), `${who}: ${family} loaded`).toBe(true);
+      }
+      expect(faces.filter((f) => f.status === 'error'), `${who}: no font face failed`).toEqual([]);
+      summaries.push(`${who}: ${faces.filter((f) => f.status === 'loaded').map((f) => `${f.family} ${f.weight}`).join(', ')}`);
+    }
+    expect(fontErrors, 'no font decode errors').toEqual([]);
+    return summaries.join(' | ');
+  });
+
+  await phase('No CSP violations in either browser', async () => {
+    expect(cspViolations).toEqual([]);
+    return `${cspViolations.length} violations`;
+  });
+
   await gm.waitForTimeout(1000);
   writeFileSync(join(ARTIFACTS, 'console.log'), consoleLog.join('\n'));
+  writeFileSync(join(ARTIFACTS, 'csp-violations.log'), cspViolations.join('\n'));
   writeFileSync(join(ARTIFACTS, 'frames-player.json'), JSON.stringify(plFrames.map((f: RecordedFrame) => f.tag)));
   writeFileSync(join(ARTIFACTS, 'phases.json'), JSON.stringify({ results, notes }, null, 2));
   await gmCtx.close();

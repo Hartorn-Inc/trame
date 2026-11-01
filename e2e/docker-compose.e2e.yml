@@ -1,26 +1,16 @@
 # Browser E2E overlay for deploy/compose/docker-compose.prod.yml (see `make e2e`).
-# `spa-proxy` serves the SPA extracted from the production image (e2e/static)
-# and forwards API/WebSocket traffic to trame-server; see e2e/spa-proxy.conf
-# for why. The Playwright container joins the proxy's network namespace, so the
-# browser reaches the stack at http://localhost:8080 (a secure context that
-# matches TRAME_PUBLIC_ORIGIN for the WebSocket Origin check).
+# The Playwright container joins the server's network namespace, so the browser
+# reaches the production image (which serves the SPA from TRAME_STATIC_DIR) at
+# http://localhost:8080, a secure context that matches TRAME_PUBLIC_ORIGIN for
+# the WebSocket Origin check.
 services:
-  spa-proxy:
-    image: nginx:1.30.6-alpine-slim
-    profiles: ["e2e"]
-    depends_on:
-      - trame-server
-    volumes:
-      - ./e2e/spa-proxy.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./e2e/static:/usr/share/nginx/html:ro
-
   playwright:
     image: mcr.microsoft.com/playwright:v1.64.1-noble
     profiles: ["e2e"]
-    network_mode: "service:spa-proxy"
+    network_mode: "service:trame-server"
     ipc: host
     depends_on:
-      - spa-proxy
+      - trame-server
     working_dir: /e2e
     environment:
       E2E_BASE_URL: http://localhost:8080
