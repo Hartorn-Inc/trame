@@ -84,7 +84,7 @@ export const DND5E_SHEET_LAYOUT: SheetLayoutTree = {
             },
             options: {
               label: "Hit Points",
-              color: "#e53e3e",
+              color: "var(--atlas-action)",
             },
           },
           {
@@ -228,6 +228,7 @@ export const DND5E_SHEET_LAYOUT: SheetLayoutTree = {
                         bindings: {
                           items: "sheet.items",
                           currency: "sheet.currency",
+                          strength: "sheet.abilities.str",
                         },
                       },
                     ],
