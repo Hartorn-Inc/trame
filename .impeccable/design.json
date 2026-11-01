@@ -1,0 +1,163 @@
+{
+  "$schema": "https://impeccable.style/schemas/design-v2.json",
+  "schemaVersion": "2.0",
+  "name": "TRAME",
+  "description": "System-agnostic virtual tabletop with a sober cartographic visual identity (ATLAS v1.1)",
+  "colors": {
+    "navy": "#0F1A25",
+    "slate": "#182736",
+    "raised": "#203243",
+    "parchment": "#F4F7F9",
+    "surface-light": "#FFFFFF",
+    "raised-light": "#E8EFF3",
+    "dark-text": "#F1F4F3",
+    "dark-text-muted": "#B8C7D1",
+    "light-text": "#1C3041",
+    "light-text-muted": "#465D6D",
+    "dark-border": "#405466",
+    "light-border": "#ACBFCB",
+    "amber": "#F3BB71",
+    "amber-deep": "#995817",
+    "on-amber-dark": "#172535",
+    "on-amber-light": "#FFFFFF",
+    "cyan-focus": "#80CBE2",
+    "cyan-focus-light": "#155D77",
+    "danger-dark": "#E0827D",
+    "danger-light": "#A3333B"
+  },
+  "typography": {
+    "display": {
+      "font": "Space Grotesk, sans-serif",
+      "size": "28px",
+      "weight": "600",
+      "lineHeight": "1.15",
+      "letterSpacing": "-0.02em"
+    },
+    "headline": {
+      "font": "Space Grotesk, sans-serif",
+      "size": "20px",
+      "weight": "600",
+      "lineHeight": "1.2",
+      "letterSpacing": "-0.015em"
+    },
+    "body": {
+      "font": "IBM Plex Sans, sans-serif",
+      "size": "16px",
+      "weight": "400",
+      "lineHeight": "1.5"
+    },
+    "label": {
+      "font": "IBM Plex Sans, sans-serif",
+      "size": "14px",
+      "weight": "500",
+      "lineHeight": "1.45"
+    }
+  },
+  "rounded": {
+    "sm": "4px",
+    "md": "6px",
+    "lg": "8px"
+  },
+  "spacing": {
+    "xs": "4px",
+    "sm": "8px",
+    "md": "16px",
+    "lg": "24px",
+    "xl": "32px"
+  },
+  "components": [
+    {
+      "id": "button-primary",
+      "name": "Primary Action Button",
+      "html": "<button type=\"button\" class=\"ds-btn ds-btn-primary\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 12h14M13 6l6 6-6 6\"/></svg><span>Launch Session</span></button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 16px; border-radius: 4px; font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; font-weight: 500; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; } .ds-btn-primary { background: var(--atlas-action); color: var(--atlas-on-action); border: 1px solid transparent; } .ds-btn:focus-visible { outline: 2px solid var(--atlas-focus); outline-offset: 2px; }"
+    },
+    {
+      "id": "button-secondary",
+      "name": "Secondary Control Button",
+      "html": "<button type=\"button\" class=\"ds-btn ds-btn-secondary\" aria-pressed=\"false\"><span>Lock Sheet</span></button>",
+      "css": ".ds-btn-secondary { background: var(--atlas-surface-raised); color: var(--atlas-text); border: 1px solid var(--atlas-border); } .ds-btn-secondary:focus-visible { outline: 2px solid var(--atlas-focus); outline-offset: 2px; }"
+    },
+    {
+      "id": "input-field",
+      "name": "Labeled Tactical Input",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">Campaign Title</span><input class=\"ds-input\" type=\"text\" value=\"The Sunless Citadel\" /></label>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 4px; } .ds-field-label { font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; font-weight: 500; color: var(--atlas-text); } .ds-input { min-height: 40px; padding: 8px 12px; border-radius: 6px; background: var(--atlas-surface-raised); color: var(--atlas-text); border: 1px solid var(--atlas-border); font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; } .ds-input:focus-visible { outline: 2px solid var(--atlas-focus); outline-offset: 2px; }"
+    },
+    {
+      "id": "panel-surface",
+      "name": "Flat Structural Panel",
+      "html": "<section class=\"ds-panel\" aria-label=\"Combat Tracker\"><header class=\"ds-panel-header\"><h2 class=\"ds-panel-title\">Initiative</h2><span class=\"atlas-tabular-nums\">Round 3</span></header></section>",
+      "css": ".ds-panel { background: var(--atlas-surface); color: var(--atlas-text); border: 1px solid var(--atlas-border); border-radius: 8px; padding: 16px; } .ds-panel-header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--atlas-border); padding-bottom: 8px; } .ds-panel-title { font-family: 'Space Grotesk', sans-serif; font-size: 16px; font-weight: 600; margin: 0; } .atlas-tabular-nums { font-variant-numeric: tabular-nums; }"
+    }
+  ],
+  "colorMeta": {
+    "slateRamp": ["#0A121A", "#0F1A25", "#182736", "#203243", "#2D4357", "#405466", "#7A91A3", "#B8C7D1"],
+    "parchmentRamp": ["#1C3041", "#2F4657", "#465D6D", "#7890A0", "#ACBFCB", "#D6E2E9", "#E8EFF3", "#F4F7F9"],
+    "amberRamp": ["#5E3309", "#7B4510", "#995817", "#C2782C", "#DF994B", "#F3BB71", "#F8D29D", "#FCE8CA"],
+    "cyanFocusRamp": ["#0D3B4D", "#155D77", "#1F7EA0", "#3B9EC0", "#5DB6D4", "#80CBE2", "#AEE0EF", "#D9F2F9"],
+    "dangerRamp": ["#631B20", "#82262C", "#A3333B", "#BE5259", "#D57973", "#E39D98", "#F0C2BF", "#F9E5E3"]
+  },
+  "typographyMeta": {
+    "fontFamilies": {
+      "display": "'Space Grotesk', system-ui, -apple-system, sans-serif",
+      "sans": "'IBM Plex Sans', system-ui, -apple-system, sans-serif"
+    },
+    "numericVariant": "tabular-nums",
+    "selfHostedWoff2": true
+  },
+  "shadows": {
+    "none": "none",
+    "overlay": "0 10px 30px var(--atlas-shadow)"
+  },
+  "motion": {
+    "fast": "120ms cubic-bezier(0.2, 0, 0, 1)",
+    "normal": "180ms cubic-bezier(0.2, 0, 0, 1)",
+    "reducedMotion": "0.01ms"
+  },
+  "breakpoints": {
+    "mobile": "390px",
+    "tablet": "768px",
+    "desktop": "1440px"
+  },
+  "extensions": {
+    "colorMeta": {
+      "slateRamp": ["#0A121A", "#0F1A25", "#182736", "#203243", "#2D4357", "#405466", "#7A91A3", "#B8C7D1"],
+      "parchmentRamp": ["#1C3041", "#2F4657", "#465D6D", "#7890A0", "#ACBFCB", "#D6E2E9", "#E8EFF3", "#F4F7F9"],
+      "amberRamp": ["#5E3309", "#7B4510", "#995817", "#C2782C", "#DF994B", "#F3BB71", "#F8D29D", "#FCE8CA"],
+      "cyanFocusRamp": ["#0D3B4D", "#155D77", "#1F7EA0", "#3B9EC0", "#5DB6D4", "#80CBE2", "#AEE0EF", "#D9F2F9"],
+      "dangerRamp": ["#631B20", "#82262C", "#A3333B", "#BE5259", "#D57973", "#E39D98", "#F0C2BF", "#F9E5E3"]
+    },
+    "typographyMeta": {
+      "fontFamilies": {
+        "display": "'Space Grotesk', system-ui, -apple-system, sans-serif",
+        "sans": "'IBM Plex Sans', system-ui, -apple-system, sans-serif"
+      },
+      "numericVariant": "tabular-nums",
+      "selfHostedWoff2": true
+    },
+    "shadows": {
+      "none": "none",
+      "overlay": "0 10px 30px var(--atlas-shadow)"
+    },
+    "motion": {
+      "fast": "120ms cubic-bezier(0.2, 0, 0, 1)",
+      "normal": "180ms cubic-bezier(0.2, 0, 0, 1)",
+      "reducedMotion": "0.01ms"
+    },
+    "breakpoints": {
+      "mobile": "390px",
+      "tablet": "768px",
+      "desktop": "1440px"
+    }
+  },
+  "narrative": {
+    "northStar": "The Map Is the Workspace: sober cartographic precision that recedes behind any battlemap art.",
+    "invariants": [
+      "The Map-Art Independence Rule: Never apply CSS theme filters to uploaded battlemap textures.",
+      "The Single-Signal Amber Rule: Reserve --atlas-action for primary CTA, active tool, active turn, and unlocked PadlockEditMode.",
+      "The Non-Color Redundancy Rule: Pair every tactical disposition and wall kind with a distinct geometric shape or dash pattern.",
+      "The Flat-By-Default Rule: Use 1px solid --atlas-border for panels; reserve shadows strictly for floating canvas overlays."
+    ]
+  }
+}
