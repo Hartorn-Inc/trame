@@ -5,10 +5,10 @@
  *
  * PURPOSE:
  * -----
- * Slide-in drawers over the table canvas: the selected actor's sheet
- * (`CharacterSheetHeader` + the 12-widget `DeclarativeSheetView`) and the
+ * Slide-in drawers over the workspace: the selected actor's sheet
+ * (`ActorSheetPanel`: header + the 12-widget sheet) and the
  * `CompendiumDrawer`. A token click selects the actor; the drawer then shows
- * the stored sheet for that actor without leaving the table.
+ * the stored sheet for that actor without leaving the current tab.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
@@ -27,22 +27,19 @@
  */
 import { h, type VNode } from 'preact';
 import { signal } from '@preact/signals';
-import type { Dnd5eActorData } from '../../../game-systems/dnd5e/src/index.ts';
 import { apiClient, type ApiClient } from '../api/client.ts';
 import { selectedActorIdSignal } from '../api/session.ts';
-import { DeclarativeSheetView } from '../sheet/DeclarativeSheetView.tsx';
-import { createSheetCommandDispatcher, restDiceRollService } from '../sheet/sheetPersistence.ts';
-import { sheetViewState } from '../sheet/sheetViewState.ts';
+import { ActorSheetPanel } from '../sheet/ActorSheetPanel.tsx';
+import { createSheetCommandDispatcher } from '../sheet/sheetPersistence.ts';
 import { CompendiumDrawer, type CompendiumEntry } from '../compendium/CompendiumDrawer.tsx';
-import { CharacterSheetHeader } from '../components/character-sheet/CharacterSheetHeader.tsx';
 import { t } from '../i18n/index.ts';
+
+export { coreStatsLockedSignal } from '../sheet/ActorSheetPanel.tsx';
 
 /** `true` while the sheet drawer is open. */
 export const isSheetDrawerOpenSignal = signal<boolean>(false);
 /** `true` while the compendium drawer is open. */
 export const isCompendiumDrawerOpenSignal = signal<boolean>(false);
-/** Padlock state of the sheet's core stats (`true` = play mode). */
-export const coreStatsLockedSignal = signal<boolean>(true);
 
 export interface HudDrawersProps {
   campaignId: string;
@@ -61,8 +58,6 @@ export interface HudDrawersProps {
 export function HudDrawers(props: HudDrawersProps): VNode<any> {
   const client = props.client ?? apiClient;
   const actorId = props.actorId === undefined ? selectedActorIdSignal.value : props.actorId;
-  const record = actorId ? client.state.actors.value[actorId] : undefined;
-  const actor = record?.data as Dnd5eActorData | undefined;
 
   const closeSheet = () => {
     isSheetDrawerOpenSignal.value = false;
@@ -107,36 +102,15 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
               t('action.close'),
             ),
           ),
-          actor && actorId
-            ? [
-                h(CharacterSheetHeader, {
-                  key: 'header',
-                  actor,
-                  actorId,
-                  client,
-                  campaignId: props.campaignId,
-                  context: 'hud_drawer',
-                  diceRollService: restDiceRollService(client, props.campaignId),
-                  coreStatsLocked: coreStatsLockedSignal.value,
-                  onToggleCoreStatsLocked: (locked: boolean) => {
-                    coreStatsLockedSignal.value = locked;
-                  },
-                }),
-                h(DeclarativeSheetView, {
-                  key: 'sheet',
-                  actorState: sheetViewState(actor),
-                  actorId,
-                  gm_core_locked: props.gm_core_locked,
-                  coreStatsLocked: coreStatsLockedSignal.value,
-                  onToggleCoreStatsLocked: () => {
-                    coreStatsLockedSignal.value = !coreStatsLockedSignal.value;
-                  },
-                  dispatchCommand,
-                  onCloseDrawer: closeSheet,
-                  isTableCanvasMounted: props.isTableCanvasMounted,
-                }),
-              ]
-            : h('p', { class: 'ds-hint', 'data-testid': 'hud-no-sheet' }, t('hud.noSheet')),
+          h(ActorSheetPanel, {
+            campaignId: props.campaignId,
+            client,
+            actorId: actorId ?? null,
+            context: 'hud_drawer',
+            gmCoreLocked: props.gm_core_locked,
+            isTableCanvasMounted: props.isTableCanvasMounted,
+            onClose: closeSheet,
+          }),
         )
       : null,
     h(CompendiumDrawer, {

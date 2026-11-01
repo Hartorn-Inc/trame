@@ -42,7 +42,7 @@ import { selectedActorIdSignal, selectedTokenIdSignal } from '../api/session.ts'
 import type { Uuid, WirePoint2D } from '../api/wire.ts';
 import { t } from '../i18n/index.ts';
 import { moveToken } from './commands.ts';
-import { listTableTokens, snapToCell, type TableToken } from './tableView.ts';
+import { assetHashFromKey, listTableTokens, snapToCell, type TableToken } from './tableView.ts';
 
 /** Board size, in cells, used before a scene with dimensions is active. */
 const FALLBACK_BOARD_CELLS = 20;
@@ -95,7 +95,7 @@ export function TableCanvas({ campaignId, client }: TableCanvasProps) {
     if (!mapHash) return;
     let live = true;
     client
-      .presignAsset(campaignId, mapHash)
+      .presignAsset(campaignId, assetHashFromKey(mapHash))
       .then((url) => {
         if (live) setMapUrl(url);
       })

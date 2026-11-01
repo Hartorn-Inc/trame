@@ -64,6 +64,16 @@ export function snapToCell(point: WirePoint2D, cellSizePx: number): WirePoint2D 
   return { x: Math.floor(point.x / cell) * cell, y: Math.floor(point.y / cell) * cell };
 }
 
+/**
+ * Asset hash accepted by `GET .../assets/{hash}/presign`. Scenes store the full
+ * object key (`instances/{i}/campaigns/{c}/assets/{hash}.webp`), and activation
+ * copies it into `background_asset_hash`, so the last path segment is taken
+ * and the `.webp` suffix dropped; a bare hash passes through unchanged.
+ */
+export function assetHashFromKey(keyOrHash: string): string {
+  return (keyOrHash.split("/").pop() ?? keyOrHash).replace(/\.webp$/, "");
+}
+
 /** Every token the recipient can see, controlled tokens first, then by name. */
 export function listTableTokens(state: ProjectedTableState | null): TableToken[] {
   if (!state) return [];
@@ -89,6 +99,24 @@ export function listTableTokens(state: ProjectedTableState | null): TableToken[]
       .map((raw) => toToken(raw, false)),
   ];
   return tokens.sort((a, b) => Number(b.controlled) - Number(a.controlled) || a.name.localeCompare(b.name));
+}
+
+/**
+ * First grid cell (row-major from the top-left) whose top-left corner holds
+ * no visible token, used to drop a newly placed token; falls back to the
+ * origin when the board is full.
+ */
+export function firstFreeCell(state: ProjectedTableState | null): WirePoint2D {
+  const cell = state && state.cell_size_px > 0 ? state.cell_size_px : 50;
+  const cols = Math.max(1, Math.floor((state?.map_width_px || cell * 20) / cell));
+  const rows = Math.max(1, Math.floor((state?.map_height_px || cell * 20) / cell));
+  const taken = new Set(listTableTokens(state).map((tok) => `${tok.topLeft.x},${tok.topLeft.y}`));
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      if (!taken.has(`${col * cell},${row * cell}`)) return { x: col * cell, y: row * cell };
+    }
+  }
+  return { x: 0, y: 0 };
 }
 
 /** Initiative rows in turn order; hidden combatants are absent from the projection. */

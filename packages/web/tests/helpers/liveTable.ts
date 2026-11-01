@@ -88,6 +88,7 @@ export function liveTable(userId: string, state: ProjectedTableState | null, rou
 /** Mounts a vnode with synchronous re-rendering; returns query helpers. */
 export function mount(vnode: VNode<any>) {
   options.debounceRendering = (cb: () => void) => cb();
+  options.requestAnimationFrame = (cb: () => void) => setTimeout(cb, 0);
   const doc = (globalThis as any).document;
   const container = doc.createElement("div");
   doc.body.appendChild(container);
