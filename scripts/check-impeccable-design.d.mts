@@ -6,6 +6,13 @@ export function runAudit(repoRoot?: string): string[];
 
 export const CANONICAL_SECTIONS: string[];
 export const CANONICAL_SECTION_TITLES: string[];
+export const CONTRAST_MATRIX: Array<{
+  id: string;
+  fg: string;
+  bg: string;
+  min: number;
+}>;
+export function walkFiles(dir: string, exts: string[]): string[];
 export function parseYamlSubset(yamlText: string): Record<string, unknown>;
 export function parseDesignMdFrontmatter(content: string): Record<string, unknown>;
 export function extractCanonicalHeadings(content: string): string[];
