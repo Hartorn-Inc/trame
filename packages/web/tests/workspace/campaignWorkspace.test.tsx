@@ -54,7 +54,7 @@ describe("CampaignWorkspace: five tabs", () => {
     { id: "Maps tab gives the GM the studio", tab: "maps", role: "GM", inner: "maps-workspace" },
     { id: "Maps tab gives a player the read-only atlas", tab: "maps", role: "PLAYER", inner: "scene-atlas" },
     { id: "Actors tab lists the sheets", tab: "actors", role: "PLAYER", inner: "actors-tab" },
-    { id: "Documents tab shows the notes tree", tab: "documents", role: "PLAYER", inner: "notes-hierarchy-tree" },
+    { id: "Documents tab starts loading the server notes", tab: "documents", role: "PLAYER", inner: "documents-loading" },
     { id: "Compendium tab shows the SRD browser", tab: "compendium", role: "PLAYER", inner: "compendium-drawer" },
   ];
   for (const c of panels) {
@@ -193,8 +193,8 @@ describe("firstFreeCell", () => {
 
 describe("MapsWorkspaceTab: import, background, activation", () => {
   const mapRoutes = (extra = {}) => ({
-    [`GET ${MAPS_URL}`]: { status: 200, body: [backendScene] },
-    [`PUT ${MAPS_URL}`]: { status: 200, body: {} },
+    [`GET ${MAPS_URL}`]: { status: 200, body: { scenes: [backendScene], version: 3 } },
+    [`PUT ${MAPS_URL}`]: { status: 200, body: { scenes: [backendScene], version: 4 } },
     ...extra,
   });
 
@@ -267,7 +267,7 @@ describe("MobileCompanionView: five live tabs", () => {
     { id: "dice shows the table dice tray", tab: "dice", inner: "dice-tray" },
     { id: "inventory shows the sheet panel with the inventory layout", tab: "inventory", inner: "actor-sheet-panel" },
     { id: "tracker shows the combat tracker", tab: "tracker", inner: "combat-tracker" },
-    { id: "journal shows the notes tree", tab: "journal", inner: "notes-hierarchy-tree" },
+    { id: "journal loads the server-backed documents", tab: "journal", inner: "documents-loading" },
   ];
   for (const c of tabs) {
     it(c.id, () => {

@@ -36,7 +36,7 @@ import { MapsWorkspaceTab } from '../maps/MapsWorkspaceTab.tsx';
 import type { UserRole } from '../maps/types.ts';
 import { TableTab } from '../table/TableTab.tsx';
 import { ActorsTab } from './ActorsTab.tsx';
-import { DocumentsWorkspaceTab } from './DocumentsWorkspaceTab.tsx';
+import { CampaignDocumentsTab } from './CampaignDocumentsTab.tsx';
 
 /** Workspace tabs, in display order. */
 export const WORKSPACE_TABS = ['table', 'maps', 'actors', 'documents', 'compendium'] as const;
@@ -118,7 +118,7 @@ export function CampaignWorkspace({ campaignId, userRole, client = apiClient, ac
         {tab === 'table' && <TableTab campaignId={campaignId} client={client} isGm={isGm} />}
         {tab === 'maps' && <MapsWorkspaceTab campaignId={campaignId} client={client} isGm={isGm} />}
         {tab === 'actors' && <ActorsTab campaignId={campaignId} client={client} isGm={isGm} />}
-        {tab === 'documents' && <DocumentsWorkspaceTab isGm={isGm} currentUserId={client.state.user.value?.id ?? ''} />}
+        {tab === 'documents' && <CampaignDocumentsTab campaignId={campaignId} client={client} isGm={isGm} />}
         {tab === 'compendium' && (
           <div class="ds-stack">
             <CompendiumDrawer isOpen entries={SYSTEM_SRD} systemId="dnd5e" onClose={() => setTab('table')} />
