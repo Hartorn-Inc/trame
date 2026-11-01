@@ -150,6 +150,8 @@ export interface ProjectedTableState {
   walls: unknown[];
   persistent_aoes: Record<Uuid, unknown>;
   initiative_order: Uuid[];
+  /** Totals keyed by token id, limited to `initiative_order` (no hidden combatant's total). */
+  initiative_totals?: Record<Uuid, number>;
   /** Index into `initiative_order`; `null` when the active combatant is hidden or the order is empty. */
   active_turn_index: number | null;
   round: number;
