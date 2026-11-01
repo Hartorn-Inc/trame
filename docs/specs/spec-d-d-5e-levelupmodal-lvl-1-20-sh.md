@@ -3,7 +3,6 @@
 - **Identifiant** : `spec-d-d-5e-levelupmodal-lvl-1-20-sh`
 - **Titre** : Spécification Technique de la Montée de Niveau (Lvl 1-20), de l'Interface de Repos et de l'Expansion du Compendium SRD 5.1
 - **Statut** : Prêt pour Implémentation
-- **Architecture de référence** : ADR-0036 (D&D 5e Level-Up (Lvl 1-20), Short/Long Rests, and SRD 5.1 Compendium Expansion Architecture)
 - **Conformité** : ASD-STE100 (Controlled Technical Prompting, ADR-0031)
 
 ---
@@ -29,7 +28,7 @@ Cette spécification définit l'implémentation complète des règles métier, d
 3. Aucun `AbilityScore` ne peut dépasser la valeur 20 par le biais d'un choix d'Amélioration de Caractéristique (ASI).
 4. Le gain de points de vie maximum (`maxHp`) à chaque niveau respecte le plancher strict de 1 point de vie (`max(1, hitDieGain + constitutionModifier)`).
 5. Le nombre total de dés de vie d'un `Actor` (`hitDiceCurrent`) ne peut jamais dépasser la valeur plafond `hitDiceMax`, laquelle est égale au niveau total de l'`Actor`.
-6. Le composant d'interface de fiche d'un `Actor` verrouille toute édition directe des caractéristiques fondamentales en dehors du composant `LevelUpModal` conformément à `CoreBuildLock` (ADR-0006).
+6. Le composant d'interface de fiche d'un `Actor` verrouille toute édition directe des caractéristiques fondamentales en dehors du composant `LevelUpModal` conformément à `CoreBuildLock`.
 
 ---
 
@@ -394,7 +393,7 @@ export function applyLongRest(actor: Dnd5eActorData): Dnd5eActorData;
     }
   }
   ```
-- **Comportement** : Le `TableRoomActor` diffuse l'événement à tous les clients connectés pour synchroniser les signaux Preact et persiste l'état via `SqlxPostgresStore` (ADR-0010).
+- **Comportement** : Le `TableRoomActor` diffuse l'événement à tous les clients connectés pour synchroniser les signaux Preact et persiste l'état via `SqlxPostgresStore`.
 
 ### 6.2 Service de Tirage de Dés Autoritaire (`ChaCha20Rng`)
 
