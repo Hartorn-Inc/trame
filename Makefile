@@ -10,7 +10,7 @@ COMPOSE_ENV_FILE := $(shell if [ -f "$(ENV_FILE)" ]; then printf '%s' '--env-fil
 DC ?= docker compose
 DEV_COMPOSE := $(DC) --project-name $(DEV_PROJECT) --project-directory "$(REPO_DIR)" $(COMPOSE_ENV_FILE) -f "$(COMPOSE_FILE)"
 
-.PHONY: help up down logs ps build wasm test test-rust test-web lint lint-rust lint-web lint-design fmt check shell-rust shell-web db-psql clean
+.PHONY: help up down logs ps build wasm test test-rust test-web test-game-systems lint lint-rust lint-web lint-design fmt check shell-rust shell-web db-psql clean
 
 help: ## Display available Docker-based development commands
 	@awk 'BEGIN {FS = ":.*##"; printf "TRAME Docker Development Workflow\nUsage: make <target>\n\nTargets:\n"} /^[a-zA-Z][a-zA-Z0-9_-]*:.*##/ {printf "  %-14s %s\n", $$1, $$2}' "$(MAKEFILE_PATH)"
@@ -39,14 +39,17 @@ test: test-rust test-web ## Run all unit and integration tests (Rust + WASM + We
 test-rust: ## Run Cargo workspace tests inside the Rust Docker container
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev cargo test --workspace --all-targets
 
-test-web: ## Run Web frontend tests inside the Node Docker container
+test-web: test-game-systems ## Run Web frontend and game-system tests inside the Node Docker container
 	$(DEV_COMPOSE) run --rm --no-deps web-dev npm test
 
-lint: lint-rust lint-web lint-design ## Run all linters and format checks (glossary/ADR integrity, Impeccable design audit, rustfmt, clippy, eslint, tsc) inside Docker
-	python3 "$(REPO_DIR)/scripts/check-glossary-and-adrs.py"
+test-game-systems: ## Run packages/game-systems/dnd5e tests inside the Node Docker container
+	$(DEV_COMPOSE) run --rm --no-deps web-dev node --test "../game-systems/dnd5e/tests/**/*.test.ts"
 
-lint-design: ## Run Impeccable design system audit (WCAG AA, tokens, Craft Floor)
-	node "$(REPO_DIR)/scripts/check-impeccable-design.mjs"
+lint: lint-rust lint-web lint-design ## Run all linters and format checks (glossary/ADR integrity, Impeccable design audit, rustfmt, clippy, eslint, tsc) inside Docker
+	$(DEV_COMPOSE) run --rm --no-deps rust-dev python3 scripts/check-glossary-and-adrs.py
+
+lint-design: ## Run Impeccable design system audit (WCAG AA, tokens, Craft Floor) inside the Node Docker container
+	$(DEV_COMPOSE) run --rm --no-deps web-dev node /workspace/scripts/check-impeccable-design.mjs
 
 lint-rust: ## Run cargo fmt check and clippy inside the Rust Docker container
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev cargo fmt --all -- --check
