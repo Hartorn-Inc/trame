@@ -304,6 +304,13 @@ export interface Dnd5eActorData {
   id: string;
   /** Display name of the character, NPC, or monster. */
   name: string;
+  /**
+   * Content-addressed asset key returned by `POST /api/v1/campaigns/{id}/assets`,
+   * resolved to a signed URL by the client. Absent or `""` means no portrait.
+   * The pack never reads or rewrites it: every sheet transform carries the value
+   * through verbatim, so clearing a portrait is a client decision.
+   */
+  portraitAssetKey?: string;
   /** Actor classification controlling sheet presentation and NPC rules. */
   type: "character" | "npc" | "monster";
   /** Map of the six core ability scores (`1..=30`) and saving throw proficiencies. */
