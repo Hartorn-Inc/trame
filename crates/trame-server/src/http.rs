@@ -549,13 +549,53 @@ pub async fn list_campaign_notes_internal(state: &AppState, campaign_id: Uuid) -
     state.campaign_store.notes_for_campaign(campaign_id)
 }
 
+/// Path prefixes owned by the API; the SPA fallback never answers them (JSON `404` instead).
+const RESERVED_PREFIXES: [&str; 4] = ["/api", "/ws", "/assets", "/healthz"];
+
+fn is_reserved_path(path: &str) -> bool {
+    RESERVED_PREFIXES.iter().any(|prefix| {
+        path == *prefix
+            || path
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+/// Fallback serving the built SPA from `dir` (`ServeDir`, unknown paths -> `index.html`) for
+/// client-side routes. Reserved API prefixes get a JSON `404` so they are never shadowed.
+fn spa_fallback(
+    dir: std::path::PathBuf,
+) -> impl Fn(Request<Body>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>
++ Clone
++ Send
++ Sync
++ 'static {
+    use tower::ServiceExt;
+    let serve = tower_http::services::ServeDir::new(&dir)
+        .fallback(tower_http::services::ServeFile::new(dir.join("index.html")));
+    move |req: Request<Body>| {
+        let serve = serve.clone();
+        Box::pin(async move {
+            if is_reserved_path(req.uri().path()) {
+                return error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "route not found");
+            }
+            match serve.oneshot(req).await {
+                Ok(resp) => resp.into_response(),
+                Err(never) => match never {},
+            }
+        })
+    }
+}
+
 /// Constructs the authoritative Axum `Router` from a pre-configured `AppState`, wrapped in
 /// `security_headers_middleware`. Also connects the rooms' storage sinks (linked vitals,
-/// timeline).
+/// timeline) and, when `static_dir` is set, serves the SPA as the last-resort fallback.
 pub fn build_router_with_state(state: AppState) -> Router {
     let auth_router = build_auth_router(state.auth_state.clone());
     crate::campaigns::install_room_sinks(&state);
-    Router::new()
+    let static_dir = state.static_dir.clone();
+
+    let router = Router::new()
         .route("/healthz", get(healthz_handler))
         .route("/ws/campaigns/{campaign_id}", get(ws_campaign_handler))
         .route(
@@ -586,8 +626,12 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/v1/mcp", post(crate::mcp::mcp_jsonrpc_handler))
         .merge(crate::campaigns::campaign_routes())
         .with_state(state)
-        .merge(auth_router)
-        .layer(axum::middleware::from_fn(security_headers_middleware))
+        .merge(auth_router);
+    let router = match static_dir {
+        Some(dir) => router.fallback(spa_fallback(dir)),
+        None => router,
+    };
+    router.layer(axum::middleware::from_fn(security_headers_middleware))
 }
 
 /// Resolves an authenticated user ID from a session cookie, Bearer session token, or Bearer PAT.
