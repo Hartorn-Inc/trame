@@ -637,7 +637,8 @@ select.ds-input {
 /* Wizard stepper: current step pairs the amber rule with aria-current; done steps carry a check glyph */
 .ds-stepper {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   border-bottom: 1px solid var(--atlas-border);
   font-size: var(--atlas-font-size-xs);
   font-weight: 600;
@@ -852,6 +853,172 @@ button.ds-prof-pip {
   display: flex;
   justify-content: center;
   gap: var(--atlas-space-sm);
+}
+
+/* Live table: board, tokens, tracker, GM toolbar, HUD drawers */
+.ds-table-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20rem;
+  gap: var(--atlas-space-md);
+  min-height: 0;
+}
+
+.ds-table-main,
+.ds-table-side {
+  min-width: 0;
+}
+
+.ds-table-canvas {
+  overflow: auto;
+  max-height: 70vh;
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-md);
+  background-color: var(--atlas-bg);
+}
+
+.ds-board {
+  position: relative;
+  cursor: crosshair;
+}
+
+.ds-board-map {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  filter: none;
+}
+
+.ds-board-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--atlas-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--atlas-grid) 1px, transparent 1px);
+  background-size: var(--board-cell) var(--board-cell);
+}
+
+.ds-token {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 2px solid var(--atlas-border-control);
+  border-radius: 50%;
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  font: inherit;
+  font-size: var(--atlas-font-size-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ds-token.is-public {
+  border-style: dashed;
+}
+
+.ds-token.is-selected {
+  border-width: 3px;
+  border-color: var(--atlas-action);
+  outline: 2px solid var(--atlas-action);
+  outline-offset: 2px;
+}
+
+.ds-token:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+.ds-tracker,
+.ds-gm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--atlas-space-sm);
+  padding: var(--atlas-space-sm);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-md);
+  background-color: var(--atlas-surface);
+}
+
+.ds-tracker-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--atlas-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ds-tracker-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--atlas-space-xs);
+  padding: var(--atlas-space-xs) var(--atlas-space-sm);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-sm);
+}
+
+.ds-tracker-item.is-active {
+  border-color: var(--atlas-action);
+  background-color: var(--atlas-accent-primary-subtle);
+  font-weight: 600;
+}
+
+.ds-input-compact {
+  width: 5rem;
+}
+
+.ds-reaction-prompt {
+  border-color: var(--atlas-action);
+}
+
+.ds-hud-drawers-container {
+  position: relative;
+}
+
+.ds-hud-sheet-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(40rem, 100vw);
+  overflow-y: auto;
+  padding: var(--atlas-space-md);
+  background-color: var(--atlas-surface);
+  color: var(--atlas-text);
+  border-left: 1px solid var(--atlas-border);
+  box-shadow: var(--atlas-elevation-overlay);
+  z-index: 20;
+}
+
+.ds-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--atlas-space-sm);
+  margin-bottom: var(--atlas-space-md);
+}
+
+.ds-btn-sm {
+  min-height: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-xs) var(--atlas-space-sm);
+}
+
+.ds-btn-close {
+  background-color: transparent;
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border-control);
+}
+
+@media (max-width: 1023px) {
+  .ds-table-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* Map-Art Independence Rule: Never apply theme filters to PixiJS battlemap canvas */

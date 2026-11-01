@@ -3,434 +3,171 @@ import { describe, it } from "node:test";
 import {
   BuilderDraftStore,
   CharacterBuilderWizard,
-  MAX_POINT_BUY_BUDGET,
   calculatePointBuyCost,
   validateStandardArray,
-  type CreateActorCommand,
+  type CharacterDraft,
 } from "../../src/builder/index.ts";
 
-describe("CharacterBuilderWizard and BuilderDraftStore Suite", () => {
-  it("WHEN CharacterBuilderWizard initializes, CharacterBuilderWizard sets currentStep to ancestry and draft state to default empty values.", () => {
-    const dispatched: unknown[] = [];
-    const wizard = new CharacterBuilderWizard((cmd) => dispatched.push(cmd));
+const STANDARD = { str: 15, dex: 14, con: 13, int: 12, wis: 10, cha: 8 };
 
-    assert.equal(wizard.currentStep, "ancestry");
-    assert.equal(wizard.step, "ancestry");
-    assert.equal(wizard.getStep(), "ancestry");
-    assert.equal(wizard.getStepIndex(), 0);
+function wizardWith(draft: Partial<CharacterDraft> = {}) {
+  return new CharacterBuilderWizard({ draftStore: new BuilderDraftStore(), initialDraft: draft });
+}
 
-    const draft = wizard.getDraft();
-    assert.notEqual(draft, null);
-    assert.equal(draft?.ancestryId, null);
-    assert.equal(draft?.classId, null);
-    assert.equal(draft?.subclassId, null);
-    assert.equal(draft?.name, "");
-    assert.deepEqual(draft?.equipmentIds, []);
-    assert.deepEqual(draft?.spellIds, []);
-    assert.deepEqual(draft?.featIds, []);
-    assert.deepEqual(draft?.skills, []);
-    assert.equal(draft?.abilityGenerationMethod, "pointBuy");
-    assert.deepEqual(draft?.abilityScores, {
-      str: 8,
-      dex: 8,
-      con: 8,
-      int: 8,
-      wis: 8,
-      cha: 8,
+const COMPLETE: Partial<CharacterDraft> = {
+  name: "Brakka",
+  speciesId: "dwarf",
+  classId: "fighter",
+  backgroundId: "soldier",
+  backgroundChoice: { mode: "plus2_plus1", plus2: "str", plus1: "con" },
+  abilityScores: { ...STANDARD },
+  abilityGenerationMethod: "standardArray",
+  equipmentIds: ["Spear", "Shortbow"],
+};
+
+describe("CharacterBuilderWizard: 2024 step order and gating", () => {
+  it("starts on species with an empty draft and follows the SRD 5.2.1 order", () => {
+    const wizard = wizardWith(COMPLETE);
+    const visited = [wizard.currentStep];
+    while (wizard.nextStep()) visited.push(wizard.currentStep);
+    assert.deepEqual(visited, ["species", "class", "background", "abilityScores", "equipment", "review"]);
+  });
+
+  const blocked: Array<{ id: string; draft: Partial<CharacterDraft>; step: string; error: string }> = [
+    { id: "unknown species blocks the species step", draft: { ...COMPLETE, speciesId: "half-elf" }, step: "species", error: "builder.error.species" },
+    { id: "unknown class blocks the class step", draft: { ...COMPLETE, classId: "artificer" }, step: "class", error: "builder.error.class" },
+    { id: "missing background blocks the background step", draft: { ...COMPLETE, backgroundId: null }, step: "background", error: "builder.error.background" },
+    {
+      id: "+2/+1 on the same ability is rejected",
+      draft: { ...COMPLETE, backgroundChoice: { mode: "plus2_plus1", plus2: "str", plus1: "str" } },
+      step: "background",
+      error: "builder.error.backgroundChoice",
+    },
+    {
+      id: "+2 on an ability outside the background list is rejected",
+      draft: { ...COMPLETE, backgroundChoice: { mode: "plus2_plus1", plus2: "cha", plus1: "str" } },
+      step: "background",
+      error: "builder.error.backgroundChoice",
+    },
+    {
+      id: "duplicated standard array values are rejected",
+      draft: { ...COMPLETE, abilityScores: { ...STANDARD, cha: 15 } },
+      step: "abilityScores",
+      error: "builder.error.standardArray",
+    },
+    {
+      id: "point buy above 27 points is rejected",
+      draft: { ...COMPLETE, abilityGenerationMethod: "pointBuy", abilityScores: { str: 15, dex: 15, con: 15, int: 9, wis: 8, cha: 8 } },
+      step: "abilityScores",
+      error: "builder.error.pointBuy",
+    },
+    { id: "empty equipment blocks the equipment step", draft: { ...COMPLETE, equipmentIds: [] }, step: "equipment", error: "builder.error.equipment" },
+    { id: "a blank name blocks the review", draft: { ...COMPLETE, name: "  " }, step: "review", error: "builder.error.name" },
+  ];
+
+  for (const c of blocked) {
+    it(c.id, () => {
+      const wizard = wizardWith(c.draft);
+      while (wizard.currentStep !== c.step && wizard.nextStep());
+      assert.equal(wizard.currentStep, c.step);
+      assert.ok(wizard.validateStep(c.step as never).errors.includes(c.error));
+      assert.equal(wizard.confirm(), null);
     });
+  }
 
-    assert.equal(dispatched.length, 0);
-  });
-
-  it("WHEN a user attempts to transition to class while ancestryId is null, CharacterBuilderWizard rejects step progression and returns false.", () => {
-    const wizard = new CharacterBuilderWizard();
-    assert.equal(wizard.currentStep, "ancestry");
-    assert.equal(wizard.getDraft()?.ancestryId, null);
-
-    const nextResult = wizard.nextStep();
-    assert.equal(nextResult, false);
-    assert.equal(wizard.currentStep, "ancestry");
-
-    const jumpResult = wizard.goToStep("class");
-    assert.equal(jumpResult, false);
-    assert.equal(wizard.currentStep, "ancestry");
-
-    wizard.setAncestry("   ");
-    assert.equal(wizard.nextStep(), false);
-    assert.equal(wizard.currentStep, "ancestry");
-
-    wizard.setAncestry("elf");
-    assert.equal(wizard.canAdvance(), true);
-    assert.equal(wizard.canTransitionTo("class"), true);
-    const successfulNext = wizard.nextStep();
-    assert.equal(successfulNext, true);
-    assert.equal(wizard.currentStep, "class");
-  });
-
-  it("CharacterBuilderWizard verifies that classId is selected before advancing from class step.", () => {
-    const wizard = new CharacterBuilderWizard();
-    wizard.setAncestry("dwarf");
-    wizard.nextStep();
-    assert.equal(wizard.currentStep, "class");
-    assert.equal(wizard.getDraft()?.classId, null);
-
-    const nextResult = wizard.nextStep();
-    assert.equal(nextResult, false);
-    assert.equal(wizard.currentStep, "class");
-
-    const jumpResult = wizard.goToStep("abilityScores");
-    assert.equal(jumpResult, false);
-    assert.equal(wizard.currentStep, "class");
-
-    wizard.setClass("wizard");
-    assert.equal(wizard.nextStep(), true);
-    assert.equal(wizard.currentStep, "abilityScores");
-  });
-
-  it("WHEN a user attempts to transition to equipment while allocated point buy cost exceeds 27 points, CharacterBuilderWizard rejects step progression and returns false.", () => {
-    const wizard = new CharacterBuilderWizard();
-    wizard.setAncestry("human");
-    wizard.nextStep();
-    wizard.setClass("fighter");
-    wizard.nextStep();
-    assert.equal(wizard.currentStep, "abilityScores");
-
-    wizard.setAbilityScores(
-      {
-        str: 15,
-        dex: 15,
-        con: 15,
-        int: 15,
-        wis: 10,
-        cha: 8,
-      },
-      "pointBuy",
-    );
-
-    const cost = wizard.getPointBuyCost();
-    assert.equal(cost, 38);
-    assert.ok(cost > MAX_POINT_BUY_BUDGET);
-    assert.equal(wizard.isPointBuyValid(), false);
-    assert.equal(wizard.getRemainingPointBuyBudget(), -11);
-
-    const nextResult = wizard.nextStep();
-    assert.equal(nextResult, false);
-    assert.equal(wizard.currentStep, "abilityScores");
-
-    const jumpResult = wizard.goToStep("equipment");
-    assert.equal(jumpResult, false);
-    assert.equal(wizard.currentStep, "abilityScores");
-
-    wizard.setAbilityScores(
-      {
-        str: 15,
-        dex: 15,
-        con: 15,
-        int: 9,
-        wis: 8,
-        cha: 8,
-      },
-      "pointBuy",
-    );
-    assert.equal(wizard.getPointBuyCost(), 28);
-    assert.equal(wizard.nextStep(), false);
-
-    wizard.setAbilityScores(
-      {
-        str: 15,
-        dex: 15,
-        con: 15,
-        int: 8,
-        wis: 8,
-        cha: 8,
-      },
-      "pointBuy",
-    );
-    assert.equal(wizard.getPointBuyCost(), 27);
-    assert.equal(wizard.isPointBuyValid(), true);
-    assert.equal(wizard.getRemainingPointBuyBudget(), 0);
-
-    const advanceResult = wizard.nextStep();
-    assert.equal(advanceResult, true);
-    assert.equal(wizard.currentStep, "equipment");
-  });
-
-  it("CharacterBuilderWizard evaluates standard array assignments ([15, 14, 13, 12, 10, 8] without duplicates) before advancing from abilityScores step.", () => {
-    const wizard = new CharacterBuilderWizard();
-    wizard.setAncestry("halfling");
-    wizard.nextStep();
-    wizard.setClass("rogue");
-    wizard.nextStep();
-    assert.equal(wizard.currentStep, "abilityScores");
-
-    wizard.setAbilityScores(
-      {
-        str: 15,
-        dex: 15,
-        con: 13,
-        int: 12,
-        wis: 10,
-        cha: 8,
-      },
-      "standardArray",
-    );
-    assert.equal(wizard.isStandardArrayValid(), false);
-    assert.equal(wizard.nextStep(), false);
-    assert.equal(wizard.currentStep, "abilityScores");
-
-    wizard.setAbilityScores(
-      {
-        str: 16,
-        dex: 14,
-        con: 13,
-        int: 12,
-        wis: 10,
-        cha: 8,
-      },
-      "standardArray",
-    );
-    assert.equal(wizard.isStandardArrayValid(), false);
-    assert.equal(wizard.nextStep(), false);
-
-    wizard.setAbilityScores(
-      {
-        str: 15,
-        dex: 14,
-        con: 13,
-        int: 12,
-        wis: 10,
-        cha: 8,
-      },
-      "standardArray",
-    );
-    assert.equal(wizard.isStandardArrayValid(), true);
-    assert.equal(wizard.nextStep(), true);
-    assert.equal(wizard.currentStep, "equipment");
-  });
-
-  it("WHEN a user transitions through wizard steps 1 to 4, CharacterBuilderWizard dispatches zero network commands and creates zero CRDT entries.", () => {
-    const dispatchedCommands: unknown[] = [];
-    const wizard = new CharacterBuilderWizard((cmd) =>
-      dispatchedCommands.push(cmd),
-    );
-
-    assert.equal(wizard.currentStep, "ancestry");
-    wizard.setName("Theron");
-    wizard.setAncestry("human");
-    assert.equal(dispatchedCommands.length, 0);
-
-    const toClass = wizard.nextStep();
-    assert.equal(toClass, true);
-    assert.equal(wizard.currentStep, "class");
-    wizard.setClass("paladin");
-    assert.equal(dispatchedCommands.length, 0);
-
-    const toAbilities = wizard.nextStep();
-    assert.equal(toAbilities, true);
-    assert.equal(wizard.currentStep, "abilityScores");
-    wizard.setAbilityScores(
-      { str: 15, dex: 10, con: 14, int: 8, wis: 12, cha: 13 },
-      "standardArray",
-    );
-    assert.equal(dispatchedCommands.length, 0);
-
-    const toEquipment = wizard.nextStep();
-    assert.equal(toEquipment, true);
-    assert.equal(wizard.currentStep, "equipment");
-    wizard.setEquipment(["longsword", "shield", "chainmail"]);
-    wizard.addEquipment("holy_symbol");
-    assert.equal(dispatchedCommands.length, 0);
-
-    wizard.previousStep();
-    assert.equal(wizard.currentStep, "abilityScores");
-    wizard.nextStep();
-    assert.equal(wizard.currentStep, "equipment");
-    assert.equal(dispatchedCommands.length, 0);
-
-    const toReview = wizard.nextStep();
-    assert.equal(toReview, true);
-    assert.equal(wizard.currentStep, "review");
-    assert.equal(dispatchedCommands.length, 0);
-  });
-
-  it("WHEN a user confirms character creation in the review step, CharacterBuilderWizard dispatches exactly one TrameCommand.CreateActor command containing the finalized character configuration.", () => {
-    const dispatchedCommands: CreateActorCommand[] = [];
-    const wizard = new CharacterBuilderWizard((cmd) =>
-      dispatchedCommands.push(cmd as CreateActorCommand),
-    );
-
-    wizard.setName("Lyra Silvertongue");
-    wizard.setAncestry("half-elf");
-    wizard.nextStep();
-    wizard.setClass("bard", "college-of-lore");
-    wizard.nextStep();
-    wizard.setAbilityScores(
-      { str: 8, dex: 14, con: 13, int: 12, wis: 10, cha: 15 },
-      "standardArray",
-    );
-    wizard.nextStep();
-    wizard.setEquipment(["rapier", "lute", "leather-armor"]);
-    wizard.nextStep();
-
-    assert.equal(wizard.currentStep, "review");
-    assert.equal(dispatchedCommands.length, 0);
-
-    const confirmed = wizard.confirm();
-    assert.equal(confirmed, true);
-    assert.equal(dispatchedCommands.length, 1);
-
-    const cmd = dispatchedCommands[0];
-    assert.equal(cmd.cmd, "CREATE_ACTOR");
-    assert.equal(cmd.type, "CREATE_ACTOR");
-    assert.equal(cmd.name, "Lyra Silvertongue");
-    assert.equal(cmd.ancestryId, "half-elf");
-    assert.equal(cmd.classId, "bard");
-    assert.equal(cmd.subclassId, "college-of-lore");
-    assert.deepEqual(cmd.equipmentIds, ["rapier", "lute", "leather-armor"]);
-    assert.deepEqual(cmd.abilityScores, {
-      str: 8,
-      dex: 14,
-      con: 13,
-      int: 12,
-      wis: 10,
-      cha: 15,
-    });
-    assert.ok(cmd.actor);
-    assert.equal((cmd.actor as any).name, "Lyra Silvertongue");
-    assert.equal((cmd.actor as any).abilities.cha.score, 15);
-    assert.equal((cmd.actor as any).abilities.cha.mod, 2);
-  });
-
-  it("WHEN character creation dispatch succeeds, CharacterBuilderWizard clears the draft in BuilderDraftStore to null.", () => {
-    const customStore = new BuilderDraftStore();
-    const dispatched: unknown[] = [];
-    const wizard = new CharacterBuilderWizard({
-      draftStore: customStore,
-      dispatchCommand: (cmd) => dispatched.push(cmd),
-    });
-
-    wizard.setAncestry("gnome");
-    wizard.nextStep();
-    wizard.setClass("wizard");
-    wizard.nextStep();
-    wizard.setAbilityScores(
-      { str: 8, dex: 14, con: 13, int: 15, wis: 12, cha: 10 },
-      "standardArray",
-    );
-    wizard.nextStep();
-    wizard.setEquipment(["spellbook", "dagger"]);
-    wizard.nextStep();
-    assert.equal(wizard.currentStep, "review");
-
-    assert.notEqual(customStore.getDraft(), null);
-    assert.notEqual(wizard.getDraft(), null);
-
-    wizard.confirm();
-
-    assert.equal(customStore.getDraft(), null);
-    assert.equal(wizard.getDraft(), null);
-    assert.equal(customStore.hasDraft(), false);
-
-    const secondConfirm = wizard.confirm();
-    assert.equal(secondConfirm, false);
-    assert.equal(dispatched.length, 1);
-  });
-
-  it("WHEN a user cancels character creation, BuilderDraftStore resets active draft state to null without dispatching any TrameCommand.", () => {
-    const dispatched: unknown[] = [];
-    const customStore = new BuilderDraftStore();
-    const wizard = new CharacterBuilderWizard({
-      draftStore: customStore,
-      dispatchCommand: (cmd) => dispatched.push(cmd),
-    });
-
-    wizard.setName("Abandoned Hero");
-    wizard.setAncestry("orc");
-    assert.notEqual(customStore.getDraft(), null);
-    assert.equal(customStore.getDraft()?.name, "Abandoned Hero");
-
-    wizard.cancel();
-
-    assert.equal(customStore.getDraft(), null);
-    assert.equal(wizard.getDraft(), null);
-    assert.equal(customStore.hasDraft(), false);
-    assert.equal(dispatched.length, 0);
-
-    customStore.initDraft({ name: "Direct Store Draft" });
-    assert.notEqual(customStore.getDraft(), null);
-    customStore.cancel();
-    assert.equal(customStore.getDraft(), null);
-    assert.equal(dispatched.length, 0);
-  });
-
-  it("BuilderDraftStore static singleton methods reset draft to null without dispatching commands", () => {
-    BuilderDraftStore.initDraft({ name: "Static Draft", ancestryId: "elf" });
-    assert.notEqual(BuilderDraftStore.getDraft(), null);
-    assert.equal(BuilderDraftStore.getDraft()?.ancestryId, "elf");
-
-    BuilderDraftStore.cancel();
-    assert.equal(BuilderDraftStore.getDraft(), null);
-    assert.equal(BuilderDraftStore.hasDraft(), false);
-  });
-
-  it("WHEN draft abilityGenerationMethod is undefined or manual with scores exceeding 27 points, CharacterBuilderWizard rejects step progression.", () => {
-    const wizard = new CharacterBuilderWizard();
-    wizard.setAncestry("human");
-    wizard.nextStep();
-    wizard.setClass("fighter");
-    wizard.nextStep();
-    assert.equal(wizard.currentStep, "abilityScores");
-
-    wizard.updateDraft({
-      abilityGenerationMethod: undefined,
-      abilityScores: { str: 15, dex: 15, con: 15, int: 15, wis: 10, cha: 8 },
-    });
-    assert.equal(wizard.nextStep(), false);
-    assert.equal(wizard.currentStep, "abilityScores");
-
-    wizard.updateDraft({
-      abilityGenerationMethod: "manual" as any,
-      abilityScores: { str: 18, dex: 16, con: 14, int: 10, wis: 10, cha: 10 },
-    });
-    assert.equal(wizard.nextStep(), false);
-    assert.equal(wizard.currentStep, "abilityScores");
-  });
-
-  it("rejects confirm() before review step without dispatching commands", () => {
-    const dispatched: unknown[] = [];
-    const wizard = new CharacterBuilderWizard((cmd) => dispatched.push(cmd));
-    wizard.setAncestry("human");
-
-    const result = wizard.confirm();
-    assert.equal(result, false);
-    assert.equal(dispatched.length, 0);
-  });
-
-  it("supports navigation backwards to previous steps", () => {
-    const wizard = new CharacterBuilderWizard();
-    wizard.setAncestry("tiefling");
-    wizard.nextStep();
-    wizard.setClass("warlock");
-    wizard.nextStep();
-
-    assert.equal(wizard.currentStep, "abilityScores");
+  it("forward jumps require every earlier step to validate; backward moves are free", () => {
+    const wizard = wizardWith({ ...COMPLETE, classId: null });
+    assert.equal(wizard.goToStep("review"), false);
+    assert.equal(wizard.goToStep("class"), true);
     assert.equal(wizard.previousStep(), true);
-    assert.equal(wizard.currentStep, "class");
-    assert.equal(wizard.previousStep(), true);
-    assert.equal(wizard.currentStep, "ancestry");
-    assert.equal(wizard.previousStep(), false);
-    assert.equal(wizard.currentStep, "ancestry");
+    assert.equal(wizard.currentStep, "species");
   });
 
-  it("evaluates calculatePointBuyCost and validateStandardArray utility functions", () => {
-    const stdScores = { str: 15, dex: 14, con: 13, int: 12, wis: 10, cha: 8 };
-    assert.equal(validateStandardArray(stdScores), true);
-    assert.equal(calculatePointBuyCost(stdScores), 27);
-
-    const duplicateScores = { str: 15, dex: 15, con: 13, int: 12, wis: 10, cha: 8 };
-    assert.equal(validateStandardArray(duplicateScores), false);
-
-    const outOfBoundsScores = { str: 16, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
-    assert.equal(calculatePointBuyCost(outOfBoundsScores), Number.POSITIVE_INFINITY);
+  it("changing the background resets the split to +1/+1/+1", () => {
+    const wizard = wizardWith(COMPLETE);
+    wizard.setBackground("sage");
+    assert.deepEqual(wizard.getDraft()?.backgroundChoice, { mode: "plus1_each" });
   });
+});
+
+describe("CharacterBuilderWizard: finalized level-1 actor", () => {
+  const cases: Array<{
+    id: string;
+    draft: Partial<CharacterDraft>;
+    scores: Record<string, number>;
+    hp: number;
+    speedFt: number;
+    feat: string;
+    skills: string[];
+    saves: string[];
+  }> = [
+    {
+      id: "dwarf soldier fighter: species adds no score, background +2 STR / +1 CON, Dwarven Toughness HP",
+      draft: COMPLETE,
+      scores: { str: 17, dex: 14, con: 14, int: 12, wis: 10, cha: 8 },
+      hp: 10 + 2 + 1,
+      speedFt: 30,
+      feat: "srd:feat:savage_attacker",
+      skills: ["athletics", "intimidation"],
+      saves: ["str", "con"],
+    },
+    {
+      id: "elf sage wizard with +1/+1/+1: CON delta raises HP, Magic Initiate origin feat",
+      draft: { ...COMPLETE, speciesId: "elf", classId: "wizard", backgroundId: "sage", backgroundChoice: { mode: "plus1_each" } },
+      scores: { str: 15, dex: 14, con: 14, int: 13, wis: 11, cha: 8 },
+      hp: 6 + 2,
+      speedFt: 30,
+      feat: "srd:feat:magic_initiate",
+      skills: ["arcana", "history"],
+      saves: ["int", "wis"],
+    },
+  ];
+
+  for (const c of cases) {
+    it(c.id, () => {
+      const wizard = wizardWith(c.draft);
+      while (wizard.nextStep());
+      const actor = wizard.confirm();
+      assert.ok(actor);
+      const scores = Object.fromEntries(Object.entries(actor.abilities).map(([k, v]) => [k, v.score]));
+      assert.deepEqual(scores, c.scores);
+      assert.equal(actor.attributes.level, 1);
+      assert.equal(actor.subclassId, undefined, "no subclass before level 3");
+      assert.equal(actor.attributes.hp.max, c.hp);
+      assert.equal(actor.attributes.speedFt, c.speedFt);
+      assert.ok(actor.features?.includes(c.feat));
+      for (const skill of c.skills) assert.equal(actor.skills[skill as keyof typeof actor.skills].proficiencyRank, 1);
+      assert.deepEqual(
+        Object.entries(actor.abilities).filter(([, v]) => v.saveProficiency).map(([k]) => k),
+        c.saves,
+      );
+      assert.ok(wizard.getDraft(), "confirm keeps the draft so a failed create can be retried");
+    });
+  }
+
+  it("writes the chosen equipment to the sheet items", () => {
+    const wizard = wizardWith({ ...COMPLETE, equipmentIds: ["50 GP"] });
+    while (wizard.nextStep());
+    const actor = wizard.confirm() as unknown as { items: Array<{ name: string }> };
+    assert.deepEqual(actor.items.map((i) => i.name), ["50 GP"]);
+  });
+});
+
+describe("ability score utilities", () => {
+  const costs = [
+    { id: "all 8s cost nothing", scores: { str: 8, dex: 8, con: 8, int: 8, wis: 8, cha: 8 }, cost: 0 },
+    { id: "15/15/15/8/8/8 costs 27", scores: { str: 15, dex: 15, con: 15, int: 8, wis: 8, cha: 8 }, cost: 27 },
+    { id: "a 16 is outside point buy", scores: { str: 16, dex: 8, con: 8, int: 8, wis: 8, cha: 8 }, cost: Number.POSITIVE_INFINITY },
+  ];
+  for (const c of costs) {
+    it(`calculatePointBuyCost: ${c.id}`, () => assert.equal(calculatePointBuyCost(c.scores), c.cost));
+  }
+
+  const arrays = [
+    { id: "any permutation of the array is valid", scores: { str: 8, dex: 15, con: 14, int: 13, wis: 12, cha: 10 }, valid: true },
+    { id: "a duplicate value is invalid", scores: { str: 15, dex: 15, con: 14, int: 13, wis: 12, cha: 10 }, valid: false },
+  ];
+  for (const c of arrays) {
+    it(`validateStandardArray: ${c.id}`, () => assert.equal(validateStandardArray(c.scores), c.valid));
+  }
 });

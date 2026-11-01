@@ -1,504 +1,297 @@
 import assert from "node:assert/strict";
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach } from "node:test";
 import { h, render, options } from "preact";
-import { signal } from "@preact/signals";
 import { createDefaultActorData, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
+import { ApiClient } from "../../src/api/client.ts";
+import { createSessionState, selectedActorIdSignal } from "../../src/api/session.ts";
 import { localeSignal } from "../../src/i18n/index.ts";
-import {
-  CharacterSheetHeader,
-  persistActorUpdate,
-  handleUpdateActorDataEvent,
-} from "../../src/components/character-sheet/CharacterSheetHeader.tsx";
-import {
-  HudDrawers,
-  isSheetDrawerOpenSignal,
-  activeHudActorSignal,
-} from "../../src/components/hud/HudDrawers.tsx";
-import {
-  HudDrawers as CanonicalHudDrawers,
-  isSheetDrawerOpenSignal as canonicalSheetDrawerOpenSignal,
-} from "../../src/hud/HudDrawers.tsx";
-
+import { CharacterSheetHeader } from "../../src/components/character-sheet/CharacterSheetHeader.tsx";
+import { HudDrawers, isSheetDrawerOpenSignal } from "../../src/hud/HudDrawers.tsx";
+import { createSheetCommandDispatcher, restDiceRollService, setAtPath } from "../../src/sheet/sheetPersistence.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
+import { actorDto, createMockTransport, flush, type RouteReply } from "../helpers/mockTransport.ts";
 
 setupMockDom();
 localeSignal.value = "en";
 
-async function renderToDom(vnode: any) {
+const CAMPAIGN_ID = "22222222-2222-4222-8222-222222222222";
+const ACTOR_ID = "33333333-3333-4333-8333-333333333333";
+const ACTOR_URL = `/api/v1/campaigns/${CAMPAIGN_ID}/actors/${ACTOR_ID}`;
+
+function sheet(level: number, name = "Brakka", classId = "fighter"): Dnd5eActorData {
+  const actor = createDefaultActorData(ACTOR_ID, name);
+  actor.classId = classId;
+  actor.attributes.level = level;
+  return actor;
+}
+
+function newClient(routes: Record<string, RouteReply> = {}, stored?: { version: number; data: Dnd5eActorData }) {
+  const transport = createMockTransport(routes);
+  const state = createSessionState();
+  if (stored) state.actors.value = { [ACTOR_ID]: stored };
+  return { client: new ApiClient({ transport, state }), state, transport };
+}
+
+async function mount(vnode: any) {
   options.debounceRendering = (cb: () => void) => cb();
-  const doc = (globalThis as any).document || setupMockDom();
+  const doc = (globalThis as any).document;
   const container = doc.createElement("div");
   doc.body.appendChild(container);
   render(vnode, container);
-  await new Promise((r) => setTimeout(r, 15));
-
-  const unmount = () => {
-    render(null, container);
-    if (container.parentNode) {
-      container.parentNode.removeChild(container);
-    }
-    doc.activeElement = null;
-  };
-
-  const getElementByTestId = (testId: string): any => {
-    return container.querySelector(`[data-testid="${testId}"]`);
-  };
-
+  await flush();
   return {
     container,
-    unmount,
-    getElementByTestId,
-    rerender: async (newVnode: any) => {
-      render(newVnode, container);
-      await new Promise((r) => setTimeout(r, 15));
+    byTestId: (id: string): any => container.querySelector(`[data-testid="${id}"]`),
+    unmount: () => {
+      render(null, container);
+      container.remove();
     },
   };
 }
 
-describe("CharacterSheetHeader & HudDrawers REST/CQRS Dual Persistence Suite (#87)", () => {
-  let originalFetch: typeof globalThis.fetch;
+async function click(el: any) {
+  el.dispatchEvent(new (globalThis as any).Event("click"));
+  await flush(4);
+}
 
+async function confirmLongRest(container: any) {
+  const confirm: any = Array.from(container.querySelectorAll("button")).find((b: any) =>
+    b.textContent?.includes("Confirm Long Rest"),
+  );
+  assert.ok(confirm, "Confirm Long Rest button must be rendered");
+  await click(confirm);
+}
+
+describe("CharacterSheetHeader: labels and guardrails", () => {
+  const cases = [
+    { id: "workspace context shows the explicit level transition (AC1)", props: { context: "campaign_workspace" }, level: 3, label: "Level Up (Lvl 3 -> 4)", disabled: false },
+    { id: "HUD drawer context shows the compact label (AC3)", props: { context: "hud_drawer" }, level: 5, label: "Level Up", disabled: false },
+    { id: "level 20 disables Level Up with an explicit reason (AC6)", props: { context: "campaign_workspace" }, level: 20, label: "Level Up disabled: Maximum Level 20 reached", disabled: true },
+  ];
+
+  for (const c of cases) {
+    it(c.id, async () => {
+      const { client } = newClient();
+      const { byTestId, container, unmount } = await mount(h(CharacterSheetHeader, { actor: sheet(c.level), client, ...(c.props as any) }));
+      const levelUp = byTestId("btn-level-up");
+      assert.equal(levelUp.getAttribute("aria-label"), c.label);
+      assert.equal(levelUp.disabled, c.disabled);
+      assert.equal(byTestId("btn-short-rest").getAttribute("aria-label"), "Short Rest");
+      assert.equal(byTestId("btn-long-rest").getAttribute("aria-label"), "Long Rest");
+      assert.equal(container.querySelector("[role='toolbar']")?.getAttribute("aria-label"), "Progression and Rest Actions");
+      await click(levelUp);
+      assert.equal(Boolean(byTestId("level-up-modal")), !c.disabled);
+      unmount();
+    });
+  }
+});
+
+describe("CharacterSheetHeader: versioned REST save (AC2, AC4)", () => {
+  const cases: Array<{
+    id: string;
+    context: "campaign_workspace" | "hud_drawer";
+    reply: RouteReply;
+    expectConflict: boolean;
+    expectedVersionAfter: number;
+  }> = [
+    {
+      id: "a long rest in the workspace PUTs { expected_version, name, data } and stores the new version",
+      context: "campaign_workspace",
+      reply: { status: 200, body: { actor: actorDto({ version: 5, data: sheet(2) }) } },
+      expectConflict: false,
+      expectedVersionAfter: 5,
+    },
+    {
+      id: "a long rest from the live-table HUD uses the same REST PUT, never a table command",
+      context: "hud_drawer",
+      reply: { status: 200, body: { actor: actorDto({ version: 5, data: sheet(2) }) } },
+      expectConflict: false,
+      expectedVersionAfter: 5,
+    },
+    {
+      id: "a stale version shows the conflict alert and keeps the stored sheet",
+      context: "campaign_workspace",
+      reply: { status: 409, body: { code: "VERSION_CONFLICT", error: "stale", current_version: 7 } },
+      expectConflict: true,
+      expectedVersionAfter: 4,
+    },
+  ];
+
+  for (const c of cases) {
+    it(c.id, async () => {
+      const { client, state, transport } = newClient({ [`PUT ${ACTOR_URL}`]: c.reply }, { version: 4, data: sheet(2) });
+      const saved: Dnd5eActorData[] = [];
+      const { container, byTestId, unmount } = await mount(
+        h(CharacterSheetHeader, {
+          actor: sheet(2),
+          actorId: ACTOR_ID,
+          campaignId: CAMPAIGN_ID,
+          client,
+          context: c.context,
+          onSave: (a) => {
+            saved.push(a);
+          },
+        }),
+      );
+      await click(byTestId("btn-long-rest"));
+      await confirmLongRest(container);
+
+      assert.equal(transport.calls.length, 1);
+      assert.equal(transport.calls[0].method, "PUT");
+      assert.equal(transport.calls[0].url, ACTOR_URL);
+      const body = transport.calls[0].body as Record<string, any>;
+      assert.equal(body.expected_version, 4);
+      assert.equal(body.name, "Brakka");
+      assert.equal(body.data.id, ACTOR_ID);
+      assert.equal(state.actors.value[ACTOR_ID].version, c.expectedVersionAfter);
+      assert.equal(Boolean(byTestId("sheet-version-conflict")), c.expectConflict);
+      assert.equal(saved.length, c.expectConflict ? 0 : 1);
+      if (c.expectConflict) {
+        assert.equal(byTestId("sheet-version-conflict").getAttribute("role"), "alert");
+        assert.match(byTestId("sheet-version-conflict").textContent, /version 7/);
+      }
+      unmount();
+    });
+  }
+
+  const resolutions = [
+    {
+      id: "Reload latest re-reads the sheet and dismisses the conflict",
+      button: "btn-conflict-reload",
+      route: `GET ${ACTOR_URL}`,
+      reply: { status: 200, body: { actor: actorDto({ version: 7, data: sheet(6, "Brakka Remote") }) } },
+      expectedPutVersions: [4],
+    },
+    {
+      id: "Overwrite retries the PUT with the server's current_version",
+      button: "btn-conflict-overwrite",
+      route: `PUT ${ACTOR_URL}`,
+      reply: { status: 200, body: { actor: actorDto({ version: 8, data: sheet(2) }) } },
+      expectedPutVersions: [4, 7],
+    },
+  ];
+
+  for (const r of resolutions) {
+    it(r.id, async () => {
+      const { client, state, transport } = newClient(
+        { [`PUT ${ACTOR_URL}`]: { status: 409, body: { code: "VERSION_CONFLICT", error: "stale", current_version: 7 } } },
+        { version: 4, data: sheet(2) },
+      );
+      const { container, byTestId, unmount } = await mount(
+        h(CharacterSheetHeader, { actor: sheet(2), actorId: ACTOR_ID, campaignId: CAMPAIGN_ID, client }),
+      );
+      await click(byTestId("btn-long-rest"));
+      await confirmLongRest(container);
+      transport.routes[r.route] = r.reply;
+      await click(byTestId(r.button));
+
+      const putVersions = transport.calls.filter((call) => call.method === "PUT").map((call) => (call.body as any).expected_version);
+      assert.deepEqual(putVersions, r.expectedPutVersions);
+      assert.equal(byTestId("sheet-version-conflict"), null);
+      assert.equal(state.actors.value[ACTOR_ID].version, r.reply.body.actor.version);
+      unmount();
+    });
+  }
+});
+
+describe("CharacterSheetHeader: ActorUpdated broadcasts re-render the sheet (AC5)", () => {
+  const cases = [
+    { id: "a newer broadcast replaces the displayed name and level", version: 5, name: "Krag the Victorious", level: 3, expectedSummary: "Level 3 barbarian" },
+    { id: "a stale broadcast is ignored", version: 1, name: "Old Krag", level: 1, expectedSummary: "Level 2 barbarian" },
+  ];
+
+  for (const c of cases) {
+    it(c.id, async () => {
+      const { client } = newClient({}, { version: 2, data: sheet(2, "Krag", "barbarian") });
+      const { byTestId, unmount } = await mount(
+        h(CharacterSheetHeader, { actor: sheet(2, "Krag", "barbarian"), actorId: ACTOR_ID, campaignId: CAMPAIGN_ID, client, context: "live_table" }),
+      );
+      client.applyServerEnvelope({ type: "ActorUpdated", actorId: ACTOR_ID, version: c.version, data: sheet(c.level, c.name, "barbarian") });
+      await flush();
+      assert.equal(byTestId("sheet-actor-summary").textContent, c.expectedSummary);
+      unmount();
+    });
+  }
+});
+
+describe("HudDrawers: selected actor sheet", () => {
   beforeEach(() => {
-    originalFetch = globalThis.fetch;
-    isSheetDrawerOpenSignal.value = false;
-    activeHudActorSignal.value = null;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-    isSheetDrawerOpenSignal.value = false;
-    activeHudActorSignal.value = null;
-  });
-
-  it("WHEN an Actor sheet renders in CampaignWorkspace, CharacterSheetHeader displays compact '[Level Up (Lvl N -> N+1)]', '[Short Rest]', and '[Long Rest]' action buttons (AC1)", async () => {
-    const actor = createDefaultActorData("actor-warrior", "Thorin");
-    actor.classId = "fighter";
-    actor.attributes.level = 3;
-
-    const { getElementByTestId, unmount } = await renderToDom(
-      h(CharacterSheetHeader, {
-        actor,
-        campaignId: "campaign-101",
-        context: "campaign_workspace",
-      })
-    );
-
-    const levelUpBtn = getElementByTestId("btn-level-up");
-    const shortRestBtn = getElementByTestId("btn-short-rest");
-    const longRestBtn = getElementByTestId("btn-long-rest");
-    const nameEl = getElementByTestId("sheet-actor-name");
-    const summaryEl = getElementByTestId("sheet-actor-summary");
-
-    assert.ok(levelUpBtn, "btn-level-up must be mounted");
-    assert.ok(shortRestBtn, "btn-short-rest must be mounted");
-    assert.ok(longRestBtn, "btn-long-rest must be mounted");
-    assert.equal(nameEl?.textContent, "Thorin");
-    assert.equal(summaryEl?.textContent, "Level 3 fighter");
-    assert.equal(levelUpBtn.textContent, "Level Up (Lvl 3 -> 4)");
-    assert.equal(shortRestBtn.textContent, "Short Rest");
-    assert.equal(longRestBtn.textContent, "Long Rest");
-    assert.equal(levelUpBtn.getAttribute("aria-label"), "Level Up (Lvl 3 -> 4)");
-    assert.equal(levelUpBtn.disabled, false);
-
-    unmount();
-  });
-
-  it("WHEN user clicks '[Level Up]' in CampaignWorkspace, LevelUpModal opens and onSave persists the updated actor via PUT /api/v1/campaigns/{campaign_id}/actors/{actor_id} (AC2)", async () => {
-    const actor = createDefaultActorData("actor-mage", "Elminster");
-    actor.classId = "wizard";
-    actor.attributes.level = 1;
-    actor.attributes.casterType = "full";
-
-    let capturedUrl = "";
-    let capturedMethod = "";
-    let capturedBody: any = null;
-    let capturedContentType = "";
-
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      capturedUrl = String(input);
-      capturedMethod = init?.method ?? "";
-      capturedBody = init?.body ? JSON.parse(String(init.body)) : null;
-      capturedContentType = (init?.headers as Record<string, string>)?.[ "Content-Type" ] ?? "";
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }) as any;
-
-    let savedActor = null as Dnd5eActorData | null;
-    const { getElementByTestId, container, unmount } = await renderToDom(
-      h(CharacterSheetHeader, {
-        actor,
-        campaignId: "camp-xyz-9",
-        context: "campaign_workspace",
-        onSave: (updated) => {
-          savedActor = updated;
-        },
-      })
-    );
-
-    const levelUpBtn = getElementByTestId("btn-level-up");
-    assert.ok(levelUpBtn, "Level Up button must be present");
-
-    // Click to open LevelUpModal
-    levelUpBtn.dispatchEvent(new (globalThis as any).Event("click"));
-    await new Promise((r) => setTimeout(r, 15));
-
-    const modalEl = container.querySelector("[data-testid='level-up-modal']");
-    assert.ok(modalEl, "LevelUpModal should be mounted in DOM upon click");
-
-    // Persist actor update using the REST channel contract
-    const updatedActor: Dnd5eActorData = {
-      ...actor,
-      attributes: { ...actor.attributes, level: 2 },
-    };
-
-    await persistActorUpdate(updatedActor, {
-      campaignId: "camp-xyz-9",
-      isLiveTable: false,
-      onSave: (res) => {
-        savedActor = res;
-      },
-    });
-
-    assert.equal(capturedUrl, "/api/v1/campaigns/camp-xyz-9/actors/actor-mage");
-    assert.equal(capturedMethod, "PUT");
-    assert.equal(capturedContentType, "application/json");
-    assert.equal(capturedBody?.attributes?.level, 2);
-    assert.equal(savedActor?.attributes.level, 2);
-
-    unmount();
-  });
-
-  it("WHEN an Actor sheet renders in Live Table HudDrawers, CharacterSheetHeader displays compact '[Level Up]', '[Short Rest]', and '[Long Rest]' buttons (AC3)", async () => {
-    const actor = createDefaultActorData("actor-cleric", "Kyra");
-    actor.classId = "cleric";
-    actor.attributes.level = 5;
-
-    const { getElementByTestId, unmount } = await renderToDom(
-      h(CharacterSheetHeader, {
-        actor,
-        context: "hud_drawer",
-        isLiveTable: true,
-      })
-    );
-
-    const levelUpBtn = getElementByTestId("btn-level-up");
-    const shortRestBtn = getElementByTestId("btn-short-rest");
-    const longRestBtn = getElementByTestId("btn-long-rest");
-
-    assert.ok(levelUpBtn);
-    assert.ok(shortRestBtn);
-    assert.ok(longRestBtn);
-    assert.equal(levelUpBtn.textContent, "Level Up", "Live Table mode must render compact 'Level Up' text");
-    assert.equal(shortRestBtn.textContent, "Short Rest");
-    assert.equal(longRestBtn.textContent, "Long Rest");
-
-    unmount();
-  });
-
-  it("WHEN user completes LevelUp or Rest from HudDrawers during an active table session, onSave dispatches a WebSocket UpdateActorData TrameCommand to TableRoomActor (AC4)", async () => {
-    const actor = createDefaultActorData("actor-rogue", "Merisiel");
-    actor.classId = "rogue";
-    actor.attributes.level = 4;
-
-    const dispatchedCommands: any[] = [];
-    const dispatchCommand = (cmd: any) => {
-      dispatchedCommands.push(cmd);
-    };
-
-    let fetchInvoked = false;
-    globalThis.fetch = (async () => {
-      fetchInvoked = true;
-      return new Response("{}", { status: 200 });
-    }) as any;
-
-    const actorSig = signal<Dnd5eActorData>(actor);
-
-    const { getElementByTestId, container, unmount } = await renderToDom(
-      h(CharacterSheetHeader, {
-        actor,
-        actorSignal: actorSig,
-        context: "hud_drawer",
-        isLiveTable: true,
-        tableSessionActive: true,
-        dispatchCommand,
-      })
-    );
-
-    // Test Short Rest modal opening
-    const shortRestBtn = getElementByTestId("btn-short-rest");
-    shortRestBtn.dispatchEvent(new (globalThis as any).Event("click"));
-    await new Promise((r) => setTimeout(r, 15));
-    assert.ok(container.querySelector("[data-testid='rest-modal']"), "Short Rest modal must open");
-
-    // Test dual persistence contract for live table
-    const updatedActor: Dnd5eActorData = {
-      ...actor,
-      attributes: { ...actor.attributes, level: 5 },
-    };
-
-    await persistActorUpdate(updatedActor, {
-      isLiveTable: true,
-      tableSessionActive: true,
-      dispatchCommand,
-      actorSignal: actorSig,
-    });
-
-    assert.equal(fetchInvoked, false, "WebSocket CQRS mode must bypass HTTP REST fetch");
-    assert.equal(dispatchedCommands.length, 1, "Must dispatch exactly 1 UpdateActorData command");
-    assert.equal(dispatchedCommands[0].type, "UpdateActorData");
-    assert.equal(dispatchedCommands[0].actorId, "actor-rogue");
-    assert.equal(dispatchedCommands[0].actor.attributes.level, 5);
-    assert.equal(actorSig.value.attributes.level, 5);
-
-    unmount();
-  });
-
-  it("WHEN table clients receive an UpdateActorData event, Preact signals update the actor sheet reactively across all connected clients (AC5)", async () => {
-    const initialActor = createDefaultActorData("actor-barbarian", "Krag");
-    initialActor.classId = "barbarian";
-    initialActor.attributes.level = 2;
-
-    const actorSignal = signal<Dnd5eActorData>(initialActor);
-
-    const { getElementByTestId, unmount } = await renderToDom(
-      h(CharacterSheetHeader, {
-        actor: initialActor,
-        actorSignal,
-        context: "live_table",
-        isLiveTable: true,
-      })
-    );
-
-    const summaryEl = getElementByTestId("sheet-actor-summary");
-    assert.equal(summaryEl?.textContent, "Level 2 barbarian");
-
-    // Simulate remote server WebSocket broadcast received by table client
-    const remoteUpdatedActor: Dnd5eActorData = {
-      ...initialActor,
-      name: "Krag the Victorious",
-      attributes: { ...initialActor.attributes, level: 3 },
-    };
-
-    handleUpdateActorDataEvent(
-      { type: "UpdateActorData", actor: remoteUpdatedActor },
-      actorSignal
-    );
-
-    await new Promise((r) => setTimeout(r, 15));
-
-    assert.equal(actorSignal.value.name, "Krag the Victorious");
-    assert.equal(actorSignal.value.attributes.level, 3);
-
-    const nameEl = getElementByTestId("sheet-actor-name");
-    assert.equal(nameEl?.textContent, "Krag the Victorious");
-    assert.equal(getElementByTestId("sheet-actor-summary")?.textContent, "Level 3 barbarian");
-
-    // Test alternative event envelope: { event: 'ActorUpdated', payload: ... }
-    handleUpdateActorDataEvent(
-      {
-        event: "ActorUpdated",
-        payload: { ...remoteUpdatedActor, name: "Krag Chieftain" },
-      },
-      actorSignal
-    );
-    assert.equal(actorSignal.value.name, "Krag Chieftain");
-
-    unmount();
-  });
-
-  it("handleUpdateActorDataEvent ignores events targeting other actors without clobbering local actorSignal (AC5)", () => {
-    const localActor = createDefaultActorData("actor-local-1", "Local Hero");
-    const actorSignal = signal<Dnd5eActorData>(localActor);
-
-    // Incoming event for a foreign actor with mismatched event.actorId
-    handleUpdateActorDataEvent(
-      {
-        type: "UpdateActorData",
-        actorId: "actor-foreign-99",
-        actor: { ...localActor, id: "actor-foreign-99", name: "Foreign Intruder" },
-      },
-      actorSignal
-    );
-    assert.equal(actorSignal.value.id, "actor-local-1");
-    assert.equal(actorSignal.value.name, "Local Hero", "Foreign event must not clobber local actor name");
-
-    // Incoming event with mismatched actor_id
-    handleUpdateActorDataEvent(
-      {
-        event: "ActorUpdated",
-        actor_id: "actor-foreign-99",
-        payload: { ...localActor, id: "actor-foreign-99", name: "Foreign Intruder 2" },
-      },
-      actorSignal
-    );
-    assert.equal(actorSignal.value.id, "actor-local-1");
-    assert.equal(actorSignal.value.name, "Local Hero");
-
-    // Incoming event with mismatched data.id only
-    handleUpdateActorDataEvent(
-      {
-        type: "UpdateActorData",
-        data: { ...localActor, id: "actor-foreign-99", name: "Foreign Intruder 3" },
-      },
-      actorSignal
-    );
-    assert.equal(actorSignal.value.id, "actor-local-1");
-    assert.equal(actorSignal.value.name, "Local Hero");
-
-    // Incoming event matching local actorId updates actorSignal
-    handleUpdateActorDataEvent(
-      {
-        type: "UpdateActorData",
-        actorId: "actor-local-1",
-        actor: { ...localActor, name: "Local Hero Promoted" },
-      },
-      actorSignal
-    );
-    assert.equal(actorSignal.value.name, "Local Hero Promoted");
-
-    // Incoming event with matching envelope actorId but conflicting data.id does not clobber
-    handleUpdateActorDataEvent(
-      {
-        type: "UpdateActorData",
-        actorId: "actor-local-1",
-        actor: { ...localActor, id: "actor-foreign-different", name: "Spoofed Actor" },
-      },
-      actorSignal
-    );
-    assert.equal(actorSignal.value.name, "Local Hero Promoted");
-
-    // Incoming event with missing IDs does not clobber local actor
-    handleUpdateActorDataEvent(
-      {
-        type: "UpdateActorData",
-        actor: { name: "Anonymous Update" } as any,
-      },
-      actorSignal
-    );
-    assert.equal(actorSignal.value.name, "Local Hero Promoted");
-  });
-
-  it("displays explicit business guardrails with full keyboard and ARIA accessibility (WCAG 2.1 AA) (AC6)", async () => {
-    const maxLevelActor = createDefaultActorData("actor-paladin", "Seelah");
-    maxLevelActor.classId = "paladin";
-    maxLevelActor.attributes.level = 20;
-
-    const { container, getElementByTestId, unmount } = await renderToDom(
-      h(CharacterSheetHeader, {
-        actor: maxLevelActor,
-        context: "campaign_workspace",
-      })
-    );
-
-    const headerEl = getElementByTestId("character-sheet-header");
-    assert.equal(headerEl?.getAttribute("role"), "region");
-    assert.equal(headerEl?.getAttribute("aria-label"), "Character Sheet Actions");
-
-    const toolbar = container.querySelector("[role='toolbar']");
-    assert.ok(toolbar, "Progression actions must be wrapped in role='toolbar'");
-    assert.equal(toolbar.getAttribute("aria-label"), "Progression and Rest Actions");
-
-    const levelUpBtn = getElementByTestId("btn-level-up");
-    assert.ok(levelUpBtn);
-    assert.equal(levelUpBtn.disabled, true, "Level 20 actor must have disabled Level Up button");
-    assert.equal(levelUpBtn.getAttribute("aria-disabled"), "true");
-    assert.equal(
-      levelUpBtn.getAttribute("aria-label"),
-      "Level Up disabled: Maximum Level 20 reached"
-    );
-    assert.equal(levelUpBtn.getAttribute("title"), "Maximum level reached (20)");
-
-    // Verify clicking disabled button does not open LevelUpModal
-    levelUpBtn.dispatchEvent(new (globalThis as any).Event("click"));
-    await new Promise((r) => setTimeout(r, 15));
-    assert.equal(container.querySelector("[data-testid='level-up-modal']"), null);
-
-    // Verify Short and Long Rest buttons provide accessible labels
-    const shortRestBtn = getElementByTestId("btn-short-rest");
-    const longRestBtn = getElementByTestId("btn-long-rest");
-    assert.equal(shortRestBtn.getAttribute("aria-label"), "Short Rest");
-    assert.equal(longRestBtn.getAttribute("aria-label"), "Long Rest");
-
-    unmount();
-  });
-
-  it("HudDrawers mounts CharacterSheetHeader in drawer and emits UpdateActorData on drawer save", async () => {
-    const liveActor = createDefaultActorData("actor-hud-1", "Live Champion");
-    liveActor.classId = "fighter";
-    liveActor.attributes.level = 2;
-
-    const dispatched: any[] = [];
-    const dispatch = (cmd: any) => dispatched.push(cmd);
-
-    // Open drawer via signal
     isSheetDrawerOpenSignal.value = true;
-
-    const { container, unmount } = await renderToDom(
-      h(HudDrawers, {
-        actor: liveActor,
-        actorId: liveActor.id,
-        dispatchCommand: dispatch,
-        isLiveTable: true,
-        tableSessionActive: true,
-      })
-    );
-
-    const drawerEl = container.querySelector("[data-testid='hud-sheet-drawer']");
-    assert.ok(drawerEl, "Sheet drawer must be rendered when isSheetDrawerOpenSignal is true");
-
-    const headerEl = container.querySelector("[data-testid='character-sheet-header']");
-    assert.ok(headerEl, "CharacterSheetHeader must be rendered inside HudDrawers sheet drawer");
-
-    const levelUpBtn = container.querySelector("[data-testid='btn-level-up']");
-    assert.ok(levelUpBtn);
-    assert.equal(levelUpBtn.textContent, "Level Up", "In HudDrawers, button text must be 'Level Up'");
-
-    // Verify Long Rest save in HudDrawers dispatches exactly one UpdateActorData command
-    const longRestBtn = container.querySelector("[data-testid='btn-long-rest']");
-    assert.ok(longRestBtn, "Long Rest button must be present in sheet header");
-    longRestBtn.dispatchEvent(new (globalThis as any).Event("click"));
-    await new Promise((r) => setTimeout(r, 15));
-
-    const restModal = container.querySelector("[data-testid='rest-modal']");
-    assert.ok(restModal, "RestModal must open upon clicking Long Rest");
-
-    const buttons = restModal.querySelectorAll("button");
-    const confirmBtn: any = Array.from(buttons).find((b: any) =>
-      b.textContent?.includes("Confirm Long Rest")
-    );
-    assert.ok(confirmBtn, "Confirm Long Rest button must be rendered in RestModal");
-    confirmBtn.dispatchEvent(new (globalThis as any).Event("click"));
-    await new Promise((r) => setTimeout(r, 20));
-
-    assert.equal(dispatched.length, 1, "Must dispatch exactly one UpdateActorData command without duplicates");
-    assert.equal(dispatched[0].type, "UpdateActorData");
-    assert.equal(dispatched[0].actorId, "actor-hud-1");
-
-    // Verify Escape key closes the sheet drawer
-    drawerEl.dispatchEvent(new (globalThis as any).Event("keydown", { key: "Escape" }));
-    assert.equal(isSheetDrawerOpenSignal.value, false, "Escape key must close sheet drawer");
-
-    unmount();
   });
 
-  it("canonical packages/web/src/hud/HudDrawers.tsx mounts CharacterSheetHeader and shares reactive signals", async () => {
-    assert.equal(canonicalSheetDrawerOpenSignal, isSheetDrawerOpenSignal, "Drawer signals must be singletons");
+  const cases = [
+    { id: "a selected actor with a readable sheet mounts the header and the 12-widget view", selected: ACTOR_ID, expectSheet: true },
+    { id: "a selected token without a readable sheet shows the no-sheet hint", selected: "44444444-4444-4444-8444-444444444444", expectSheet: false },
+  ];
 
-    canonicalSheetDrawerOpenSignal.value = true;
-    const actor = createDefaultActorData("actor-can-1", "Canonical Hero");
-    const { container, unmount } = await renderToDom(
-      h(CanonicalHudDrawers, {
-        actor,
-        actorId: actor.id,
-      })
-    );
+  for (const c of cases) {
+    it(c.id, async () => {
+      const { client } = newClient({}, { version: 1, data: sheet(2) });
+      selectedActorIdSignal.value = c.selected;
+      const { byTestId, unmount } = await mount(h(HudDrawers, { campaignId: CAMPAIGN_ID, client }));
+      assert.equal(Boolean(byTestId("character-sheet-header")), c.expectSheet);
+      assert.equal(Boolean(byTestId("declarative-sheet-view")), c.expectSheet);
+      assert.equal(Boolean(byTestId("hud-no-sheet")), !c.expectSheet);
+      unmount();
+      selectedActorIdSignal.value = null;
+    });
+  }
 
-    const headerEl = container.querySelector("[data-testid='character-sheet-header']");
-    assert.ok(headerEl, "CharacterSheetHeader must be rendered inside canonical HudDrawers");
-    assert.ok(container.querySelector("[data-testid='btn-level-up']"), "Level Up button must be mounted");
-    assert.ok(container.querySelector("[data-testid='btn-short-rest']"), "Short Rest button must be mounted");
-    assert.ok(container.querySelector("[data-testid='btn-long-rest']"), "Long Rest button must be mounted");
-
-    canonicalSheetDrawerOpenSignal.value = false;
+  it("Escape inside the sheet drawer closes it", async () => {
+    const { client } = newClient({}, { version: 1, data: sheet(2) });
+    const { byTestId, unmount } = await mount(h(HudDrawers, { campaignId: CAMPAIGN_ID, client, actorId: ACTOR_ID }));
+    byTestId("hud-sheet-drawer").dispatchEvent(new (globalThis as any).Event("keydown", { key: "Escape" }));
+    assert.equal(isSheetDrawerOpenSignal.value, false);
     unmount();
   });
+});
+
+describe("sheet widget commands route to REST", () => {
+  it("ROLL_DICE becomes POST /dice/roll with mapped visibility", async () => {
+    const roll = `POST /api/v1/campaigns/${CAMPAIGN_ID}/dice/roll`;
+    const { client, transport } = newClient({ [roll]: { status: 200, body: { roll: { total: 12, terms: [] } } } });
+    createSheetCommandDispatcher({ client, campaignId: CAMPAIGN_ID, actorId: ACTOR_ID })({
+      cmd: "ROLL_DICE",
+      expression: "1d20+3",
+      visibility: "PUBLIC",
+      reason: "Stealth",
+    });
+    await flush();
+    assert.deepEqual(transport.calls[0].body, { expression: "1d20+3", visibility: "Public", reason: "Stealth" });
+  });
+
+  it("UPDATE_ACTOR_SHEET { path, value } saves the whole sheet with the stored version", async () => {
+    const { client, transport } = newClient(
+      { [`PUT ${ACTOR_URL}`]: { status: 200, body: { actor: actorDto({ version: 3 }) } } },
+      { version: 2, data: sheet(2) },
+    );
+    createSheetCommandDispatcher({ client, campaignId: CAMPAIGN_ID, actorId: ACTOR_ID })({
+      cmd: "UPDATE_ACTOR_SHEET",
+      path: "sheet.attributes.hp.current",
+      value: 4,
+    });
+    await flush();
+    const body = transport.calls[0].body as Record<string, any>;
+    assert.equal(body.expected_version, 2);
+    assert.equal(body.data.attributes.hp.current, 4);
+    assert.equal(body.data.attributes.hp.max, 10);
+  });
+
+  it("restDiceRollService returns the total and the kept dice", async () => {
+    const roll = `POST /api/v1/campaigns/${CAMPAIGN_ID}/dice/roll`;
+    const { client } = newClient({
+      [roll]: { status: 200, body: { roll: { total: 9, expression: "1d10", terms: [{ kept_rolls: [9] }] } } },
+    });
+    assert.deepEqual(await restDiceRollService(client, CAMPAIGN_ID).roll("1d10"), { total: 9, rolls: [9], formula: "1d10" });
+  });
+
+  const paths = [
+    { id: "strips the sheet. binding prefix", path: "sheet.attributes.level", expected: { attributes: { level: 4, hp: 1 } } },
+    { id: "creates missing intermediate objects", path: "notes.private", expected: { attributes: { level: 1, hp: 1 }, notes: { private: 4 } } },
+  ];
+  for (const p of paths) {
+    it(`setAtPath ${p.id}`, () => {
+      assert.deepEqual(setAtPath({ attributes: { level: 1, hp: 1 } }, p.path, 4), p.expected);
+    });
+  }
 });

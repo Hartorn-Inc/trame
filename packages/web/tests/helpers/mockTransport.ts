@@ -14,6 +14,7 @@ export interface RecordedCall {
   url: string;
   body: unknown;
   credentials: RequestCredentials | undefined;
+  headers: Record<string, string>;
 }
 
 /** Socket double: `open()` / `receive()` drive the client, `sent` records frames. */
@@ -72,8 +73,9 @@ export function createMockTransport(routes: Record<string, RouteReply> = {}): Mo
       transport.calls.push({
         method,
         url,
-        body: typeof init.body === "string" ? JSON.parse(init.body) : undefined,
+        body: typeof init.body === "string" ? JSON.parse(init.body) : init.body,
         credentials: init.credentials,
+        headers: (init.headers as Record<string, string>) ?? {},
       });
       const reply = transport.routes[`${method} ${url}`] ?? { status: 404, body: { error: "not found" } };
       return new Response(reply.body === undefined ? "" : JSON.stringify(reply.body), { status: reply.status });
@@ -110,6 +112,19 @@ export function campaignDto(overrides: Record<string, unknown> = {}): Record<str
     role: "GM",
     created_at: "2026-11-01T10:00:00Z",
     actors: [],
+    ...overrides,
+  };
+}
+
+/** `ActorDto` JSON as returned by the actor routes. */
+export function actorDto(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "33333333-3333-4333-8333-333333333333",
+    campaign_id: "22222222-2222-4222-8222-222222222222",
+    owner_user_id: null,
+    name: "Brakka",
+    version: 1,
+    data: {},
     ...overrides,
   };
 }

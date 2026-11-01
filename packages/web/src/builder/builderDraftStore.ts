@@ -45,18 +45,6 @@ export class BuilderDraftStore {
         equipmentIds: patch.equipmentIds
           ? [...patch.equipmentIds]
           : this.activeDraft.equipmentIds,
-        spellIds: patch.spellIds
-          ? [...patch.spellIds]
-          : this.activeDraft.spellIds,
-        featIds: patch.featIds
-          ? [...patch.featIds]
-          : this.activeDraft.featIds,
-        skills: patch.skills
-          ? [...patch.skills]
-          : this.activeDraft.skills,
-        customData: patch.customData
-          ? { ...this.activeDraft.customData, ...patch.customData }
-          : this.activeDraft.customData,
       };
     }
     this.notify();

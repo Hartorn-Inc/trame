@@ -162,14 +162,14 @@ function CampaignView({ client, campaignId }: { client: ApiClient; campaignId: s
   }, [client, campaignId]);
 
   if (!shouldMountCanvas.value) {
-    return <MobileCompanionView />;
+    return <MobileCompanionView campaignId={campaignId} client={client} isGm={campaign?.role === 'GM'} />;
   }
 
   return (
     <div class="ds-app-shell" data-testid="trame-app-root">
       <ShellHeader client={client} inCampaign />
       <main style={{ flex: 1, overflowY: 'auto' }}>
-        <CampaignWorkspace campaignId={campaignId} userRole={toUserRole(campaign?.role)} />
+        <CampaignWorkspace campaignId={campaignId} userRole={toUserRole(campaign?.role)} client={client} />
       </main>
     </div>
   );
