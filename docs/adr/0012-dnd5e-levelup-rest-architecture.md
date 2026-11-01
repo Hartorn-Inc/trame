@@ -1,7 +1,7 @@
 # ADR-0012: D&D 5e Level-Up (Lvl 1-20), Short/Long Rests, and SRD 5.1 Compendium Expansion Architecture
 
 ## Status
-Accepted
+Superseded by [ADR-0036](./0036-dnd5e-levelup-rest-architecture.md). This record is kept for history only. ADR-0036 restates this decision under a non-colliding number; its Decision 3 (Dual Persistence Channel) is in turn superseded by [ADR-0037](./0037-actor-rest-vs-token-trame-command-boundary.md).
 
 ## Context
 The `@trame/game-system-dnd5e` package initially contained a minimal `applyLevelUp` function in `packages/game-systems/dnd5e/src/progression.ts` without support for subclass selection, Ability Score Improvement (`+2` or `+1/+1`) versus Feat choices, spell learning, or multiclass/Pact Magic slot progression. In addition, `@trame/web` lacked UI modals (`LevelUpModal`, `RestModal`) for executing progression or rests from `CampaignWorkspace` or `HudDrawers.tsx`. Finally, the embedded `compendium.ts` only included a small subset of SRD 5.1 items and monsters without bilingual (`en`/`fr`) metadata.

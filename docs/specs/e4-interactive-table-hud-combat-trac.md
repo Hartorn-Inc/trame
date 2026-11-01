@@ -1,39 +1,54 @@
-# Spécification Technique [E4] : Interactive Table HUD, Reaction Banner, GM Override Toolbar, Ping/Ruler & Spatial Audio
+# Technical Specification [E4]: Interactive Table HUD, Reaction Banner, GM Override Toolbar, Ping/Ruler & Spatial Audio
 
-## 1. Contexte & Objectifs Métier
+## 1. Context & Business Goals
 
-Le module Focus Table HUD fournit l'interface interactive temps-réel de TRAME pour les joueurs et le Meneur de Jeu (MJ / Game Master). Il combine :
-1. **Exploration & Combat Tracker** : Bascule de mode (`TableMode::Exploration` vs `TableMode::TurnByTurn`), indicateur de pause MJ globale (`Spacebar`), carrousel d'initiative, badges d'économie d'actions (`[A]`, `[BA]`, `[R]`, `[Move]`) et bandeau de réaction interrompant le tour pendant 5 secondes.
-2. **Barre d'outils d'Override Omnipotente MJ & Annulation 1-Click** : Popover d'édition instantanée HP / Temp HP / death saves / spell slots, remboursement en 1 clic des actions et du déplacement, téléportation forcée sans dépense de vitesse, sélecteur de preset d'ambiance lumineuse (`DAYLIGHT`, `DUSK`, `NIGHT_MOONLIGHT`, `PITCH_DARKNESS`) et tiroir d'historique `UndoDrawer` avec raccourci `Cmd+Z` / `Ctrl+Z`.
-3. **Outils Table Non-Bloquants** : Règle de mesure multi-points 3D (support des métriques `5-5-5`, `5-10-5` et Euclidienne intégrant l'élévation `ElevationFt`), pings radar éphémères synchronisés, annotations vectorielles libres/polygones avec option de conversion en murs physiques.
-4. **Moteur Audio Spatialisé WebAudio** : Positionnement 3D des émetteurs sonores et occlusion acoustique passe-bas dynamique calculée via raycast WASM contre les murs marqués `blocks_sound`.
+The Focus Table HUD module provides TRAME's real-time interactive interface for players and the Game Master (GM). It combines:
+1. **Exploration & combat tracker**: mode switch (`TableMode::Exploration` vs `TableMode::TurnByTurn`), global GM pause indicator (`Spacebar`), initiative carousel, action economy badges (`[A]`, `[BA]`, `[R]`, `[Move]`) and a reaction banner that interrupts the turn.
+2. **GM override toolbar & 1-click undo**: instant edit popover for HP / Temp HP / death saves / spell slots, 1-click refund of actions and movement, forced teleport without spending speed, ambient lighting preset selector (`DAYLIGHT`, `DUSK`, `NIGHT_MOONLIGHT`, `PITCH_DARKNESS`) and the `UndoDrawer` history drawer with the `Cmd+Z` / `Ctrl+Z` shortcut.
+3. **Non-blocking table tools**: 3D multi-point measuring ruler (supports the `5-5-5`, `5-10-5` and Euclidean metrics, including `ElevationFt` elevation), synchronized ephemeral radar pings, freehand/polygon vector annotations with an option to convert them into physical walls.
+4. **WebAudio spatial audio engine**: 3D positioning of sound emitters and dynamic low-pass acoustic occlusion computed by a WASM raycast against walls flagged `blocks_sound`.
 
----
-
-## 2. Architecture & Découplage des Responsabilités
-
-### 2.1 Découplage React 19 vs PixiJS v8 SceneGraph vs WASM Bridge
-Pour garantir 60 FPS sans encombrer le réconciliateur React ni saturer la bande passante WebSocket :
-- **Interactions dynamiques éphémères** : La manipulation active de la règle (glisser-déposer de waypoints), l'animation des pings radar et l'affichage fantôme des tracés vectoriels s'exécutent directement dans le SceneGraph PixiJS v8 (`packages/web/src/canvas/SceneGraph.ts`, calque `uiControlHud`). Ces calculs interrogent le bridge WebAssembly `wasmBridge.ts` de façon synchrone sans déclencher de re-render React.
-- **États persistés & HUD** : Le store Zustand (`tableStore.ts` / `TableClientStore`) conserve uniquement l'outil actif, les entités validées et les métadonnées de combat. Les composants React (`CombatTracker.tsx`, `ReactionBanner.tsx`, `GmOverrideToolbar.tsx`, `UndoDrawer.tsx`) s'abonnent sélectivement aux mutations de ce store.
-- **Diffusion réseau** : Les pings radar émettent des messages légers de broadcast non persistés en base de données. Les tracés vectoriels validés et les segments de murs physiques émettent des commandes persistées au `TableRoomActor`.
-
-### 2.2 Autorité Temporelle & Synchronisation Réseau (`TimeSync`)
-Pour éviter toute désynchronisation du compte à rebours de réaction de 5 secondes :
-- Le serveur `TableRoomActor` fait autorité sur le temps. Lors du déclenchement d'une opportunité, le serveur suspend l'interpolation du token et assigne un timestamp absolu d'échéance : `expires_at_ms = current_server_time_ms + 5000`.
-- Le client estime son décalage d'horloge `server_time_offset_ms` via un protocole d'échange continu `TimeSyncPing` / `TimeSyncPong`.
-- Le client dérive le temps restant affiché : `remaining_ms = max(0, expires_at_ms - (client_now_ms + server_time_offset_ms))`.
-
-### 2.3 Undo 1-Click & Rollback Transactionnel
-- `TableRoomActor` maintient une pile d'annulation native `undo_stack: VecDeque<UndoEntry>` bornée à 50 entrées dans `crates/trame-engine/src/commands.rs`.
-- L'exécution de `TrameCommand::UndoLastAction` restaure un snapshot atomique de la table `TableSnapshotData` et reconstruit l'arbre spatial `Bvh2D`.
-- La diffusion de `ServerEnvelope::ActionUndone` ordonne au client de mettre à jour `TableClientStore` et d'invoquer `DualBufferFogOfWar.rollbackSnapshot(snapshot_id)` pour invalider les dalles de brouillard explorées lors du tour annulé.
+> **Status note (convergence spec v3, decision G2):** the 5-second reaction countdown described in this document is superseded. A `ThreatReach` exit stops the token on the exit square and opens a reaction prompt for the reactor's owner (the GM for monsters) with **no timer**; the owner resolves it with `DecideReaction` (`Trigger` or `Pass`), and the GM can force `Pass` at any time. Movement resumes after `Pass` or after resolution. `TimeSync` remains the clock-offset protocol for any other server-authoritative timer.
 
 ---
 
-## 3. Contrats Réseau & Structures de Données (`crates/trame-server/src/sync.rs`)
+## 2. Architecture & Separation of Concerns
 
-### 3.1 Types Communs
+### 2.1 Decoupling Preact vs PixiJS v8 SceneGraph vs WASM Bridge
+To guarantee 60 FPS without loading the Preact reconciler or saturating WebSocket bandwidth:
+- **Ephemeral dynamic interactions**: active ruler manipulation (dragging waypoints), radar ping animation and ghost display of vector strokes run directly in the PixiJS v8 SceneGraph (`packages/web/src/canvas/SceneGraph.ts`, `uiControlHud` layer). These computations query the WebAssembly bridge `wasmBridge.ts` synchronously without triggering a Preact re-render.
+- **Persisted state & HUD**: the signal store (`tableStore.ts` / `TableClientStore`, `PreactSignalState`) keeps only the active tool, the confirmed entities and the combat metadata. The Preact components (`CombatTracker.tsx`, `ReactionBanner.tsx`, `GmOverrideToolbar.tsx`, `UndoDrawer.tsx`) subscribe selectively to changes in this store.
+- **Network broadcast**: radar pings emit lightweight broadcast messages that are not persisted in the database. Confirmed vector strokes and physical wall segments emit commands persisted by the `TableRoomActor`.
+
+### 2.2 Time Authority & Network Synchronization (`TimeSync`)
+To avoid any desynchronization of server-authoritative countdowns:
+- The `TableRoomActor` server is the time authority. When a timed window opens, the server assigns an absolute deadline timestamp: `expires_at_ms = current_server_time_ms + duration_ms`.
+- The client estimates its clock offset `server_time_offset_ms` through a continuous exchange (`ClientEnvelope::Ping` / `ServerEnvelope::Pong`).
+- The client derives the remaining time to display: `remaining_ms = max(0, expires_at_ms - (client_now_ms + server_time_offset_ms))`.
+
+### 2.3 1-Click Undo & Transactional Rollback
+- `TableState` keeps a native undo stack `undo_stack: VecDeque<UndoEntry>` bounded to 50 entries (`MAX_UNDO_HISTORY`) in `crates/trame-engine/src/commands.rs`.
+- Running `TrameCommand::UndoLastAction` restores an atomic table snapshot (`TableSnapshotData`) and rebuilds the `Bvh2D` spatial tree.
+- The broadcast of the restored state orders the client to update `TableClientStore` and to call `DualBufferFogOfWar.rollbackSnapshot(snapshot_id)` to invalidate the fog tiles explored during the undone turn.
+
+---
+
+## 3. Network Contracts & Data Structures (`crates/trame-server/src/sync.rs`)
+
+The structures below are the E4 design contract. In the implemented wire protocol, every table mutation travels as `ClientEnvelope::SubmitCommand(TrameCommand)` and comes back as `ServerEnvelope::CommandAccepted { seq_id, events, state }` (or `CommandRejected`). The mapping is:
+
+| E4 design message | Implemented as |
+| :--- | :--- |
+| `SetTableMode`, `ToggleTablePause` | `TrameCommand::SetTableMode { mode, exploration_paused, initiative_order }` |
+| `GmOverrideHp`, `GmRefundAction` | `TrameCommand::GmOverrideTokenResources` |
+| `GmTeleportToken` | `TrameCommand::MoveToken { gm_teleport: true, .. }` |
+| `GmSetAmbientPreset` | `TrameCommand::SetAmbientLighting { preset: AmbientLightingPreset }` |
+| `GmTriggerUndo` / `ActionUndone` | `TrameCommand::UndoLastAction` / `CommandAccepted` with the restored state |
+| `DeclareReaction` / `TableInterruptSuspended` / `TableInterruptResolved` | `TrameCommand::DecideReaction` / `ReactionPrompt` in `ProjectedTableState.active_reaction_prompts` |
+| `PointerPing` / `PointerPingBroadcast` | `ClientEnvelope::PointerPing { pos, color_hex }` / `ServerEnvelope::PointerPingBroadcast` |
+| `TimeSyncPing` / `TimeSyncPong` | `ClientEnvelope::Ping` / `ServerEnvelope::Pong` |
+
+### 3.1 Common Types
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -59,7 +74,7 @@ pub struct DeathSaveCounters {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AmbientPreset {
+pub enum AmbientLightingPreset {
     Daylight,
     Dusk,
     NightMoonlight,
@@ -105,7 +120,7 @@ pub struct AudioEmitterConfig {
 }
 ```
 
-### 3.2 Messages Émis par le Client (`ClientEnvelope`)
+### 3.2 Messages Sent by the Client (`ClientEnvelope`, design contract)
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -134,7 +149,7 @@ pub enum ClientEnvelope {
         target_elevation_ft: f32,
     },
     GmSetAmbientPreset {
-        preset: AmbientPreset,
+        preset: AmbientLightingPreset,
     },
     GmTriggerUndo,
     DeclareReaction {
@@ -166,7 +181,7 @@ pub enum ClientEnvelope {
 }
 ```
 
-### 3.3 Messages Diffusés par le Serveur (`ServerEnvelope`)
+### 3.3 Messages Broadcast by the Server (`ServerEnvelope`, design contract)
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -223,249 +238,247 @@ pub enum ServerEnvelope {
 
 ---
 
-## 4. Modules Fonctionnels & Techniques
+## 4. Functional & Technical Modules
 
-### Module 1 : Top Bar d'Exploration / Combat & Combat Tracker
+### Module 1: Exploration / Combat Top Bar & Combat Tracker
 
-#### 1.1 Bascule de Mode & Pause MJ (`Spacebar`)
-- Le composant `CombatTopBar` affiche le mode courant (`TableMode`).
-- WHEN le Game Master clique sur le bouton de bascule ou déclenche le raccourci dédié, THEN `CombatTopBar` émet `ClientEnvelope::SetTableMode { mode }`.
-- WHEN le Game Master appuie sur la touche `Spacebar` hors d'un champ de saisie de texte, THEN `CombatTopBar` émet `ClientEnvelope::ToggleTablePause { is_paused }`.
-- WHEN `TableRoomActor` reçoit `ToggleTablePause`, THEN `TableRoomActor` fige les déplacements de tous les tokens et diffuse `ServerEnvelope::TablePauseToggled` à tous les clients.
-- WHEN `TablePauseToggled { is_paused: true }` arrive sur le client, THEN un bandeau visuel rouge semi-transparent `[ PAUSE MJ ]` s'affiche au centre de la vue et bloque les entrées de déplacement des joueurs.
+#### 1.1 Mode Switch & GM Pause (`Spacebar`)
+- The `CombatTopBar` component shows the current mode (`TableMode`).
+- WHEN the Game Master clicks the toggle button or uses the dedicated shortcut, THEN `CombatTopBar` sends `SetTableMode { mode }`.
+- WHEN the Game Master presses `Spacebar` outside a text input, THEN `CombatTopBar` sends `SetTableMode` with the toggled `exploration_paused`.
+- WHEN `TableRoomActor` receives the pause toggle, THEN `TableRoomActor` freezes the movement of every token and broadcasts the new state to every client.
+- WHEN the paused state arrives on the client, THEN a semi-transparent red `[ GM PAUSE ]` banner appears in the center of the view and blocks player movement input.
 
-#### 1.2 Carrousel d'Initiative & Ordre du Tour
-- Le composant `CombatTracker.tsx` affiche horizontalement la séquence ordonnée des tokens participant au combat.
-- Chaque carte de token présente le portrait, le nom, l'élévation `ElevationFt`, la valeur d'initiative et les badges d'économie d'actions.
-- La carte du token actif possède une bordure dorée animée et un indicateur de temps de tour écoulé.
-- Le Game Master dispose de boutons d'avance (`[ Suivant ]`) et de recul (`[ Précédent ]`) pour piloter le tour actif.
+#### 1.2 Initiative Carousel & Turn Order
+- The `CombatTracker.tsx` component shows the ordered sequence of the tokens in combat horizontally. Players see only the combatants they can see, with the active turn re-indexed for them.
+- Each token card shows the portrait, the name, the `ElevationFt` elevation, the initiative value and the action economy badges.
+- The active token's card has an animated gold border and an elapsed turn time indicator.
+- The Game Master has forward (`[ Next ]`, `AdvanceTurn`) and back (`[ Previous ]`) buttons to drive the active turn.
 
-#### 1.3 Badges d'Économie d'Action (`[A]`, `[BA]`, `[R]`, `[Move]`)
-- Quatre badges identifient l'état des ressources du tour du token sélectionné :
-  - `[A]` : Action principale (vert = disponible, gris = dépensée).
-  - `[BA]` : Action bonus (bleu = disponible, gris = dépensée).
-  - `[R]` : Réaction (ambre = disponible, gris = dépensée).
-  - `[Move]` : Vitesse de déplacement restante en pieds (ex: `25/30 ft`).
-- WHEN un token effectue une attaque ou un sort, THEN `TableClientStore` met à jour l'état des badges en temps-réel suite aux événements du serveur.
+#### 1.3 Action Economy Badges (`[A]`, `[BA]`, `[R]`, `[Move]`)
+- Four badges show the turn resource state of the selected token (`ActionEconomyType`):
+  - `[A]`: main Action (green = available, grey = spent).
+  - `[BA]`: Bonus Action (blue = available, grey = spent).
+  - `[R]`: Reaction (amber = available, grey = spent).
+  - `[Move]`: remaining movement speed in feet (for example `25/30 ft`).
+- WHEN a token makes an attack or casts a spell, THEN `TableClientStore` updates the badges in real time from the server events.
 
 ---
 
-### Module 2 : Bandeau d'Interruption de Réaction (5 Secondes) & TimeSync
+### Module 2: Reaction Interruption Banner & TimeSync
 
-#### 2.1 Détection de Menace (`ThreatReach`) & Interruption
-- Chaque token de créature hostile possède une portée de menace `ThreatReach` (valeur par défaut : `5.0` pieds).
-- WHEN un token en mouvement quitte le rayon `ThreatReach` d'une créature hostile éligible à une réaction, THEN `TableRoomActor` interrompt l'interpolation spatiale du token sur le serveur.
-- `TableRoomActor` génère un identifiant d'interruption unique monotone `trigger_id: u64`.
-- `TableRoomActor` calcule le timestamp d'échéance absolu `expires_at_ms = server_now_ms + 5000` et diffuse `ServerEnvelope::TableInterruptSuspended`.
+> See the status note in section 1: the 5-second countdown below is superseded by decision G2 (no timer, the GM can force `Pass`). The detection, prompt and GM override rules still apply.
 
-#### 2.2 Synchronisation d'Horloge (`TimeSync`)
-- Le client transmet périodiquement (toutes les 10 secondes et à la connexion) `ClientEnvelope::TimeSyncPing { client_send_ms: Date.now() }`.
-- `TableRoomActor` répond immédiatement avec `ServerEnvelope::TimeSyncPong { client_send_ms, server_recv_ms, server_send_ms }`.
-- `TableClientStore` met à jour le décalage temporel moyen :
+#### 2.1 Threat Detection (`ThreatReach`) & Interruption
+- Every hostile creature token has a `ThreatReach` (default: `5.0` feet).
+- WHEN a moving token leaves the `ThreatReach` radius of a hostile creature eligible to react, THEN `MoveToken` stops the token on the exit square on the server.
+- The server creates a `ReactionPrompt` with a unique `prompt_id`, the reactor and the pending destination, and adds it to `active_reaction_prompts`.
+
+#### 2.2 Clock Synchronization (`TimeSync`)
+- The client periodically (every 10 seconds and on connection) sends `ClientEnvelope::Ping { client_time_ms: Date.now() }`.
+- `TableRoomActor` replies immediately with `ServerEnvelope::Pong { client_time_ms, server_time_ms }`.
+- `TableClientStore` updates the average clock offset:
   ```typescript
-  const roundTripMs = (Date.now() - client_send_ms) - (server_send_ms - server_recv_ms);
-  const serverTimeOffsetMs = server_send_ms + (roundTripMs / 2) - Date.now();
+  const roundTripMs = Date.now() - client_time_ms;
+  const serverTimeOffsetMs = server_time_ms + (roundTripMs / 2) - Date.now();
   ```
 
-#### 2.3 Cycle de Vie du Bandeau HUD & Reprise Automatique
-- WHEN le client reçoit `TableInterruptSuspended`, THEN le composant `ReactionBanner.tsx` monte à l'écran pour les joueurs contrôlant l'acteur réactif et pour le Game Master.
-- Le bandeau affiche une jauge de progression dégressive de 5 secondes, le nom de l'interrupteur, le token ciblé et le bouton `[ Utiliser Réaction ]`.
-- Le timer calcule à chaque trame : `remaining_ms = Math.max(0, expires_at_ms - (Date.now() + serverTimeOffsetMs))`.
-- WHEN l'utilisateur clique sur `[ Utiliser Réaction ]`, THEN le client émet `ClientEnvelope::DeclareReaction { trigger_id, actor_id, reaction_id, accepted: true }`.
-- WHEN `remaining_ms` atteint 0 sans déclaration explicite, THEN `TableRoomActor` résout l'interruption avec `was_interrupted: false` et diffuse `ServerEnvelope::TableInterruptResolved`.
-- WHEN le client reçoit `TableInterruptResolved`, THEN `ReactionBanner.tsx` se démonte et le token reprend sa trajectoire d'interpolation.
+#### 2.3 HUD Banner Lifecycle & Resumption
+- WHEN the client receives a new reaction prompt, THEN the `ReactionBanner.tsx` component mounts for the players controlling the reacting actor and for the Game Master.
+- The banner shows the interrupting creature's name, the targeted token and the `[ Use Reaction ]` button.
+- WHEN the user clicks `[ Use Reaction ]`, THEN the client sends `DecideReaction { prompt_id, actor_id, decision: Trigger }`.
+- WHEN the prompt is resolved (`Trigger` or `Pass`), THEN the server removes it, `ReactionBanner.tsx` unmounts, and the token resumes its move (after `Pass`) or stays on the exit square until the reaction is resolved.
 
-#### 2.4 Contrôles d'Override MJ sur la Réaction
-- Le Game Master dispose de trois boutons d'intervention directe sur le bandeau :
-  - `[ Forcer ]` : Valide immédiatement l'interruption sans attendre le clic du joueur.
-  - `[ Ignorer ]` : Rejette immédiatement la réaction et reprend la course du token.
-  - `[ Pause ]` : Gèle le décompte de 5 secondes pour permettre une discussion tactique vocale.
+#### 2.4 GM Override Controls on the Reaction
+- The Game Master has direct intervention buttons on the banner:
+  - `[ Force ]`: accepts the interruption immediately without waiting for the player's click.
+  - `[ Ignore ]`: forces `Pass` immediately and resumes the token's move.
 
 ---
 
-### Module 3 : Barre d'Override Omnipotente MJ & Tiroir d'Annulation 1-Click (`UndoDrawer`)
+### Module 3: GM Override Toolbar & 1-Click Undo Drawer (`UndoDrawer`)
 
-#### 3.1 Popover d'Édition Instantanée HP, Temp HP & Death Saves
-- WHEN le Game Master clique sur un token avec le modificateur `Alt` ou active l'outil d'édition de la barre `GmOverrideToolbar`, THEN un popover d'ajustement apparaît.
-- Le popover permet de saisir directement les points de vie (`hp`), les points de vie temporaires (`temp_hp`), un ajustement relatif des emplacements de sorts (`spell_slots_delta`) et les compteurs de sauvegarde contre la mort (`death_saves`).
-- `DeathSaveCounters` comprend deux champs numériques bornés entre 0 et 3 : `successes` et `failures`.
-- WHEN le Game Master valide le popover, THEN `GmOverrideToolbar` transmet `ClientEnvelope::GmOverrideHp` immédiatement au `TableRoomActor`.
-- `TableRoomActor` applique la modification et diffuse le nouvel état atomique du token.
+#### 3.1 Instant HP, Temp HP & Death Save Edit Popover
+- WHEN the Game Master clicks a token with the `Alt` modifier or enables the edit tool of the `GmOverrideToolbar`, THEN an adjustment popover appears.
+- The popover lets the GM enter hit points (`hp`), temporary hit points (`temp_hp`), a relative spell slot adjustment (`spell_slots_delta`) and the death saving throw counters (`death_saves`).
+- `DeathSaveCounters` has two numeric fields bounded between 0 and 3: `successes` and `failures`.
+- WHEN the Game Master confirms the popover, THEN `GmOverrideToolbar` sends `GmOverrideTokenResources` to the `TableRoomActor` immediately.
+- `TableRoomActor` applies the change and broadcasts the token's new atomic state.
 
-#### 3.2 Remboursement d'Économie d'Action en 1 Clic
-- `GmOverrideToolbar` propose quatre icônes de remboursement instantané (`[+A]`, `[+BA]`, `[+R]`, `[+Move]`).
-- WHEN le Game Master clique sur une icône de remboursement, THEN `GmOverrideToolbar` transmet `ClientEnvelope::GmRefundAction { token_id, economy_type }`.
-- `TableRoomActor` rétablit la ressource correspondante sans altérer le reste de l'état du token et diffuse la mise à jour.
+#### 3.2 1-Click Action Economy Refund
+- `GmOverrideToolbar` offers four instant refund icons (`[+A]`, `[+BA]`, `[+R]`, `[+Move]`).
+- WHEN the Game Master clicks a refund icon, THEN `GmOverrideToolbar` sends `GmOverrideTokenResources` with the matching flag (`has_action`, `has_bonus_action`, `has_reaction`, `speed_remaining_ft`).
+- `TableRoomActor` restores the matching resource without changing the rest of the token's state and broadcasts the update.
 
-#### 3.3 Téléportation Forcée sans Dépense de Déplacement
-- WHEN le Game Master sélectionne l'outil Téléportation Forcée et clique sur une coordonnée cible de la table, THEN `GmOverrideToolbar` émet `ClientEnvelope::GmTeleportToken { token_id, target_x, target_y, target_elevation_ft }`.
-- `TableRoomActor` déplace immédiatement le token aux coordonnées spécifiées sans décrémenter son quota de déplacement `Movement` ni déclencher d'attaque d'opportunité.
+#### 3.3 Forced Teleport Without Spending Movement
+- WHEN the Game Master selects the forced teleport tool and clicks a target coordinate on the table, THEN `GmOverrideToolbar` sends `MoveToken { token_id, to_top_left, to_elevation_ft, gm_teleport: true }`.
+- `TableRoomActor` moves the token to the given coordinates immediately, without reducing its `Movement` budget and without triggering an opportunity attack.
 
-#### 3.4 Sélecteur de Presets d'Ambiance Lumineuse
-- `GmOverrideToolbar` intègre un menu déroulant pour les ambiances de table :
-  - `DAYLIGHT` : Luminosité ambiante 1.0, rayon d'obscurité nul, teinte neutre.
-  - `DUSK` : Luminosité ambiante 0.45, teinte orangée/ambre.
-  - `NIGHT_MOONLIGHT` : Luminosité ambiante 0.15, teinte bleu nuit, vision dans le noir requise.
-  - `PITCH_DARKNESS` : Luminosité ambiante 0.0, obscurité absolue, aucune vision sans source de lumière.
-- WHEN le Game Master sélectionne un preset, THEN `GmOverrideToolbar` émet `ClientEnvelope::GmSetAmbientPreset { preset }`.
-- `TableRoomActor` synchronise l'ambiance et met à jour les uniformes du shader `LightingShader.ts`.
+#### 3.4 Ambient Lighting Preset Selector
+- `GmOverrideToolbar` includes a drop-down menu of table ambiences (`AmbientLightingPreset`):
+  - `DAYLIGHT`: ambient brightness 1.0, no darkness radius, neutral tint.
+  - `DUSK`: ambient brightness 0.45, orange/amber tint.
+  - `NIGHT_MOONLIGHT`: ambient brightness 0.15, night-blue tint, darkvision required.
+  - `PITCH_DARKNESS`: ambient brightness 0.0, absolute darkness, no vision without a light source.
+- WHEN the Game Master selects a preset, THEN `GmOverrideToolbar` sends `SetAmbientLighting { preset }`.
+- `TableRoomActor` synchronizes the ambience and the client updates the `LightingShader.ts` uniforms.
 
-#### 3.5 Tiroir d'Annulation 1-Click (`UndoDrawer.tsx`) & Ring Buffer Moteur
-- Le tiroir `UndoDrawer.tsx` répertorie les 50 dernières actions enregistrées dans `undo_stack` de `trame-engine`.
-- Chaque entrée affiche l'icône de l'action, l'auteur, l'acteur ciblé et le timestamp relatif.
-- WHEN le Game Master clique sur l'entrée la plus récente ou appuie sur le raccourci `Cmd+Z` / `Ctrl+Z`, THEN `UndoDrawer` émet `ClientEnvelope::GmTriggerUndo`.
-- `TableRoomActor` exécute `TrameCommand::UndoLastAction`, dépile le dernier `UndoEntry`, restaure `TableSnapshotData` et reconstruit `Bvh2D`.
-- `TableRoomActor` diffuse `ServerEnvelope::ActionUndone { snapshot_id, restored_token_ids }`.
+#### 3.5 1-Click Undo Drawer (`UndoDrawer.tsx`) & Engine Ring Buffer
+- The `UndoDrawer.tsx` drawer lists the last 50 actions recorded in the `trame-engine` `undo_stack`.
+- Each entry shows the action icon, the author, the targeted actor and the relative timestamp.
+- WHEN the Game Master clicks the most recent entry or presses `Cmd+Z` / `Ctrl+Z`, THEN `UndoDrawer` sends `UndoLastAction`.
+- `TableRoomActor` runs `TrameCommand::UndoLastAction`, pops the last `UndoEntry`, restores `TableSnapshotData` and rebuilds `Bvh2D`.
+- `TableRoomActor` broadcasts the restored state (`CommandAccepted`).
 
-#### 3.6 Rollback Transactionnel du FBO de Brouillard de Guerre (`DualBufferFogOfWar`)
-- WHEN le client reçoit `ServerEnvelope::ActionUndone`, THEN `DualBufferFogOfWar.rollbackSnapshot(snapshot_id)` s'exécute.
-- `DualBufferFogOfWar` réinitialise les dalles de brouillard explorées associées au token restauré pour ce tour, empêchant la persistance visuelle des zones découvertes par erreur.
+#### 3.6 Transactional Rollback of the Fog of War FBO (`DualBufferFogOfWar`)
+- WHEN the client receives the restored state after an undo, THEN `DualBufferFogOfWar.rollbackSnapshot(snapshot_id)` runs.
+- `DualBufferFogOfWar` resets the explored fog tiles linked to the restored token for that turn, so areas discovered by mistake do not stay visible.
 
 ---
 
-### Module 4 : Outils Table Non-Bloquants (PixiJS v8 SceneGraph Overlay)
+### Module 4: Non-Blocking Table Tools (PixiJS v8 SceneGraph Overlay)
 
-#### 4.1 Règle Multi-Points Non-Bloquante avec Élévation 3D
-- La fonction `measureRulerWaypointsFt` dans `packages/web/src/canvas/SceneGraph.ts` calcule la distance cumulative le long d'une suite de waypoints $P_i = (X_i, Y_i, Z_i)$ où $Z_i$ représente `ElevationFt` en pieds et $(X_i, Y_i)$ les coordonnées monde en pieds (grille 5 ft).
-- Formules de calcul supportées entre deux points consécutifs $A$ et $B$ :
-  1. **Euclidean** :
+#### 4.1 Non-Blocking Multi-Point Ruler with 3D Elevation
+- The `measureRulerWaypointsFt` function in `packages/web/src/canvas/SceneGraph.ts` computes the cumulative distance along a sequence of waypoints $P_i = (X_i, Y_i, Z_i)$ where $Z_i$ is `ElevationFt` in feet and $(X_i, Y_i)$ are world coordinates in feet (5 ft grid).
+- Supported formulas between two consecutive points $A$ and $B$ (`RulerMetric`):
+  1. **Euclidean**:
      $$\Delta X = |X_B - X_A|, \quad \Delta Y = |Y_B - Y_A|, \quad \Delta Z = |Z_B - Z_A|$$
      $$D = \sqrt{\Delta X^2 + \Delta Y^2 + \Delta Z^2}$$
-  2. **5-5-5 (Chebyshev 3D)** :
+  2. **5-5-5 (3D Chebyshev)**:
      $$D = \max(\Delta X, \Delta Y, \Delta Z)$$
-  3. **5-10-5 (Alternance D&D 5e avec hypoténuse 3D)** :
-     Soit la distance 2D horizontale standard :
+  3. **5-10-5 (D&D 5e alternating diagonals with a 3D hypotenuse)**:
+     Let the standard horizontal 2D distance be:
      $$D_{diag} = \min(\Delta X, \Delta Y), \quad D_{str} = \max(\Delta X, \Delta Y) - D_{diag}$$
      $$N_{diag} = \lfloor D_{diag} / 5.0 \rfloor$$
      $$D_{2D} = D_{str} + \lfloor N_{diag} / 2 \rfloor \times 15.0 + (N_{diag} \pmod 2) \times 5.0$$
      $$D_{3D} = \sqrt{D_{2D}^2 + \Delta Z^2}$$
-- Le rendu visuel de la règle s'exécute dans `uiControlHud` à 60 FPS sans mise à jour React.
+- The ruler is rendered in `uiControlHud` at 60 FPS without a Preact update.
 
-#### 4.2 Radar Pings Éphémères
-- WHEN un utilisateur effectue un clic molette ou un appui long avec la touche `P`, THEN `SceneGraph` intercepte l'événement et transmet `ClientEnvelope::PointerPing { x, y, ping_type }`.
-- `TableRoomActor` diffuse `ServerEnvelope::PointerPingBroadcast` aux clients sans écriture en base de données.
-- `SceneGraph` anime un sprite circulaire d'onde radar (`PingPulse`) avec décroissance exponentielle d'opacité sur une durée fixe de 1.5 seconde.
+#### 4.2 Ephemeral Radar Pings (`PointerPing`)
+- WHEN a user middle-clicks or long-presses with the `P` key, THEN `SceneGraph` intercepts the event and sends `ClientEnvelope::PointerPing { pos, color_hex }`.
+- `TableRoomActor` broadcasts `ServerEnvelope::PointerPingBroadcast` to the clients without writing to the database.
+- `SceneGraph` animates a circular radar-wave `PointerPing` sprite with exponential opacity decay over a fixed 1.5 seconds.
 
-#### 4.3 Tracés Vectoriels & Conversion en Murs Physiques
-- L'outil de dessin vectoriel `DrawingOverlay` permet de tracer des segments à main levée ou des polygones réguliers.
-- La configuration du tracé comprend l'épaisseur de ligne, la couleur hexadécimale, la fermeture du polygone (`is_closed`) et le drapeau `has_physical_walls`.
-- WHEN l'utilisateur termine son tracé, THEN `DrawingOverlay` émet `ClientEnvelope::CreateDrawing { drawing }`.
-- WHEN `has_physical_walls` vaut `true`, THEN `TableRoomActor` extrait les segments linéaires du tracé et les insère comme entités `PhysicalWall` dans l'arbre spatial `Bvh2D` du moteur `trame-engine` avec les propriétés `blocks_movement: true`, `blocks_vision: true`, et `blocks_sound: true`.
-- `TableRoomActor` diffuse `ServerEnvelope::DrawingCreated` à tous les clients pour affichage persistant.
+#### 4.3 Vector Strokes & Conversion to Physical Walls
+- The `DrawingOverlay` vector drawing tool draws freehand segments or regular polygons.
+- The stroke configuration includes the line width, the hexadecimal color, polygon closing (`is_closed`) and the `has_physical_walls` flag.
+- WHEN the user finishes a stroke, THEN `DrawingOverlay` sends `CreateDrawing { drawing }`.
+- WHEN `has_physical_walls` is `true`, THEN `TableRoomActor` extracts the stroke's line segments and inserts them as `WallSegment` entries in the `trame-engine` `Bvh2D` spatial tree (`AddWall`) with `blocks_movement: true`, `blocks_vision: true` and `blocks_sound: true`.
+- `TableRoomActor` broadcasts the created drawing to every client for persistent display.
 
 ---
 
-### Module 5 : Moteur Audio Spatialisé & Occlusion Acoustique WebAudio
+### Module 5: Spatial Audio Engine & WebAudio Acoustic Occlusion
 
-#### 5.1 Graphe de Nœuds WebAudio
-Pour chaque émetteur sonore provisionné via `AudioEmitterConfig`, le composant `SpatialAudioManager` instancie la chaîne audio suivante :
+#### 5.1 WebAudio Node Graph
+For each sound emitter provisioned through `AudioEmitterConfig`, the `SpatialAudioManager` component creates the following audio chain:
 ```
 [ AudioBufferSourceNode / HTMLMediaElement ]
                     │
                     ▼
-            [ BiquadFilterNode ] (type: 'lowpass', calcul d'occlusion)
+            [ BiquadFilterNode ] (type: 'lowpass', occlusion computation)
                     │
                     ▼
             [ PannerNode ] (panningModel: 'HRTF', distanceModel: 'inverse')
                     │
                     ▼
-            [ GainNode ] (contrôle de volume maître)
+            [ GainNode ] (master volume control)
                     │
                     ▼
         [ AudioContext.destination ]
 ```
 
-#### 5.2 Approvisionnement & Cycle de Vie des Émetteurs
-- La table initialise les émetteurs au chargement de la scène ou lors de la réception de `ServerEnvelope::AudioEmitterUpserted { emitter }`.
-- WHEN `TableRoomActor` supprime une source audio, THEN il diffuse `ServerEnvelope::AudioEmitterRemoved { emitter_id }` et `SpatialAudioManager` libère les nœuds audio correspondants.
-- Le `AudioListener` global est asservi aux coordonnées mondes et à l'élévation du token contrôlé par le joueur local.
+#### 5.2 Emitter Provisioning & Lifecycle
+- The table creates the emitters when the scene loads or when it receives `AudioEmitterUpserted { emitter }`.
+- WHEN `TableRoomActor` removes an audio source, THEN it broadcasts `AudioEmitterRemoved { emitter_id }` and `SpatialAudioManager` releases the matching audio nodes.
+- The global `AudioListener` follows the world coordinates and the elevation of the token controlled by the local player.
 
-#### 5.3 Atténuation Géométrique & Hypoténuse 3D
-- La distance tridimensionnelle $d$ entre l'émetteur $E$ et le récepteur/auditeur $L$ intègre l'élévation `ElevationFt` :
+#### 5.3 Geometric Attenuation & 3D Hypotenuse
+- The three-dimensional distance $d$ between the emitter $E$ and the listener $L$ includes the `ElevationFt` elevation:
   $$d = \sqrt{(X_E - X_L)^2 + (Y_E - Y_L)^2 + (Z_E - Z_L)^2}$$
-- Le modèle d'atténuation libre applique la règle inverse standard avec distance de référence $d_{ref}$ et facteur d'atténuation $rolloff$ :
-  $$\text{Gain}(d) = \begin{cases} 1.0 & \text{si } d \le d_{ref} \\ \dfrac{d_{ref}}{d_{ref} + rolloff \times (d - d_{ref})} & \text{si } d > d_{ref} \end{cases}$$
+- The free-field attenuation model applies the standard inverse rule with a reference distance $d_{ref}$ and a $rolloff$ factor:
+  $$\text{Gain}(d) = \begin{cases} 1.0 & \text{if } d \le d_{ref} \\ \dfrac{d_{ref}}{d_{ref} + rolloff \times (d - d_{ref})} & \text{if } d > d_{ref} \end{cases}$$
 
-#### 5.4 Calcul d'Occlusion Acoustique & Fréquence de Coupure Déterministe
-- Le thread audio exécute un raycast acoustique WASM à une fréquence throttlée de 10 Hz entre la position de l'émetteur et celle de l'auditeur.
-- Le raycast dénombre le total de segments de murs physiques traversés possédant le drapeau `blocks_sound: true` ($N_{walls}$).
-- La fréquence de coupure du filtre passe-bas `BiquadFilterNode.frequency.value` obéit strictement à la formule :
-  $$f_{cutoff} = \frac{20000.0}{1.0 + 3.5 \times N_{walls}} \quad \text{(en Hertz)}$$
-- **Valeurs de référence strictes** :
-  - $N_{walls} = 0 \implies f_{cutoff} = 20000.00 \text{ Hz}$ (aucun filtrage).
+#### 5.4 Acoustic Occlusion & Deterministic Cutoff Frequency (`AcousticOcclusion`)
+- The audio loop runs a WASM acoustic raycast, throttled to 10 Hz, between the emitter and the listener.
+- The raycast counts the physical wall segments crossed that have the `blocks_sound: true` flag ($N_{walls}$).
+- The low-pass filter cutoff frequency `BiquadFilterNode.frequency.value` strictly follows the formula:
+  $$f_{cutoff} = \frac{20000.0}{1.0 + 3.5 \times N_{walls}} \quad \text{(in Hertz)}$$
+- **Strict reference values**:
+  - $N_{walls} = 0 \implies f_{cutoff} = 20000.00 \text{ Hz}$ (no filtering).
   - $N_{walls} = 1 \implies f_{cutoff} = 4444.44 \text{ Hz}$.
   - $N_{walls} = 2 \implies f_{cutoff} = 2500.00 \text{ Hz}$.
   - $N_{walls} = 4 \implies f_{cutoff} = 1333.33 \text{ Hz}$.
-- **Règle de limitation de charge** : WHEN le nombre d'émetteurs sonores dépasse 16, THEN `SpatialAudioManager` applique la dernière fréquence calculée aux émetteurs situés au-delà du 16e rang sans exécuter de nouveau raycast.
+- **Load limiting rule**: WHEN the number of sound emitters exceeds 16, THEN `SpatialAudioManager` applies the last computed frequency to the emitters ranked beyond 16th without running a new raycast.
 
 ---
 
-## 5. Invariants Métier & Règles ASD-STE100
+## 5. Business Invariants & ASD-STE100 Rules
 
-1. **Invariant d'Autorité d'Interruption** : `TableRoomActor` contrôle l'unique source de vérité temporelle pour le décompte de réaction. Aucun client ne peut reprendre un mouvement suspendu sans avoir reçu `ServerEnvelope::TableInterruptResolved`.
-2. **Invariant de Continuité d'Économie d'Action** : WHEN un Game Master déclenche un Undo sur un déplacement de token, THEN `TableRoomActor` recrédite la vitesse de déplacement exactement égale à la longueur du déplacement annulé.
-3. **Invariant de Restauration du Brouillard** : L'annulation d'un déplacement de token révoque immédiatement les cellules de vision dévoilées dans `DualBufferFogOfWar` pour ce tour annulé.
-4. **Invariant de Bounded Concurrency Audio** : `SpatialAudioManager` ne dépasse jamais 16 calculs de raycasts acoustiques simultanés par cycle d'atténuation de 100 ms (10 Hz).
-5. **Invariant de Vocabulaire Contrôlé** : L'interface du tiroir d'historique s'intitule impérativement `UndoDrawer` (l'usage de `HistoryDrawer` est formellement interdit).
+1. **Interruption authority invariant**: `TableRoomActor` is the single source of truth for reaction prompts. No client can resume a suspended move before the server has resolved the prompt.
+2. **Action economy continuity invariant**: WHEN a Game Master undoes a token move, THEN `TableRoomActor` refunds movement speed exactly equal to the length of the undone move.
+3. **Fog restoration invariant**: undoing a token move immediately revokes the vision cells revealed in `DualBufferFogOfWar` for that undone turn.
+4. **Bounded audio concurrency invariant**: `SpatialAudioManager` never exceeds 16 acoustic raycasts per 100 ms attenuation cycle (10 Hz).
+5. **Controlled vocabulary invariant**: the history drawer interface must be named `UndoDrawer` (`HistoryDrawer` is forbidden).
 
 ---
 
-## 6. Plan de Test Déterministe TDD (Node 24 `node:test` + `node:assert/strict`)
+## 6. Deterministic TDD Test Plan (Node 24 `node:test` + `node:assert/strict`)
 
-Les tests unitaires s'exécutent avec le runner natif Node 24 (`npm test` dans `packages/web`) sans dépendance matérielle WebAudio réelle (utilisation d'un mock WebAudio déterministe).
+Unit tests run with the native Node 24 runner (`npm test` in `packages/web`) without real WebAudio hardware (a deterministic WebAudio mock is used).
 
-### 6.1 Tests Audio Spatialisé & Occlusion (`packages/web/tests/audio.test.ts`)
+### 6.1 Spatial Audio & Occlusion Tests (`packages/web/tests/audio.test.ts`)
 
-#### Test 6.1.1 : Distance Euclidienne 3D avec Élévation $\Delta Z$
-- **Description** : Calculer la distance entre un émetteur à $(0, 0, 0)$ et un auditeur à $(30, 40, 120)$.
-- **Assertion** : Vérifier que la distance calculée vaut exactement $\sqrt{30^2 + 40^2 + 120^2} = \sqrt{900 + 1600 + 14400} = \sqrt{16900} = 130.00$ pieds.
+#### Test 6.1.1: 3D Euclidean Distance with Elevation $\Delta Z$
+- **Description**: compute the distance between an emitter at $(0, 0, 0)$ and a listener at $(30, 40, 120)$.
+- **Assertion**: the computed distance is exactly $\sqrt{30^2 + 40^2 + 120^2} = \sqrt{900 + 1600 + 14400} = \sqrt{16900} = 130.00$ feet.
 
-#### Test 6.1.2 : Gain d'Atténuation Acoustique en Champ Libre
-- **Description** : Configurer $d_{ref} = 10.0$, $rolloff = 1.0$, et distance $d = 50.0$.
-- **Assertion** : Vérifier que le gain linéaire calculé vaut exactement $\frac{10.0}{10.0 + 1.0 \times (50.0 - 10.0)} = \frac{10.0}{50.0} = 0.20$.
+#### Test 6.1.2: Free-Field Acoustic Attenuation Gain
+- **Description**: configure $d_{ref} = 10.0$, $rolloff = 1.0$ and distance $d = 50.0$.
+- **Assertion**: the computed linear gain is exactly $\frac{10.0}{10.0 + 1.0 \times (50.0 - 10.0)} = \frac{10.0}{50.0} = 0.20$.
 
-#### Test 6.1.3 : Fréquences de Coupure Passe-Bas Déterministes par Occlusion de Murs
-- **Description** : Simuler l'interposition de 1, 2 et 4 murs marqués `blocks_sound: true`.
-- **Assertions** :
-  - Avec 1 mur traversé, vérifier que `BiquadFilterNode.frequency.value` vaut exactement `4444.44` Hz (arrondi à 2 décimales).
-  - Avec 2 murs traversés, vérifier que `BiquadFilterNode.frequency.value` vaut exactement `2500.00` Hz (arrondi à 2 décimales).
-  - Avec 4 murs traversés, vérifier que `BiquadFilterNode.frequency.value` vaut exactement `1333.33` Hz (arrondi à 2 décimales).
+#### Test 6.1.3: Deterministic Low-Pass Cutoff Frequencies from Wall Occlusion
+- **Description**: simulate 1, 2 and 4 interposed walls flagged `blocks_sound: true`.
+- **Assertions**:
+  - With 1 wall crossed, `BiquadFilterNode.frequency.value` is exactly `4444.44` Hz (rounded to 2 decimals).
+  - With 2 walls crossed, `BiquadFilterNode.frequency.value` is exactly `2500.00` Hz (rounded to 2 decimals).
+  - With 4 walls crossed, `BiquadFilterNode.frequency.value` is exactly `1333.33` Hz (rounded to 2 decimals).
 
-#### Test 6.1.4 : Plafond de Charge à 16 Émetteurs Concurrants
-- **Description** : Enregistrer 20 émetteurs audio simultanés.
-- **Assertion** : Vérifier que le dispatcher de raycast WASM n'émet que 16 requêtes de raycasting par intervalle de 100 ms, et que les 4 émetteurs restants conservent leur valeur de fréquence précédente sans lever d'exception.
+#### Test 6.1.4: 16 Concurrent Emitter Load Ceiling
+- **Description**: register 20 simultaneous audio emitters.
+- **Assertion**: the WASM raycast dispatcher issues only 16 raycast requests per 100 ms interval, and the 4 remaining emitters keep their previous frequency value without throwing.
 
-### 6.2 Tests de la Règle 3D (`packages/web/tests/ruler.test.ts`)
+### 6.2 3D Ruler Tests (`packages/web/tests/ruler.test.ts`)
 
-#### Test 6.2.1 : Règle Métrique 5-5-5 (Chebyshev 3D)
-- **Description** : Mesurer un segment de waypoints de $(0, 0, 0)$ à $(15, 25, 40)$.
-- **Assertion** : Vérifier que la distance renvoyée vaut $\max(15, 25, 40) = 40.00$ pieds.
+#### Test 6.2.1: 5-5-5 Metric (3D Chebyshev)
+- **Description**: measure a waypoint segment from $(0, 0, 0)$ to $(15, 25, 40)$.
+- **Assertion**: the returned distance is $\max(15, 25, 40) = 40.00$ feet.
 
-#### Test 6.2.2 : Règle Métrique 5-10-5 avec Hypothénuse 3D
-- **Description** : Mesurer un segment de waypoints avec $\Delta X = 10$, $\Delta Y = 10$, $\Delta Z = 20$.
-- **Calcul** : $D_{diag} = 10$, $N_{diag} = 2$. $D_{2D} = 15.0$ pieds. $D_{3D} = \sqrt{15^2 + 20^2} = \sqrt{225 + 400} = 25.0$ pieds.
-- **Assertion** : Vérifier que la fonction `measureRulerWaypointsFt` renvoie exactement `25.00` pieds.
+#### Test 6.2.2: 5-10-5 Metric with a 3D Hypotenuse
+- **Description**: measure a waypoint segment with $\Delta X = 10$, $\Delta Y = 10$, $\Delta Z = 20$.
+- **Computation**: $D_{diag} = 10$, $N_{diag} = 2$. $D_{2D} = 15.0$ feet. $D_{3D} = \sqrt{15^2 + 20^2} = \sqrt{225 + 400} = 25.0$ feet.
+- **Assertion**: `measureRulerWaypointsFt` returns exactly `25.00` feet.
 
-#### Test 6.2.3 : Règle Métrique Euclidienne 3D
-- **Description** : Mesurer un segment de $(0, 0, 0)$ à $(6, 8, 24)$.
-- **Assertion** : Vérifier que la distance renvoyée vaut $\sqrt{36 + 64 + 576} = \sqrt{676} = 26.00$ pieds.
+#### Test 6.2.3: 3D Euclidean Metric
+- **Description**: measure a segment from $(0, 0, 0)$ to $(6, 8, 24)$.
+- **Assertion**: the returned distance is $\sqrt{36 + 64 + 576} = \sqrt{676} = 26.00$ feet.
 
-### 6.3 Tests du Bandeau de Réaction & Horloge (`packages/web/tests/hud.test.ts`)
+### 6.3 Reaction Banner & Clock Tests (`packages/web/tests/hud.test.ts`)
 
-#### Test 6.3.1 : Décroissance Déterministe du Compte à Rebours & Fermeture
-- **Description** : Initialiser `ReactionBanner` avec `expires_at_ms = Date.now() + 5000` et `serverTimeOffsetMs = 0`.
-- **Assertion** : Vérifier que `remainingMs` décroît de 1000 ms chaque seconde et que `ReactionBanner` émet l'état fermé dès que `remainingMs` atteint 0.
+#### Test 6.3.1: Banner Stays Open Until Resolution
+- **Description**: mount `ReactionBanner` with an open reaction prompt and advance the clock by 10 seconds.
+- **Assertion**: `ReactionBanner` stays mounted (there is no timer, decision G2).
 
-#### Test 6.3.2 : Résolution Immédiate par Action MJ
-- **Description** : Simuler la réception de `TableInterruptResolved { trigger_id: 42, was_interrupted: false }` pendant le compte à rebours.
-- **Assertion** : Vérifier que le composant `ReactionBanner` se démonte immédiatement sans attendre l'expiration des 5000 ms.
+#### Test 6.3.2: Immediate Resolution by a GM Action
+- **Description**: simulate the GM forcing `Pass` on the open prompt.
+- **Assertion**: the `ReactionBanner` component unmounts immediately.
 
-### 6.4 Tests de l'Undo 1-Click & Restauration du Brouillard (`packages/web/tests/undo.test.ts`)
+### 6.4 1-Click Undo & Fog Restoration Tests (`packages/web/tests/undo.test.ts`)
 
-#### Test 6.4.1 : Annulation de Déplacement Token & Remboursement d'Économie
-- **Description** : Simuler un déplacement de token de 30 pieds puis l'application de `ActionUndone`.
-- **Assertion** : Vérifier que les coordonnées du token reviennent à leur position antérieure et que le quota `Movement` de `ActionEconomyType` est recrédité de 30 pieds.
+#### Test 6.4.1: Token Move Undo & Economy Refund
+- **Description**: simulate a 30-foot token move followed by an undo.
+- **Assertion**: the token coordinates return to their previous position and the `Movement` budget (`ActionEconomyType`) is refunded by 30 feet.
 
-#### Test 6.4.2 : Invalidation Transactionnelle du Cache de Brouillard
-- **Description** : Invoquer `DualBufferFogOfWar.rollbackSnapshot(snapshot_id)` après l'annulation d'un déplacement.
-- **Assertion** : Vérifier que les pixels modifiés par le déplacement annulé dans la texture GPU repassent à la valeur non-explorée (0).
+#### Test 6.4.2: Transactional Fog Cache Invalidation
+- **Description**: call `DualBufferFogOfWar.rollbackSnapshot(snapshot_id)` after undoing a move.
+- **Assertion**: the pixels changed by the undone move in the GPU texture return to the unexplored value (0).

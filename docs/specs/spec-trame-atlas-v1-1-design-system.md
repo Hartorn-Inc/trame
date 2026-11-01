@@ -1,47 +1,47 @@
-# Spécification Technique & Fonctionnelle : TRAME ATLAS v1.1 Design System, Architecture Hybride Canvas Theme & Validation Impeccable Gate
+# Technical & Functional Specification: TRAME ATLAS v1.1 Design System, Hybrid Canvas Theme Architecture & Impeccable Gate Validation
 
-## 1. Vue d'Ensemble & Objectif Stratégique
+## 1. Overview & Strategic Goal
 
-### 1.1 Contexte et Problématique
-L'application TRAME offre une expérience de jeu sur table virtuelle en temps réel (`ExplorationMode`, `TurnByTurnMode`), des ateliers de préparation de campagne (`CampaignLobby`, `CampaignWorkspace`), des fiches d'acteurs déclaratives (`DeclarativeSheetRenderer`), un wiki collaboratif (`CRDTDocument`) et une interface mobile d'appoint (`MobileCompanionLayout`).
+### 1.1 Context and Problem
+TRAME offers a real-time virtual tabletop experience (`TableMode::Exploration`, `TableMode::TurnByTurn`), campaign preparation workspaces (`CampaignLobby`, `CampaignWorkspace`), declarative actor sheets (`DeclarativeSheetRenderer`), a collaborative wiki (`CRDTDocument`) and a companion mobile interface (`MobileCompanionView`).
 
-L'absence d'un système de design unifié générait plusieurs défauts bloquants :
-1. Les vues Preact et les composants du `WidgetRegistry` utilisaient des couleurs hexadécimales brutes codées en dur sans adaptation aux modes clair, sombre et système.
-2. Le moteur PixiJS v8 et son `SceneGraph` à 7 couches (`backgroundMap`, `gridOverlay`, `aoeTemplates`, `tokens`, `lightingAndVisionMask`, `fogOfWar`, `uiControlHud`) ne disposaient pas d'une passerelle typée avec les thèmes du DOM. Aucun invariant n'interdisait l'altération des battlemaps importées par des filtres CSS globaux.
-3. Les états tactiques (allégeance des tokens d'Actor, indicateur de tour actif, types de `WallSegment` et aperçus fantômes de `MCPStagingMode`) reposaient exclusivement sur la couleur.
-4. Les fiches d'acteurs risquaient des modifications accidentelles de caractéristiques structurelles en pleine session de jeu lors de simples clics de dés.
-5. L'application chargeait des polices distantes depuis des CDN, compromettant le fonctionnement conteneurisé hors-ligne sous Docker et la portabilité des archives `.trame`.
-6. Le pipeline CI ne disposait d'aucun contrôle automatisé pour interdire la régression du contraste WCAG 2.2 AA et l'apparition de code hexadécimal brut.
+The lack of a unified design system caused several blocking defects:
+1. The Preact views and the `WidgetRegistry` components used raw hard-coded hexadecimal colors with no adaptation to light, dark and system modes.
+2. The PixiJS v8 engine and its 7-layer `SceneGraph` (`backgroundMap`, `gridOverlay`, `aoeTemplates`, `tokens`, `lightingAndVisionMask`, `fogOfWar`, `uiControlHud`) had no typed bridge to the DOM themes. No invariant prevented global CSS filters from altering imported battlemaps.
+3. Tactical states (Actor token allegiance, active turn indicator, `WallSegment` kinds and `MCP Staging Mode` ghost previews) relied only on color.
+4. Actor sheets risked accidental changes to structural attributes in the middle of a session from simple dice clicks.
+5. The application loaded remote fonts from CDNs, which broke offline containerized use under Docker and the portability of `.trame` archives.
+6. The CI pipeline had no automated check to prevent WCAG 2.2 AA contrast regressions and raw hexadecimal code.
 
-### 1.2 Objectif & Principe Directeur
-La présente spécification établit et verrouille le système de design **TRAME ATLAS v1.1** autour du principe directeur : **"The Map Is the Workspace"**.
+### 1.2 Goal & Guiding Principle
+This specification establishes and locks the **TRAME ATLAS v1.1** design system around the guiding principle: **"The Map Is the Workspace"**.
 
-Le système repose sur quatre piliers techniques :
-1. Une double source de vérité découplée : des variables CSS pour le DOM Preact (`packages/web/src/styles/tokens.css`) et un registre typé immuable pour WebGL (`packages/web/src/canvas/CanvasThemePalette.ts`).
-2. La règle absolue d'indépendance de l'art cartographique (*The Map-Art Independence Rule*) : les textures de battlemap restent strictement neutres et le calque inexploré de `FogLayer` reste opaque et sombre.
-3. La redondance géométrique systématique (*Non-Color Redundancy*) pour toutes les informations tactiques.
-4. La gouvernance hermétique en deux étapes (audit statique CI `scripts/check-impeccable-design.mjs` et tests unitaires `packages/web/tests/designSystem.test.ts`).
-
----
-
-## 2. Modèle de Domaine & Définitions Ubiquitaires
-
-Conformément au `GLOSSARY.md` et à la norme ASD-STE100, la spécification emploie exclusivement les termes canoniques suivants :
-
-- **Actor** : Agrégat représentant un héros, un monstre ou une créature non-joueur. L'usage des termes `personnage`, `entité` ou `joueur-avatar` est strictement interdit.
-- **CampaignWorkspace** : Coquille applicative Preact authentifiée contenant les espaces `Map`, `Actors`, `Journal`, `Compendium` et `Settings`.
-- **CanvasThemePalette** : Registre typé fournissant les couleurs numériques et les motifs géométriques au `SceneGraph` PixiJS selon le thème résolu.
-- **PadlockEditMode** : État booléen de l'en-tête de `DeclarativeSheetRenderer` commutant entre le mode jeu verrouillé (`aria-pressed="false"`) et le mode édition déverrouillé (`aria-pressed="true"`).
-- **SceneGraph** : Arbre hiérarchique PixiJS v8 à 7 couches rendant le plateau virtuel.
-- **WallSegment** : Segment d'obstacle spatial portant des propriétés d'occlusion lumineuse et de franchissement physique.
-- **WidgetRegistry** : Registre central associant les clés de widgets déclaratifs à leurs composants de rendu Preact.
+The system rests on four technical pillars:
+1. A decoupled dual source of truth: CSS variables for the Preact DOM (`packages/web/src/styles/tokens.css`) and an immutable typed registry for WebGL (`packages/web/src/canvas/CanvasThemePalette.ts`, `CanvasThemePalette`).
+2. The absolute *Map-Art Independence Rule*: battlemap textures stay strictly neutral and the unexplored `FogLayer` layer stays opaque and dark.
+3. Systematic *Non-Color Redundancy* for all tactical information.
+4. Sealed two-stage governance (the CI static audit `scripts/check-impeccable-design.mjs` and the unit tests `packages/web/tests/designSystem.test.ts`).
 
 ---
 
-## 3. Architecture Hybride des Tokens & Typographie Autohébergée
+## 2. Domain Model & Ubiquitous Definitions
 
-### 3.1 Définition des Variables CSS Sémantiques
-Le fichier `packages/web/src/styles/tokens.css` déclare les variables CSS sur `:root` (thème sombre par défaut), `[data-theme="light"]` et via `@media (prefers-color-scheme: light)` lorsque l'attribut est `[data-theme="system"]`.
+According to `GLOSSARY.md` and the ASD-STE100 standard, this specification uses only the following canonical terms:
+
+- **Actor**: aggregate representing a hero, a monster or a non-player creature. The terms `character`, `entity` or `player-avatar` are forbidden.
+- **CampaignWorkspace**: authenticated Preact shell containing the 5 tabs `Table`, `Maps`, `Actors`, `Documents` and `Compendium`, with slide-over `HudDrawers` on the `Table` tab.
+- **CanvasThemePalette**: typed registry providing numeric colors and geometric patterns to the PixiJS `SceneGraph` according to the resolved theme.
+- **PadlockEditMode**: boolean state in the `DeclarativeSheetRenderer` header that switches between the locked play mode (`aria-pressed="false"`) and the unlocked edit mode (`aria-pressed="true"`).
+- **SceneGraph**: 7-layer PixiJS v8 tree that renders the virtual tabletop.
+- **WallSegment**: spatial obstacle segment carrying light occlusion and physical passage properties.
+- **WidgetRegistry**: central registry mapping declarative widget keys to their Preact render components.
+
+---
+
+## 3. Hybrid Token Architecture & Self-Hosted Typography
+
+### 3.1 Semantic CSS Variable Definitions
+The `packages/web/src/styles/tokens.css` file declares the CSS variables on `:root` (dark theme by default), on `[data-theme="light"]`, and through `@media (prefers-color-scheme: light)` when the attribute is `[data-theme="system"]`.
 
 ```css
 :root,
@@ -76,48 +76,48 @@ Le fichier `packages/web/src/styles/tokens.css` déclare les variables CSS sur `
 }
 ```
 
-### 3.2 Matrice de Contraste WCAG 2.2 AA
-Le script de contrôle `scripts/check-impeccable-design.mjs` calcule la luminance relative $L = 0.2126 R + 0.7152 G + 0.0722 B$ et vérifie mathématiquement le ratio $(L_1 + 0.05) / (L_2 + 0.05)$ :
+### 3.2 WCAG 2.2 AA Contrast Matrix
+The check script `scripts/check-impeccable-design.mjs` computes the relative luminance $L = 0.2126 R + 0.7152 G + 0.0722 B$ and mathematically checks the ratio $(L_1 + 0.05) / (L_2 + 0.05)$:
 
-| Paire de Tokens | Mode Sombre (Hex) | Ratio Sombre | Mode Clair (Hex) | Ratio Clair | Règle Normative |
+| Token pair | Dark mode (hex) | Dark ratio | Light mode (hex) | Light ratio | Normative rule |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `--atlas-text` sur `--atlas-bg` | `#F1F4F3` sur `#0F1A25` | 14.8:1 | `#1C3041` sur `#F4F7F9` | 11.2:1 | Texte corps $\ge 4.5:1$ |
-| `--atlas-text` sur `--atlas-surface` | `#F1F4F3` sur `#182736` | 12.3:1 | `#1C3041` sur `#FFFFFF` | 12.6:1 | Texte corps $\ge 4.5:1$ |
-| `--atlas-text-muted` sur `--atlas-bg` | `#B8C7D1` sur `#0F1A25` | 9.2:1 | `#465D6D` sur `#F4F7F9` | 5.3:1 | Texte secondaire $\ge 4.5:1$ |
-| `--atlas-danger` sur `--atlas-surface` | `#D57973` sur `#182736` | 5.2:1 | `#A3333B` sur `#FFFFFF` | 6.4:1 | Texte alerte $\ge 4.5:1$ |
-| `--atlas-on-action` sur `--atlas-action`| `#172535` sur `#F3BB71` | 9.1:1 | `#FFFFFF` sur `#995817` | 5.8:1 | Texte bouton action $\ge 4.5:1$ |
-| `--atlas-focus` sur `--atlas-bg` | `#80CBE2` sur `#0F1A25` | 9.3:1 | `#155D77` sur `#F4F7F9` | 6.8:1 | Anneau focus UI $\ge 3.0:1$ |
-| `--atlas-border` sur `--atlas-bg` | `#405466` sur `#0F1A25` | 3.1:1 | `#ACBFCB` sur `#F4F7F9` | 3.2:1 | Bordure de contrôle $\ge 3.0:1$ |
+| `--atlas-text` on `--atlas-bg` | `#F1F4F3` on `#0F1A25` | 14.8:1 | `#1C3041` on `#F4F7F9` | 11.2:1 | Body text $\ge 4.5:1$ |
+| `--atlas-text` on `--atlas-surface` | `#F1F4F3` on `#182736` | 12.3:1 | `#1C3041` on `#FFFFFF` | 12.6:1 | Body text $\ge 4.5:1$ |
+| `--atlas-text-muted` on `--atlas-bg` | `#B8C7D1` on `#0F1A25` | 9.2:1 | `#465D6D` on `#F4F7F9` | 5.3:1 | Secondary text $\ge 4.5:1$ |
+| `--atlas-danger` on `--atlas-surface` | `#D57973` on `#182736` | 5.2:1 | `#A3333B` on `#FFFFFF` | 6.4:1 | Alert text $\ge 4.5:1$ |
+| `--atlas-on-action` on `--atlas-action`| `#172535` on `#F3BB71` | 9.1:1 | `#FFFFFF` on `#995817` | 5.8:1 | Action button text $\ge 4.5:1$ |
+| `--atlas-focus` on `--atlas-bg` | `#80CBE2` on `#0F1A25` | 9.3:1 | `#155D77` on `#F4F7F9` | 6.8:1 | UI focus ring $\ge 3.0:1$ |
+| `--atlas-border` on `--atlas-bg` | `#405466` on `#0F1A25` | 3.1:1 | `#ACBFCB` on `#F4F7F9` | 3.2:1 | Control border $\ge 3.0:1$ |
 
-Pour la grille vectorielle `--atlas-grid` :
-- En mode sombre, l'application de `rgba(184, 199, 209, 0.16)` sur `--atlas-bg` (`#0F1A25`) produit la couleur composite `#2A353F`. Le contraste Weber calculé $(L_{\text{composite}} - L_{\text{bg}}) / L_{\text{bg}}$ est égal à $0.14$, ce qui garantit une lisibilité discrète sans saturer le regard.
-- En mode clair, l'application de `rgba(28, 48, 65, 0.14)` sur `--atlas-bg` (`#F4F7F9`) produit la couleur composite `#E4E9EC`. Le contraste Weber calculé $(L_{\text{bg}} - L_{\text{composite}}) / L_{\text{bg}}$ est égal à $0.11$.
+For the `--atlas-grid` vector grid:
+- In dark mode, applying `rgba(184, 199, 209, 0.16)` on `--atlas-bg` (`#0F1A25`) produces the composite color `#2A353F`. The computed Weber contrast $(L_{\text{composite}} - L_{\text{bg}}) / L_{\text{bg}}$ equals $0.14$, which keeps it discreetly readable without tiring the eye.
+- In light mode, applying `rgba(28, 48, 65, 0.14)` on `--atlas-bg` (`#F4F7F9`) produces the composite color `#E4E9EC`. The computed Weber contrast $(L_{\text{bg}} - L_{\text{composite}}) / L_{\text{bg}}$ equals $0.11$.
 
-### 3.3 Typographie Autohébergée et Alignement Tabulaire
-1. Le paquet `packages/web` héberge les fichiers WOFF2 dans `packages/web/public/fonts/` :
+### 3.3 Self-Hosted Typography and Tabular Alignment
+1. The `packages/web` package hosts the WOFF2 files in `packages/web/public/fonts/`:
    - `space-grotesk-v16-latin-500.woff2`
    - `space-grotesk-v16-latin-600.woff2`
    - `ibm-plex-sans-v19-latin-regular.woff2` (400)
    - `ibm-plex-sans-v19-latin-500.woff2`
    - `ibm-plex-sans-v19-latin-600.woff2`
    - `OFL-1.1.txt`
-2. Le fichier `packages/web/src/styles/tokens.css` déclare les règles `@font-face` avec la directive `font-display: swap` et des chemins d'accès locaux relatifs. Aucun appel vers `fonts.googleapis.com` ou `fonts.gstatic.com` n'est autorisé.
-3. La classe utilitaire `.atlas-tabular-nums` applique la propriété `font-variant-numeric: tabular-nums; font-family: var(--atlas-font-body);`. Le `DeclarativeSheetRenderer`, le `CombatTracker` et le visualiseur de dés assignent obligatoirement cette classe à l'ensemble des valeurs numériques affichées.
+2. The `packages/web/src/styles/tokens.css` file declares the `@font-face` rules with `font-display: swap` and relative local paths. No call to `fonts.googleapis.com` or `fonts.gstatic.com` is allowed.
+3. The utility class `.atlas-tabular-nums` applies `font-variant-numeric: tabular-nums; font-family: var(--atlas-font-body);`. The `DeclarativeSheetRenderer`, the `CombatTracker` and the dice viewer must assign this class to every displayed numeric value.
 
-### 3.4 Propagation Réactive de l'État de Thème
-1. Le module `packages/web/src/signals/themeSignal.ts` exporte le signal `themeModeSignal = signal<AtlasThemeMode>('system')` et le signal dérivé `resolvedThemeSignal = computed<ResolvedAtlasTheme>(...)`.
-2. Le composant racine `App.tsx` exécute un hook réactif `effect()` qui :
-   - Lit la valeur de `resolvedThemeSignal`.
-   - Assigne l'attribut `data-theme` à la balise `<html>` (`document.documentElement.setAttribute('data-theme', resolvedTheme)`).
-   - Écrit le choix de l'utilisateur dans `localStorage` sous la clé `trame.atlas.theme`.
-3. Le contrôleur du canvas PixiJS s'abonne à `resolvedThemeSignal` et appelle `getCanvasThemePalette(resolvedThemeSignal.value)`. Le contrôleur transmet la palette immuable aux couches vectorielles sans réinitialiser le contexte WebGL.
+### 3.4 Reactive Theme State Propagation
+1. The `packages/web/src/signals/themeSignal.ts` module exports the signal `themeModeSignal = signal<AtlasThemeMode>('system')` and the derived signal `resolvedThemeSignal = computed<ResolvedAtlasTheme>(...)`.
+2. The root `App.tsx` component runs a reactive `effect()` hook that:
+   - Reads the value of `resolvedThemeSignal`.
+   - Sets the `data-theme` attribute on the `<html>` tag (`document.documentElement.setAttribute('data-theme', resolvedTheme)`).
+   - Writes the user's choice to `localStorage` under the key `trame.atlas.theme`.
+3. The PixiJS canvas controller subscribes to `resolvedThemeSignal` and calls `getCanvasThemePalette(resolvedThemeSignal.value)`. The controller passes the immutable palette to the vector layers without resetting the WebGL context.
 
 ---
 
-## 4. Palette PixiJS v8 (`CanvasThemePalette`) & Non-Dépendance à la Couleur
+## 4. PixiJS v8 Palette (`CanvasThemePalette`) & Color Independence
 
-### 4.1 Contrat TypeScript Immuable
-Le fichier `packages/web/src/canvas/CanvasThemePalette.ts` expose l'interface stricte et la fonction de résolution de palette :
+### 4.1 Immutable TypeScript Contract
+The `packages/web/src/canvas/CanvasThemePalette.ts` file exposes the strict interface and the palette resolution function:
 
 ```ts
 export type AtlasThemeMode = "dark" | "light" | "system";
@@ -176,36 +176,36 @@ export interface CanvasThemePaletteSpec {
 export function getCanvasThemePalette(theme: ResolvedAtlasTheme): CanvasThemePaletteSpec;
 ```
 
-### 4.2 Règle d'Indépendance de l'Art Cartographique (*The Map-Art Independence Rule*)
-1. La propriété `mapArtFilter` vaut obligatoirement `"none"` dans les deux thèmes.
-2. Le conteneur PixiJS du calque `backgroundMap` conserve en permanence `filters = []` et n'applique aucun filtre CSS (`filter: none`). Les images de carte importées ne subissent aucune inversion chromatique ni atténuation de luminosité.
-3. La couleur `fogUnexploredHex` reste strictement fixée à `0x0f1a25` (`#0F1A25`) quel que soit le thème actif. Le brouillard inexploré de `FogLayer` demeure un noir ardoise opaque afin de garantir le contraste dynamique des sources lumineuses 2.5D.
-4. La couleur du vide hors-carte `canvasVoidHex` bascule entre `0x0f1a25` (sombre) et `0xf4f7f9` (clair).
+### 4.2 The Map-Art Independence Rule
+1. The `mapArtFilter` property must be `"none"` in both themes.
+2. The PixiJS container of the `backgroundMap` layer always keeps `filters = []` and applies no CSS filter (`filter: none`). Imported map images never get a color inversion or a brightness reduction.
+3. The `fogUnexploredHex` color stays fixed at `0x0f1a25` (`#0F1A25`) whatever the active theme. The unexplored `FogLayer` fog stays an opaque slate black to preserve the dynamic contrast of 2.5D light sources.
+4. The off-map void color `canvasVoidHex` switches between `0x0f1a25` (dark) and `0xf4f7f9` (light).
 
-### 4.3 Injectivité Géométrique des États Tactiques
-Pour assurer l'opérabilité par des utilisateurs daltoniens, chaque état tactique associe sa couleur à une géométrie unique. Le test unitaire `packages/web/tests/designSystem.test.ts` vérifie formellement l'injectivité des tuples :
+### 4.3 Geometric Injectivity of Tactical States
+To keep the table usable by color-blind users, every tactical state pairs its color with a unique geometry. The unit test `packages/web/tests/designSystem.test.ts` formally checks the injectivity of the tuples:
 
-#### Dispositions des Tokens d'Actor :
-- `ally` : Anneau continu (`ringStrokeStyle: "solid"`), couleur verte/cyanée `0x22c55e`, badge bouclier (`"shield"`), glyphe vide `""`.
-- `hostile` : Anneau tireté (`ringStrokeStyle: "dashed"`, `dashPatternPx: [6, 4]`), couleur rouge `0xef4444`, badge losange (`"diamond"`), glyphe `"!"`.
-- `selected` : Double anneau (`ringStrokeStyle: "double"`), couleur bleue `0x38bdf8`, chevrons de coin (`"corner-chevrons"`), glyphe vide `""`.
-- `activeTurn` : Anneau ambre `0xf59e0b`, balise directionnelle chevron (`"chevron-beacon"`), glyphe `"›"`.
+#### Actor Token Dispositions:
+- `ally`: solid ring (`ringStrokeStyle: "solid"`), green/cyan color `0x22c55e`, shield badge (`"shield"`), empty glyph `""`.
+- `hostile`: dashed ring (`ringStrokeStyle: "dashed"`, `dashPatternPx: [6, 4]`), red color `0xef4444`, diamond badge (`"diamond"`), glyph `"!"`.
+- `selected`: double ring (`ringStrokeStyle: "double"`), blue color `0x38bdf8`, corner chevrons (`"corner-chevrons"`), empty glyph `""`.
+- `activeTurn`: amber ring `0xf59e0b`, directional chevron beacon (`"chevron-beacon"`), glyph `"›"`.
 
-#### Types de WallSegment :
-- `Normal` : Trait continu (`dashPatternPx: null`), embout droit (`endpointMarker: "cap"`).
-- `Window` : Trait tireté large (`dashPatternPx: [6, 4]`), embout ergot (`endpointMarker: "tick"`).
-- `Terrain` : Trait pointillé dense (`dashPatternPx: [2, 4]`), embout rond (`endpointMarker: "dot"`).
-- `OneWay` : Trait tireté directionnel (`dashPatternPx: [8, 3]`), embout flèche (`endpointMarker: "arrow"`).
-- `SecretDoor` : Trait discontinu court (`dashPatternPx: [4, 4]`), embout glyphe secret (`endpointMarker: "s-glyph"`).
-- `Door` : Trait plein renforcé (`dashPatternPx: null`, `strokeWidthPx: 3`), embout boîte charnière (`endpointMarker: "hinge-box"`).
-- `Illusion` : Trait alterné complexe (`dashPatternPx: [3, 3, 1, 3]`), embout losange évidé (`endpointMarker: "diamond-hollow"`).
+#### WallSegment Kinds:
+- `Normal`: solid stroke (`dashPatternPx: null`), straight cap (`endpointMarker: "cap"`).
+- `Window`: wide dashed stroke (`dashPatternPx: [6, 4]`), tick end (`endpointMarker: "tick"`).
+- `Terrain`: dense dotted stroke (`dashPatternPx: [2, 4]`), round end (`endpointMarker: "dot"`).
+- `OneWay`: directional dashed stroke (`dashPatternPx: [8, 3]`), arrow end (`endpointMarker: "arrow"`).
+- `SecretDoor`: short broken stroke (`dashPatternPx: [4, 4]`), secret glyph end (`endpointMarker: "s-glyph"`).
+- `Door`: reinforced solid stroke (`dashPatternPx: null`, `strokeWidthPx: 3`), hinge box end (`endpointMarker: "hinge-box"`).
+- `Illusion`: complex alternating stroke (`dashPatternPx: [3, 3, 1, 3]`), hollow diamond end (`endpointMarker: "diamond-hollow"`).
 
 ---
 
-## 5. Composants Applicatifs, Feuille d'Acteur & Suite SVG
+## 5. Application Components, Actor Sheet & SVG Suite
 
-### 5.1 Verrouillage de Sécurité `PadlockEditMode`
-Le composant `DeclarativeSheetRenderer.tsx` intègre un bouton bascule dans son en-tête identifié par l'attribut `data-testid="sheet-padlock-toggle"`. Ce bouton porte l'attribut `aria-pressed="false"` (mode verrouillé par défaut) ou `aria-pressed="true"` (mode déverrouillé).
+### 5.1 `PadlockEditMode` Safety Lock
+The `DeclarativeSheetRenderer.tsx` component includes a toggle button in its header with the attribute `data-testid="sheet-padlock-toggle"`. This button has `aria-pressed="false"` (locked mode by default) or `aria-pressed="true"` (unlocked mode).
 
 ```
 +-----------------------------------------------------------------------------------+
@@ -221,34 +221,34 @@ Le composant `DeclarativeSheetRenderer.tsx` intègre un bouton bascule dans son 
 +-----------------------------------------------------------------------------------+
 ```
 
-#### Énumération Exhaustive des Champs Protégés (Mode Verrouillé `aria-pressed="false"`) :
-Le composant assigne l'attribut `readonly={true}` ou `disabled={true}` aux éléments suivants :
-1. Nom de l'Actor (`actor.name`).
-2. Classe et sous-classe (`actor.class`, `actor.subclass`).
-3. Niveau global (`actor.level`).
-4. Points de vie maximaux (`actor.hp.max`).
-5. Valeur de base de la classe d'armure (`actor.armorClass.base`).
-6. Vitesse de déplacement au sol, en vol et à la nage (`actor.speed.*`).
-7. Les 6 valeurs de caractéristiques fondamentales (`strength`, `dexterity`, `constitution`, `intelligence`, `wisdom`, `charisma`).
-8. Les cases à cocher de maîtrise et d'expertise des compétences (`actor.skills.*.proficient`).
-9. Les cases à cocher de maîtrise des jets de sauvegarde (`actor.savingThrows.*.proficient`).
-10. Les actions d'ajout, de suppression, de renommage et de modification de poids dans l'inventaire (`actor.inventory.items`).
-11. Les boutons d'ajout et de suppression de sorts connus et préparés (`actor.spells.known`, `actor.spells.prepared`).
-12. Les champs de description textuelle des dons et capacités (`actor.features.*.description`).
+#### Exhaustive List of Protected Fields (Locked Mode `aria-pressed="false"`):
+The component sets `readonly={true}` or `disabled={true}` on the following elements:
+1. Actor name (`actor.name`).
+2. Class and subclass (`actor.class`, `actor.subclass`).
+3. Total level (`actor.level`).
+4. Maximum hit points (`actor.hp.max`).
+5. Base armor class value (`actor.armorClass.base`).
+6. Walking, flying and swimming speed (`actor.speed.*`).
+7. The 6 core ability scores (`strength`, `dexterity`, `constitution`, `intelligence`, `wisdom`, `charisma`).
+8. The skill proficiency and expertise checkboxes (`actor.skills.*.proficient`).
+9. The saving throw proficiency checkboxes (`actor.savingThrows.*.proficient`).
+10. The inventory add, delete, rename and weight edit actions (`actor.inventory.items`).
+11. The add and delete buttons for known and prepared spells (`actor.spells.known`, `actor.spells.prepared`).
+12. The text description fields of feats and features (`actor.features.*.description`).
 
-#### Énumération Exhaustive des Contrôles Opérationnels Maintenus Actifs en Mode Verrouillé :
-1. Tous les déclencheurs de jets de dés (`roll-button`, tests de caractéristiques, jets de sauvegarde, jets d'attaque et de dégâts).
-2. Les boutons d'incrémentation et décrémentation des points de vie actuels (`actor.hp.current`).
-3. Le champ des points de vie temporaires (`actor.hp.temp`).
-4. Les compteurs de succès et d'échecs des jets de sauvegarde contre la mort (`actor.deathSaves.successes`, `actor.deathSaves.failures`).
-5. Les cases d'utilisation et de récupération des emplacements de sorts (`actor.spellSlots.*.expended`).
-6. Les compteurs des réserves de ressources temporaires (`actor.resources.*.current`, points de Ki, rages, etc.).
-7. Les badges d'activation et désactivation des conditions (`Blinded`, `Poisoned`, etc.).
-8. La bascule d'inspiration (`actor.inspiration`).
-9. Les boutons de repos court (`Short Rest`) et de repos long (`Long Rest`).
+#### Exhaustive List of Operational Controls Kept Active in Locked Mode:
+1. All dice roll triggers (`roll-button`, ability checks, saving throws, attack and damage rolls).
+2. The increment and decrement buttons for current hit points (`actor.hp.current`).
+3. The temporary hit points field (`actor.hp.temp`).
+4. The death saving throw success and failure counters (`actor.deathSaves.successes`, `actor.deathSaves.failures`).
+5. The spell slot use and recovery checkboxes (`actor.spellSlots.*.expended`).
+6. The temporary resource pool counters (`actor.resources.*.current`, Ki points, rages, etc.).
+7. The condition activation and deactivation badges (`Blinded`, `Poisoned`, etc.).
+8. The inspiration toggle (`actor.inspiration`).
+9. The short rest (`Short Rest`) and long rest (`Long Rest`) buttons.
 
-### 5.2 Bibliothèque d'Icônes Stroked `AtlasIcons.tsx`
-Le fichier `packages/web/src/components/icons/AtlasIcons.tsx` exporte l'interface commune et les composants individuels :
+### 5.2 Stroked Icon Library `AtlasIcons.tsx`
+The `packages/web/src/components/icons/AtlasIcons.tsx` file exports the shared interface and the individual components:
 
 ```ts
 export interface AtlasIconProps {
@@ -260,9 +260,9 @@ export interface AtlasIconProps {
 }
 ```
 
-Toutes les icônes partagent les propriétés SVG géométriques strictes : `viewBox="0 0 24 24"`, `fill="none"`, `stroke="currentColor"`, `strokeWidth={1.75}`, `strokeLinecap="round"`, `strokeLinejoin="round"` et `aria-hidden="true"` par défaut.
+Every icon shares the strict geometric SVG properties: `viewBox="0 0 24 24"`, `fill="none"`, `stroke="currentColor"`, `strokeWidth={1.75}`, `strokeLinecap="round"`, `strokeLinejoin="round"` and `aria-hidden="true"` by default.
 
-Le module exporte également le composant de répartition `AtlasIcon` recevant la propriété `name: AtlasIconName`. La liste des 34 icônes comprend formellement :
+The module also exports the dispatch component `AtlasIcon`, which receives the `name: AtlasIconName` property. The list of 34 icons is:
 1. `SelectToolIcon`
 2. `PanToolIcon`
 3. `RulerToolIcon`
@@ -298,34 +298,34 @@ Le module exporte également le composant de répartition `AtlasIcon` recevant l
 33. `ChevronRightIcon`
 34. `CloseIcon`
 
-### 5.3 Logo Cartographique `TrameLogo.tsx`
-Le composant `TrameLogo.tsx` restitue la marque sous forme de T cartographique vectoriel. Il expose les propriétés `variant?: 'route-intersection' | 'waypoint-grid' | 'monolith-path'` (valeur par défaut : `'route-intersection'`), `size?: number` (de 16 à 256) et `duotone?: boolean`.
-En mode duotone, le composant utilise `--atlas-text` pour la structure du T et `--atlas-action` pour le point de jonction cartographique.
+### 5.3 Cartographic Logo `TrameLogo.tsx`
+The `TrameLogo.tsx` component renders the brand as a vector cartographic T. It exposes the properties `variant?: 'route-intersection' | 'waypoint-grid' | 'monolith-path'` (default: `'route-intersection'`), `size?: number` (from 16 to 256) and `duotone?: boolean`.
+In duotone mode, the component uses `--atlas-text` for the structure of the T and `--atlas-action` for the cartographic junction point.
 
-### 5.4 États Vides Cartographiques `AtlasEmptyStates.tsx`
-Le fichier `packages/web/src/components/empty/AtlasEmptyStates.tsx` exporte 4 illustrations vectorielles :
+### 5.4 Cartographic Empty States `AtlasEmptyStates.tsx`
+The `packages/web/src/components/empty/AtlasEmptyStates.tsx` file exports 4 vector illustrations:
 1. `EmptyCampaignsSvg`
 2. `EmptyMapAtlasSvg`
 3. `EmptyJournalSvg`
 4. `EmptyActorsSvg`
 
-Invariant critique : Chaque illustration SVG se compose exclusivement de chemins de courbes de niveau (`<path>`), de nœuds de balisage (`<circle>`) et de hachures géométriques avec `stroke="currentColor"`. **L'inclusion de balises `<text>` dans ces fichiers SVG est formellement interdite**. Les conteneurs HTML parents fournissent l'ensemble des titres, descriptions et boutons d'action via les dictionnaires i18n avec le rôle sémantique `role="status"`.
+Critical invariant: every SVG illustration is made only of contour paths (`<path>`), marker nodes (`<circle>`) and geometric hatching with `stroke="currentColor"`. **`<text>` tags are forbidden in these SVG files**. The parent HTML containers provide every title, description and action button through the i18n dictionaries with the semantic role `role="status"`.
 
-### 5.5 Adaptation Mobile `MobileCompanionLayout.tsx`
-Pour les écrans de largeur inférieure à 768 pixels, `MobileCompanionLayout.tsx` présente 4 onglets inférieurs (`tab-button-sheet`, `tab-button-dice`, `tab-button-inventory`, `tab-button-journal`).
-Chaque bouton respecte une surface tactile minimale de $44 \times 44$ pixels (`min-height: 44px; min-width: 44px;`). Sur les interfaces de bureau, les cibles interactives respectent une hauteur minimale de 40 pixels.
+### 5.5 Mobile Adaptation `MobileCompanionView.tsx`
+For screens narrower than 768 pixels, `MobileCompanionView` shows 5 bottom tabs (Sheet, Dice, Inventory, Tracker and Journal).
+Every button has a minimum touch area of $44 \times 44$ pixels (`min-height: 44px; min-width: 44px;`). On desktop interfaces, interactive targets have a minimum height of 40 pixels.
 
 ---
 
-## 6. Gouvernance Impeccable & Validation Fail-Closed en CI
+## 6. Impeccable Governance & Fail-Closed CI Validation
 
-### 6.1 Architecture du Script `scripts/check-impeccable-design.mjs`
-Le script de vérification s'exécute sous Node 24 lors de l'appel à `make lint`. Il procède en deux étapes séquentielles hermétiques :
+### 6.1 Architecture of the `scripts/check-impeccable-design.mjs` Script
+The check script runs under Node 24 when `make lint` is called. It runs in two sealed sequential stages:
 
-#### Étape 1 : Analyse Statique Interne (Contrats, Tokens, Ratios & Craft Floor)
-1. **Validation de `DESIGN.md`** :
-   - Le script parse le frontmatter YAML et valide la présence des champs `name`, `description`, `colors`, `typography`, `rounded`, `spacing` et `components`.
-   - Le script vérifie la présence exacte des 8 sections H2 canoniques dans l'ordre prescrit :
+#### Stage 1: Internal Static Analysis (Contracts, Tokens, Ratios & Craft Floor)
+1. **`DESIGN.md` validation**:
+   - The script parses the YAML frontmatter and checks the presence of the `name`, `description`, `colors`, `typography`, `rounded`, `spacing` and `components` fields.
+   - The script checks the exact presence of the 8 canonical H2 sections in the prescribed order:
      1. `## Overview`
      2. `## Colors`
      3. `## Typography`
@@ -334,60 +334,60 @@ Le script de vérification s'exécute sous Node 24 lors de l'appel à `make lint
      6. `## Shapes`
      7. `## Components`
      8. `## Do's and Don'ts`
-2. **Validation de `.impeccable/design.json`** :
-   - Le script valide la conformité du fichier JSON avec le standard Schema v2 (extensions `colorMeta`, `typographyMeta`, `shadows`, `motion`, `breakpoints` et snippets HTML/CSS).
-3. **Calcul Automatisé des Contrastes WCAG 2.2 AA** :
-   - Le script évalue chaque paire de tokens définie au tableau 3.2. Il retourne une erreur bloquante si le ratio est inférieur à $4.5:1$ pour le texte ou inférieur à $3.0:1$ pour les bordures et l'anneau de focus.
-4. **Détection des Couleurs Hexadécimales Brutes** :
-   - Le script inspecte l'ensemble des fichiers sous `packages/web/src/**/*.{ts,tsx,css}`.
-   - Le script rejette l'exécution si une chaîne hexadécimale (`#([0-9a-fA-F]{3,8})`), `rgb(` ou `hsl(` apparaît en dehors des deux fichiers autorisés : `packages/web/src/styles/tokens.css` et `packages/web/src/canvas/CanvasThemePalette.ts`.
-5. **Vérification de l'Étanchéité Réseau des Polices** :
-   - Le script rejette toute référence aux domaines `fonts.googleapis.com` ou `fonts.gstatic.com` dans le code source.
-6. **Contrôle Statique des 62 Règles Craft Floor Anti-Slop** :
-   - Le script analyse les fichiers CSS/TSX et échoue s'il détecte des textes en dégradé (`-webkit-background-clip: text`), des ombres portées avec halos néon (`filter: drop-shadow(...)`), des polices interdites ou des titres surmontés d'accroches en majuscules (*eyebrow kickers*).
+2. **`.impeccable/design.json` validation**:
+   - The script checks that the JSON file conforms to the Schema v2 standard (`colorMeta`, `typographyMeta`, `shadows`, `motion`, `breakpoints` extensions and HTML/CSS snippets).
+3. **Automated WCAG 2.2 AA contrast computation**:
+   - The script evaluates every token pair defined in table 3.2. It returns a blocking error if the ratio is below $4.5:1$ for text or below $3.0:1$ for borders and the focus ring.
+4. **Raw hexadecimal color detection**:
+   - The script inspects every file under `packages/web/src/**/*.{ts,tsx,css}`.
+   - The script fails if a hexadecimal string (`#([0-9a-fA-F]{3,8})`), `rgb(` or `hsl(` appears outside the two allowed files: `packages/web/src/styles/tokens.css` and `packages/web/src/canvas/CanvasThemePalette.ts`.
+5. **Font network isolation check**:
+   - The script rejects any reference to the `fonts.googleapis.com` or `fonts.gstatic.com` domains in the source code.
+6. **Static check of the 62 anti-slop Craft Floor rules**:
+   - The script analyzes the CSS/TSX files and fails if it detects gradient text (`-webkit-background-clip: text`), drop shadows with neon halos (`filter: drop-shadow(...)`), forbidden fonts or headings topped with uppercase eyebrow kickers.
 
-#### Étape 2 : Exécution du Détecteur Impeccable CLI
-- Si le binaire CLI `impeccable` (`engine-v0.1.18`) est présent dans l'environnement, le script exécute la commande `npx impeccable detect --rules-all`.
-- En cas d'indisponibilité du binaire en environnement déconnecté, les contrôles de l'Étape 1 garantissent le rejet immédiat de toute dérive de design.
+#### Stage 2: Running the Impeccable CLI Detector
+- If the `impeccable` CLI binary (`engine-v0.1.18`) is present in the environment, the script runs `npx impeccable detect --rules-all`.
+- If the binary is unavailable in an offline environment, the Stage 1 checks still reject any design drift immediately.
 
 ---
 
-## 7. EpicGoalContract & Critères d'Acceptation Formels
+## 7. EpicGoalContract & Formal Acceptance Criteria
 
 ### 7.1 epic_goal_contract
 
 #### `epic_goal_summary`
-Livrer et verrouiller le système de design TRAME ATLAS v1.1 garantissant la séparation étanche des tokens DOM et WebGL, la synchronisation réactive du thème avec `CanvasThemePalette` sans altération des cartes de combat, la non-dépendance absolue à la vision des couleurs par discrimination géométrique, le verrouillage de sécurité `PadlockEditMode` de la feuille d'Actor et le contrôle de conformité fail-closed des 62 règles Craft Floor en CI.
+Deliver and lock the TRAME ATLAS v1.1 design system, guaranteeing the sealed separation of DOM and WebGL tokens, reactive theme synchronization with `CanvasThemePalette` without altering battlemaps, full independence from color vision through geometric discrimination, the `PadlockEditMode` safety lock on the Actor sheet, and fail-closed compliance checking of the 62 Craft Floor rules in CI.
 
 #### `required_entrypoints`
-1. `packages/web/src/styles/tokens.css` (Variables sémantiques CSS, classes `.ds-*`, `.atlas-tabular-nums`, `@font-face` locaux).
-2. `packages/web/src/canvas/CanvasThemePalette.ts:getCanvasThemePalette` (Registre typé PixiJS v8 immuable).
-3. `packages/web/src/signals/themeSignal.ts` (Gestion réactive des thèmes `themeModeSignal` et `resolvedThemeSignal`).
-4. `packages/web/src/components/sheet/DeclarativeSheetRenderer.tsx` (Composant de fiche intégrant la bascule `PadlockEditMode`).
-5. `packages/web/src/components/icons/AtlasIcons.tsx` (Suite de 34 icônes vectorielles trait 1.75px).
-6. `packages/web/src/components/empty/AtlasEmptyStates.tsx` (4 états vides cartographiques sans balise `<text>`).
-7. `scripts/check-impeccable-design.mjs` (Script d'audit statique CI WCAG AA et Craft Floor).
+1. `packages/web/src/styles/tokens.css` (semantic CSS variables, `.ds-*` classes, `.atlas-tabular-nums`, local `@font-face`).
+2. `packages/web/src/canvas/CanvasThemePalette.ts:getCanvasThemePalette` (immutable typed PixiJS v8 registry).
+3. `packages/web/src/signals/themeSignal.ts` (reactive theme management with `themeModeSignal` and `resolvedThemeSignal`).
+4. `packages/web/src/components/sheet/DeclarativeSheetRenderer.tsx` (sheet component with the `PadlockEditMode` toggle).
+5. `packages/web/src/components/icons/AtlasIcons.tsx` (suite of 34 vector icons with a 1.75 px stroke).
+6. `packages/web/src/components/empty/AtlasEmptyStates.tsx` (4 cartographic empty states without a `<text>` tag).
+7. `scripts/check-impeccable-design.mjs` (CI static audit script for WCAG AA and Craft Floor).
 
 #### `forbidden_stubs`
-1. Interdiction des valeurs hexadécimales brutes (`#RGB`, `#RRGGBB`, `rgb()`, `hsl()`) dans `packages/web/src/` en dehors de `tokens.css` et `CanvasThemePalette.ts`.
-2. Interdiction des filtres graphiques CSS (`filter: invert()`, `filter: brightness()`) ou WebGL sur le calque `backgroundMap`.
-3. Interdiction de toute couleur de fond autre que `0x0f1a25` pour le calque inexploré de `FogLayer`.
-4. Interdiction de requêtes réseau sortantes vers des services de polices distants (Google Fonts).
-5. Interdiction de balises `<text>` codées en dur à l'intérieur des illustrations SVG de `AtlasEmptyStates.tsx`.
-6. Interdiction de boutons d'action d'une dimension inférieure à $40$ px sur desktop et $44 \times 44$ px sur mobile.
+1. No raw hexadecimal values (`#RGB`, `#RRGGBB`, `rgb()`, `hsl()`) in `packages/web/src/` outside `tokens.css` and `CanvasThemePalette.ts`.
+2. No CSS graphic filters (`filter: invert()`, `filter: brightness()`) or WebGL filters on the `backgroundMap` layer.
+3. No background color other than `0x0f1a25` for the unexplored `FogLayer` layer.
+4. No outgoing network requests to remote font services (Google Fonts).
+5. No hard-coded `<text>` tags inside the `AtlasEmptyStates.tsx` SVG illustrations.
+6. No action buttons smaller than $40$ px on desktop and $44 \times 44$ px on mobile.
 
 #### `end_to_end_verification_criteria`
-1. **Vérification Statique CI** :
-   - WHEN le développeur exécute `make lint`, THEN le script `scripts/check-impeccable-design.mjs` valide l'arbre de code et retourne le code de sortie 0.
-   - WHEN un contributeur introduit une valeur hexadécimale brute dans un composant Preact, THEN `scripts/check-impeccable-design.mjs` intercepte l'infraction et retourne le code de sortie 1 en indiquant le fichier et la ligne fautive.
-2. **Vérification Mathématique des Contrastes** :
-   - WHEN la suite de tests `packages/web/tests/designSystem.test.ts` évalue les contrastes des thèmes sombre et clair, THEN les ratios respectent strictement $\ge 4.5:1$ pour les textes et $\ge 3.0:1$ pour les bordures et l'anneau de focus.
-3. **Vérification de l'Injectivité Géométrique Canvas** :
-   - WHEN le test unitaire inspecte les spécifications renvoyées par `getCanvasThemePalette`, THEN aucune paire d'états parmi les 4 allégeances de tokens (`ally`, `hostile`, `selected`, `activeTurn`) ou parmi les 7 types de `WallSegment` ne présente un couple `(dashPatternPx, endpointMarker)` ou `(ringStrokeStyle, badgeShape)` identique.
-4. **Vérification de l'Indépendance de l'Art Cartographique** :
-   - WHEN le contrôleur bascule le thème résolu de `dark` à `light`, THEN la propriété `mapArtFilter` de `CanvasThemePaletteSpec` conserve la valeur `"none"` et `fogUnexploredHex` conserve la valeur `0x0f1a25`.
-5. **Vérification du Verrouillage de la Feuille d'Actor** :
-   - WHEN l'utilisateur clique sur le bouton `[data-testid="sheet-padlock-toggle"]` pour définir `PadlockEditMode` sur l'état verrouillé (`aria-pressed="false"`), THEN le composant `DeclarativeSheetRenderer` assigne l'attribut `disabled` ou `readonly` à l'ensemble des 12 catégories de champs structurels et maintient les écouteurs d'événements cliquables sur les 9 catégories de contrôles opérationnels de combat.
-6. **Vérification de l'Accessibilité SVG & Mobile** :
-   - WHEN le moteur de test analyse les composants de `AtlasIcons.tsx` et `AtlasEmptyStates.tsx`, THEN toutes les icônes portent `aria-hidden="true"` et aucune illustration d'état vide ne contient d'élément `<text>`.
-   - WHEN le test monte `MobileCompanionLayout.tsx` avec une largeur de fenêtre de 390px, THEN les 4 onglets de navigation mesurent au minimum 44px par 44px.
+1. **CI static verification**:
+   - WHEN the developer runs `make lint`, THEN the `scripts/check-impeccable-design.mjs` script validates the code tree and returns exit code 0.
+   - WHEN a contributor adds a raw hexadecimal value to a Preact component, THEN `scripts/check-impeccable-design.mjs` catches the violation and returns exit code 1 with the offending file and line.
+2. **Mathematical contrast verification**:
+   - WHEN the `packages/web/tests/designSystem.test.ts` suite evaluates the dark and light theme contrasts, THEN the ratios are strictly $\ge 4.5:1$ for text and $\ge 3.0:1$ for borders and the focus ring.
+3. **Canvas geometric injectivity verification**:
+   - WHEN the unit test inspects the specifications returned by `getCanvasThemePalette`, THEN no pair of states among the 4 token allegiances (`ally`, `hostile`, `selected`, `activeTurn`) or among the 7 `WallSegment` kinds has an identical `(dashPatternPx, endpointMarker)` or `(ringStrokeStyle, badgeShape)` pair.
+4. **Map-art independence verification**:
+   - WHEN the controller switches the resolved theme from `dark` to `light`, THEN the `mapArtFilter` property of `CanvasThemePaletteSpec` stays `"none"` and `fogUnexploredHex` stays `0x0f1a25`.
+5. **Actor sheet lock verification**:
+   - WHEN the user clicks the `[data-testid="sheet-padlock-toggle"]` button to set `PadlockEditMode` to the locked state (`aria-pressed="false"`), THEN the `DeclarativeSheetRenderer` component sets `disabled` or `readonly` on all 12 categories of structural fields and keeps the event listeners clickable on the 9 categories of operational combat controls.
+6. **SVG & mobile accessibility verification**:
+   - WHEN the test engine analyzes the `AtlasIcons.tsx` and `AtlasEmptyStates.tsx` components, THEN every icon has `aria-hidden="true"` and no empty state illustration contains a `<text>` element.
+   - WHEN the test mounts `MobileCompanionView.tsx` with a 390 px window width, THEN the 5 navigation tabs measure at least 44 px by 44 px.

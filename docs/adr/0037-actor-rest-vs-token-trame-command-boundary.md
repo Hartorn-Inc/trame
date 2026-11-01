@@ -1,7 +1,7 @@
 # ADR-0037: Optimistic-Concurrency REST Boundary for Persistent Actor Sheets vs. TrameCommand Tactical Table State
 
 ## Status
-Accepted (Supersedes Section 3 of ADR-0036)
+Accepted. Supersedes Decision 3 of [ADR-0036](./0036-dnd5e-levelup-rest-architecture.md) (and the same decision in its predecessor [ADR-0012](./0012-dnd5e-levelup-rest-architecture.md), itself superseded by ADR-0036), and Decision 6 of [ADR-0001](./0001-dnd5e-gamesystempack-pipeline-and-compendium.md).
 
 ## Context
 During the convergence of Epic E7 (`SqlxPostgresStore`, REST CRUD, WebSocket `TableRoomActor`) with Specs #77 (`LevelUpModal`, `RestModal`) and #78 (12-widget `DeclarativeSheetView`), a boundary collision emerged:
@@ -19,7 +19,7 @@ During the convergence of Epic E7 (`SqlxPostgresStore`, REST CRUD, WebSocket `Ta
    - Upon committing the `Actor` update in PostgreSQL, the HTTP handler notifies the active `TableRoomActor` (if loaded) to broadcast `ServerEnvelope::ActorUpdated` to connected clients and synchronize linked `TokenState` tactical fields (`hp_current`, `hp_max`, `temp_hp`, `ac`, `speed_ft`, `conditions`) without pushing onto the tactical `UndoEntry` ring buffer.
    - Sheet-driven dice rolls (`LevelUpModal` hit points, `RestModal` hit dice, sheet checks) use `POST /api/v1/campaigns/{id}/dice/roll` with the same `ChaCha20Rng` roller, so they work while the room is hibernated; when the room is awake the result is also appended to the table roll log.
 2. **Tactical Table Boundary (`TrameCommand`)**:
-   - `TrameCommand` remains the sole mutation path for live tabletop state (`MoveToken`, `SpawnToken`, `RemoveToken`, `ApplyDamage`, `HealActor`, `ToggleDoor`, `StartTurnByTurn`, `NextTurn`, `DecideReaction`, `ProjectAoE`, `SetFogOverride`, `CommitMcpStaging`, `RejectMcpStaging`).
+   - `TrameCommand` remains the sole mutation path for live tabletop state (`MoveToken`, `SpawnToken`, `RemoveToken`, `ApplyDamage`, `HealActor`, `ToggleDoor`, `StartTurnByTurn`, `AdvanceTurn`, `DecideReaction`, `ProjectAoe`, `SetFogOverride`, `CommitMcpStaging`, `RejectMcpStaging`).
    - When tactical commands (`ApplyDamage`, `HealActor`) mutate a `LinkedActorToken`, `TableRoomActor` updates both `TokenState` and the persistent `Actor`'s hit points/death saves/concentration state and records a single tactical `UndoEntry`. A `SyntheticToken` only updates its own `TokenState`.
 
 ## Consequences

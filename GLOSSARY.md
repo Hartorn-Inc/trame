@@ -6,9 +6,9 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ## 1. Core Architectural Primitives
 
-- **`TrameCommand`**: The single canonical CQRS command enum representing every possible mutation on a campaign or table (e.g., `MoveToken`, `ToggleDoor`, `ProjectAoE`, `ApplyDamage`, `RevealHandout`). Dispatched identically from the WebSocket client, REST API, or MCP tools.
+- **`TrameCommand`**: The single canonical CQRS command enum representing every possible mutation on a campaign or table (e.g., `MoveToken`, `ToggleDoor`, `ProjectAoe`, `ApplyDamage`, `AdvanceTurn`, `SetAmbientLighting`, `UndoLastAction`). The variant names in `crates/trame-engine/src/commands.rs` are canonical. Dispatched identically from the WebSocket client, REST API, or MCP tools.
 - **`TrameEvent`**: An immutable domain event emitted after a `TrameCommand` passes RBAC and spatial/rule validation, broadcast to connected clients (filtered per player visibility) and appended to the session timeline.
-- **`UndoEntry`**: A compensating state delta generated alongside every `TrameCommand` execution, pushed onto the per-map 50-action ring buffer so the GM can revert mistakes in 1 click (`Cmd+Z`).
+- **`UndoEntry`**: A state snapshot generated alongside every tactical `TrameCommand` execution, pushed onto the per-map 50-action ring buffer so the GM can revert mistakes in 1 click (`Cmd+Z`).
 - **`TableRoomActor`**: The single-owner Tokio actor in `trame-server` holding the authoritative live state of an active campaign in RAM (`Arc<RwLock<CampaignRoomState>>`).
 - **`Idle-Lease`**: The 15-minute inactivity timer tracking exclusively human/MCP mutations (`TrameCommand`, dice rolls, note edits) while ignoring WebSocket Ping/Pong keep-alives, allowing Cloud Run instances to cleanly snapshot and scale to `0`.
 
@@ -30,7 +30,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **`GameSystemPack`**: A declarative manifest (`system.json` + JSON Schemas + `derivedDAG` + `sheetLayout` + compendium packs) defining a tabletop RPG system without hardcoding game rules in the server binary.
 - **`derivedDAG`**: The topological directed acyclic graph of pure mathematical expressions (`trame-engine`) computing derived actor attributes (e.g., ability modifiers, AC, spell save DC) in deterministic order.
-- **`ActiveEffect`**: A buff, condition, feat, or equipped item modifier evaluated through the strict 5-phase pipeline: `BASE` -> `ADD` -> `MULTIPLY` -> `OVERRIDE` -> `CLAMP`, obeying same-source non-stacking rules.
+- **`ActiveEffect`**: A spell, condition, feat, or equipped item modifier evaluated through the strict 5-phase pipeline: `Base` -> `Add` -> `Multiply` -> `Override` -> `ClampMin`/`ClampMax` (`ModifierPhase` in `rules.rs`). The `Base` phase is exclusive and keeps the largest candidate ("best wins"); same-named effects do not stack and keep the largest magnitude.
 - **`VisibilityTier`**: Field-level RBAC on actor sheets (`PUBLIC`, `OWNER_AND_GM`, `GM_ONLY`). Server snapshots strip unauthorized fields before serialization.
 
 ---
@@ -71,7 +71,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ActiveEffect
 
-- **Definition**: Declarative mutation applied to a numeric or string actor property following the strict 5-phase order (`BASE` -> `ADD` -> `MULTIPLY` -> `OVERRIDE` -> `CLAMP`, where `CLAMP` applies the lower bound before the upper bound).
+- **Definition**: Declarative mutation applied to a numeric or string actor property following the strict 5-phase order (`Base` -> `Add` -> `Multiply` -> `Override` -> `ClampMin`/`ClampMax`, where `ClampMin` applies the lower bound before `ClampMax` applies the upper bound).
 - **Allowed Context**: `ActiveEffect`, `active effect`, 5-phase modifier pipeline.
 - **_Avoid_**: `buff`, `debuff`, `stat modifier`, `status effect`, `BASE_FORMULA`, `OVERRIDE_CONDITIONAL`, `FINAL_CLAMP`.
 
@@ -81,11 +81,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: `Actor`, `actor`.
 - **_Avoid_**: `character`, `entity`, `token` (when referring to the persistent sheet record).
 
-### AmbientPreset
+### AmbientLightingPreset
 
-- **Definition**: Environmental lighting and atmospheric configuration (`Daylight`, `Dusk`, `NightMoonlight`, `PitchDarkness`).
+- **Definition**: Environmental lighting and atmospheric configuration (`Daylight`, `Dusk`, `NightMoonlight`, `PitchDarkness`), changed on the live table by `TrameCommand::SetAmbientLighting`.
 - **Allowed Context**: Map lighting configuration, Game Master override toolbar, and canvas rendering.
-- **_Avoid_**: WeatherMode, LightingTheme, SkyboxPreset.
+- **_Avoid_**: AmbientPreset, SetAmbientPreset, WeatherMode, LightingTheme, SkyboxPreset.
 
 ### CampaignHomebrew
 
@@ -257,7 +257,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ReactionBanner
 
-- **Definition**: Authoritative HUD countdown banner that interrupts action movement interpolation for eligible reacting actors.
+- **Definition**: HUD banner shown to the owner of the reacting token (the Game Master for monsters) while a `ReactionPrompt` is pending. A `MoveToken` that leaves a hostile `ThreatReach` stops on the exit square until the owner dispatches `DecideReaction` (`Trigger` or `Pass`). There is no timer; the Game Master can force `Pass`.
 - **Allowed Context**: Movement interruption window and combat reaction declaration.
 - **_Avoid_**: ReactionPopup, OpportunityModal, InterruptionWidget.
 
@@ -324,7 +324,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 ### TimeSync
 
 - **Definition**: Two-way timestamp ping-pong protocol estimating clock offset between client and server.
-- **Allowed Context**: Network synchronization, reaction banner timers, and latency compensation.
+- **Allowed Context**: Network synchronization and latency compensation.
 - **_Avoid_**: ClockAlignment, NetworkNtp, TimeCorrection.
 
 ### TurnTrigger

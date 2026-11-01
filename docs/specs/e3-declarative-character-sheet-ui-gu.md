@@ -13,7 +13,7 @@ The character sheet subsystem renders Actor data declaratively inside `packages/
 ### 1.2 Command Dispatch Pipeline
 Atomic widgets and drag-and-drop handlers do not mutate Actor records directly. Every user interaction constructs and dispatches a canonical `TrameCommand` payload through an injected `CommandDispatcher` callback:
 - `TrameCommand.RollDice`: Dispatched when triggering an attack, ability check, saving throw, hit die spend, or spell cast.
-- `TrameCommand.ProjectAoE`: Dispatched when triggering an area-of-effect spell or action.
+- `TrameCommand.ProjectAoe`: Dispatched when triggering an area-of-effect spell or action.
 - `TrameCommand.UpdateActorSheet`: Dispatched when toggling resource counters, spell slot pips, death save counters, or moving items between containers.
 - `TrameCommand.DropCompendiumEntry`: Dispatched when dropping an item, feat, or spell from the compendium onto the character sheet.
 - `TrameCommand.CreateActor`: Dispatched when the user finalizes the `CharacterBuilderWizard`.
@@ -175,7 +175,7 @@ export interface SheetLayoutTree {
 - **Interactions**:
   - WHEN a user clicks a spell slot pip, THEN `SpellbookAccordion` dispatches a `TrameCommand.UpdateActorSheet` command toggling the slot count.
   - WHEN a user clicks 'Cast Spell' on a non-AoE spell, THEN `SpellbookAccordion` dispatches a `TrameCommand.RollDice` command.
-  - WHEN a user clicks 'Cast Spell' on an AoE spell, THEN `SpellbookAccordion` dispatches a `TrameCommand.ProjectAoE` command.
+  - WHEN a user clicks 'Cast Spell' on an AoE spell, THEN `SpellbookAccordion` dispatches a `TrameCommand.ProjectAoe` command.
   - IF `options.autoDeductSlots` equals `true` AND the spell level is greater than 0, THEN `SpellbookAccordion` dispatches a `TrameCommand.UpdateActorSheet` command decrementing the corresponding spell level slot by 1.
 
 ### 3.9 `InventoryContainerTree`
@@ -410,7 +410,7 @@ node --test packages/web/tests/**/*.test.ts
 - Test 6: `HitDiceAndDeathSaves` dispatches `RollDice` for `1d{hitDieSides} + {conModifier}` and decrements `hitDiceCurrent` by 1.
 - Test 7: `HitDiceAndDeathSaves` evaluates death save roll results and dispatches correct counters.
 - Test 8: `AttackActionTable` dispatches `RollDice` for attack roll and damage formula.
-- Test 9: `SpellbookAccordion` dispatches `RollDice` (or `ProjectAoE` for area spells) and decrements spell slot by 1 when `options.autoDeductSlots` is `true`.
+- Test 9: `SpellbookAccordion` dispatches `RollDice` (or `ProjectAoe` for area spells) and decrements spell slot by 1 when `options.autoDeductSlots` is `true`.
 - Test 10: `InventoryContainerTree` dispatches `UpdateActorSheet` when item container changes.
 - Test 11: `ConditionBadgeStrip` dispatches `UpdateActorSheet` to remove condition.
 - Test 12: `NotesMarkdownPane` dispatches `UpdateActorSheet` when notes text is modified.
