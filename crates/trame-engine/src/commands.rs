@@ -205,6 +205,33 @@ pub struct ReactionPrompt {
     /// Reactors already prompted during this movement, so resuming does not prompt them again.
     #[serde(default)]
     pub resolved_reactor_ids: Vec<Uuid>,
+    /// `true` once the reactor chose `Trigger`: the reaction is being played out and the
+    /// interrupted movement resumes only on `ResolveReaction`. `false` while awaiting the
+    /// `DecideReaction` choice.
+    #[serde(default)]
+    pub awaiting_resolution: bool,
+}
+
+/// Why a `ReactionPrompt` left `active_reaction_prompts` without a `DecideReaction` `Pass`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ReactionPromptCloseReason {
+    /// The triggered reaction was played out (`ResolveReaction`); movement may have resumed.
+    Resolved,
+    /// The prompt no longer applies: combat ended, the trigger or reactor token was removed,
+    /// or the GM moved the trigger token.
+    Stale,
+}
+
+/// Result of `TableState::preview_move`, serialized as `{ "collision": {x, y} | null, "costFt" }`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovePreview {
+    /// First movement-blocking wall crossing in pixels (`px`) between the token centers, or
+    /// `None` when the straight path is clear.
+    pub collision: Option<Point2D>,
+    /// Movement cost in feet (`ft`): 3D distance, doubled while squeezing.
+    pub cost_ft: f64,
 }
 
 /// Fully resolved scene payload consumed by `TrameCommand::ActivateScene`.
@@ -369,7 +396,7 @@ pub struct TokenState {
     pub has_reaction: bool,
     /// Optional ID of the persistent `AoeTemplate` currently maintained via concentration by this token.
     pub concentrating_on_aoe_id: Option<Uuid>,
-    /// Active buffs, debuffs, and modifiers applied to this token.
+    /// Active bonuses, penalties, and modifiers applied to this token.
     pub active_effects: Vec<ActiveEffect>,
     /// Active D&D 5e condition labels synchronized from the persistent actor sheet (`ADR-0037`).
     #[serde(default)]
@@ -688,6 +715,14 @@ pub enum TrameCommand {
         /// Player or GM decision (`Trigger` with optional `ability_id`, or `Pass`).
         decision: ReactionDecision,
     },
+    /// Marks a triggered reaction as played out (reactor owner or GM). The interrupted movement
+    /// then resumes toward its pending destination without re-prompting reactors already resolved
+    /// during that movement; it does not resume if the mover dropped to 0 HP or the path became
+    /// invalid (wall or movement budget).
+    ResolveReaction {
+        /// Unique identifier of the triggered reaction prompt.
+        prompt_id: Uuid,
+    },
     /// Commits a queued MCP dry-run staging batch atomically as a single undoable step (GM only).
     CommitMcpStaging {
         /// Unique identifier of the staged MCP proposal to execute.
@@ -776,6 +811,9 @@ pub enum TrameEvent {
         has_bonus_action: bool,
         /// Updated Reaction flag.
         has_reaction: bool,
+        /// Death flag after the override (cleared when HP is restored above 0).
+        #[serde(default)]
+        is_dead: bool,
     },
     /// Emitted when an AoE template is evaluated and projected onto the map.
     AoeProjected {
@@ -884,6 +922,13 @@ pub enum TrameEvent {
         decision: ReactionDecision,
         /// Whether the triggering token's movement was interrupted (`true` on `Trigger`, `false` on `Pass`).
         movement_interrupted: bool,
+    },
+    /// Emitted when an open or triggered reaction prompt is closed without a `Pass` decision.
+    ReactionPromptClosed {
+        /// Closed reaction prompt UUID.
+        prompt_id: Uuid,
+        /// Why the prompt was closed.
+        reason: ReactionPromptCloseReason,
     },
     /// Emitted when a queued MCP dry-run staging proposal is committed by the GM.
     McpStagingCommitted {
@@ -1136,8 +1181,14 @@ impl TableState {
     }
 
     /// Restores a compensating `UndoEntry` snapshot and rebuilds the 2.5D `Bvh2D` spatial index.
+    ///
+    /// `revealed_handout_ids` is kept from the current state: a reveal is an out-of-band
+    /// disclosure that players have already seen, so undoing earlier or enclosing commands must
+    /// not silently hide it again.
     pub fn apply_undo_delta(&mut self, entry: UndoEntry) {
+        let revealed_handout_ids = std::mem::take(&mut self.data.revealed_handout_ids);
         self.data = entry.snapshot;
+        self.data.revealed_handout_ids = revealed_handout_ids;
         if let Some(cell_size_px) = entry.cell_size_px {
             self.cell_size_px = cell_size_px;
         }
@@ -1288,10 +1339,12 @@ impl TableState {
     /// Finds the first hostile `ThreatReach` that `mover` leaves along the straight path to
     /// `to_top_left`, returning `(reactor_id, exit_top_left, exit_elevation_ft)`.
     ///
-    /// Eligible reactors: hostile side, alive and above 0 HP, `has_reaction`, not in `excluded`,
-    /// and holding the mover within reach at the start. The path is sampled every 1/10 cell; the
-    /// exit point is the last in-reach sample snapped to the grid when the snapped square is still
-    /// in reach. Ties on the exit sample go to the lowest reactor ID.
+    /// Eligible reactors: hostile side, alive and above 0 HP, `has_reaction`, and not in
+    /// `excluded`. The path is sampled every 1/10 cell; a reactor triggers on the first
+    /// out-of-reach sample that follows an in-reach sample, so passing through reach (enter then
+    /// exit) prompts exactly like starting inside it. The exit point is the last in-reach sample
+    /// snapped to the grid when the snapped square is still in reach. Ties on the exit sample go
+    /// to the lowest reactor ID.
     fn find_threat_exit(
         &self,
         mover: &TokenState,
@@ -1321,14 +1374,17 @@ impl TableState {
                 && reactor.has_reaction
                 && reactor.hp > 0
                 && !reactor.is_dead
-                && !excluded.contains(&reactor.id)
-                && self.is_within_reach(reactor, mover, from, from_elev);
+                && !excluded.contains(&reactor.id);
             if !eligible {
                 continue;
             }
+            let mut was_inside = self.is_within_reach(reactor, mover, from, from_elev);
             let exit_step = (1..=steps).find(|&i| {
                 let (pos, elev) = lerp(i as f64 / steps as f64);
-                !self.is_within_reach(reactor, mover, pos, elev)
+                let inside = self.is_within_reach(reactor, mover, pos, elev);
+                let exited = was_inside && !inside;
+                was_inside = inside;
+                exited
             });
             if let Some(i) = exit_step
                 && best.is_none_or(|(best_i, _)| i < best_i)
@@ -1404,6 +1460,25 @@ impl TableState {
         Ok(())
     }
 
+    /// Previews a straight `MoveToken` of `token` to `to_top_left` at `to_elevation_ft` with the
+    /// exact wall-collision and movement-cost rules `MoveToken` enforces, without mutating state.
+    /// Turn budget, turn order, and `ThreatReach` are not evaluated.
+    pub fn preview_move(
+        &self,
+        token: &TokenState,
+        to_top_left: Point2D,
+        to_elevation_ft: f64,
+    ) -> MovePreview {
+        let collision = match self.check_wall_collision(token, to_top_left, to_elevation_ft) {
+            Err(CommandError::WallCollision { x, y }) => Some(Point2D::new(x, y)),
+            _ => None,
+        };
+        MovePreview {
+            collision,
+            cost_ft: self.movement_cost_ft(token, to_top_left, to_elevation_ft),
+        }
+    }
+
     /// Movement cost in feet (`ft`) of moving `token` from its position to `to_top_left` at
     /// `new_elev` (3D distance, doubled while squeezing).
     fn movement_cost_ft(&self, token: &TokenState, to_top_left: Point2D, new_elev: f64) -> f64 {
@@ -1473,6 +1548,7 @@ impl TableState {
                 pending_elevation_ft: Some(new_elev),
                 reactor_owner_user_id: self.data.tokens[&reactor_id].owner_user_id,
                 resolved_reactor_ids,
+                awaiting_resolution: false,
             };
             self.data
                 .active_reaction_prompts
@@ -1480,6 +1556,57 @@ impl TableState {
             events.push(TrameEvent::ReactionPromptOpened { prompt });
         }
         events
+    }
+
+    /// Continues the movement interrupted by `prompt` toward its pending destination, skipping
+    /// reactors in `resolved_reactor_ids`. Does nothing when the mover is gone, at 0 HP, or the
+    /// remaining path is blocked by a wall or exceeds the Turn-by-Turn movement budget.
+    fn resume_interrupted_move(&mut self, prompt: &ReactionPrompt) -> Vec<TrameEvent> {
+        let Some(dest) = prompt.pending_destination else {
+            return Vec::new();
+        };
+        let Some(mover) = self.data.tokens.get(&prompt.trigger_token_id).cloned() else {
+            return Vec::new();
+        };
+        if mover.hp == 0 || mover.is_dead {
+            return Vec::new();
+        }
+        let new_elev = prompt.pending_elevation_ft.unwrap_or(mover.elevation_ft);
+        let in_combat = self.data.mode == TableMode::TurnByTurn;
+        let cost_ft = self.movement_cost_ft(&mover, dest, new_elev);
+        let path_still_valid = self.check_wall_collision(&mover, dest, new_elev).is_ok()
+            && (!in_combat || cost_ft <= mover.speed_remaining_ft + 1e-6);
+        if !path_still_valid {
+            return Vec::new();
+        }
+        self.move_token_with_threat_check(
+            prompt.trigger_token_id,
+            dest,
+            new_elev,
+            in_combat,
+            in_combat,
+            prompt.resolved_reactor_ids.clone(),
+        )
+    }
+
+    /// Removes every reaction prompt matching `stale`, emitting `ReactionPromptClosed { Stale }`.
+    fn close_stale_prompts(&mut self, stale: impl Fn(&ReactionPrompt) -> bool) -> Vec<TrameEvent> {
+        let ids: Vec<Uuid> = self
+            .data
+            .active_reaction_prompts
+            .values()
+            .filter(|p| stale(p))
+            .map(|p| p.prompt_id)
+            .collect();
+        ids.into_iter()
+            .map(|prompt_id| {
+                self.data.active_reaction_prompts.remove(&prompt_id);
+                TrameEvent::ReactionPromptClosed {
+                    prompt_id,
+                    reason: ReactionPromptCloseReason::Stale,
+                }
+            })
+            .collect()
     }
 
     /// Re-sorts `initiative_order` by total (desc), `dex_mod` (desc), token ID (asc), keeping the
@@ -1593,15 +1720,17 @@ impl TableState {
                 }
 
                 self.push_undo(format!("Move token {}", token.name));
+                let mut events = self.close_stale_prompts(|p| p.trigger_token_id == token_id);
                 let engaged = !is_gm_teleport && in_combat;
-                Ok(self.move_token_with_threat_check(
+                events.extend(self.move_token_with_threat_check(
                     token_id,
                     to_top_left,
                     new_elev,
                     engaged,
                     engaged,
                     Vec::new(),
-                ))
+                ));
+                Ok(events)
             }
 
             TrameCommand::ToggleSqueeze {
@@ -1686,12 +1815,16 @@ impl TableState {
                     tok.has_bonus_action = true;
                     tok.has_reaction = true;
                 }
-                Ok(vec![TrameEvent::TableModeChanged {
+                let mut events = vec![TrameEvent::TableModeChanged {
                     mode,
                     exploration_paused,
                     active_turn_token_id: self.active_turn_token_id(),
                     round: self.data.round,
-                }])
+                }];
+                if mode != TableMode::TurnByTurn {
+                    events.extend(self.close_stale_prompts(|_| true));
+                }
+                Ok(events)
             }
 
             TrameCommand::StartTurnByTurn {
@@ -1732,12 +1865,14 @@ impl TableState {
                 self.data.initiative_totals.clear();
                 self.data.active_turn_index = 0;
                 self.data.round = 1;
-                Ok(vec![TrameEvent::TableModeChanged {
+                let mut events = vec![TrameEvent::TableModeChanged {
                     mode: TableMode::Exploration,
                     exploration_paused: false,
                     active_turn_token_id: None,
                     round: 1,
-                }])
+                }];
+                events.extend(self.close_stale_prompts(|_| true));
+                Ok(events)
             }
 
             TrameCommand::SetInitiativeTotal { token_id, total } => {
@@ -1802,7 +1937,7 @@ impl TableState {
 
                 self.push_undo(format!("Apply {raw_damage} damage to {}", token.name));
                 let is_concentrating = token.concentrating_on_aoe_id.is_some();
-                let resolution = resolve_damage_application(
+                let mut resolution = resolve_damage_application(
                     raw_damage,
                     affinity,
                     token.hp,
@@ -1812,6 +1947,16 @@ impl TableState {
                     is_critical,
                     token.death_save_failures,
                 );
+                // 5e: monsters die at 0 HP instead of making death saves. Synthetic GM tokens
+                // (no player owner, no linked actor) follow that default; the GM can revive one
+                // with `GmOverrideTokenResources`.
+                if resolution.new_hp == 0
+                    && token.owner_user_id.is_none()
+                    && token.actor_id.is_none()
+                {
+                    resolution.dead = true;
+                    resolution.unconscious = false;
+                }
 
                 let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
                 tok_mut.hp = resolution.new_hp;
@@ -1932,6 +2077,11 @@ impl TableState {
                 let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
                 if let Some(v) = hp {
                     tok.hp = v.clamp(0, tok.max_hp);
+                    if tok.hp > 0 {
+                        tok.is_dead = false;
+                        tok.death_save_successes = 0;
+                        tok.death_save_failures = 0;
+                    }
                 }
                 if let Some(v) = temp_hp {
                     tok.temp_hp = v.max(0);
@@ -1956,6 +2106,7 @@ impl TableState {
                     has_action: tok.has_action,
                     has_bonus_action: tok.has_bonus_action,
                     has_reaction: tok.has_reaction,
+                    is_dead: tok.is_dead,
                 }])
             }
 
@@ -2158,7 +2309,11 @@ impl TableState {
                 if self.data.active_turn_index >= self.data.initiative_order.len() {
                     self.data.active_turn_index = 0;
                 }
-                Ok(vec![TrameEvent::TokenRemoved { token_id }])
+                let mut events = vec![TrameEvent::TokenRemoved { token_id }];
+                events.extend(self.close_stale_prompts(|p| {
+                    p.trigger_token_id == token_id || p.reactor_actor_id == token_id
+                }));
+                Ok(events)
             }
 
             TrameCommand::AddWall { wall } => {
@@ -2358,6 +2513,11 @@ impl TableState {
                 if actor.role != CampaignRole::Gm {
                     self.require_token_control(actor, actor_id)?;
                 }
+                if prompt.awaiting_resolution {
+                    return Err(CommandError::InvalidConfiguration(
+                        "reaction already triggered; resolve it with ResolveReaction".to_string(),
+                    ));
+                }
                 if matches!(decision, ReactionDecision::Trigger { .. })
                     && !self
                         .data
@@ -2369,7 +2529,6 @@ impl TableState {
                 }
 
                 self.push_undo(format!("Decide reaction {prompt_id}"));
-                self.data.active_reaction_prompts.remove(&prompt_id);
                 let mut extra_events = Vec::new();
 
                 let movement_interrupted = match &decision {
@@ -2377,33 +2536,14 @@ impl TableState {
                         if let Some(reactor_tok) = self.data.tokens.get_mut(&actor_id) {
                             reactor_tok.has_reaction = false;
                         }
+                        if let Some(open) = self.data.active_reaction_prompts.get_mut(&prompt_id) {
+                            open.awaiting_resolution = true;
+                        }
                         true
                     }
                     ReactionDecision::Pass => {
-                        if let Some(dest) = prompt.pending_destination
-                            && let Some(moving_tok) =
-                                self.data.tokens.get(&prompt.trigger_token_id).cloned()
-                        {
-                            let new_elev = prompt
-                                .pending_elevation_ft
-                                .unwrap_or(moving_tok.elevation_ft);
-                            let in_combat = self.data.mode == TableMode::TurnByTurn;
-                            let cost_ft = self.movement_cost_ft(&moving_tok, dest, new_elev);
-                            let path_still_valid = self
-                                .check_wall_collision(&moving_tok, dest, new_elev)
-                                .is_ok()
-                                && (!in_combat || cost_ft <= moving_tok.speed_remaining_ft + 1e-6);
-                            if path_still_valid {
-                                extra_events.extend(self.move_token_with_threat_check(
-                                    prompt.trigger_token_id,
-                                    dest,
-                                    new_elev,
-                                    in_combat,
-                                    in_combat,
-                                    prompt.resolved_reactor_ids.clone(),
-                                ));
-                            }
-                        }
+                        self.data.active_reaction_prompts.remove(&prompt_id);
+                        extra_events.extend(self.resume_interrupted_move(&prompt));
                         false
                     }
                 };
@@ -2415,6 +2555,37 @@ impl TableState {
                     movement_interrupted,
                 }];
                 events.extend(extra_events);
+                Ok(events)
+            }
+
+            TrameCommand::ResolveReaction { prompt_id } => {
+                let prompt = self
+                    .data
+                    .active_reaction_prompts
+                    .get(&prompt_id)
+                    .ok_or_else(|| CommandError::NotFound(format!("reaction prompt {prompt_id}")))?
+                    .clone();
+                if actor.role != CampaignRole::Gm {
+                    if actor.role == CampaignRole::Spectator {
+                        return Err(CommandError::PermissionDenied(
+                            "spectators cannot resolve reactions".to_string(),
+                        ));
+                    }
+                    self.require_token_control(actor, prompt.reactor_actor_id)?;
+                }
+                if !prompt.awaiting_resolution {
+                    return Err(CommandError::InvalidConfiguration(
+                        "reaction has not been triggered; decide it first".to_string(),
+                    ));
+                }
+
+                self.push_undo(format!("Resolve reaction {prompt_id}"));
+                self.data.active_reaction_prompts.remove(&prompt_id);
+                let mut events = vec![TrameEvent::ReactionPromptClosed {
+                    prompt_id,
+                    reason: ReactionPromptCloseReason::Resolved,
+                }];
+                events.extend(self.resume_interrupted_move(&prompt));
                 Ok(events)
             }
 

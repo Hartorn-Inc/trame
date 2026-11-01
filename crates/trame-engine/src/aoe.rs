@@ -181,7 +181,7 @@ impl AoeTemplate {
                 } else if dist_2d_ft < 1e-6 {
                     true
                 } else {
-                    let pt_deg = dy_ft.atan2(dx_ft).to_degrees();
+                    let pt_deg = libm::atan2(dy_ft, dx_ft).to_degrees();
                     let diff = normalize_angle_deg(pt_deg - *direction_deg).abs();
                     diff <= (*angle_deg * 0.5) + 1e-6
                 }
@@ -192,8 +192,9 @@ impl AoeTemplate {
             } => {
                 // Origin is treated as the center of the cube on `(x, y)`
                 let rad = -rotation_deg.to_radians();
-                let rx = dx_ft * rad.cos() - dy_ft * rad.sin();
-                let ry = dx_ft * rad.sin() + dy_ft * rad.cos();
+                let (sin, cos) = (libm::sin(rad), libm::cos(rad));
+                let rx = dx_ft * cos - dy_ft * sin;
+                let ry = dx_ft * sin + dy_ft * cos;
                 let half = *side_ft * 0.5 + 1e-6;
                 rx.abs() <= half && ry.abs() <= half && dz_ft <= *side_ft + 1e-6
             }
@@ -203,8 +204,9 @@ impl AoeTemplate {
                 direction_deg,
             } => {
                 let rad = -direction_deg.to_radians();
-                let along = dx_ft * rad.cos() - dy_ft * rad.sin();
-                let perp = dx_ft * rad.sin() + dy_ft * rad.cos();
+                let (sin, cos) = (libm::sin(rad), libm::cos(rad));
+                let along = dx_ft * cos - dy_ft * sin;
+                let perp = dx_ft * sin + dy_ft * cos;
                 along >= -1e-6
                     && along <= *length_ft + 1e-6
                     && perp.abs() <= (*width_ft * 0.5) + 1e-6

@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use trame_engine::aoe::{AoeShape, AoeTemplate, GridDiscretizationMode};
 use trame_engine::{
     CampaignRole, CommandActor, CommandError, McpStagingProposal, Point2D, ReactionDecision,
-    RefundableResource, SceneActivation, TableMode, TableState, TokenState, TrameCommand,
-    TrameEvent, WallKind, WallSegment,
+    ReactionPromptCloseReason, RefundableResource, SceneActivation, TableMode, TableState,
+    TokenState, TrameCommand, TrameEvent, WallKind, WallSegment,
 };
 use uuid::Uuid;
 
@@ -93,6 +93,7 @@ fn move_token_stops_on_threat_reach_exit_and_prompts_the_reactor() {
         from_x: f64,
         to_x: f64,
         reach_ft: f64,
+        reactor_y: f64,
         reactor_has_reaction: bool,
         reactor_hp: i32,
         reactor_owner: Option<Uuid>,
@@ -106,6 +107,7 @@ fn move_token_stops_on_threat_reach_exit_and_prompts_the_reactor() {
         from_x: 100.0,
         to_x: 400.0,
         reach_ft: 5.0,
+        reactor_y: 0.0,
         reactor_has_reaction: true,
         reactor_hp: 7,
         reactor_owner: None,
@@ -125,6 +127,15 @@ fn move_token_stops_on_threat_reach_exit_and_prompts_the_reactor() {
             id: "leaving_10ft_reach_stops_on_last_threatened_square",
             reach_ft: 10.0,
             expect_stop_x: 200.0,
+            expect_prompt: true,
+            ..base
+        },
+        Case {
+            id: "passing_through_reach_prompts",
+            from_x: -300.0,
+            to_x: 300.0,
+            reactor_y: 100.0,
+            expect_stop_x: 100.0,
             expect_prompt: true,
             ..base
         },
@@ -171,7 +182,7 @@ fn move_token_stops_on_threat_reach_exit_and_prompts_the_reactor() {
 
     for c in cases {
         let hero = token(HERO_ID, "Kyra", c.from_x, 0.0, Some(PLAYER_ID));
-        let mut goblin = token(GOBLIN_ID, "Goblin", 0.0, 0.0, c.reactor_owner);
+        let mut goblin = token(GOBLIN_ID, "Goblin", 0.0, c.reactor_y, c.reactor_owner);
         goblin.reach_ft = c.reach_ft;
         goblin.has_reaction = c.reactor_has_reaction;
         goblin.hp = c.reactor_hp;
@@ -303,21 +314,22 @@ fn reaction_decisions_resume_or_interrupt_the_move() {
             "case {} reaction spent",
             c.id
         );
-        assert!(
-            !state
-                .data
-                .active_reaction_prompts
-                .contains_key(&prompt.prompt_id),
-            "case {} decided prompt removed",
-            c.id
-        );
+        let kept = state.data.active_reaction_prompts.get(&prompt.prompt_id);
+        match c.decision {
+            ReactionDecision::Pass => assert!(kept.is_none(), "case {} pass removes", c.id),
+            ReactionDecision::Trigger { .. } => assert!(
+                kept.is_some_and(|p| p.awaiting_resolution),
+                "case {} trigger awaits resolution",
+                c.id
+            ),
+        }
         let next = opened_prompts(&events).first().map(|p| p.reactor_actor_id);
         assert_eq!(next, c.expect_next_prompt_reactor, "case {}", c.id);
     }
 }
 
 #[test]
-fn interrupted_token_cannot_move_until_the_prompt_is_decided() {
+fn interrupted_token_cannot_move_until_the_reaction_is_resolved() {
     let hero = token(HERO_ID, "Kyra", 100.0, 0.0, Some(PLAYER_ID));
     let goblin = token(GOBLIN_ID, "Goblin", 0.0, 0.0, None);
     let mut state = table(vec![hero, goblin], vec![HERO_ID, GOBLIN_ID]);
@@ -341,14 +353,337 @@ fn interrupted_token_cannot_move_until_the_prompt_is_decided() {
             },
         )
         .unwrap();
+    let err = state
+        .apply_command(&player(), move_cmd(HERO_ID, 300.0, false))
+        .unwrap_err();
+    assert_eq!(
+        err,
+        CommandError::ReactionPending,
+        "triggered, not resolved"
+    );
+
+    state
+        .apply_command(
+            &gm(),
+            TrameCommand::ResolveReaction {
+                prompt_id: prompt.prompt_id,
+            },
+        )
+        .unwrap();
     let events = state
-        .apply_command(&player(), move_cmd(HERO_ID, 400.0, false))
+        .apply_command(&player(), move_cmd(HERO_ID, 200.0, false))
         .unwrap();
     assert!(
         opened_prompts(&events).is_empty(),
         "spent reaction cannot prompt again"
     );
-    assert_eq!(state.data.tokens[&HERO_ID].top_left.x, 400.0);
+    assert_eq!(state.data.tokens[&HERO_ID].top_left.x, 200.0);
+}
+
+#[test]
+fn resolving_a_triggered_reaction_resumes_the_move() {
+    struct Case {
+        id: &'static str,
+        second_goblin: bool,
+        resolver: CommandActor,
+        mover_drops_to_zero: bool,
+        expect_hero_x: f64,
+        expect_next_prompt_reactor: Option<Uuid>,
+    }
+    let cases = [
+        Case {
+            id: "gm_resolves_and_move_reaches_destination",
+            second_goblin: false,
+            resolver: gm(),
+            mover_drops_to_zero: false,
+            expect_hero_x: 400.0,
+            expect_next_prompt_reactor: None,
+        },
+        Case {
+            id: "resolved_reactor_is_skipped_and_next_reactor_prompted",
+            second_goblin: true,
+            resolver: gm(),
+            mover_drops_to_zero: false,
+            expect_hero_x: 100.0,
+            expect_next_prompt_reactor: Some(GOBLIN_B_ID),
+        },
+        Case {
+            id: "mover_downed_by_the_reaction_does_not_resume",
+            second_goblin: false,
+            resolver: gm(),
+            mover_drops_to_zero: true,
+            expect_hero_x: 100.0,
+            expect_next_prompt_reactor: None,
+        },
+    ];
+
+    for c in cases {
+        let hero = token(HERO_ID, "Kyra", 100.0, 0.0, Some(PLAYER_ID));
+        let goblin = token(GOBLIN_ID, "Goblin", 0.0, 0.0, None);
+        let mut tokens = vec![hero, goblin];
+        if c.second_goblin {
+            tokens.push(token(GOBLIN_B_ID, "Goblin B", 0.0, 100.0, None));
+        }
+        let mut state = table(tokens, vec![HERO_ID, GOBLIN_ID]);
+        let events = state
+            .apply_command(&player(), move_cmd(HERO_ID, 400.0, false))
+            .unwrap();
+        let prompt = opened_prompts(&events).remove(0);
+        state
+            .apply_command(
+                &gm(),
+                TrameCommand::DecideReaction {
+                    prompt_id: prompt.prompt_id,
+                    actor_id: GOBLIN_ID,
+                    decision: ReactionDecision::Trigger { ability_id: None },
+                },
+            )
+            .unwrap();
+        if c.mover_drops_to_zero {
+            state.apply_command(&gm(), damage(HERO_ID, 25)).unwrap();
+        }
+        let undo_before = state.undo_stack.len();
+
+        let events = state
+            .apply_command(
+                &c.resolver,
+                TrameCommand::ResolveReaction {
+                    prompt_id: prompt.prompt_id,
+                },
+            )
+            .unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+
+        assert_eq!(
+            events.first(),
+            Some(&TrameEvent::ReactionPromptClosed {
+                prompt_id: prompt.prompt_id,
+                reason: ReactionPromptCloseReason::Resolved,
+            }),
+            "case {}",
+            c.id
+        );
+        assert_eq!(
+            state.data.tokens[&HERO_ID].top_left.x, c.expect_hero_x,
+            "case {} hero position",
+            c.id
+        );
+        assert!(
+            !state
+                .data
+                .active_reaction_prompts
+                .contains_key(&prompt.prompt_id),
+            "case {} resolved prompt removed",
+            c.id
+        );
+        let next = opened_prompts(&events).first().map(|p| p.reactor_actor_id);
+        assert_eq!(next, c.expect_next_prompt_reactor, "case {}", c.id);
+        assert_eq!(state.undo_stack.len(), undo_before + 1, "case {}", c.id);
+    }
+}
+
+#[test]
+fn hero_owner_resolves_their_reaction_and_the_monster_resumes() {
+    let hero = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+    let goblin = token(GOBLIN_ID, "Goblin", 100.0, 0.0, None);
+    let mut state = table(vec![hero, goblin], vec![GOBLIN_ID, HERO_ID]);
+    let events = state
+        .apply_command(&gm(), move_cmd(GOBLIN_ID, 400.0, false))
+        .unwrap();
+    let prompt = opened_prompts(&events).remove(0);
+    state
+        .apply_command(
+            &player(),
+            TrameCommand::DecideReaction {
+                prompt_id: prompt.prompt_id,
+                actor_id: HERO_ID,
+                decision: ReactionDecision::Trigger { ability_id: None },
+            },
+        )
+        .unwrap();
+    state
+        .apply_command(
+            &player(),
+            TrameCommand::ResolveReaction {
+                prompt_id: prompt.prompt_id,
+            },
+        )
+        .unwrap();
+    assert_eq!(state.data.tokens[&GOBLIN_ID].top_left.x, 400.0);
+}
+
+#[test]
+fn resolve_reaction_rejections_leave_state_and_undo_untouched() {
+    // (case id, actor, trigger first, send DecideReaction instead of ResolveReaction, error)
+    let cases: Vec<(&str, CommandActor, bool, bool, CommandError)> = vec![
+        (
+            "undecided_prompt_cannot_be_resolved",
+            gm(),
+            false,
+            false,
+            CommandError::InvalidConfiguration(
+                "reaction has not been triggered; decide it first".into(),
+            ),
+        ),
+        (
+            "player_cannot_resolve_gm_monster_reaction",
+            player(),
+            true,
+            false,
+            CommandError::PermissionDenied("you do not control this token".into()),
+        ),
+        (
+            "spectator_cannot_resolve",
+            spectator(),
+            true,
+            false,
+            CommandError::PermissionDenied("spectators cannot resolve reactions".into()),
+        ),
+        (
+            "triggered_prompt_cannot_be_decided_again",
+            gm(),
+            true,
+            true,
+            CommandError::InvalidConfiguration(
+                "reaction already triggered; resolve it with ResolveReaction".into(),
+            ),
+        ),
+    ];
+
+    for (case_id, actor, trigger_first, decide_again, expected) in cases {
+        let hero = token(HERO_ID, "Kyra", 100.0, 0.0, Some(PLAYER_ID));
+        let goblin = token(GOBLIN_ID, "Goblin", 0.0, 0.0, None);
+        let mut state = table(vec![hero, goblin], vec![HERO_ID, GOBLIN_ID]);
+        let events = state
+            .apply_command(&player(), move_cmd(HERO_ID, 400.0, false))
+            .unwrap();
+        let prompt_id = opened_prompts(&events).remove(0).prompt_id;
+        let decide = TrameCommand::DecideReaction {
+            prompt_id,
+            actor_id: GOBLIN_ID,
+            decision: ReactionDecision::Trigger { ability_id: None },
+        };
+        if trigger_first {
+            state.apply_command(&gm(), decide.clone()).unwrap();
+        }
+        let data_before = state.data.clone();
+        let undo_before = state.undo_stack.len();
+
+        let cmd = if decide_again {
+            decide
+        } else {
+            TrameCommand::ResolveReaction { prompt_id }
+        };
+        let err = state.apply_command(&actor, cmd).unwrap_err();
+
+        assert_eq!(err, expected, "case {case_id}");
+        assert_eq!(state.data, data_before, "case {case_id} state untouched");
+        assert_eq!(state.undo_stack.len(), undo_before, "case {case_id}");
+    }
+}
+
+#[test]
+fn stale_reaction_prompts_are_closed() {
+    struct Case {
+        id: &'static str,
+        trigger_first: bool,
+        cmd: TrameCommand,
+        expect_closed: bool,
+    }
+    let exploration = TrameCommand::SetTableMode {
+        mode: TableMode::Exploration,
+        exploration_paused: false,
+        initiative_order: vec![],
+        initiative_totals: BTreeMap::new(),
+    };
+    let cases = [
+        Case {
+            id: "end_turn_by_turn_closes_prompts",
+            trigger_first: false,
+            cmd: TrameCommand::EndTurnByTurn,
+            expect_closed: true,
+        },
+        Case {
+            id: "set_table_mode_to_exploration_closes_prompts",
+            trigger_first: false,
+            cmd: exploration,
+            expect_closed: true,
+        },
+        Case {
+            id: "set_table_mode_staying_turn_by_turn_keeps_prompts",
+            trigger_first: false,
+            cmd: TrameCommand::SetTableMode {
+                mode: TableMode::TurnByTurn,
+                exploration_paused: false,
+                initiative_order: vec![HERO_ID, GOBLIN_ID],
+                initiative_totals: BTreeMap::new(),
+            },
+            expect_closed: false,
+        },
+        Case {
+            id: "removing_the_trigger_token_closes_prompts",
+            trigger_first: false,
+            cmd: TrameCommand::RemoveToken { token_id: HERO_ID },
+            expect_closed: true,
+        },
+        Case {
+            id: "removing_the_reactor_token_closes_prompts",
+            trigger_first: false,
+            cmd: TrameCommand::RemoveToken {
+                token_id: GOBLIN_ID,
+            },
+            expect_closed: true,
+        },
+        Case {
+            id: "gm_moving_the_trigger_token_closes_prompts",
+            trigger_first: false,
+            cmd: move_cmd(HERO_ID, 300.0, true),
+            expect_closed: true,
+        },
+        Case {
+            id: "gm_moving_the_trigger_token_closes_triggered_prompts",
+            trigger_first: true,
+            cmd: move_cmd(HERO_ID, 300.0, true),
+            expect_closed: true,
+        },
+    ];
+
+    for c in cases {
+        let hero = token(HERO_ID, "Kyra", 100.0, 0.0, Some(PLAYER_ID));
+        let goblin = token(GOBLIN_ID, "Goblin", 0.0, 0.0, None);
+        let mut state = table(vec![hero, goblin], vec![HERO_ID, GOBLIN_ID]);
+        let events = state
+            .apply_command(&player(), move_cmd(HERO_ID, 400.0, false))
+            .unwrap();
+        let prompt_id = opened_prompts(&events).remove(0).prompt_id;
+        if c.trigger_first {
+            state
+                .apply_command(
+                    &gm(),
+                    TrameCommand::DecideReaction {
+                        prompt_id,
+                        actor_id: GOBLIN_ID,
+                        decision: ReactionDecision::Trigger { ability_id: None },
+                    },
+                )
+                .unwrap();
+        }
+
+        let events = state
+            .apply_command(&gm(), c.cmd)
+            .unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+
+        let closed = events.contains(&TrameEvent::ReactionPromptClosed {
+            prompt_id,
+            reason: ReactionPromptCloseReason::Stale,
+        });
+        assert_eq!(closed, c.expect_closed, "case {} close event", c.id);
+        assert_eq!(
+            state.data.active_reaction_prompts.is_empty(),
+            c.expect_closed,
+            "case {} stored prompts",
+            c.id
+        );
+    }
 }
 
 #[test]
@@ -853,6 +1188,26 @@ fn apply_damage_tracks_death_saves_and_enforces_ownership() {
             expect: Ok((0, 0, true)),
         },
         Case {
+            id: "massive_damage_overflow_equal_to_max_hp_from_full_hp_kills",
+            actor: gm(),
+            target_owner: Some(PLAYER_ID),
+            hp: 20,
+            failures: 0,
+            raw: 40,
+            critical: false,
+            expect: Ok((0, 0, true)),
+        },
+        Case {
+            id: "massive_damage_overflow_one_below_max_hp_only_downs",
+            actor: gm(),
+            target_owner: Some(PLAYER_ID),
+            hp: 20,
+            failures: 0,
+            raw: 39,
+            critical: false,
+            expect: Ok((0, 0, false)),
+        },
+        Case {
             id: "player_damages_own_token",
             actor: player(),
             target_owner: Some(PLAYER_ID),
@@ -899,6 +1254,7 @@ fn apply_damage_tracks_death_saves_and_enforces_ownership() {
                 assert_eq!(t.hp, hp, "case {} hp", c.id);
                 assert_eq!(t.death_save_failures, failures, "case {} failures", c.id);
                 assert_eq!(t.is_dead, dead, "case {} dead", c.id);
+                assert_eq!(state.undo_stack.len(), 1, "case {} one undo entry", c.id);
             }
             Err(expected) => {
                 assert_eq!(result.unwrap_err(), expected, "case {}", c.id);
@@ -1233,6 +1589,128 @@ fn reveal_handout_records_and_broadcasts_without_undo() {
             }
         }
         assert!(state.undo_stack.is_empty(), "case {case_id} never undoable");
+    }
+}
+
+#[test]
+fn revealed_handouts_survive_undo() {
+    let reveal = || TrameCommand::RevealHandout {
+        handout_id: "crypt-map".to_string(),
+    };
+    let cases: Vec<(&str, bool)> = vec![
+        ("undo_of_an_earlier_move_keeps_the_reveal", false),
+        ("undo_of_a_batch_containing_the_reveal_keeps_it", true),
+    ];
+    for (case_id, batched) in cases {
+        let hero = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+        let mut state = table(vec![hero], vec![]);
+        if batched {
+            state
+                .apply_batch(&gm(), vec![move_cmd(HERO_ID, 200.0, false), reveal()], "b")
+                .unwrap();
+        } else {
+            state
+                .apply_command(&gm(), move_cmd(HERO_ID, 200.0, false))
+                .unwrap();
+            state.apply_command(&gm(), reveal()).unwrap();
+        }
+
+        state
+            .apply_command(&gm(), TrameCommand::UndoLastAction)
+            .unwrap();
+
+        assert_eq!(
+            state.data.tokens[&HERO_ID].top_left.x, 0.0,
+            "case {case_id}"
+        );
+        assert!(
+            state.data.revealed_handout_ids.contains("crypt-map"),
+            "case {case_id} still revealed"
+        );
+    }
+}
+
+#[test]
+fn synthetic_gm_tokens_die_at_zero_hp() {
+    // (case id, owner, linked actor, expect dead, expect unconscious)
+    let cases: Vec<(&str, Option<Uuid>, Option<Uuid>, bool, bool)> = vec![
+        ("synthetic_monster_dies_at_zero", None, None, true, false),
+        (
+            "linked_gm_npc_makes_death_saves",
+            None,
+            Some(Uuid::from_u128(0x99)),
+            false,
+            true,
+        ),
+        (
+            "player_hero_makes_death_saves",
+            Some(PLAYER_ID),
+            None,
+            false,
+            true,
+        ),
+    ];
+    for (case_id, owner, actor_id, expect_dead, expect_unconscious) in cases {
+        let mut target = token(HERO_ID, "Target", 0.0, 0.0, owner);
+        target.actor_id = actor_id;
+        let mut state = table(vec![target], vec![]);
+
+        let events = state.apply_command(&gm(), damage(HERO_ID, 25)).unwrap();
+
+        let t = &state.data.tokens[&HERO_ID];
+        assert_eq!(t.hp, 0, "case {case_id}");
+        assert_eq!(t.is_dead, expect_dead, "case {case_id} dead");
+        assert_eq!(t.death_save_failures, 0, "case {case_id} failures");
+        match &events[0] {
+            TrameEvent::DamageApplied { resolution, .. } => {
+                assert_eq!(resolution.dead, expect_dead, "case {case_id}");
+                assert_eq!(resolution.unconscious, expect_unconscious, "case {case_id}");
+            }
+            other => panic!("case {case_id}: unexpected {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn gm_override_above_zero_hp_revives_and_clears_death_saves() {
+    // (case id, override hp, expect dead, expect hp)
+    let cases: Vec<(&str, i32, bool, i32)> = vec![
+        ("restoring_hp_clears_death", 5, false, 5),
+        ("override_to_zero_keeps_death", 0, true, 0),
+    ];
+    for (case_id, hp, expect_dead, expect_hp) in cases {
+        let mut target = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+        target.hp = 0;
+        target.is_dead = true;
+        target.death_save_failures = 3;
+        target.death_save_successes = 1;
+        let mut state = table(vec![target], vec![]);
+
+        let events = state
+            .apply_command(
+                &gm(),
+                TrameCommand::GmOverrideTokenResources {
+                    token_id: HERO_ID,
+                    hp: Some(hp),
+                    temp_hp: None,
+                    speed_remaining_ft: None,
+                    has_action: None,
+                    has_bonus_action: None,
+                    has_reaction: None,
+                },
+            )
+            .unwrap();
+
+        let t = &state.data.tokens[&HERO_ID];
+        assert_eq!(t.hp, expect_hp, "case {case_id}");
+        assert_eq!(t.is_dead, expect_dead, "case {case_id}");
+        let cleared = !expect_dead;
+        assert_eq!(t.death_save_failures == 0, cleared, "case {case_id}");
+        assert_eq!(t.death_save_successes == 0, cleared, "case {case_id}");
+        assert!(
+            matches!(events[0], TrameEvent::TokenResourcesOverridden { is_dead, .. } if is_dead == expect_dead),
+            "case {case_id} event"
+        );
     }
 }
 

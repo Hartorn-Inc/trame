@@ -690,8 +690,8 @@ impl Bvh2D {
         has_truesight: bool,
     ) -> Point2D {
         let target = Point2D::new(
-            origin.x + angle_rad.cos() * max_range_px,
-            origin.y + angle_rad.sin() * max_range_px,
+            origin.x + libm::cos(angle_rad) * max_range_px,
+            origin.y + libm::sin(angle_rad) * max_range_px,
         );
         let Some(root) = &self.root else {
             return target;
@@ -750,7 +750,7 @@ impl Bvh2D {
         for wall in &self.walls {
             for pt in [wall.a, wall.b] {
                 if origin.distance_to(pt) <= max_range_px + 1.0 {
-                    let base = (pt.y - origin.y).atan2(pt.x - origin.x);
+                    let base = libm::atan2(pt.y - origin.y, pt.x - origin.x);
                     angles.push(base - eps);
                     angles.push(base);
                     angles.push(base + eps);
@@ -912,4 +912,39 @@ pub fn segment_intersection(
 /// Returns `true` when 2D line segment `p0..p1` intersects segment `q0..q1` (within a `1e-9` epsilon).
 pub fn segment_intersects_segment(p0: Point2D, p1: Point2D, q0: Point2D, q1: Point2D) -> bool {
     segment_intersection(p0, p1, q0, q1).is_some()
+}
+
+/// Counts the sound-blocking walls crossed by the straight path from `emitter` (at
+/// `emitter_elevation_ft`) to `listener` (at `listener_elevation_ft`), positions in pixels.
+///
+/// A wall counts when `blocks_sound` is set, it is not an open door, the crossing lies strictly
+/// inside the path (`1e-6 < t < 1 - 1e-6`, so walls touching either endpoint are ignored), and the
+/// path elevation interpolated at the crossing lies within the wall's vertical span.
+pub fn count_sound_occluding_walls(
+    walls: &[WallSegment],
+    emitter: Point2D,
+    emitter_elevation_ft: f64,
+    listener: Point2D,
+    listener_elevation_ft: f64,
+) -> usize {
+    walls
+        .iter()
+        .filter(|wall| {
+            let open_door = matches!(
+                wall.kind,
+                WallKind::Door { is_open: true, .. } | WallKind::SecretDoor { is_open: true }
+            );
+            if !wall.blocks_sound || open_door {
+                return false;
+            }
+            segment_intersection(emitter, listener, wall.a, wall.b).is_some_and(|(t, _)| {
+                let ray_z_ft =
+                    emitter_elevation_ft + t * (listener_elevation_ft - emitter_elevation_ft);
+                t > 1e-6
+                    && t < 1.0 - 1e-6
+                    && ray_z_ft >= wall.bottom_elevation_ft
+                    && ray_z_ft <= wall.top_elevation_ft
+            })
+        })
+        .count()
 }
