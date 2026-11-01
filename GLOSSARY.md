@@ -413,11 +413,9 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### UserRole
 
-- **Definition**: Integer value derived from an actor's ability score using the standard formula: `Math.floor((score - 10) / 2)`.
-- **Allowed Context**: `AbilityModifier`, `ability modifier`, derived attribute evaluation.
-- **_Avoid_**: `stat mod`, `ability bonus`.
-
-### AbilityScore
+- **Definition**: Role-based access control (RBAC) role assigned to a campaign participant, distinguishing `GameMaster` (full administrative and secret visibility authority), `Player` (actor owner with party and public visibility), and `Spectator` (read-only observer).
+- **Allowed Context**: `UserRole`, `user role`, participant authorization, and permission enforcement.
+- **_Avoid_**: `player role`, `access level`, `account type`.
 
 ## Domain Terminology / Terminologie Métier
 
