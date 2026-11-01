@@ -214,9 +214,8 @@ When running the reveal, `trame-server` performs the following steps in a single
        revealed_at = EXCLUDED.revealed_at;
    ```
 4. Resolves `session_num`:
-   - `trame-server` queries the active state of the `TableRoomActor` for campaign `campaign_id`.
-   - IF a session is active, THEN `session_num` is the current session's number.
-   - ELSE `session_num` is `0`.
+   - IF the reveal request body carries `session_num`, THEN that number is used.
+   - ELSE `session_num` is `LIVE_SESSION_NUM` (`1`). The server has no session lifecycle yet, so the journal entry and the timeline event always share this number.
 5. Atomically increments the campaign's `seq_id` and inserts the event into `session_events`:
    ```sql
    INSERT INTO session_events (id, campaign_id, session_num, seq_id, event_type, payload, created_at)
