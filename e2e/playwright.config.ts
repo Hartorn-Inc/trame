@@ -21,6 +21,10 @@
  * 3. `Watchable Recordings`:
  *    - `E2E_SLOW_MO` (ms per browser action, default 250, `0` disables)
  *      slows the journey so the side-by-side video can be followed by eye.
+ * 4. `Software WebGL`:
+ *    - The container has no GPU, so Chromium runs WebGL on SwiftShader via
+ *      ANGLE (`--use-angle=swiftshader --enable-unsafe-swiftshader`); without
+ *      it the table falls back to its DOM board and the renderer checks fail.
  * ============================================================================
  */
 import { defineConfig, devices } from '@playwright/test';
@@ -46,6 +50,9 @@ export default defineConfig({
     actionTimeout: 15_000,
     trace: 'off',
     video: 'off',
-    launchOptions: { slowMo: Number(process.env.E2E_SLOW_MO ?? 250) },
+    launchOptions: {
+      slowMo: Number(process.env.E2E_SLOW_MO ?? 250),
+      args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+    },
   },
 });
