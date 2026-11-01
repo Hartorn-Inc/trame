@@ -14,7 +14,7 @@
 //! - Hybrid authentication routes (`/api/v1/auth/magic-link`, `/api/v1/auth/bind-account`,
 //!   `/api/v1/auth/pat`, `/api/v1/auth/totp/{setup,enable,verify}`).
 //! - Campaign-scoped asset presigned URL endpoint (`GET /api/v1/campaigns/{campaign_id}/assets/{hash}/presign`).
-//! - Cursor-paginated session timeline endpoint (`GET /api/campaigns/{campaign_id}/sessions/{session_num}/timeline`).
+//! - Cursor-paginated session timeline endpoint (`GET /api/v1/campaigns/{campaign_id}/sessions/{session_num}/timeline`).
 //! - Binary MessagePack WebSocket upgrade endpoint (`GET /ws/campaigns/{campaign_id}`) backed by `RoomLeaseManager`.
 //!
 //! INVARIANTS & SAFETY BOUNDARIES:
@@ -612,7 +612,7 @@ pub fn build_router_with_state(state: AppState) -> Router {
             get(presign_asset_handler),
         )
         .route(
-            "/api/campaigns/{campaign_id}/sessions/{session_num}/timeline",
+            "/api/v1/campaigns/{campaign_id}/sessions/{session_num}/timeline",
             get(timeline_handler),
         )
         .route(

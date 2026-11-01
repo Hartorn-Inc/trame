@@ -387,7 +387,7 @@ async fn a63_query_parameter_identity_is_ignored() {
         (
             "timeline_user_id_query",
             "GET",
-            format!("/api/campaigns/{campaign_id}/sessions/1/timeline?user_id={gm_id}"),
+            format!("/api/v1/campaigns/{campaign_id}/sessions/1/timeline?user_id={gm_id}"),
             String::new(),
         ),
         (
@@ -436,7 +436,7 @@ async fn a63_global_role_grants_no_campaign_privilege() {
         (
             "timeline",
             "GET",
-            format!("/api/campaigns/{campaign_id}/sessions/1/timeline"),
+            format!("/api/v1/campaigns/{campaign_id}/sessions/1/timeline"),
         ),
     ];
     for (case, method, uri) in cases {
@@ -714,7 +714,7 @@ async fn a62_timeline_requires_membership_filters_gm_events_and_caps_limit() {
             &app,
             request(
                 "GET",
-                &format!("/api/campaigns/{campaign_id}/sessions/1/timeline{query}"),
+                &format!("/api/v1/campaigns/{campaign_id}/sessions/1/timeline{query}"),
                 cookie,
                 Body::empty(),
             ),
