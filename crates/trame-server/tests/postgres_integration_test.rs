@@ -21,6 +21,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tower::ServiceExt;
+use trame_server::assets::store::AssetStore;
 use trame_server::auth::session::{IdentityStore, SessionStore, UserRecord, hash_session_token};
 use trame_server::config::ServerConfig;
 use trame_server::http::build_router_with_postgres_store;
@@ -373,6 +374,154 @@ async fn pg_archive_round_trip_restores_scenes_with_player_masking() {
             json!(spec.len()),
             "case {case}: re-export does not duplicate scenes"
         );
+    }
+}
+
+fn png_bytes() -> Vec<u8> {
+    let img = image::RgbImage::from_pixel(8, 8, image::Rgb([40, 90, 160]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_archive_round_trip_keeps_actor_owner_and_data() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    // (case, owned by a player)
+    let cases = [
+        ("gm_npc_without_owner", false),
+        ("player_owned_sheet", true),
+    ];
+    for (case, owner_kept) in cases {
+        let gm = account(&store).await;
+        let (campaign_id, _) = create_campaign_with_actor(&app, &gm).await;
+        let (player_id, _) = account_with_id(&store).await;
+        let owner = if owner_kept {
+            json!(player_id)
+        } else {
+            Value::Null
+        };
+        let (status, body) = call_json(
+            &app,
+            "POST",
+            &format!("/api/v1/campaigns/{campaign_id}/actors"),
+            &gm,
+            json!({ "name": "Zz Owned", "owner_user_id": owner, "data": { "attributes": { "hp": { "current": 3, "max": 9 } } } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "case {case}: {body}");
+
+        let imported = export_then_import(&app, &gm, &campaign_id).await;
+        assert_eq!(imported["actors_restored"], json!(2), "case {case}");
+        let new_id = imported["campaign_id"].as_str().unwrap();
+        let (_, body) = call_json(
+            &app,
+            "GET",
+            &format!("/api/v1/campaigns/{new_id}/actors"),
+            &gm,
+            Value::Null,
+        )
+        .await;
+        let owned = body["actors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == json!("Zz Owned"))
+            .unwrap_or_else(|| panic!("case {case}: actor restored: {body}"));
+        let want_owner = if owner_kept {
+            json!(player_id)
+        } else {
+            Value::Null
+        };
+        assert_eq!(owned["owner_user_id"], want_owner, "case {case}");
+        assert_eq!(
+            owned["data"]["attributes"]["hp"]["current"],
+            json!(3),
+            "case {case}"
+        );
+        assert!(owned["data"].get("owner_user_id").is_none(), "case {case}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_archive_round_trip_restores_and_rewrites_asset_keys() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    // (case, where the key is referenced, whether its blob exists at export)
+    let cases = [
+        ("scene_background", "scene_background", true),
+        ("actor_portrait", "actor_portrait", true),
+        ("deleted_blob_is_reported", "actor_portrait", false),
+    ];
+    for (case, place, blob_exists) in cases {
+        let gm = account(&store).await;
+        let (campaign_id, _) = create_campaign_with_actor(&app, &gm).await;
+        let (status, bytes) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/campaigns/{campaign_id}/assets"),
+            &gm,
+            Body::from(png_bytes()),
+        )
+        .await;
+        let upload: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(status, StatusCode::CREATED, "case {case}: {upload}");
+        let uploaded = upload["key"].as_str().unwrap().to_string();
+        let key = if blob_exists {
+            uploaded
+        } else {
+            uploaded.replace(upload["hash"].as_str().unwrap(), &"f".repeat(64))
+        };
+        if place == "scene_background" {
+            let mut body = scene_set(0);
+            body["scenes"][0]["background_image_url"] = json!(key);
+            let maps = format!("/api/v1/campaigns/{campaign_id}/maps");
+            let (status, body) = call_json(&app, "PUT", &maps, &gm, body).await;
+            assert_eq!(status, StatusCode::OK, "case {case}: {body}");
+        } else {
+            let (status, body) = call_json(
+                &app,
+                "POST",
+                &format!("/api/v1/campaigns/{campaign_id}/actors"),
+                &gm,
+                json!({ "name": "Zz Portrait", "data": { "portraitAssetKey": key } }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "case {case}: {body}");
+        }
+
+        let imported = export_then_import(&app, &gm, &campaign_id).await;
+        let new_id = imported["campaign_id"].as_str().unwrap().to_string();
+        let new_key = key.replace(&campaign_id, &new_id);
+        let want_missing = if blob_exists { json!([]) } else { json!([key]) };
+        assert_eq!(imported["missing_asset_keys"], want_missing, "case {case}");
+
+        let restored_ref = if place == "scene_background" {
+            let maps = format!("/api/v1/campaigns/{new_id}/maps");
+            let (_, body) = call_json(&app, "GET", &maps, &gm, Value::Null).await;
+            body["scenes"][0]["background_image_url"].clone()
+        } else {
+            let actors = format!("/api/v1/campaigns/{new_id}/actors");
+            let (_, body) = call_json(&app, "GET", &actors, &gm, Value::Null).await;
+            body["actors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["name"] == json!("Zz Portrait"))
+                .map(|a| a["data"]["portraitAssetKey"].clone())
+                .unwrap_or(Value::Null)
+        };
+        assert_eq!(restored_ref, json!(new_key), "case {case}: key rewritten");
+        let restored = store.get_asset(&new_key).await.unwrap();
+        assert_eq!(
+            restored,
+            store.get_asset(&key).await.unwrap(),
+            "case {case}"
+        );
+        assert_eq!(restored.is_some(), blob_exists, "case {case}");
     }
 }
 

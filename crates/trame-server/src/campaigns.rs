@@ -48,6 +48,8 @@
 //!            broadcast `ActorUpdated` to the GM and the linked tokens' controllers).
 //! ============================================================================
 
+use crate::archive::ExportEntity;
+use crate::archive::importer::OWNER_USER_ID_FIELD;
 use crate::dice::{RollVisibility, SeededDiceRoller, project_roll_for_recipient};
 use crate::http::{AppState, error_response, resolve_authenticated_user, resolve_campaign_role};
 use crate::importers::uvtt::{
@@ -591,6 +593,89 @@ async fn create_actor(
     }
     inner.actors.insert((campaign_id, actor_id), record.clone());
     Ok(record)
+}
+
+/// Archive entities for `campaign_id`: every stored actor sheet (payload plus `name` and
+/// `owner_user_id`) replaces any store `actor` entity with the same ID.
+pub async fn export_entities_with_actors(
+    state: &AppState,
+    campaign_id: Uuid,
+    entities: Vec<ExportEntity>,
+) -> Result<Vec<ExportEntity>, String> {
+    let actors = list_actors(state, campaign_id).await?;
+    let ids: std::collections::HashSet<String> = actors.iter().map(|a| a.id.to_string()).collect();
+    let mut out: Vec<ExportEntity> = entities
+        .into_iter()
+        .filter(|e| {
+            e.entity_type != "actor"
+                || !e
+                    .data
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| ids.contains(id))
+        })
+        .collect();
+    for actor in actors {
+        let mut data = actor.payload;
+        stamp_payload(&mut data, actor.id, campaign_id, actor.version);
+        data["name"] = json!(actor.name);
+        if let Some(owner) = actor.owner_user_id {
+            data[OWNER_USER_ID_FIELD] = json!(owner);
+        }
+        out.push(ExportEntity {
+            entity_type: "actor".to_string(),
+            data,
+        });
+    }
+    Ok(out)
+}
+
+/// Splits an archived `actor` entity into `(id, name, owner, sheet data)`; the owner field is
+/// removed from the sheet. `None` for non-actor entities.
+pub fn split_actor_entity(entity: &ExportEntity) -> Option<(Uuid, String, Option<Uuid>, Value)> {
+    if entity.entity_type != "actor" {
+        return None;
+    }
+    let mut data = entity.data.clone();
+    let owner = data
+        .as_object_mut()
+        .and_then(|o| o.remove(OWNER_USER_ID_FIELD))
+        .and_then(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok()));
+    let id = data
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .unwrap_or_else(Uuid::new_v4);
+    let name = data
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .unwrap_or("Imported actor")
+        .to_string();
+    Some((id, name, owner, data))
+}
+
+/// Memory-only mode: turns the `actor` entities an archive import stored in the campaign store
+/// into actor sheets. An owner is kept only when that account exists on this instance.
+pub async fn restore_imported_actors(
+    state: &AppState,
+    campaign_id: Uuid,
+    entities: &[ExportEntity],
+) -> Result<(), String> {
+    for (id, name, owner, data) in entities.iter().filter_map(split_actor_entity) {
+        let owner = match owner {
+            Some(uid) => match state.auth_state.session_store.get_user_by_id(uid).await {
+                Ok(Some(_)) => Some(uid),
+                _ => None,
+            },
+            None => None,
+        };
+        create_actor(state, campaign_id, id, owner, &name, data)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Conditional actor write (`version == expected_version`), PostgreSQL or memory.
