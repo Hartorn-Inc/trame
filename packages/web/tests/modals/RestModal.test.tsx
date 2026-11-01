@@ -147,6 +147,7 @@ function setupMockDom() {
 
     removeAttribute(name: string) {
       delete this.attributes[name];
+      if (name === "disabled") this.disabled = false;
     }
 
     addEventListener(type: string, listener: Function) {
@@ -179,6 +180,12 @@ function setupMockDom() {
       if (selector.startsWith(".")) {
         return this.classList.contains(selector.slice(1));
       }
+      const notMatch = selector.match(/^([^:]*):not\((.+)\)$/);
+      if (notMatch) {
+        const [, base, negated] = notMatch;
+        const matchesBase = base ? this.matches(base) : true;
+        return matchesBase && !this.matches(negated);
+      }
       const bracketIdx = selector.indexOf("[");
       if (bracketIdx !== -1 && selector.endsWith("]")) {
         const tagPart = selector.slice(0, bracketIdx).trim();
@@ -192,7 +199,13 @@ function setupMockDom() {
           const val = inner.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, "");
           return this.getAttribute(attr) === val || (this as any)[attr] === val;
         }
+        if (inner === "disabled") {
+          return Boolean(this.disabled || this.hasAttribute("disabled"));
+        }
         return this.hasAttribute(inner);
+      }
+      if (selector === ":disabled") {
+        return Boolean(this.disabled || this.hasAttribute("disabled"));
       }
       return this.nodeName.toLowerCase() === selector.toLowerCase();
     }
