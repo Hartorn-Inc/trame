@@ -16,7 +16,7 @@ E2E_COMPOSE := E2E_UID=$$(id -u) E2E_GID=$$(id -g) $(DC) --project-name trame-e2
 help: ## Display available Docker-based development commands
 	@awk 'BEGIN {FS = ":.*##"; printf "TRAME Docker Development Workflow\nUsage: make <target>\n\nTargets:\n"} /^[a-zA-Z][a-zA-Z0-9_-]*:.*##/ {printf "  %-20s %s\n", $$1, $$2}' "$(MAKEFILE_PATH)"
 
-up: wasm ## Start the isolated local development stack (Postgres 18, MinIO S3, Rust server, Web HMR)
+up: wasm ## Start the isolated local development stack (Postgres 18, Silo S3, Rust server, Web HMR)
 	$(DEV_COMPOSE) up -d --build
 
 down: ## Stop the isolated local development stack without removing data volumes

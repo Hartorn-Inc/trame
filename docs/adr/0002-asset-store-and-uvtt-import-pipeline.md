@@ -1,7 +1,7 @@
 # ADR-0002: Ingestion Pipeline for Universal VTT and Asset Storage Abstraction
 
 ## Status
-Accepted
+Accepted. Amendment (2026-11-01): the local development stack now runs Silo (`pgsty/silo`), an S3-compatible MinIO fork, in the `minio` Compose service, because the `minio/minio` image left Docker Hub. The server does not read `S3_*` yet; assets are stored in PostgreSQL (or in memory without a database). MinIO references below describe the S3-compatible target, not the dev image.
 
 ## Context
 TRAME requires support for importing Universal VTT (`.uvtt` and `.dd2vtt`) battlemaps produced by tools like Dungeondraft and Dungeon Alchemist. An imported map includes a raster image encoded in Base64, grid geometry, line of sight (LOS) blockers, doors (portals), and ambient/point light sources.
