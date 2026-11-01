@@ -214,7 +214,9 @@ The `system.json` file provides the configuration read by `trame-engine` for val
 
 ### 3.3 Derived Calculation Function (`computeDnd5eSheetDerived`)
 
-The `manifest.ts` module exposes the pure synchronous function `computeDnd5eSheetDerived(actor: Dnd5eActorData)` that computes derived values mirroring the `derivedDAG` graph for tests running without the WASM runtime:
+> **Superseded by the ADR-0001 amendment (single evaluator, G1):** there is no TypeScript evaluator. `computeDnd5eSheetDerived` keeps its signature but evaluates the `system.json` formulas through the WASM `evaluate_derived_dag`, installed with `setDerivedDagEvaluator` (the browser installs the `wasmBridge.ts` export; Node consumers and tests import `src/node.ts`). Calling it before an evaluator is installed throws. The rules below are now `system.json` formulas; AC uses the exclusive `Base` phase (`ac_base`, then `ac = ac_base + shield_bonus`, ADR-0038).
+
+The `manifest.ts` module exposes the pure synchronous function `computeDnd5eSheetDerived(actor: Dnd5eActorData)`, whose results follow these rules:
 1. Computes each ability modifier: `Math.floor((score - 10) / 2)`.
 2. Computes the proficiency bonus: `Math.floor((level - 1) / 4) + 2`.
 3. Computes passive perception: `10 + wisMod + (perceptionRank * profBonus)`.

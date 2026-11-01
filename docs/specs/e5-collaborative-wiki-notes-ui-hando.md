@@ -8,6 +8,8 @@ This document specifies the implementation of four integrated components of the 
 3. **Append-only session timeline (`SessionTimelineEvent`)**: a persistent log of session events, exposed over WebSocket, a REST endpoint and an MCP server tool (`get_session_timeline`).
 4. **Decoupled mobile companion mode (< 768 px, `MobileCompanionView`)**: a lightweight touch layout with five tabs that never creates the PixiJS application or WebGL Framebuffer Objects (FBO) on screens narrower than 768 pixels.
 
+> **Implementation status:** the web client reveals handouts through `POST /api/v1/campaigns/{id}/handouts/{handout_id}/reveal`, which applies `TrameCommand::RevealHandout` and broadcasts `ServerEnvelope::HandoutRevealed` (see `spec-3-scope-wiki-notes-private-part.md`, section 4). The notes REST contract is described there as well.
+
 ---
 
 ## 2. Data Model and Protocol Architecture

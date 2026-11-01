@@ -9,7 +9,7 @@ In TRAME, the active table is coordinated in memory by a distributed Tokio actor
 Furthermore, transitioning to a new map during an active session required manual token recreation or caused loss of dynamic hero token attributes (current HP, conditions, inventory).
 
 ## Decision
-1. **Decoupled REST Persistence**: Expose REST endpoints `GET / POST / PUT / DELETE /api/v1/campaigns/{campaign_id}/maps[/{map_id}]`. The Game Master drafts and persists scenes independently from the running `TableRoomActor`.
+1. **Decoupled REST Persistence**: Expose REST endpoints for campaign scenes. As implemented, the whole scene set is read with `GET /api/v1/campaigns/{campaign_id}/maps` (`{ scenes, version }`) and replaced with `PUT` carrying `expected_version` (`409 VERSION_CONFLICT` when stale, see `SceneSetVersion` in `GLOSSARY.md`); there are no per-scene routes. The Game Master drafts and persists scenes independently from the running `TableRoomActor`.
 2. **Atomic ActivateScene Command**: Dispatch the `ActivateScene { scene_id: Uuid }` actor message to `TableRoomActor`. Upon handling:
    - `TableRoomActor` loads wall segments, light sources, spatial audio emitters, and staged tokens from the target persisted scene.
    - `TableRoomActor` preserves all active player `HeroToken` instances (`owner_user_id.is_some()`) without altering HP, conditions, or inventory.

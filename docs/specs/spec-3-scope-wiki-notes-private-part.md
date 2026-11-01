@@ -19,7 +19,7 @@ This specification defines the complete implementation of the following TRAME fe
    - Removal of the secret `:::dm` and `:::handout{revealed="false"}` blocks for non-GM users.
    - AST preservation and merge algorithm (`LineAnchorNoteMerge`) that keeps the GM's confidential blocks when players edit `PARTY` notes with `PUT`.
 3. **Transactional lifecycle and live handout reveal**:
-   - The `TrameCommand::RevealHandout` command over WebSocket and the REST endpoint `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout`.
+   - The `TrameCommand::RevealHandout` command over WebSocket and the REST endpoint `POST /api/v1/campaigns/{id}/handouts/{handout_id}/reveal`.
    - Decoupled persistence in the SQL table `party_journal_entries` and the `session_events` timeline.
    - WebSocket broadcast `ServerEnvelope::HandoutRevealed` that automatically opens the Preact component `[data-testid="handout-reveal-modal"]`.
 4. **Preact mobile companion view (`MobileCompanionView`)**:
@@ -125,6 +125,11 @@ WHEN a user with `user.role != UserRole::GameMaster` sends `PUT /api/v1/campaign
 
 ### 3.4 Notes REST API Contracts
 
+> **Implementation status (convergence branch):** the mounted routes (`crates/trame-server/src/campaigns.rs`) are narrower than the design below:
+> - `GET /api/v1/campaigns/{id}/notes` returns `{ "notes": [...] }`, each note filtered by `FilteredNoteDocument` for the caller's role.
+> - `PUT /api/v1/campaigns/{id}/notes/{slug}` creates or updates a note (body `{ title, content_markdown, folder?, min_role? }`, slug `[A-Za-z0-9_-]{1,128}`) and returns `{ "note": ... }`. Only the GM may set `min_role` to `"GM"` (the `DM_ONLY` tier); every other note is `"PLAYER"` (the `PARTY` tier). Player edits go through `LineAnchorNoteMerge` (`merge_party_note_ast`); a player `PUT` on a GM note returns `404`; spectators receive `403`.
+> - There is no single-note `GET`, no `POST`, no `DELETE`, and no `PRIVATE` tier over REST yet. `NoteVisibility` (`PRIVATE`, `PARTY`, `DM_ONLY`) and its access rules exist in `crates/trame-server/src/notes.rs` but are not wired to these routes.
+
 #### `GET /api/v1/campaigns/{id}/notes`
 - Returns the notes visible to the caller:
   - Includes every `PARTY` note.
@@ -182,13 +187,15 @@ WHEN a user with `user.role != UserRole::GameMaster` sends `PUT /api/v1/campaign
 
 A handout reveal is triggered either by the WebSocket action `TrameCommand::RevealHandout` or by the dedicated REST endpoint:
 
-- **REST route**: `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout`
-- **JSON payload**:
+- **REST route**: `POST /api/v1/campaigns/{id}/handouts/{handout_id}/reveal`. The server searches every campaign note for the `:::handout{id="<handout_id>"}` block, so no note ID is needed.
+- **Optional JSON payload**:
   ```json
   {
-    "handout_id": "string"
+    "session_num": 3
   }
   ```
+  `session_num` selects the timeline session; it defaults to the live session.
+- **Response**: `{ "handout": ... }`.
 - **Access control**: only the `GameMaster` role is allowed. Any other role receives `403 Forbidden`.
 
 ### 4.2 Atomic Transactional Processing
@@ -233,15 +240,15 @@ When running the reveal, `trame-server` performs the following steps in a single
 
 - **REST route**: `GET /api/v1/campaigns/{id}/journal`
 - **Authorization**: any authenticated campaign member (`GameMaster`, `Player`, `Spectator`).
-- **Returns**: the array of `PartyJournalEntry` entries ordered by `revealed_at DESC`.
+- **Returns**: `{ "entries": [PartyJournalEntry] }` ordered by `revealed_at DESC`.
 - Status code: `200 OK`.
 
 ### 4.4 Event Timeline Endpoint
 
-- **REST route**: `GET /api/v1/campaigns/{id}/timeline` (the session-scoped route is `GET /api/campaigns/{campaign_id}/sessions/{session_num}/timeline`, see the E5 spec)
-- **Optional query parameters**: `since_seq_id=0`, `limit=50` (capped at `200`).
-- **Authorization**: any authenticated campaign member; events are filtered by role.
-- **Returns**: the array of `SessionTimelineEvent` entries sorted by `seq_id ASC`.
+- **REST route**: `GET /api/campaigns/{campaign_id}/sessions/{session_num}/timeline` (session-scoped, see the E5 spec; note the path has no `v1` segment). There is no campaign-wide timeline route.
+- **Optional query parameters**: `after=0` (exclusive `seq_id` cursor), `limit=50` (clamped to `1..=200`).
+- **Authorization**: any authenticated campaign member; non-GM members never see GM-only events.
+- **Returns**: the `SessionTimelineEvent` entries sorted by `seq_id ASC`.
 - Status code: `200 OK`.
 
 ---
@@ -272,7 +279,7 @@ When running the reveal, `trame-server` performs the following steps in a single
      - Tree grouped by logical folder (`folder`).
      - Note creation button `[data-testid="create-note-btn"]` with a `PRIVATE` or `PARTY` scope choice (or `DM_ONLY` for the GM).
      - Bidirectional Markdown editor supporting the `:::handout` and `:::dm` directives.
-     - For every `:::handout` directive in the GM's editor: an action button `[data-testid="btn-reveal-handout"]` that calls `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout`.
+     - For every `:::handout` directive in the GM's editor: an action button `[data-testid="btn-reveal-handout"]` that calls `POST /api/v1/campaigns/{id}/handouts/{handout_id}/reveal`.
   2. **Revealed handouts gallery** (`[data-testid="past-handouts-gallery"]`):
      - Grid of archived handout cards from `GET /api/v1/campaigns/{id}/journal`.
      - Clicking a card opens its content in `HandoutRevealModal`.
@@ -372,7 +379,7 @@ When running the reveal, `trame-server` performs the following steps in a single
    - Player A sends a `PUT` with `"Edited public text\n\nPublic end"`.
    - The GameMaster reads the note: the `:::dm\nGM secret\n:::` block is still present in the stored note.
 3. `test_reveal_handout_atomicity`:
-   - The GameMaster calls `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout` with `handout_id = "clue-1"`.
+   - The GameMaster calls `POST /api/v1/campaigns/{id}/handouts/clue-1/reveal`.
    - Check that `party_journal_entries` contains a row for `clue-1`.
    - Check that `session_events` contains a `handout_revealed` row.
    - Check that player A can now read the handout through `GET /api/v1/campaigns/{id}/journal`.

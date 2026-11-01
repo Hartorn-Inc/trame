@@ -1,7 +1,7 @@
 # ADR-0003: Interactive Table HUD, Reaction Interruption Authority, and Acoustic Occlusion
 
 ## Status
-Accepted
+Accepted. The 5-second reaction countdown is superseded by convergence decision G2 (`docs/specs/spec-playable-dnd5e-campaign-convergence.md`): a `ReactionPrompt` has no timer and the Game Master can force `Pass` (see `GLOSSARY.md`).
 
 ## Context
 The interactive table in TRAME requires low-latency user feedback for interactive tools (3D ruler, radar pings, vector drawing overlays) while providing an authoritative HUD for combat sequencing (mode toggles, initiative tracking, 5-second reaction interruptions) and omnipotent Game Master overrides (resource edits, action refunds, 1-click state undo).

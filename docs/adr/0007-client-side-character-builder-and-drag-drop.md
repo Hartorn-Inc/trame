@@ -1,7 +1,7 @@
 # ADR-0007: Client-Side Character Builder State Machine and Interactive Drag-and-Drop
 
 ## Status
-Accepted
+Accepted. The rules baseline is now SRD 5.2.1 ([ADR-0038](./0038-srd-521-rules-baseline.md)): ability score increases come from the background (`applyBackground`), not the species, and the SRD 5.1 references below are historical.
 
 ## Context
 Character creation and sheet population require two workflows:

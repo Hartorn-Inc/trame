@@ -30,7 +30,7 @@ The MCP endpoint is JSON-RPC 2.0 at `POST /api/v1/mcp`, authenticated with a `tr
 
 ## 2. Staging Mode & Atomic MCP Batches (Q7)
 
-When an AI agent runs heavy or creative operations through MCP (for example *"Generate an ambush with 6 monsters and change the room's walls"* or *"Rewrite the session notes"*), the GM chooses between two execution modes. `MCP Staging Mode` is a persisted campaign setting (`mcp_staging_mode`), not a per-call flag.
+When an AI agent runs heavy or creative operations through MCP (for example *"Generate an ambush with 6 monsters and change the room's walls"* or *"Rewrite the session notes"*), the GM chooses between two execution modes. `MCP Staging Mode` is a persisted campaign setting (`mcp_staging_mode`, `GET/PUT /api/v1/campaigns/{id}/settings`). A call is staged when that setting is on or when the call itself passes `mcp_staging_mode: true` (`trame.dispatch_command`, `mcp.execute_batch`); `mcp.stage_encounter` always stages.
 
 1. **Direct execution (staging off) + 1-click undo**:
    * The MCP tool `mcp.execute_batch` groups several `TrameCommand`s (for example `SpawnToken`, `AddLight`, `AddWall`) into **a single history transaction**: the batch is applied all-or-nothing (snapshot, apply all, or roll back on the first failure) and produces **one composite `UndoEntry`**.

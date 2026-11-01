@@ -52,7 +52,7 @@ CREATE INDEX idx_campaign_map_scenes_campaign_id ON campaign_map_scenes(campaign
 
 ### 3.2 Rust Domain Data Models (`trame-engine / trame-server`)
 
-> **Convergence note (spec v3, audit A29):** the engine's `WallSegment` (`crates/trame-engine/src/geometry.rs`, with `WallKind`) is the only wall type. The `WallType` / `WallSegment` shapes below describe the scene persistence payload; `crates/trame-server/src/maps.rs` maps them onto the engine type instead of keeping a duplicate.
+> **Convergence note (spec v3, audit A29):** the engine's `WallSegment` (`crates/trame-engine/src/geometry.rs`, with `WallKind`) is the only wall type. `crates/trame-server/src/maps.rs` stores scenes with the engine `WallSegment`; its tolerant deserializer accepts the editor shape below (`p1`/`p2`, `wallType`, `doorState`), and responses carry the canonical `kind` plus those editor fields. The `WallType` / `WallSegment` listing below is that editor wire shape, not a second Rust type.
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -180,13 +180,14 @@ pub struct CampaignMapScene {
 
 ### 4.1 Route Specification
 
-- `GET /api/v1/campaigns/{campaign_id}/maps`: lists the campaign's scenes.
-- `POST /api/v1/campaigns/{campaign_id}/maps`: creates a new map scene.
-- `GET /api/v1/campaigns/{campaign_id}/maps/{map_id}`: gets one scene with its full geometry.
-- `PUT /api/v1/campaigns/{campaign_id}/maps/{map_id}`: updates the prepared scene (GM only).
-- `DELETE /api/v1/campaigns/{campaign_id}/maps/{map_id}`: deletes the prepared scene (GM only).
-- `POST /api/v1/campaigns/{campaign_id}/maps/{map_id}/activate`: runs `ActivateScene` on the active table.
-- `POST /api/v1/campaigns/{campaign_id}/maps/import`: imports a `.uvtt` / `.dd2vtt` file as a new scene (GM only, see section 7).
+A campaign's scenes are read and written as one versioned set (the **scene-set version**, ADR-0037 optimistic concurrency). There are no per-scene routes.
+
+- `GET /api/v1/campaigns/{campaign_id}/maps`: returns `{ "scenes": [CampaignMapScene], "version": <i64> }`. Campaign members only (`403 FORBIDDEN` otherwise); players receive the filtered set described in section 4.2.
+- `PUT /api/v1/campaigns/{campaign_id}/maps`: GM only. Body `{ "scenes": [...], "expected_version": <i64> }` replaces the whole scene set (create, edit and delete are all a `PUT`). A missing `expected_version` returns `400 MISSING_EXPECTED_VERSION`; a stale one returns `409 VERSION_CONFLICT` with `current_version`. On success the response has the same shape as `GET` with the bumped `version`.
+- `POST /api/v1/campaigns/{campaign_id}/maps/import`: imports a `.uvtt` / `.dd2vtt` file as a new scene (GM only, see section 7). It saves through the same path and bumps the scene-set version.
+- **Activation** is not a REST route: the GM client sends `TrameCommand::ActivateScene` over the table WebSocket (or MCP). The server replaces any client-supplied scene payload with the persisted scene (`resolve_scene_command`) and rejects unknown scene IDs, so clients cannot inject geometry and WAL replays stay deterministic.
+
+The scene-set version is stored in `campaigns.scenes_version` (default `0`) when PostgreSQL is configured.
 
 ### 4.2 Zero-Trust Filtering Matrix for Players
 
@@ -199,11 +200,11 @@ WHEN a user with the `CampaignRole::Player` role sends a `GET` request to `/api/
    - The backend removes every emitter from `spatial_audio_emitters` with `gm_only == true`.
    - The backend serializes the `explored_fog_texture` texture encoded as an 8-bit grayscale PNG to show the explored area without revealing hidden areas.
 
-WHEN a user with the `CampaignRole::Player` role sends `GET /api/v1/campaigns/{campaign_id}/maps/{map_id}` for a scene where `revealed_to_players == false`, THEN the backend returns HTTP `403 Forbidden`.
+Unrevealed scenes are simply absent from a player's `GET` response; there is no per-scene route that could expose them.
 
 ### 4.3 Deterministic `StarterDungeon` Template
 
-WHEN the request `POST /api/v1/campaigns/{campaign_id}/maps` contains the payload `template = "StarterDungeon"`, THEN the backend creates a deterministic `CampaignMapScene` with the following properties:
+WHEN the game master clicks the starter dungeon button in `MapsStudioTab`, THEN the web client builds a deterministic `CampaignMapScene` (`createStarterDungeonScene` in `packages/web/src/maps/domain.ts`) and saves it with the rest of the scene set through `PUT .../maps`. The scene has the following properties:
 - `name`: "The Forgotten Crypt"
 - `grid_type`: `GridType::Square`
 - `grid_size_px`: 70
@@ -260,7 +261,7 @@ The backend and the WASM bridge validate every `WallSegment` against the followi
 
 ### 6.1 Deterministic Token Migration Protocol
 
-WHEN the game master triggers `ActivateScene` by sending `POST /api/v1/campaigns/{campaign_id}/maps/{map_id}/activate`, THEN `TableRoomActor` runs the following atomic sequence:
+WHEN the game master sends `TrameCommand::ActivateScene` over the table WebSocket (or MCP), THEN `TableRoomActor` runs the following atomic sequence:
 1. `TableRoomActor` loads the `CampaignMapScene` identified by `map_id` from the database.
 2. `TableRoomActor` extracts every current `HeroToken` on the table (`owner_user_id.is_some()`), sorted lexicographically by UUID.
 3. `TableRoomActor` keeps the `HeroToken` state attributes unchanged: `hp_current`, `hp_max`, `temp_hp`, `conditions`, `inventory_items`.
@@ -340,7 +341,7 @@ For players, the `MapsStudioTab` tab shows only the `SceneAtlas` gallery:
 
 ### 10.2 Suite 2: RBAC Security & SceneAtlas Masking Test (`tests/scene_atlas_security_test.rs`)
 - **Test 2.1**: a player account requesting `GET /api/v1/campaigns/{id}/maps` receives only the scenes with `revealed_to_players == true`.
-- **Test 2.2**: a player account requesting `GET /api/v1/campaigns/{id}/maps/{map_id}` on a hidden scene receives HTTP `403 Forbidden`.
+- **Test 2.2**: a non-member requesting `GET /api/v1/campaigns/{id}/maps` receives HTTP `403 Forbidden`; a GM `PUT` with a stale `expected_version` receives `409 VERSION_CONFLICT`.
 - **Test 2.3**: in the payload a player receives for a revealed scene, no segment is a closed `WallType::SecretDoor` (changed into `WallType::Normal`), no segment is a `WallType::Illusion` (changed into `WallType::Normal`), no token has `visibility == VisibilityChannel::GmHidden`, and no sound has `gm_only == true`.
 
 ### 10.3 Suite 3: ActivateScene Table Transition Test (`tests/activate_scene_test.rs`)

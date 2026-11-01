@@ -257,7 +257,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ReactionBanner
 
-- **Definition**: HUD banner shown to the owner of the reacting token (the Game Master for monsters) while a `ReactionPrompt` is pending. A `MoveToken` that leaves a hostile `ThreatReach` stops on the exit square until the owner dispatches `DecideReaction` (`Trigger` or `Pass`). There is no timer; the Game Master can force `Pass`.
+- **Definition**: HUD banner shown to the owner of the reacting token (the Game Master for monsters) while a `ReactionPrompt` is pending. A `MoveToken` that leaves a hostile `ThreatReach` stops on the exit square until the owner dispatches `DecideReaction` (`Trigger` or `Pass`). There is no timer; the Game Master can force `Pass`. See `ReactionPrompt`.
 - **Allowed Context**: Movement interruption window and combat reaction declaration.
 - **_Avoid_**: ReactionPopup, OpportunityModal, InterruptionWidget.
 
@@ -491,7 +491,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### McpStagingProposal
 
-- **Definition**: Pending batch of destructive or bulk `TrameCommand` mutations submitted via `/api/v1/mcp` while `MCP Staging Mode` is active, held in `TableRoomActor` and rendered as translucent purple ghost previews until the Game Master dispatches `CommitMcpStaging` or `RejectMcpStaging`.
+- **Definition**: Pending batch of destructive or bulk `TrameCommand` mutations submitted via `/api/v1/mcp` while `MCP Staging Mode` is active, stored in the table snapshot data (`mcp_staging_proposals`) rather than in transient actor memory, projected to Game Masters only, and rendered as translucent purple ghost previews until the Game Master dispatches `CommitMcpStaging` (applied all-or-nothing) or `RejectMcpStaging`.
 - **Allowed Context**: `/api/v1/mcp` tool execution, `TableRoomActor` staging queue, and Game Master canvas confirmation controls.
 - **_Avoid_**: AiDraftQueue, PendingBotCommands.
 
@@ -512,5 +512,23 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: SRD 5.2.1 weapon property (`Cleave`, `Graze`, `Nick`, `Push`, `Sap`, `Slow`, `Topple`, `Vex`) that a class with the Weapon Mastery feature can use with a number of weapon kinds set by its level (`getWeaponMasteryCount`).
 - **Allowed Context**: Weapon compendium entries (`data.mastery`), Barbarian, Fighter, Paladin, Ranger and Rogue progression.
 - **_Avoid_**: Weapon specialization, weapon trick.
+
+### ReactionPrompt
+
+- **Definition**: Pending opportunity-reaction decision opened by a Turn-by-Turn `MoveToken` that leaves the `ThreatReach` of a hostile token that still has its reaction, is not GM-hidden or incapacitated, and can see the mover. It is addressed to the reactor's owner (the Game Master for unowned tokens), has no timer, and blocks player movement of the interrupted token until `DecideReaction` (`Trigger` or `Pass`, which the Game Master can force). After `Trigger`, `ResolveReaction` resumes the remaining move. Its `prompt_id` is a one-way SHA-256-derived UUID, so players cannot recover a hidden reactor's ID, and WAL replay reproduces the same IDs.
+- **Allowed Context**: `ProjectedTableState.active_reaction_prompts`, `ReactionPromptOpened` / `ReactionPromptClosed` events, and `ReactionBanner` rendering.
+- **_Avoid_**: OpportunityWindow, ReactionTimer, InterruptToken.
+
+### ReactionPromptCloseReason
+
+- **Definition**: Why a `ReactionPrompt` closed, carried by `ReactionPromptClosed` (serialized `RESOLVED`, `STALE`, `UNDONE`): `Resolved` (the triggered reaction was played out with `ResolveReaction`), `Stale` (combat ended, the trigger or reactor token was removed, or the Game Master moved the trigger token), or `Undone` (`UndoLastAction` restored a state without the prompt). A `Pass` decision closes the prompt through `ReactionDecided` instead.
+- **Allowed Context**: Reaction event handling and client prompt reconciliation.
+- **_Avoid_**: PromptOutcome, CancelReason.
+
+### SceneSetVersion
+
+- **Definition**: Integer optimistic-concurrency version of a campaign's whole map scene set (`campaigns.scenes_version`, default `0`). `GET .../maps` returns `{ scenes, version }`; `PUT .../maps` must echo it as `expected_version` (missing: `400 MISSING_EXPECTED_VERSION`, stale: `409 VERSION_CONFLICT` with `current_version`). Every scene write, including UVTT import, bumps it by one.
+- **Allowed Context**: `MapsStudioTab` saves, scene REST routes, and concurrent GM editing.
+- **_Avoid_**: MapRevision, SceneEtag, MapsVersion.
 
 

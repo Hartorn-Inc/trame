@@ -24,11 +24,43 @@ All local development, compilation, testing, and linting run inside isolated Doc
 
 ```bash
 cp .env.example .env
-# Edit .env to set a 32+ char TRAME_SESSION_SECRET and chmod 600 .env
+# Optionally edit .env, then chmod 600 .env
 make help
-make up          # Start isolated dev stack (PostgreSQL 18, MinIO S3, Rust watch, Vite HMR)
+make up          # Start isolated dev stack (PostgreSQL 18, MinIO, Rust server, Vite HMR)
 make test        # Run Rust, WASM parity, game-system, and Web tests in Docker
 make lint        # Run glossary/ADR and design checks, cargo fmt, cargo clippy, ESLint, and tsc in Docker
-make wasm        # Compile trame-engine to WebAssembly via wasm-pack in Docker
+make wasm        # Compile trame-engine to WebAssembly (browser + Node targets) via wasm-pack in Docker
 make down        # Stop the local development stack
 ```
+
+The dev stack sets `TRAME_ENV=dev`, so the server boots with public development keys for any missing secret. MinIO is started for future S3-compatible asset storage; the server currently stores assets in PostgreSQL (or in memory without a database).
+
+### PostgreSQL integration tests
+
+`make test-rust` skips the PostgreSQL integration tests unless `TEST_DATABASE_URL` is set (CI always runs them against a `postgres:18-alpine` service). With the stack running:
+
+```bash
+make up
+make test-rust TEST_DATABASE_URL=postgresql://trame:trame_dev_password@postgres:5432/trame
+```
+
+## Server Configuration
+
+`trame-server` reads its configuration from the environment at startup. Outside `TRAME_ENV=dev` it refuses to start and lists every missing or invalid secret; it never generates keys.
+
+| Variable | Required outside dev | Purpose |
+| :--- | :--- | :--- |
+| `TRAME_ENV` | No | `dev` substitutes public development keys and Vite origins for missing values. Never set it in production. |
+| `MASTER_ENCRYPTION_KEY` | Yes | 64 hex characters (AES-256-GCM) encrypting TOTP secrets at rest. |
+| `TRAME_JWT_SECRET` | Yes | At least 32 bytes; signs presigned asset URLs (legacy alias: `JWT_SECRET`). |
+| `TRAME_INVITE_JWT_SECRET` | Yes, unless a fallback is set | At least 32 bytes; signs Magic Link invite JWTs. Falls back to `TRAME_SESSION_SECRET`, then `JWT_SECRET`. |
+| `TRAME_SESSION_SECRET` | No | Fallback key for invite JWTs (see above). |
+| `TRAME_PUBLIC_ORIGIN` | Yes | Public browser origin (for example `https://table.example.com`); used for invite URLs and the WebSocket `Origin` allow-list. |
+| `TRAME_ALLOWED_ORIGINS` | No | Extra comma-separated WebSocket origins. |
+| `TRAME_COOKIE_SECURE` | No | Session cookies carry `Secure` unless set to `false`/`0`/`no`/`off` (plain-HTTP LAN tables). |
+| `TRAME_TRUST_FORWARDED_FOR` | No | `true` keys rate limits on the right-most `X-Forwarded-For` hop; set only behind a trusted proxy. |
+| `TRAME_STATIC_DIR` | No | Directory of the built web client served with an `index.html` SPA fallback (set to `/app/static` in the production image). |
+| `DATABASE_URL` | No | PostgreSQL URL (alias: `TRAME_DATABASE_URL`). Migrations run at startup. Without it the server uses in-memory persistence. |
+| `TRAME_PORT` | No | Listen port (fallback `PORT`, default `8080`). |
+| `TRAME_INSTANCE_ID` | No | Instance UUID; a random one is generated when unset. |
+| `RUST_LOG` | No | `tracing` log filter (for example `info,trame_server=debug`); defaults to `info`. |
