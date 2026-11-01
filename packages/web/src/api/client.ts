@@ -764,6 +764,7 @@ export class ApiClient {
         s.seqId.value = envelope.seqId;
         s.table.value = envelope.state;
         s.mcpProposals.value = envelope.state.mcp_staging_proposals ?? {};
+        this.seedInitiativeTotals(envelope.state);
         return;
       case "CommandAccepted":
         if (envelope.seqId <= s.seqId.value) return;
@@ -772,7 +773,8 @@ export class ApiClient {
         s.lastEvents.value = envelope.events;
         s.mcpProposals.value = envelope.state.mcp_staging_proposals ?? {};
         s.lastRejection.value = null;
-        this.applyEvents(envelope.events, envelope.state);
+        this.seedInitiativeTotals(envelope.state);
+        this.applyEvents(envelope.events);
         return;
       case "CommandRejected":
         s.lastRejection.value = envelope.reason;
@@ -828,23 +830,30 @@ export class ApiClient {
     if (token) this.state.initiativeTotals.value = { ...totals, [token.id]: roll.total };
   }
 
+  /**
+   * Overlays the projected state's `initiative_totals` on the known totals, so a
+   * late join or reconnect (which starts from `{}` in `connect`) shows the
+   * tracker totals without replaying events. Roll-derived totals the server
+   * does not know yet are kept; outside combat everything is cleared.
+   */
+  private seedInitiativeTotals(state: ProjectedTableState): void {
+    const s = this.state;
+    s.initiativeTotals.value =
+      state.mode === "TURN_BY_TURN" ? { ...s.initiativeTotals.value, ...(state.initiative_totals ?? {}) } : {};
+  }
+
   /** Folds the event-only facts (initiative totals, prompt closures) into session signals. */
-  private applyEvents(events: WireTrameEvent[], state: ProjectedTableState): void {
+  private applyEvents(events: WireTrameEvent[]): void {
     const s = this.state;
     for (const ev of events) {
       if (ev.event === "INITIATIVE_UPDATED") {
         s.initiativeTotals.value = { ...((ev.initiative_totals as Record<Uuid, number>) ?? {}) };
-      } else if (ev.event === "TABLE_MODE_CHANGED" && ev.mode === "EXPLORATION") {
-        s.initiativeTotals.value = {};
       } else if (ev.event === "REACTION_PROMPT_CLOSED") {
         s.lastClosedPrompt.value = {
           promptId: String(ev.prompt_id),
           reason: ev.reason as ReactionPromptCloseReason,
         };
       }
-    }
-    if (state.mode !== "TURN_BY_TURN" && Object.keys(s.initiativeTotals.value).length > 0) {
-      s.initiativeTotals.value = {};
     }
   }
 }

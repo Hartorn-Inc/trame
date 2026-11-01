@@ -18,10 +18,11 @@
  * 2. `Bounded Logs`:
  *    - Dice and pointer-ping logs are capped (`DICE_LOG_LIMIT`,
  *      `POINTER_PING_LIMIT`) so a long session cannot grow memory unbounded.
- * 3. `Initiative Totals Are Event-Sourced`:
- *    - `ProjectedTableState` carries the initiative order but not the totals,
- *      so `initiativeTotals` is rebuilt from `INITIATIVE_UPDATED` events and
- *      `Initiative: {name}` dice rolls, and cleared when combat ends.
+ * 3. `Initiative Totals Seeded From State`:
+ *    - Every projected state carries `initiative_totals` (visible combatants
+ *      only), so a late join or reconnect seeds `initiativeTotals` from it;
+ *      `INITIATIVE_UPDATED` events and `Initiative: {name}` dice rolls apply on
+ *      top, and the map is cleared when combat ends.
  * ============================================================================
  */
 import { signal, type Signal } from "@preact/signals";

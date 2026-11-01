@@ -15,9 +15,10 @@
  * 1. `Engine-Owned Order`:
  *    - The order and active index come from the projection; the bar never
  *      re-sorts. `SET_INITIATIVE_TOTAL` lets the engine re-sort.
- * 2. `Totals From Events`:
- *    - Totals come from `session.initiativeTotals` (initiative rolls and
- *      `INITIATIVE_UPDATED`); a total that is not known yet shows a dash.
+ * 2. `Totals From Session`:
+ *    - Totals come from `session.initiativeTotals` (the snapshot's
+ *      `initiative_totals`, then initiative rolls and `INITIATIVE_UPDATED`);
+ *      a total that is not known yet shows a dash.
  * 3. `Non-Color Turn Marker`:
  *    - The active row carries `aria-current="true"` and a text marker in
  *      addition to the highlight; the live region announces turn changes.
