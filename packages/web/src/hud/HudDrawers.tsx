@@ -30,7 +30,9 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
 
   const handleSheetKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
-      e.stopPropagation();
+      if (typeof e.stopPropagation === 'function') {
+        e.stopPropagation();
+      }
       closeSheet();
     }
   };

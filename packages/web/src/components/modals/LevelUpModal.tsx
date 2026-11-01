@@ -334,7 +334,9 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
   // Keyboard handlers: Escape closes modal, Tab is trapped inside
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
-      e.stopPropagation();
+      if (typeof e.stopPropagation === "function") {
+        e.stopPropagation();
+      }
       onClose();
       return;
     }

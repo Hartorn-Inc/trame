@@ -178,12 +178,26 @@ function setupMockDom() {
 
     dispatchEvent(event: { type: string; [k: string]: any }): boolean {
       const target = event.target ?? this;
+      let stopped = false;
+      const originalStopPropagation = event.stopPropagation;
+      const eventObj = {
+        preventDefault: () => {},
+        ...event,
+        target,
+        currentTarget: this,
+        stopPropagation: () => {
+          stopped = true;
+          if (typeof originalStopPropagation === "function") {
+            originalStopPropagation();
+          }
+        },
+      };
       const list = this.listeners[event.type] || [];
       for (const handler of list) {
-        handler.call(this, { ...event, target, currentTarget: this });
+        handler.call(this, eventObj);
       }
-      if (this.parentNode && (event as any).bubbles !== false) {
-        this.parentNode.dispatchEvent({ ...event, target });
+      if (this.parentNode && (event as any).bubbles !== false && !stopped) {
+        this.parentNode.dispatchEvent(eventObj);
       }
       return true;
     }
@@ -279,6 +293,9 @@ function setupMockDom() {
   (globalThis as any).Event = class {
     type: string;
     bubbles = true;
+    stopPropagation = () => {};
+    stopImmediatePropagation = () => {};
+    preventDefault = () => {};
     constructor(type: string, opts?: any) {
       this.type = type;
       if (opts) Object.assign(this, opts);
