@@ -34,6 +34,11 @@
 //!      - `Point2D::distance_3d` clamps `px_per_ft` to `>= 1e-6` and
 //!        `segment_intersection` rejects collinear/parallel segments where
 //!        `|denom| < 1e-10`.
+//!   5. `Single Wall Type`:
+//!      - `WallSegment` is the only wall primitive in the workspace. It accepts
+//!        the map-editor input shape (`p1`/`p2`, `wallType`, `doorState`) on
+//!        deserialization and `masked_for_players` is the one place that turns
+//!        closed secret doors and illusions into plain walls for non-GMs.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -171,7 +176,14 @@ pub enum WallKind {
 }
 
 /// Authoritative 2.5D wall segment primitive with vertical elevation bounds and channel flags.
+///
+/// This is the single wall type shared by the engine, the server's scene storage, and the
+/// UVTT importer. Serialization always emits the canonical shape (`a`, `b`, `kind`, snake_case
+/// flags). Deserialization is tolerant (see `WallSegmentWire`): it also accepts `p1`/`p2`,
+/// camelCase field names, the map-editor `wallType` + `doorState` pair, and missing
+/// elevation/blocking fields (full height, blocking by default).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "WallSegmentWire")]
 pub struct WallSegment {
     /// Unique identifier for the wall or door segment.
     pub id: Uuid,
@@ -255,6 +267,143 @@ impl WallSegment {
     /// returning `false` when `blocks_movement` is `false`, the door is open, or the wall is an `Illusion`.
     pub fn is_blocking_movement(&self) -> bool {
         self.effective_blocks_movement(false)
+    }
+
+    /// Returns the copy of this wall that a non-GM recipient may see: a closed `SecretDoor` or
+    /// any `Illusion` becomes a fully blocking `WallKind::Normal`, so wire payloads never reveal
+    /// hidden passages or illusory walls. Other walls are returned unchanged.
+    pub fn masked_for_players(&self) -> Self {
+        let hidden = matches!(
+            self.kind,
+            WallKind::SecretDoor { is_open: false } | WallKind::Illusion { .. }
+        );
+        if !hidden {
+            return self.clone();
+        }
+        Self {
+            kind: WallKind::Normal,
+            blocks_movement: true,
+            blocks_vision: true,
+            blocks_light: true,
+            blocks_sound: true,
+            ..self.clone()
+        }
+    }
+}
+
+fn default_wall_bottom_ft() -> f64 {
+    -1000.0
+}
+
+fn default_wall_top_ft() -> f64 {
+    1000.0
+}
+
+/// Map-editor wall classification (`wallType`) accepted on input for `WallSegment`.
+#[derive(Debug, Clone, Copy, Deserialize)]
+enum LegacyWallType {
+    Normal,
+    Window,
+    Terrain,
+    OneWay,
+    Door,
+    SecretDoor,
+    Illusion,
+}
+
+/// Map-editor door state (`doorState`): `"Open"` / `"Closed"` / `"Locked"` or `{ isOpen, isLocked }`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum LegacyDoorState {
+    Label(String),
+    Flags {
+        #[serde(default, alias = "isOpen")]
+        is_open: bool,
+        #[serde(default, alias = "isLocked")]
+        is_locked: bool,
+    },
+}
+
+impl LegacyDoorState {
+    /// Returns `(is_open, is_locked)`; unknown labels read as closed and unlocked.
+    fn flags(&self) -> (bool, bool) {
+        match self {
+            LegacyDoorState::Label(label) => match label.to_ascii_lowercase().as_str() {
+                "open" => (true, false),
+                "locked" => (false, true),
+                _ => (false, false),
+            },
+            LegacyDoorState::Flags { is_open, is_locked } => (*is_open, *is_locked),
+        }
+    }
+}
+
+/// Tolerant input shape for `WallSegment`. `kind` wins over `wallType`; with neither the wall
+/// is `Normal`. Missing elevations default to full height (`-1000.0..=1000.0` ft); missing
+/// blocking flags default to `true`, except vision and light through a `Window`.
+///
+/// Field order mirrors the canonical `WallSegment` order (legacy-only fields last) so positional
+/// encodings such as non-named MessagePack still decode.
+#[derive(Deserialize)]
+struct WallSegmentWire {
+    id: Uuid,
+    #[serde(alias = "p1")]
+    a: Point2D,
+    #[serde(alias = "p2")]
+    b: Point2D,
+    #[serde(default)]
+    kind: Option<WallKind>,
+    #[serde(default, alias = "blocksMovement")]
+    blocks_movement: Option<bool>,
+    #[serde(default, alias = "blocksVision")]
+    blocks_vision: Option<bool>,
+    #[serde(default, alias = "blocksLight")]
+    blocks_light: Option<bool>,
+    #[serde(default, alias = "blocksSound")]
+    blocks_sound: Option<bool>,
+    #[serde(default = "default_wall_bottom_ft", alias = "bottomElevationFt")]
+    bottom_elevation_ft: f64,
+    #[serde(default = "default_wall_top_ft", alias = "topElevationFt")]
+    top_elevation_ft: f64,
+    #[serde(default, alias = "wallType")]
+    wall_type: Option<LegacyWallType>,
+    #[serde(default, alias = "doorState")]
+    door_state: Option<LegacyDoorState>,
+}
+
+impl From<WallSegmentWire> for WallSegment {
+    fn from(wire: WallSegmentWire) -> Self {
+        let (is_open, is_locked) = wire
+            .door_state
+            .as_ref()
+            .map_or((false, false), LegacyDoorState::flags);
+        let kind = wire.kind.unwrap_or(match wire.wall_type {
+            None | Some(LegacyWallType::Normal) => WallKind::Normal,
+            Some(LegacyWallType::Window) => WallKind::Window,
+            Some(LegacyWallType::Terrain) => WallKind::Terrain,
+            Some(LegacyWallType::OneWay) => WallKind::OneWay {
+                normal_x: 0.0,
+                normal_y: 0.0,
+            },
+            Some(LegacyWallType::Door) => WallKind::Door { is_open, is_locked },
+            Some(LegacyWallType::SecretDoor) => WallKind::SecretDoor { is_open },
+            Some(LegacyWallType::Illusion) => WallKind::Illusion {
+                pierced_by_truesight: true,
+            },
+        });
+        let see_through = matches!(kind, WallKind::Window);
+        Self {
+            id: wire.id,
+            a: wire.a,
+            b: wire.b,
+            kind,
+            blocks_movement: wire.blocks_movement.unwrap_or(true),
+            blocks_vision: wire.blocks_vision.unwrap_or(!see_through),
+            blocks_light: wire.blocks_light.unwrap_or(!see_through),
+            blocks_sound: wire.blocks_sound.unwrap_or(true),
+            bottom_elevation_ft: wire.bottom_elevation_ft,
+            top_elevation_ft: wire.top_elevation_ft,
+        }
     }
 }
 

@@ -33,8 +33,33 @@
 //!        `TrameEvent::ConcentrationBroken`.
 //!   4. `BVH Synchronization`:
 //!      - Any mutation that alters wall permeability (`ToggleDoor`,
-//!        `UndoLastAction`) immediately rebuilds `self.bvh` so subsequent
-//!        raycasts and collision queries reflect the updated geometry.
+//!        `UndoLastAction`, `LoadScene`, `ActivateScene`) immediately rebuilds
+//!        `self.bvh` so subsequent raycasts and collision queries reflect the
+//!        updated geometry.
+//!   5. `ThreatReach Opportunity Prompts (Turn-by-Turn only)`:
+//!      - A non-teleport `MoveToken` whose straight path leaves the `reach_ft`
+//!        of a hostile, conscious token that still has its reaction stops on
+//!        the exit square and opens a `ReactionPrompt` addressed to the
+//!        reactor's owner (`None` = GM). There is no timer. Until the prompt
+//!        is decided, players cannot move the interrupted token.
+//!      - Hostility is side-based: a `HeroToken` (`owner_user_id.is_some()`)
+//!        and a GM-controlled token (`owner_user_id.is_none()`) are hostile.
+//!      - `Pass` (including a GM-forced `Pass`) resumes the remaining move,
+//!        re-checking walls, budget, and the other reactors' reach. `Trigger`
+//!        spends the reaction and leaves the token on the exit square; once the
+//!        attack is resolved, its controller re-issues `MoveToken` with the
+//!        preserved movement budget.
+//!   6. `Validate-Then-Snapshot Reactions`:
+//!      - `DecideReaction` verifies that the prompt exists, that `actor_id`
+//!        is its reactor, that the issuer owns the reactor (GM may force), and
+//!        that `Trigger` still has a reaction available, all before pushing
+//!        an `UndoEntry`.
+//!   7. `All-or-Nothing Batches`:
+//!      - `apply_batch` and `CommitMcpStaging` run sub-commands against the
+//!        live state; on the first failure the table data, `Bvh2D`, grid size,
+//!        and undo stack are restored exactly and the error carries the failing
+//!        index. On success the sub-commands' own undo entries are discarded in
+//!        favor of one composite `UndoEntry`.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -44,6 +69,12 @@
 //!     ├── 3. Push pre-mutation `UndoEntry` onto `undo_stack` (bounded to 50).
 //!     ├── 4. Mutate `self.data` (and rebuild `self.bvh` if walls changed).
 //!     └── 5. Return emitted `Vec<TrameEvent>` for WAL persistence and client broadcast.
+//!
+//!   `TableState::apply_batch(actor, commands, description)`
+//!     ├── 1. Reject empty batches and nested undo/staging commands.
+//!     ├── 2. Snapshot data, `Bvh2D`, grid size; detach the undo stack.
+//!     ├── 3. `apply_command` each sub-command; on error restore and return `BatchCommandFailed`.
+//!     └── 4. Reattach the undo stack and push one composite `UndoEntry`.
 //! ============================================================================
 
 use crate::aoe::{AoeTemplate, GridCell, TokenSpatialRef};
@@ -54,7 +85,7 @@ use crate::geometry::{
 };
 use crate::rules::{ActiveEffect, DamageAffinity, DamageResolution, resolve_damage_application};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -136,7 +167,7 @@ pub struct FogOverrideCell {
     pub mode: FogOverrideMode,
 }
 
-/// Player or GM decision in response to a tactical 5-second reaction prompt (e.g., Opportunity Attack, Shield).
+/// Player or GM decision in response to a tactical reaction prompt (e.g., Opportunity Attack, Shield).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ReactionDecision {
@@ -152,12 +183,13 @@ pub enum ReactionDecision {
     Pass,
 }
 
-/// Active tactical reaction window awaiting a `DecideReaction` command from the reacting actor or GM.
+/// Active tactical reaction window awaiting a `DecideReaction` command from the reacting
+/// token's owner or the GM. Prompts never expire on a timer (G2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReactionPrompt {
     /// Unique identifier of this reaction prompt.
     pub prompt_id: Uuid,
-    /// Token/actor UUID eligible to spend their reaction (`has_reaction == true`).
+    /// Token UUID eligible to spend its reaction (`has_reaction == true`).
     pub reactor_actor_id: Uuid,
     /// Token UUID whose movement or action triggered the reaction window.
     pub trigger_token_id: Uuid,
@@ -167,6 +199,56 @@ pub struct ReactionPrompt {
     /// Optional destination elevation in feet (`ft`) to resume if the reactor passes.
     #[serde(default)]
     pub pending_elevation_ft: Option<f64>,
+    /// User who must decide the prompt: the reactor token's owner, or `None` for the GM.
+    #[serde(default)]
+    pub reactor_owner_user_id: Option<Uuid>,
+    /// Reactors already prompted during this movement, so resuming does not prompt them again.
+    #[serde(default)]
+    pub resolved_reactor_ids: Vec<Uuid>,
+}
+
+/// Fully resolved scene payload consumed by `TrameCommand::ActivateScene`.
+///
+/// Clients send `ActivateScene { scene_id }` only; the server resolves the persisted scene
+/// into this payload before applying, so WAL replays stay deterministic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneActivation {
+    /// Asset store key or SHA-256 hash of the background battlemap (`None` = no background).
+    #[serde(default)]
+    pub map_asset_id: Option<String>,
+    /// Battlemap canvas width in pixels (`px`, `> 0`).
+    pub width_px: u32,
+    /// Battlemap canvas height in pixels (`px`, `> 0`).
+    pub height_px: u32,
+    /// Grid cell width/height in pixels (`px`, `> 0.0`).
+    pub pixels_per_grid: f64,
+    /// Wall and portal geometry replacing the current scene walls.
+    #[serde(default)]
+    pub walls: Vec<WallSegment>,
+    /// Point light sources replacing the current scene lights.
+    #[serde(default)]
+    pub lights: Vec<LightSource>,
+    /// `StagedToken`s instantiated as live tokens; IDs must not collide with kept `HeroToken`s.
+    #[serde(default)]
+    pub staged_tokens: Vec<TokenState>,
+    /// Top-left spawn coordinates in pixels (`px`) assigned to `HeroToken`s in token-ID order;
+    /// heroes beyond the list keep their current position.
+    #[serde(default)]
+    pub hero_spawn_points: Vec<Point2D>,
+}
+
+/// Action-economy resource restored by `TrameCommand::RefundAction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RefundableResource {
+    /// Restores the primary Action (`has_action = true`).
+    Action,
+    /// Restores the Bonus Action (`has_bonus_action = true`).
+    BonusAction,
+    /// Restores the Reaction (`has_reaction = true`).
+    Reaction,
+    /// Restores the full turn movement budget (`speed_remaining_ft = speed_max_ft`).
+    Movement,
 }
 
 /// Queued MCP dry-run staging batch awaiting explicit GM confirmation (`CommitMcpStaging`) or rejection (`RejectMcpStaging`).
@@ -229,6 +311,10 @@ fn default_token_ac() -> i32 {
     10
 }
 
+fn default_reach_ft() -> f64 {
+    5.0
+}
+
 /// Authoritative spatial, vitality, action-economy, and sensory state of a single tabletop token.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenState {
@@ -288,6 +374,18 @@ pub struct TokenState {
     /// Active D&D 5e condition labels synchronized from the persistent actor sheet (`ADR-0037`).
     #[serde(default)]
     pub conditions: Vec<String>,
+    /// Melee `ThreatReach` in feet (`ft`, default `5.0`); leaving it provokes an opportunity prompt.
+    #[serde(default = "default_reach_ft")]
+    pub reach_ft: f64,
+    /// `DeathSaveCounters` successes (`0..=3`), reset when the token regains HP.
+    #[serde(default)]
+    pub death_save_successes: u8,
+    /// `DeathSaveCounters` failures (`0..=3`), raised by damage taken at 0 HP and reset on healing.
+    #[serde(default)]
+    pub death_save_failures: u8,
+    /// `true` after `InstantDeath` or a third death saving throw failure; dead tokens cannot be healed.
+    #[serde(default)]
+    pub is_dead: bool,
 }
 
 impl TokenState {
@@ -320,6 +418,10 @@ impl TokenState {
             concentrating_on_aoe_id: None,
             active_effects: Vec::new(),
             conditions: Vec::new(),
+            reach_ft: default_reach_ft(),
+            death_save_successes: 0,
+            death_save_failures: 0,
+            is_dead: false,
         }
     }
 
@@ -383,18 +485,38 @@ pub enum TrameCommand {
         /// Ordered list of token IDs defining the combat initiative sequence.
         #[serde(default)]
         initiative_order: Vec<Uuid>,
+        /// Initiative totals keyed by token ID; entries for tokens outside `initiative_order` are dropped.
+        #[serde(default)]
+        initiative_totals: BTreeMap<Uuid, i32>,
     },
     /// Enters `TurnByTurn` combat mode at Round 1, Turn Index 0 with an explicit or auto-rolled `initiative_order` (GM only).
     StartTurnByTurn {
         /// Ordered list of token IDs defining the combat initiative sequence (if empty, `TableRoomActor` rolls `1d20 + dex_mod`).
         #[serde(default)]
         initiative_order: Vec<Uuid>,
+        /// Initiative totals keyed by token ID (e.g., the `AuthoritativeInitiativeRoll` results);
+        /// entries for tokens outside `initiative_order` are dropped.
+        #[serde(default)]
+        initiative_totals: BTreeMap<Uuid, i32>,
+    },
+    /// Sets one combatant's initiative total and re-sorts `initiative_order` (GM only).
+    ///
+    /// Sort order: total descending, then `dex_mod` descending, then token ID ascending; tokens
+    /// without a total sort last. The active combatant keeps the turn.
+    SetInitiativeTotal {
+        /// Token ID of the combatant (must be in `initiative_order`).
+        token_id: Uuid,
+        /// New initiative total.
+        total: i32,
     },
     /// Exits `TurnByTurn` combat mode and returns the tabletop to free-form `Exploration` mode (GM only).
     EndTurnByTurn,
     /// Advances the combat tracker to the next token in `initiative_order`, wrapping rounds and refreshing action/movement budgets.
     AdvanceTurn,
-    /// Applies raw damage with a specified `DamageAffinity` to a target token, resolving Temp HP and Concentration checks.
+    /// Applies raw damage with a specified `DamageAffinity` to a target token, resolving Temp HP,
+    /// Concentration checks, death saving throw failures at 0 HP, and `InstantDeath`.
+    ///
+    /// GM may target any token; players only tokens they own (G6).
     ApplyDamage {
         /// Target token ID receiving damage.
         token_id: Uuid,
@@ -402,6 +524,18 @@ pub enum TrameCommand {
         raw_damage: i32,
         /// Target's resistance, vulnerability, or immunity toward the damage type.
         affinity: DamageAffinity,
+        /// Whether the hit is a critical hit (adds 2 death saving throw failures at 0 HP).
+        #[serde(default)]
+        is_critical: bool,
+    },
+    /// Restores hit points to a token, capped at `max_hp` (GM: any token; players: owned tokens only).
+    ///
+    /// Healing a token at 0 HP resets its `DeathSaveCounters`. Dead tokens cannot be healed.
+    HealActor {
+        /// Target token ID receiving healing.
+        token_id: Uuid,
+        /// Hit points restored (`>= 0`).
+        amount: i32,
     },
     /// Directly overrides a token's HP, Temp HP, remaining speed, or action economy flags (GM only).
     GmOverrideTokenResources {
@@ -427,6 +561,19 @@ pub enum TrameCommand {
         /// When `true`, stores the template in `persistent_aoes` and binds caster concentration if set.
         persist_zone: bool,
     },
+    /// Removes a persistent AoE zone (GM, or the controller of its concentration caster).
+    /// Clears the caster's concentration when it was bound to this zone.
+    ClearAoe {
+        /// `AoeTemplate::id` of the persistent zone to remove.
+        aoe_id: Uuid,
+    },
+    /// Restores one spent action-economy resource on a token (GM only).
+    RefundAction {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Resource to restore.
+        resource: RefundableResource,
+    },
     /// Voluntarily or forcibly ends a caster token's active concentration and removes its linked persistent AoE.
     BreakConcentration {
         /// Token ID of the concentrating spellcaster.
@@ -451,6 +598,16 @@ pub enum TrameCommand {
         pixels_per_grid: f64,
         /// Wall and portal geometry segments extracted from the scene or `.uvtt` bundle.
         walls: Vec<WallSegment>,
+    },
+    /// Activates a persisted map scene (GM only): replaces walls, lights, map, and grid; keeps
+    /// `HeroToken`s (moved onto spawn points); removes every other token; spawns the scene's
+    /// `StagedToken`s; clears AoEs, fog overrides, reaction prompts; and returns to `Exploration`.
+    ActivateScene {
+        /// Unique identifier of the persisted scene.
+        scene_id: Uuid,
+        /// Resolved scene payload filled in by the server; `None` is rejected by the engine.
+        #[serde(default)]
+        scene: Option<SceneActivation>,
     },
     /// Spawns or replaces a token on the tabletop (GM only).
     SpawnToken {
@@ -517,7 +674,12 @@ pub enum TrameCommand {
         /// Optional conversion between `WallKind::SecretDoor` (`true`) and `WallKind::Door` (`false`).
         is_secret: Option<bool>,
     },
-    /// Resolves an active 5-second tactical reaction prompt (`Trigger` or `Pass`).
+    /// Reveals a campaign handout to the table (GM only). Not undoable: players have already seen it.
+    RevealHandout {
+        /// Handout identifier from the `:::handout{id="..."}` `DirectiveBlock` (non-empty).
+        handout_id: String,
+    },
+    /// Resolves an active tactical reaction prompt (`Trigger` or `Pass`); the GM may force any decision.
     DecideReaction {
         /// Unique identifier of the active reaction prompt being resolved.
         prompt_id: Uuid,
@@ -738,6 +900,65 @@ pub enum TrameEvent {
         /// Human-readable description of the undone command.
         description: String,
     },
+    /// Emitted when a moving token leaves a hostile's `ThreatReach` and stops on the exit square.
+    ReactionPromptOpened {
+        /// The opened prompt, addressed to `prompt.reactor_owner_user_id` (`None` = GM).
+        prompt: ReactionPrompt,
+    },
+    /// Emitted when a token regains hit points through `HealActor`.
+    TokenHealed {
+        /// Healed token ID.
+        token_id: Uuid,
+        /// Hit points actually restored after the `max_hp` cap (`>= 0`).
+        hp_restored: i32,
+        /// Resulting Hit Points (`0..=max_hp`).
+        new_hp: i32,
+    },
+    /// Emitted when a persistent AoE zone is removed through `ClearAoe`.
+    AoeCleared {
+        /// Removed `AoeTemplate::id`.
+        aoe_id: Uuid,
+        /// Caster whose concentration ended with the zone, if any.
+        caster_token_id: Option<Uuid>,
+    },
+    /// Emitted when the GM restores a spent action-economy resource.
+    ActionRefunded {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Restored resource.
+        resource: RefundableResource,
+    },
+    /// Emitted when a persisted scene is activated.
+    SceneActivated {
+        /// Activated scene ID.
+        scene_id: Uuid,
+        /// Background map asset key or SHA-256 hash.
+        map_asset_id: Option<String>,
+        /// Canvas width in pixels (`px`).
+        width_px: u32,
+        /// Canvas height in pixels (`px`).
+        height_px: u32,
+        /// Grid cell size in pixels (`px`).
+        pixels_per_grid: f64,
+        /// `HeroToken`s kept from the previous scene.
+        hero_token_ids: Vec<Uuid>,
+        /// `StagedToken`s spawned from the scene.
+        spawned_token_ids: Vec<Uuid>,
+    },
+    /// Emitted when the GM reveals a handout to the table.
+    HandoutRevealed {
+        /// Revealed handout identifier.
+        handout_id: String,
+    },
+    /// Emitted when an initiative total changes and the order is re-sorted.
+    InitiativeUpdated {
+        /// Re-sorted combat order.
+        initiative_order: Vec<Uuid>,
+        /// Current initiative totals keyed by token ID.
+        initiative_totals: BTreeMap<Uuid, i32>,
+        /// Token ID of the combatant holding the turn.
+        active_turn_token_id: Option<Uuid>,
+    },
 }
 
 /// Single compensating snapshot entry stored in the `TableState::undo_stack` ring buffer.
@@ -747,6 +968,10 @@ pub struct UndoEntry {
     pub description: String,
     /// Full serializable tabletop state captured prior to the command mutation.
     pub snapshot: TableSnapshotData,
+    /// Grid cell size in pixels (`px`) captured with the snapshot, so undoing a scene change also
+    /// restores `TableState::cell_size_px` (`None` in entries written before this field existed).
+    #[serde(default)]
+    pub cell_size_px: Option<f64>,
 }
 
 /// Purely serializable tabletop state payload persisted in snapshots and the undo ring buffer.
@@ -764,6 +989,9 @@ pub struct TableSnapshotData {
     pub initiative_order: Vec<Uuid>,
     /// Zero-based index into `initiative_order` indicating whose turn is active.
     pub active_turn_index: usize,
+    /// Initiative totals keyed by token ID for combatants in `initiative_order` (cleared with combat).
+    #[serde(default)]
+    pub initiative_totals: BTreeMap<Uuid, i32>,
     /// Map of all active tokens on the tabletop keyed by token `Uuid`.
     pub tokens: BTreeMap<Uuid, TokenState>,
     /// Authoritative list of wall, window, terrain, and door segments on the map.
@@ -791,6 +1019,9 @@ pub struct TableSnapshotData {
     /// Active battlemap height in canvas pixels (`px`, default `2000`).
     #[serde(default = "default_map_dimension_px")]
     pub map_height_px: u32,
+    /// Handout identifiers revealed to the table through `RevealHandout`.
+    #[serde(default)]
+    pub revealed_handout_ids: BTreeSet<String>,
 }
 
 /// Authoritative in-memory tabletop state machine combining serializable `TableSnapshotData`,
@@ -849,6 +1080,20 @@ pub enum CommandError {
     /// The GM issued `UndoLastAction` while `undo_stack` was empty.
     #[error("undo stack is empty")]
     NothingToUndo,
+    /// A player tried to move a token that is stopped on an undecided `ReactionPrompt`.
+    #[error("token movement is waiting for a reaction decision")]
+    ReactionPending,
+    /// The reacting token has already spent its reaction this round.
+    #[error("reaction already spent")]
+    ReactionUnavailable,
+    /// A sub-command of an atomic batch failed; the whole batch was rolled back.
+    #[error("batch command #{index} failed: {source}")]
+    BatchCommandFailed {
+        /// Zero-based index of the failing sub-command.
+        index: usize,
+        /// Error returned by the failing sub-command.
+        source: Box<CommandError>,
+    },
 }
 
 impl Default for TableState {
@@ -872,6 +1117,7 @@ impl TableState {
                 round: 1,
                 initiative_order: Vec::new(),
                 active_turn_index: 0,
+                initiative_totals: BTreeMap::new(),
                 tokens: BTreeMap::new(),
                 walls,
                 lights: Vec::new(),
@@ -882,6 +1128,7 @@ impl TableState {
                 background_asset_hash: None,
                 map_width_px: default_map_dimension_px(),
                 map_height_px: default_map_dimension_px(),
+                revealed_handout_ids: BTreeSet::new(),
             },
             bvh,
             undo_stack: VecDeque::with_capacity(MAX_UNDO_HISTORY),
@@ -891,6 +1138,9 @@ impl TableState {
     /// Restores a compensating `UndoEntry` snapshot and rebuilds the 2.5D `Bvh2D` spatial index.
     pub fn apply_undo_delta(&mut self, entry: UndoEntry) {
         self.data = entry.snapshot;
+        if let Some(cell_size_px) = entry.cell_size_px {
+            self.cell_size_px = cell_size_px;
+        }
         self.bvh = Bvh2D::build(self.data.walls.clone());
     }
 
@@ -904,13 +1154,357 @@ impl TableState {
     }
 
     fn push_undo(&mut self, description: impl Into<String>) {
+        let snapshot = self.data.clone();
+        let cell_size_px = self.cell_size_px;
+        self.push_undo_snapshot(description.into(), snapshot, cell_size_px);
+    }
+
+    fn push_undo_snapshot(
+        &mut self,
+        description: String,
+        snapshot: TableSnapshotData,
+        cell_size_px: f64,
+    ) {
         if self.undo_stack.len() >= MAX_UNDO_HISTORY {
             self.undo_stack.pop_front();
         }
         self.undo_stack.push_back(UndoEntry {
-            description: description.into(),
-            snapshot: self.data.clone(),
+            description,
+            snapshot,
+            cell_size_px: Some(cell_size_px),
         });
+    }
+
+    /// Applies `commands` all-or-nothing as one undoable step.
+    ///
+    /// Each sub-command keeps its own RBAC and validation. On the first failure every change is
+    /// rolled back (data, `Bvh2D`, grid size, undo stack) and
+    /// `CommandError::BatchCommandFailed { index, source }` is returned. On success exactly one
+    /// composite `UndoEntry` labelled `description` is pushed. Empty batches and nested
+    /// `UndoLastAction` / `CommitMcpStaging` / `RejectMcpStaging` are rejected up front with
+    /// `CommandError::InvalidConfiguration`, because they would rewrite the undo stack mid-batch.
+    pub fn apply_batch(
+        &mut self,
+        actor: &CommandActor,
+        commands: Vec<TrameCommand>,
+        description: impl Into<String>,
+    ) -> Result<Vec<TrameEvent>, CommandError> {
+        Self::validate_batch(&commands)?;
+        let pre_batch = self.data.clone();
+        self.apply_atomic(actor, commands, description.into(), pre_batch)
+    }
+
+    fn validate_batch(commands: &[TrameCommand]) -> Result<(), CommandError> {
+        if commands.is_empty() {
+            return Err(CommandError::InvalidConfiguration(
+                "batch must contain at least one command".to_string(),
+            ));
+        }
+        if let Some(index) = commands.iter().position(|cmd| {
+            matches!(
+                cmd,
+                TrameCommand::UndoLastAction
+                    | TrameCommand::CommitMcpStaging { .. }
+                    | TrameCommand::RejectMcpStaging { .. }
+            )
+        }) {
+            return Err(CommandError::BatchCommandFailed {
+                index,
+                source: Box::new(CommandError::InvalidConfiguration(
+                    "undo and staging commands cannot be nested in a batch".to_string(),
+                )),
+            });
+        }
+        Ok(())
+    }
+
+    /// Runs pre-validated `commands` against the live state; on failure restores `restore_point`
+    /// (which is also the composite undo snapshot on success).
+    fn apply_atomic(
+        &mut self,
+        actor: &CommandActor,
+        commands: Vec<TrameCommand>,
+        description: String,
+        restore_point: TableSnapshotData,
+    ) -> Result<Vec<TrameEvent>, CommandError> {
+        let saved_bvh = self.bvh.clone();
+        let saved_cell_size_px = self.cell_size_px;
+        let saved_undo = std::mem::take(&mut self.undo_stack);
+        let mut events = Vec::new();
+        for (index, cmd) in commands.into_iter().enumerate() {
+            match self.apply_command(actor, cmd) {
+                Ok(sub_events) => events.extend(sub_events),
+                Err(source) => {
+                    self.data = restore_point;
+                    self.bvh = saved_bvh;
+                    self.cell_size_px = saved_cell_size_px;
+                    self.undo_stack = saved_undo;
+                    return Err(CommandError::BatchCommandFailed {
+                        index,
+                        source: Box::new(source),
+                    });
+                }
+            }
+        }
+        self.undo_stack = saved_undo;
+        self.push_undo_snapshot(description, restore_point, saved_cell_size_px);
+        Ok(events)
+    }
+
+    /// Footprint of `token` placed at `top_left` as `(min_x, min_y, max_x, max_y)` in pixels (`px`).
+    fn footprint_px(&self, token: &TokenState, top_left: Point2D) -> (f64, f64, f64, f64) {
+        let spatial = token.spatial_ref();
+        (
+            top_left.x,
+            top_left.y,
+            top_left.x + f64::from(spatial.grid_w.max(1)) * self.cell_size_px,
+            top_left.y + f64::from(spatial.grid_h.max(1)) * self.cell_size_px,
+        )
+    }
+
+    /// Returns `true` when `mover` (at `mover_top_left`, `mover_elev_ft`) is within `reactor`'s
+    /// `reach_ft`, using 5e grid distance: edge-to-edge Chebyshev gap in cells plus one cell
+    /// (adjacent = 5 ft), combined with the vertical gap between the two creatures' heights.
+    fn is_within_reach(
+        &self,
+        reactor: &TokenState,
+        mover: &TokenState,
+        mover_top_left: Point2D,
+        mover_elev_ft: f64,
+    ) -> bool {
+        let (ax0, ay0, ax1, ay1) = self.footprint_px(reactor, reactor.top_left);
+        let (bx0, by0, bx1, by1) = self.footprint_px(mover, mover_top_left);
+        let gap_x = (bx0 - ax1).max(ax0 - bx1).max(0.0);
+        let gap_y = (by0 - ay1).max(ay0 - by1).max(0.0);
+        let gap_cells = gap_x.max(gap_y) / self.cell_size_px.max(1e-9);
+        let horizontal_ft = (gap_cells + 1.0) * self.feet_per_cell;
+        let vertical_gap_ft = (mover_elev_ft - (reactor.elevation_ft + reactor.height_ft))
+            .max(reactor.elevation_ft - (mover_elev_ft + mover.height_ft))
+            .max(0.0);
+        let distance_ft = horizontal_ft.max(vertical_gap_ft + self.feet_per_cell);
+        distance_ft <= reactor.reach_ft + 1e-6
+    }
+
+    /// Finds the first hostile `ThreatReach` that `mover` leaves along the straight path to
+    /// `to_top_left`, returning `(reactor_id, exit_top_left, exit_elevation_ft)`.
+    ///
+    /// Eligible reactors: hostile side, alive and above 0 HP, `has_reaction`, not in `excluded`,
+    /// and holding the mover within reach at the start. The path is sampled every 1/10 cell; the
+    /// exit point is the last in-reach sample snapped to the grid when the snapped square is still
+    /// in reach. Ties on the exit sample go to the lowest reactor ID.
+    fn find_threat_exit(
+        &self,
+        mover: &TokenState,
+        to_top_left: Point2D,
+        to_elev_ft: f64,
+        excluded: &[Uuid],
+    ) -> Option<(Uuid, Point2D, f64)> {
+        let from = mover.top_left;
+        let from_elev = mover.elevation_ft;
+        let path_px = ((to_top_left.x - from.x).powi(2) + (to_top_left.y - from.y).powi(2)).sqrt();
+        let step_px = (self.cell_size_px / 10.0).max(1e-3);
+        let steps = ((path_px / step_px).ceil() as usize).max(1);
+        let lerp = |t: f64| {
+            (
+                Point2D::new(
+                    from.x + (to_top_left.x - from.x) * t,
+                    from.y + (to_top_left.y - from.y) * t,
+                ),
+                from_elev + (to_elev_ft - from_elev) * t,
+            )
+        };
+
+        let mut best: Option<(usize, Uuid)> = None;
+        for reactor in self.data.tokens.values() {
+            let eligible = reactor.id != mover.id
+                && (reactor.owner_user_id.is_some() != mover.owner_user_id.is_some())
+                && reactor.has_reaction
+                && reactor.hp > 0
+                && !reactor.is_dead
+                && !excluded.contains(&reactor.id)
+                && self.is_within_reach(reactor, mover, from, from_elev);
+            if !eligible {
+                continue;
+            }
+            let exit_step = (1..=steps).find(|&i| {
+                let (pos, elev) = lerp(i as f64 / steps as f64);
+                !self.is_within_reach(reactor, mover, pos, elev)
+            });
+            if let Some(i) = exit_step
+                && best.is_none_or(|(best_i, _)| i < best_i)
+            {
+                best = Some((i, reactor.id));
+            }
+        }
+
+        let (exit_step, reactor_id) = best?;
+        let reactor = &self.data.tokens[&reactor_id];
+        let (last_inside, last_elev) = lerp((exit_step - 1) as f64 / steps as f64);
+        let snapped = Point2D::new(
+            (last_inside.x / self.cell_size_px).round() * self.cell_size_px,
+            (last_inside.y / self.cell_size_px).round() * self.cell_size_px,
+        );
+        let exit = if self.is_within_reach(reactor, mover, snapped, last_elev) {
+            snapped
+        } else {
+            last_inside
+        };
+        Some((reactor_id, exit, last_elev))
+    }
+
+    /// Rejects a straight move of `token` to `to_center` that crosses a movement-blocking wall
+    /// overlapping the token's vertical span (ethereal tokens pass through).
+    fn check_wall_collision(
+        &self,
+        token: &TokenState,
+        to_top_left: Point2D,
+        new_elev: f64,
+    ) -> Result<(), CommandError> {
+        let half_w = f64::from(token.grid_w.max(1)) * self.cell_size_px * 0.5;
+        let half_h = f64::from(token.grid_h.max(1)) * self.cell_size_px * 0.5;
+        let from_center = Point2D::new(token.top_left.x + half_w, token.top_left.y + half_h);
+        let to_center = Point2D::new(to_top_left.x + half_w, to_top_left.y + half_h);
+        let is_ethereal = (token.visibility_channel & CHANNEL_ETHEREAL) != 0;
+        let check_elev = new_elev + token.height_ft * 0.5;
+
+        if !is_ethereal {
+            let token_bottom_ft = token.elevation_ft.min(new_elev);
+            let token_top_ft = token.elevation_ft.max(new_elev) + token.height_ft.max(0.0);
+            for wall in &self.data.walls {
+                if !wall.is_blocking_movement() {
+                    continue;
+                }
+                let elev_overlaps = token_bottom_ft <= wall.top_elevation_ft
+                    && token_top_ft >= wall.bottom_elevation_ft
+                    && check_elev >= wall.bottom_elevation_ft
+                    && check_elev <= wall.top_elevation_ft;
+                if elev_overlaps
+                    && segment_intersects_segment(from_center, to_center, wall.a, wall.b)
+                {
+                    let hit_pt = segment_intersection(from_center, to_center, wall.a, wall.b)
+                        .map(|(_, pt)| pt)
+                        .unwrap_or(to_center);
+                    return Err(CommandError::WallCollision {
+                        x: hit_pt.x,
+                        y: hit_pt.y,
+                    });
+                }
+            }
+        }
+
+        if let Some(hit_pt) =
+            self.bvh
+                .check_movement_collision(from_center, to_center, check_elev, is_ethereal)
+        {
+            return Err(CommandError::WallCollision {
+                x: hit_pt.x,
+                y: hit_pt.y,
+            });
+        }
+        Ok(())
+    }
+
+    /// Movement cost in feet (`ft`) of moving `token` from its position to `to_top_left` at
+    /// `new_elev` (3D distance, doubled while squeezing).
+    fn movement_cost_ft(&self, token: &TokenState, to_top_left: Point2D, new_elev: f64) -> f64 {
+        let px_per_ft = self.cell_size_px / self.feet_per_cell.max(1.0);
+        let dist_ft =
+            token
+                .top_left
+                .distance_3d(token.elevation_ft, to_top_left, new_elev, px_per_ft);
+        if token.is_squeezing {
+            dist_ft * 2.0
+        } else {
+            dist_ft
+        }
+    }
+
+    /// Moves `token_id` toward `to_top_left`, stopping on the first hostile `ThreatReach` exit
+    /// (Turn-by-Turn, non-teleport only) and opening a `ReactionPrompt`. Deducts the cost of the
+    /// distance actually travelled when `deduct_budget` is set. Callers validate walls and budget.
+    fn move_token_with_threat_check(
+        &mut self,
+        token_id: Uuid,
+        to_top_left: Point2D,
+        new_elev: f64,
+        check_threats: bool,
+        deduct_budget: bool,
+        excluded_reactors: Vec<Uuid>,
+    ) -> Vec<TrameEvent> {
+        let token = self.data.tokens[&token_id].clone();
+        let threat = if check_threats {
+            self.find_threat_exit(&token, to_top_left, new_elev, &excluded_reactors)
+        } else {
+            None
+        };
+        let (stop_top_left, stop_elev) = match threat {
+            Some((_, exit, exit_elev)) => (exit, exit_elev),
+            None => (to_top_left, new_elev),
+        };
+        let cost_ft = self.movement_cost_ft(&token, stop_top_left, stop_elev);
+
+        let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
+        let from_top_left = tok_mut.top_left;
+        tok_mut.top_left = stop_top_left;
+        tok_mut.elevation_ft = stop_elev;
+        if deduct_budget {
+            tok_mut.speed_remaining_ft = (tok_mut.speed_remaining_ft - cost_ft).max(0.0);
+        }
+        let mut events = vec![TrameEvent::TokenMoved {
+            token_id,
+            from_top_left,
+            to_top_left: stop_top_left,
+            elevation_ft: stop_elev,
+            speed_remaining_ft: tok_mut.speed_remaining_ft,
+        }];
+
+        if let Some((reactor_id, _, _)) = threat {
+            let mut resolved_reactor_ids = excluded_reactors;
+            resolved_reactor_ids.push(reactor_id);
+            // WAL replay re-applies commands, so the prompt ID must be derived, not random. A mover
+            // has at most one open prompt per reactor, which keeps the pair unique while active.
+            let prompt_id =
+                Uuid::from_u128(token_id.as_u128() ^ reactor_id.as_u128().rotate_left(64));
+            let prompt = ReactionPrompt {
+                prompt_id,
+                reactor_actor_id: reactor_id,
+                trigger_token_id: token_id,
+                pending_destination: Some(to_top_left),
+                pending_elevation_ft: Some(new_elev),
+                reactor_owner_user_id: self.data.tokens[&reactor_id].owner_user_id,
+                resolved_reactor_ids,
+            };
+            self.data
+                .active_reaction_prompts
+                .insert(prompt.prompt_id, prompt.clone());
+            events.push(TrameEvent::ReactionPromptOpened { prompt });
+        }
+        events
+    }
+
+    /// Re-sorts `initiative_order` by total (desc), `dex_mod` (desc), token ID (asc), keeping the
+    /// active combatant on the turn.
+    fn sort_initiative_order(&mut self) {
+        let active = self.active_turn_token_id();
+        let data = &mut self.data;
+        let key = |id: &Uuid| {
+            let total = data.initiative_totals.get(id).copied();
+            let dex = data.tokens.get(id).map_or(0, |t| t.dex_mod);
+            (
+                std::cmp::Reverse(total.is_some()),
+                std::cmp::Reverse(total.unwrap_or(0)),
+                std::cmp::Reverse(dex),
+                *id,
+            )
+        };
+        let mut order = data.initiative_order.clone();
+        order.sort_by_key(key);
+        data.initiative_order = order;
+        if let Some(active_id) = active
+            && let Some(idx) = data.initiative_order.iter().position(|id| *id == active_id)
+        {
+            data.active_turn_index = idx;
+        }
     }
 
     fn require_gm(actor: &CommandActor) -> Result<(), CommandError> {
@@ -974,103 +1568,40 @@ impl TableState {
                     {
                         return Err(CommandError::NotActiveTurn);
                     }
+                    if actor.role != CampaignRole::Gm
+                        && self
+                            .data
+                            .active_reaction_prompts
+                            .values()
+                            .any(|p| p.trigger_token_id == token_id)
+                    {
+                        return Err(CommandError::ReactionPending);
+                    }
                 }
 
                 let new_elev = to_elevation_ft.unwrap_or(token.elevation_ft);
-                let px_per_ft = self.cell_size_px / self.feet_per_cell.max(1.0);
-                let half_w = f64::from(token.grid_w.max(1)) * self.cell_size_px * 0.5;
-                let half_h = f64::from(token.grid_h.max(1)) * self.cell_size_px * 0.5;
-                let from_center =
-                    Point2D::new(token.top_left.x + half_w, token.top_left.y + half_h);
-                let to_center = Point2D::new(to_top_left.x + half_w, to_top_left.y + half_h);
-
+                let in_combat = self.data.mode == TableMode::TurnByTurn;
                 if !is_gm_teleport {
-                    let is_ethereal = (token.visibility_channel & CHANNEL_ETHEREAL) != 0;
-                    let check_elev = new_elev + token.height_ft * 0.5;
-
-                    if !is_ethereal {
-                        let token_bottom_ft = token.elevation_ft.min(new_elev);
-                        let token_top_ft =
-                            token.elevation_ft.max(new_elev) + token.height_ft.max(0.0);
-                        for wall in &self.data.walls {
-                            if !wall.is_blocking_movement() {
-                                continue;
-                            }
-                            let elev_overlaps = token_bottom_ft <= wall.top_elevation_ft
-                                && token_top_ft >= wall.bottom_elevation_ft
-                                && check_elev >= wall.bottom_elevation_ft
-                                && check_elev <= wall.top_elevation_ft;
-                            if elev_overlaps
-                                && segment_intersects_segment(
-                                    from_center,
-                                    to_center,
-                                    wall.a,
-                                    wall.b,
-                                )
-                            {
-                                let hit_pt =
-                                    segment_intersection(from_center, to_center, wall.a, wall.b)
-                                        .map(|(_, pt)| pt)
-                                        .unwrap_or(to_center);
-                                return Err(CommandError::WallCollision {
-                                    x: hit_pt.x,
-                                    y: hit_pt.y,
-                                });
-                            }
-                        }
-                    }
-
-                    if let Some(hit_pt) = self.bvh.check_movement_collision(
-                        from_center,
-                        to_center,
-                        check_elev,
-                        is_ethereal,
-                    ) {
-                        return Err(CommandError::WallCollision {
-                            x: hit_pt.x,
-                            y: hit_pt.y,
+                    self.check_wall_collision(&token, to_top_left, new_elev)?;
+                    let cost_ft = self.movement_cost_ft(&token, to_top_left, new_elev);
+                    if in_combat && cost_ft > token.speed_remaining_ft + 1e-6 {
+                        return Err(CommandError::InsufficientMovement {
+                            needed_ft: cost_ft,
+                            remaining_ft: token.speed_remaining_ft,
                         });
                     }
                 }
 
-                let dist_ft = token.top_left.distance_3d(
-                    token.elevation_ft,
+                self.push_undo(format!("Move token {}", token.name));
+                let engaged = !is_gm_teleport && in_combat;
+                Ok(self.move_token_with_threat_check(
+                    token_id,
                     to_top_left,
                     new_elev,
-                    px_per_ft,
-                );
-                let cost_ft = if token.is_squeezing {
-                    dist_ft * 2.0
-                } else {
-                    dist_ft
-                };
-
-                if !is_gm_teleport
-                    && self.data.mode == TableMode::TurnByTurn
-                    && cost_ft > token.speed_remaining_ft + 1e-6
-                {
-                    return Err(CommandError::InsufficientMovement {
-                        needed_ft: cost_ft,
-                        remaining_ft: token.speed_remaining_ft,
-                    });
-                }
-
-                self.push_undo(format!("Move token {}", token.name));
-                let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
-                let from_top_left = tok_mut.top_left;
-                tok_mut.top_left = to_top_left;
-                tok_mut.elevation_ft = new_elev;
-                if !is_gm_teleport && self.data.mode == TableMode::TurnByTurn {
-                    tok_mut.speed_remaining_ft = (tok_mut.speed_remaining_ft - cost_ft).max(0.0);
-                }
-
-                Ok(vec![TrameEvent::TokenMoved {
-                    token_id,
-                    from_top_left,
-                    to_top_left,
-                    elevation_ft: new_elev,
-                    speed_remaining_ft: tok_mut.speed_remaining_ft,
-                }])
+                    engaged,
+                    engaged,
+                    Vec::new(),
+                ))
             }
 
             TrameCommand::ToggleSqueeze {
@@ -1136,11 +1667,14 @@ impl TableState {
                 mode,
                 exploration_paused,
                 initiative_order,
+                mut initiative_totals,
             } => {
                 Self::require_gm(actor)?;
                 self.push_undo("Change table mode");
                 self.data.mode = mode;
                 self.data.exploration_paused = exploration_paused;
+                initiative_totals.retain(|id, _| initiative_order.contains(id));
+                self.data.initiative_totals = initiative_totals;
                 self.data.initiative_order = initiative_order;
                 self.data.active_turn_index = 0;
                 self.data.round = 1;
@@ -1160,11 +1694,16 @@ impl TableState {
                 }])
             }
 
-            TrameCommand::StartTurnByTurn { initiative_order } => {
+            TrameCommand::StartTurnByTurn {
+                initiative_order,
+                mut initiative_totals,
+            } => {
                 Self::require_gm(actor)?;
                 self.push_undo("Start Turn-by-Turn mode");
                 self.data.mode = TableMode::TurnByTurn;
                 self.data.exploration_paused = false;
+                initiative_totals.retain(|id, _| initiative_order.contains(id));
+                self.data.initiative_totals = initiative_totals;
                 self.data.initiative_order = initiative_order;
                 self.data.active_turn_index = 0;
                 self.data.round = 1;
@@ -1190,6 +1729,7 @@ impl TableState {
                 self.data.mode = TableMode::Exploration;
                 self.data.exploration_paused = false;
                 self.data.initiative_order.clear();
+                self.data.initiative_totals.clear();
                 self.data.active_turn_index = 0;
                 self.data.round = 1;
                 Ok(vec![TrameEvent::TableModeChanged {
@@ -1197,6 +1737,23 @@ impl TableState {
                     exploration_paused: false,
                     active_turn_token_id: None,
                     round: 1,
+                }])
+            }
+
+            TrameCommand::SetInitiativeTotal { token_id, total } => {
+                Self::require_gm(actor)?;
+                if !self.data.initiative_order.contains(&token_id) {
+                    return Err(CommandError::NotFound(format!(
+                        "token {token_id} in initiative order"
+                    )));
+                }
+                self.push_undo(format!("Set initiative total for {token_id}"));
+                self.data.initiative_totals.insert(token_id, total);
+                self.sort_initiative_order();
+                Ok(vec![TrameEvent::InitiativeUpdated {
+                    initiative_order: self.data.initiative_order.clone(),
+                    initiative_totals: self.data.initiative_totals.clone(),
+                    active_turn_token_id: self.active_turn_token_id(),
                 }])
             }
 
@@ -1239,18 +1796,9 @@ impl TableState {
                 token_id,
                 raw_damage,
                 affinity,
+                is_critical,
             } => {
-                if actor.role == CampaignRole::Spectator {
-                    return Err(CommandError::PermissionDenied(
-                        "spectators cannot apply damage".to_string(),
-                    ));
-                }
-                let token = self
-                    .data
-                    .tokens
-                    .get(&token_id)
-                    .ok_or_else(|| CommandError::NotFound(format!("token {token_id}")))?
-                    .clone();
+                let token = self.require_token_control(actor, token_id)?.clone();
 
                 self.push_undo(format!("Apply {raw_damage} damage to {}", token.name));
                 let is_concentrating = token.concentrating_on_aoe_id.is_some();
@@ -1261,11 +1809,15 @@ impl TableState {
                     token.max_hp,
                     token.temp_hp,
                     is_concentrating,
+                    is_critical,
+                    token.death_save_failures,
                 );
 
                 let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
                 tok_mut.hp = resolution.new_hp;
                 tok_mut.temp_hp = resolution.new_temp_hp;
+                tok_mut.death_save_failures = resolution.new_death_save_failures;
+                tok_mut.is_dead |= resolution.dead;
 
                 let mut events = vec![TrameEvent::DamageApplied {
                     token_id,
@@ -1284,6 +1836,79 @@ impl TableState {
                 }
 
                 Ok(events)
+            }
+
+            TrameCommand::HealActor { token_id, amount } => {
+                let token = self.require_token_control(actor, token_id)?.clone();
+                if amount < 0 {
+                    return Err(CommandError::InvalidConfiguration(
+                        "healing amount must be >= 0".to_string(),
+                    ));
+                }
+                if token.is_dead {
+                    return Err(CommandError::InvalidConfiguration(
+                        "dead creatures cannot be healed".to_string(),
+                    ));
+                }
+                self.push_undo(format!("Heal {} by {amount}", token.name));
+                let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
+                let new_hp = tok.hp.saturating_add(amount).min(tok.max_hp);
+                let hp_restored = (new_hp - tok.hp).max(0);
+                if hp_restored > 0 {
+                    tok.hp = new_hp;
+                    tok.death_save_successes = 0;
+                    tok.death_save_failures = 0;
+                }
+                Ok(vec![TrameEvent::TokenHealed {
+                    token_id,
+                    hp_restored,
+                    new_hp: tok.hp,
+                }])
+            }
+
+            TrameCommand::ClearAoe { aoe_id } => {
+                let caster_token_id = self
+                    .data
+                    .persistent_aoes
+                    .get(&aoe_id)
+                    .ok_or_else(|| CommandError::NotFound(format!("aoe {aoe_id}")))?
+                    .concentration_caster_id;
+                if actor.role != CampaignRole::Gm {
+                    let Some(caster_id) = caster_token_id else {
+                        return Err(CommandError::PermissionDenied(
+                            "GM role required to clear this AoE".to_string(),
+                        ));
+                    };
+                    self.require_token_control(actor, caster_id)?;
+                }
+                self.push_undo(format!("Clear AoE {aoe_id}"));
+                self.data.persistent_aoes.remove(&aoe_id);
+                if let Some(caster_id) = caster_token_id
+                    && let Some(caster) = self.data.tokens.get_mut(&caster_id)
+                    && caster.concentrating_on_aoe_id == Some(aoe_id)
+                {
+                    caster.concentrating_on_aoe_id = None;
+                }
+                Ok(vec![TrameEvent::AoeCleared {
+                    aoe_id,
+                    caster_token_id,
+                }])
+            }
+
+            TrameCommand::RefundAction { token_id, resource } => {
+                Self::require_gm(actor)?;
+                if !self.data.tokens.contains_key(&token_id) {
+                    return Err(CommandError::NotFound(format!("token {token_id}")));
+                }
+                self.push_undo(format!("Refund {resource:?} for {token_id}"));
+                let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
+                match resource {
+                    RefundableResource::Action => tok.has_action = true,
+                    RefundableResource::BonusAction => tok.has_bonus_action = true,
+                    RefundableResource::Reaction => tok.has_reaction = true,
+                    RefundableResource::Movement => tok.speed_remaining_ft = tok.speed_max_ft,
+                }
+                Ok(vec![TrameEvent::ActionRefunded { token_id, resource }])
             }
 
             TrameCommand::GmOverrideTokenResources {
@@ -1441,6 +2066,79 @@ impl TableState {
                 }])
             }
 
+            TrameCommand::ActivateScene { scene_id, scene } => {
+                Self::require_gm(actor)?;
+                let Some(scene) = scene else {
+                    return Err(CommandError::InvalidConfiguration(
+                        "ActivateScene requires the server-resolved scene payload".to_string(),
+                    ));
+                };
+                if scene.pixels_per_grid <= 0.0 || scene.width_px == 0 || scene.height_px == 0 {
+                    return Err(CommandError::InvalidConfiguration(
+                        "Scene dimensions and pixels_per_grid must be positive".to_string(),
+                    ));
+                }
+                let hero_token_ids: Vec<Uuid> = self
+                    .data
+                    .tokens
+                    .values()
+                    .filter(|t| t.owner_user_id.is_some())
+                    .map(|t| t.id)
+                    .collect();
+                if let Some(clash) = scene
+                    .staged_tokens
+                    .iter()
+                    .find(|t| hero_token_ids.contains(&t.id))
+                {
+                    return Err(CommandError::InvalidConfiguration(format!(
+                        "staged token {} collides with a hero token",
+                        clash.id
+                    )));
+                }
+
+                self.push_undo(format!("Activate scene {scene_id}"));
+                self.data.tokens.retain(|_, t| t.owner_user_id.is_some());
+                for (hero_id, spawn) in hero_token_ids.iter().zip(&scene.hero_spawn_points) {
+                    let hero = self.data.tokens.get_mut(hero_id).expect("hero kept");
+                    hero.top_left = *spawn;
+                }
+                for hero in self.data.tokens.values_mut() {
+                    hero.concentrating_on_aoe_id = None;
+                }
+                let spawned_token_ids: Vec<Uuid> =
+                    scene.staged_tokens.iter().map(|t| t.id).collect();
+                for staged in scene.staged_tokens {
+                    self.data.tokens.insert(staged.id, staged);
+                }
+
+                self.cell_size_px = scene.pixels_per_grid;
+                self.data.background_asset_hash = scene.map_asset_id.clone();
+                self.data.map_width_px = scene.width_px;
+                self.data.map_height_px = scene.height_px;
+                self.data.walls = scene.walls;
+                self.data.lights = scene.lights;
+                self.data.fog_overrides.clear();
+                self.data.persistent_aoes.clear();
+                self.data.active_reaction_prompts.clear();
+                self.data.mode = TableMode::Exploration;
+                self.data.exploration_paused = false;
+                self.data.initiative_order.clear();
+                self.data.initiative_totals.clear();
+                self.data.active_turn_index = 0;
+                self.data.round = 1;
+                self.bvh = Bvh2D::build(self.data.walls.clone());
+
+                Ok(vec![TrameEvent::SceneActivated {
+                    scene_id,
+                    map_asset_id: scene.map_asset_id,
+                    width_px: scene.width_px,
+                    height_px: scene.height_px,
+                    pixels_per_grid: scene.pixels_per_grid,
+                    hero_token_ids,
+                    spawned_token_ids,
+                }])
+            }
+
             TrameCommand::SpawnToken { token } => {
                 Self::require_gm(actor)?;
                 self.push_undo(format!("Spawn token {}", token.name));
@@ -1456,6 +2154,7 @@ impl TableState {
                 self.push_undo(format!("Remove token {token_id}"));
                 self.data.tokens.remove(&token_id);
                 self.data.initiative_order.retain(|id| *id != token_id);
+                self.data.initiative_totals.remove(&token_id);
                 if self.data.active_turn_index >= self.data.initiative_order.len() {
                     self.data.active_turn_index = 0;
                 }
@@ -1645,20 +2344,32 @@ impl TableState {
                         "spectators cannot decide reactions".to_string(),
                     ));
                 }
-                if actor.role == CampaignRole::Player && self.data.tokens.contains_key(&actor_id) {
-                    self.require_token_control(actor, actor_id)?;
-                }
-                if let Some(prompt) = self.data.active_reaction_prompts.get(&prompt_id)
-                    && actor.role != CampaignRole::Gm
-                    && prompt.reactor_actor_id != actor_id
-                {
+                let prompt = self
+                    .data
+                    .active_reaction_prompts
+                    .get(&prompt_id)
+                    .ok_or_else(|| CommandError::NotFound(format!("reaction prompt {prompt_id}")))?
+                    .clone();
+                if prompt.reactor_actor_id != actor_id {
                     return Err(CommandError::PermissionDenied(
                         "reaction prompt belongs to another actor".to_string(),
                     ));
                 }
+                if actor.role != CampaignRole::Gm {
+                    self.require_token_control(actor, actor_id)?;
+                }
+                if matches!(decision, ReactionDecision::Trigger { .. })
+                    && !self
+                        .data
+                        .tokens
+                        .get(&actor_id)
+                        .is_some_and(|t| t.has_reaction)
+                {
+                    return Err(CommandError::ReactionUnavailable);
+                }
 
                 self.push_undo(format!("Decide reaction {prompt_id}"));
-                let removed_prompt = self.data.active_reaction_prompts.remove(&prompt_id);
+                self.data.active_reaction_prompts.remove(&prompt_id);
                 let mut extra_events = Vec::new();
 
                 let movement_interrupted = match &decision {
@@ -1669,24 +2380,29 @@ impl TableState {
                         true
                     }
                     ReactionDecision::Pass => {
-                        if let Some(prompt) = removed_prompt
-                            && let Some(dest) = prompt.pending_destination
+                        if let Some(dest) = prompt.pending_destination
                             && let Some(moving_tok) =
-                                self.data.tokens.get_mut(&prompt.trigger_token_id)
+                                self.data.tokens.get(&prompt.trigger_token_id).cloned()
                         {
-                            let from_top_left = moving_tok.top_left;
                             let new_elev = prompt
                                 .pending_elevation_ft
                                 .unwrap_or(moving_tok.elevation_ft);
-                            moving_tok.top_left = dest;
-                            moving_tok.elevation_ft = new_elev;
-                            extra_events.push(TrameEvent::TokenMoved {
-                                token_id: prompt.trigger_token_id,
-                                from_top_left,
-                                to_top_left: dest,
-                                elevation_ft: new_elev,
-                                speed_remaining_ft: moving_tok.speed_remaining_ft,
-                            });
+                            let in_combat = self.data.mode == TableMode::TurnByTurn;
+                            let cost_ft = self.movement_cost_ft(&moving_tok, dest, new_elev);
+                            let path_still_valid = self
+                                .check_wall_collision(&moving_tok, dest, new_elev)
+                                .is_ok()
+                                && (!in_combat || cost_ft <= moving_tok.speed_remaining_ft + 1e-6);
+                            if path_still_valid {
+                                extra_events.extend(self.move_token_with_threat_check(
+                                    prompt.trigger_token_id,
+                                    dest,
+                                    new_elev,
+                                    in_combat,
+                                    in_combat,
+                                    prompt.resolved_reactor_ids.clone(),
+                                ));
+                            }
                         }
                         false
                     }
@@ -1704,25 +2420,39 @@ impl TableState {
 
             TrameCommand::CommitMcpStaging { proposal_id } => {
                 Self::require_gm(actor)?;
-                let pre_batch_snapshot = self.data.clone();
-                let mut batch_events = Vec::new();
-                if let Some(proposal) = self.data.mcp_staging_proposals.remove(&proposal_id) {
-                    let undo_len_before = self.undo_stack.len();
-                    for staged_cmd in proposal.commands {
-                        let evs = self.apply_command(actor, staged_cmd)?;
-                        batch_events.extend(evs);
-                    }
-                    self.undo_stack.truncate(undo_len_before);
+                let staged = self
+                    .data
+                    .mcp_staging_proposals
+                    .get(&proposal_id)
+                    .ok_or_else(|| {
+                        CommandError::NotFound(format!("MCP staging proposal {proposal_id}"))
+                    })?;
+                Self::validate_batch(&staged.commands)?;
+                let pre_commit = self.data.clone();
+                let proposal = self
+                    .data
+                    .mcp_staging_proposals
+                    .remove(&proposal_id)
+                    .expect("proposal exists");
+                let mut events = self.apply_atomic(
+                    actor,
+                    proposal.commands,
+                    format!("Commit MCP staging {proposal_id}"),
+                    pre_commit,
+                )?;
+                events.push(TrameEvent::McpStagingCommitted { proposal_id });
+                Ok(events)
+            }
+
+            TrameCommand::RevealHandout { handout_id } => {
+                Self::require_gm(actor)?;
+                if handout_id.trim().is_empty() {
+                    return Err(CommandError::InvalidConfiguration(
+                        "handout_id must not be empty".to_string(),
+                    ));
                 }
-                if self.undo_stack.len() >= MAX_UNDO_HISTORY {
-                    self.undo_stack.pop_front();
-                }
-                self.undo_stack.push_back(UndoEntry {
-                    description: format!("Commit MCP staging {proposal_id}"),
-                    snapshot: pre_batch_snapshot,
-                });
-                batch_events.push(TrameEvent::McpStagingCommitted { proposal_id });
-                Ok(batch_events)
+                self.data.revealed_handout_ids.insert(handout_id.clone());
+                Ok(vec![TrameEvent::HandoutRevealed { handout_id }])
             }
 
             TrameCommand::RejectMcpStaging { proposal_id } => {

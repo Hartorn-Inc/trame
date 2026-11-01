@@ -350,8 +350,15 @@ pub fn filter_events_for_recipient(
             | TrameEvent::DamageApplied { token_id, .. }
             | TrameEvent::TokenResourcesOverridden { token_id, .. }
             | TrameEvent::TokenVisibilityChanged { token_id, .. }
-            | TrameEvent::TokenOwnerAssigned { token_id, .. } => visible_ids.contains(token_id),
+            | TrameEvent::TokenOwnerAssigned { token_id, .. }
+            | TrameEvent::TokenHealed { token_id, .. }
+            | TrameEvent::ActionRefunded { token_id, .. } => visible_ids.contains(token_id),
             TrameEvent::TokenSpawned { token } => visible_ids.contains(&token.id),
+            TrameEvent::ReactionPromptOpened { prompt } => {
+                visible_ids.contains(&prompt.trigger_token_id)
+            }
+            TrameEvent::SceneActivated { .. } | TrameEvent::InitiativeUpdated { .. } => false,
+            TrameEvent::AoeCleared { .. } | TrameEvent::HandoutRevealed { .. } => true,
             TrameEvent::DoorToggled { .. }
             | TrameEvent::DoorConfigured { .. }
             | TrameEvent::TableModeChanged { .. }
