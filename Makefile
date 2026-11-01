@@ -36,8 +36,12 @@ build: wasm ## Build Rust workspace and Web frontend inside Docker
 
 test: test-rust wasm test-game-systems test-web ## Run all tests in order (Rust, WASM build, game systems, Web incl. WASM parity) inside Docker
 
+# Empty by default so PostgreSQL integration tests skip under `--no-deps`; after `make up`,
+# pass TEST_DATABASE_URL=postgresql://trame:trame_dev_password@postgres:5432/trame to run them.
+TEST_DATABASE_URL ?=
+
 test-rust: ## Run Cargo workspace tests inside the Rust Docker container
-	$(DEV_COMPOSE) run --rm --no-deps rust-dev cargo test --workspace --all-targets
+	$(DEV_COMPOSE) run --rm --no-deps -e DATABASE_URL="$(TEST_DATABASE_URL)" rust-dev cargo test --workspace --all-targets
 
 test-web: wasm test-game-systems ## Run Web frontend (incl. WASM parity) and game-system tests inside the Node Docker container
 	$(DEV_COMPOSE) run --rm --no-deps web-dev npm test
