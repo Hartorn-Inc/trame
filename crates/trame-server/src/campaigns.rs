@@ -1202,7 +1202,6 @@ pub async fn reveal_handout_handler(
         UserRole::GameMaster,
         &user_id.to_string(),
         RevealHandoutCommand {
-            action: "reveal_handout".to_string(),
             campaign_id: campaign_id.to_string(),
             session_num: req.session_num.unwrap_or(LIVE_SESSION_NUM),
             handout_id: handout_id.clone(),

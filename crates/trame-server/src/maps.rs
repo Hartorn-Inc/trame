@@ -358,11 +358,6 @@ pub async fn export_entities_with_scenes(
     Ok(out)
 }
 
-#[derive(Debug, Deserialize, Default)]
-pub struct CampaignMapsQuery {
-    pub user_id: Option<Uuid>,
-}
-
 /// `PUT .../maps` body. `expected_version` is optional only so its absence can be
 /// reported as `400 MISSING_EXPECTED_VERSION` instead of a generic deserialization error.
 #[derive(Debug, Clone, Serialize, Deserialize)]

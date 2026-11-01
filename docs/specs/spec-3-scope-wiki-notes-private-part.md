@@ -245,7 +245,7 @@ When running the reveal, `trame-server` performs the following steps in a single
 
 ### 4.4 Event Timeline Endpoint
 
-- **REST route**: `GET /api/campaigns/{campaign_id}/sessions/{session_num}/timeline` (session-scoped, see the E5 spec; note the path has no `v1` segment). There is no campaign-wide timeline route.
+- **REST route**: `GET /api/v1/campaigns/{campaign_id}/sessions/{session_num}/timeline` (session-scoped, see the E5 spec; note the path has no `v1` segment). There is no campaign-wide timeline route.
 - **Optional query parameters**: `after=0` (exclusive `seq_id` cursor), `limit=50` (clamped to `1..=200`).
 - **Authorization**: any authenticated campaign member; non-GM members never see GM-only events.
 - **Returns**: the `SessionTimelineEvent` entries sorted by `seq_id ASC`.
