@@ -26,7 +26,11 @@
  *      context fails the run, as do brand font faces that are not `loaded`
  *      or font decode errors; index.html must carry the app CSP while API
  *      responses keep the strict one.
- * 4. `Synchronized Recordings`:
+ * 4. `Pixels, Not DOM, For The Renderer`:
+ *    - Darkness, lights and fog are asserted on composited screenshots of
+ *      the WebGL board (`support/pixels.ts` luminance probes), comparing GM
+ *      and player and before/after states rather than absolute colours.
+ * 5. `Synchronized Recordings`:
  *    - Both contexts are created and closed together, so `gm.webm` and
  *      `player.webm` share one timeline for the side-by-side video.
  *
@@ -34,7 +38,8 @@
  * -----
  * GM signs up -> campaign -> invite -> player redeems -> characters (both)
  * -> sheet edit + version conflict -> UVTT import + background + secret door
- * + hidden goblin -> activate -> tokens -> projection checks -> combat ->
+ * + GM light + hidden goblin -> activate -> tokens -> WebGL renderer, fog,
+ * GM vision preview, night + lights (pixel probes) -> projection checks -> combat ->
  * player reload (initiative after reconnect) -> movement / opportunity
  * attack -> damage, undo, heal -> dice (WS + REST) -> documents + handout
  * -> fonts + CSP checks -> videos saved under `artifacts/`.
@@ -44,6 +49,7 @@ import { expect, test, type Browser, type BrowserContext, type Locator, type Pag
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { backgroundPng, uvttBundle } from '../support/fixtures.ts';
+import { decodePng, meanLuma, type ProbeRect, type RgbaImage } from '../support/pixels.ts';
 import { latestState, recordRoomFrames, states, type RecordedFrame } from '../support/wire.ts';
 
 const ARTIFACTS = process.env.E2E_ARTIFACTS_DIR ?? 'artifacts';
@@ -56,6 +62,26 @@ const GM = { email: `gm-${RUN}@e2e.trame.test`, name: 'Game Master' };
 const PC_NAME = 'Lyra Thornwood';
 const MONSTER_NAME = 'Grak the Goblin Boss';
 const CAMPAIGN = `Crypt of Embers ${RUN}`;
+/** Pause after each phase so the recording can be followed by eye (ms). */
+const PHASE_PAUSE_MS = 1000;
+/**
+ * GM light placed in the map studio (board px, 10 ft = 140 px dim radius),
+ * outside the UVTT torch's 420 px reach around (210, 210).
+ */
+const NEW_LIGHT = { x: 630, y: 70 };
+/**
+ * Board probes (px) on the 840x700 UVTT crypt, all above y = 540 because the
+ * lower board rows sit below the visible table panel at 1280x800. `east` lies
+ * behind the x=700 wall + closed door, out of the player's sight from the
+ * top-left token; `west` is open floor in sight; `unlit` is outside both
+ * lights' reach and above the secret door's shadow; `lit` surrounds the GM light.
+ */
+const PROBE: Record<'east' | 'west' | 'unlit' | 'lit', ProbeRect> = {
+  east: { x: 715, y: 20, w: 115, h: 240 },
+  west: { x: 280, y: 160, w: 140, h: 140 },
+  unlit: { x: 635, y: 345, w: 55, h: 60 },
+  lit: { x: NEW_LIGHT.x - 30, y: NEW_LIGHT.y - 30, w: 60, h: 60 },
+};
 
 interface PhaseResult {
   phase: string;
@@ -145,8 +171,9 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
       try {
         const detail = (await fn()) ?? '';
         results.push({ phase: name, status: 'pass', note: detail });
+        await gm.waitForTimeout(PHASE_PAUSE_MS);
       } catch (err) {
-        const message = (err instanceof Error ? err.message : String(err)).split('\n')[0];
+        const message = (err instanceof Error ? err.message : String(err)).split('\n')[0].replace(/\u001b\[[0-9;]*m/g, '');
         results.push({ phase: name, status: 'fail', note: message });
         await shot(both, `FAIL-${name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`);
         expect.soft(message, `phase "${name}" failed`).toBe('');
@@ -360,6 +387,10 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await gm.getByTestId('wall-p2x-input').fill('560');
     await gm.getByTestId('wall-p2y-input').fill('420');
     await gm.getByTestId('add-wall-btn').click();
+    await gm.getByTestId('light-x-input').fill(String(NEW_LIGHT.x));
+    await gm.getByTestId('light-y-input').fill(String(NEW_LIGHT.y));
+    await gm.getByTestId('light-radius-input').fill('10');
+    await gm.getByTestId('add-light-btn').click();
     await gm.getByTestId('template-Goblin').click();
     const reveal = gm.getByTestId('toggle-revealed-btn');
     if ((await reveal.getAttribute('aria-pressed')) !== 'true') await reveal.click();
@@ -375,7 +406,9 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await expect.poll(() => latestState(gmFrames)?.map_width_px ?? 0).toBeGreaterThan(0);
     await expect.poll(() => latestState(gmFrames)?.walls.length ?? 0).toBeGreaterThan(0);
     const gmWalls = latestState(gmFrames)?.walls ?? [];
-    return `GM table has ${gmWalls.length} walls after activation`;
+    const lights = (latestState(gmFrames)?.lights ?? []) as Array<Record<string, unknown>>;
+    expect(lights.length, 'UVTT torch + GM light').toBe(2);
+    return `GM table has ${gmWalls.length} walls and ${lights.length} lights (color_hex ${lights.map((l) => l.color_hex).join(', ')})`;
   });
 
   await phase('Both clients see the activated scene with its background', async () => {
@@ -404,6 +437,76 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await expect(pl.getByTestId(`token-${pcTokenId}`)).toBeVisible();
     await expect(pl.getByTestId(`token-${monsterTokenId}`)).toBeVisible();
     await shot(both, 'tokens-placed');
+  });
+
+  /** Composited pixels of the live board after the renderer drew the latest state. */
+  const board = async (page: Page): Promise<RgbaImage> => {
+    await page.waitForTimeout(700);
+    return decodePng(await page.getByTestId('table-board').screenshot());
+  };
+  const lumas = (img: RgbaImage) =>
+    Object.fromEntries(Object.entries(PROBE).map(([k, r]) => [k, meanLuma(img, r)])) as Record<keyof typeof PROBE, number>;
+  const gmPreview = gm.getByTestId('table-preview-player-view');
+
+  await phase('Live table renders through WebGL (PixiJS) in both browsers', async () => {
+    const infos: string[] = [];
+    for (const [who, page] of Object.entries(both)) {
+      await expect(page.getByTestId('table-board'), `${who}: PixiJS board`).toHaveClass(/is-pixi/);
+      await expect(page.getByTestId('table-map'), `${who}: battlemap drawn on the canvas`).toHaveJSProperty('tagName', 'CANVAS');
+      const gl = await page.evaluate(() => {
+        const canvas = document.querySelector<HTMLCanvasElement>('canvas.trame-pixijs-canvas');
+        const ctx = (canvas?.getContext('webgl2') ?? canvas?.getContext('webgl')) as WebGLRenderingContext | null;
+        const dbg = ctx?.getExtension('WEBGL_debug_renderer_info');
+        return {
+          version: ctx ? String(ctx.getParameter(ctx.VERSION)) : null,
+          renderer: ctx ? String(dbg ? ctx.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : ctx.getParameter(ctx.RENDERER)) : null,
+        };
+      });
+      expect(gl.version, `${who}: WebGL context on the table canvas`).toMatch(/WebGL/);
+      infos.push(`${who}: ${gl.version} / ${gl.renderer}`);
+    }
+    return infos.join(' | ');
+  });
+
+  await phase('Fog of war: player sees fog behind the east wall, GM sees the whole map', async () => {
+    const g = lumas(await board(gm));
+    const p = lumas(await board(pl));
+    await shot(both, 'fog-gm-full-vs-player-fog');
+    expect(Math.abs(g.east - g.west), 'GM: east crypt as bright as open floor').toBeLessThan(25);
+    expect(p.east, 'player: east crypt fogged').toBeLessThan(p.west - 50);
+    expect(p.east, 'player: fog darker than the GM view').toBeLessThan(g.east - 50);
+    return `luma east/west GM ${g.east}/${g.west}, player ${p.east}/${p.west}`;
+  });
+
+  await phase('GM "Preview player vision" applies the players\' fog, then turns off', async () => {
+    const before = lumas(await board(gm));
+    await gmPreview.click();
+    await expect(gmPreview).toHaveAttribute('aria-pressed', 'true');
+    const preview = lumas(await board(gm));
+    await shot({ gm }, 'gm-preview-player-vision');
+    expect(preview.east, 'preview dims the east crypt').toBeLessThan(before.east - 15);
+    expect(Math.abs(preview.west - before.west), 'preview keeps the player-visible floor').toBeLessThan(15);
+    await gmPreview.click();
+    await expect(gmPreview).toHaveAttribute('aria-pressed', 'false');
+    const after = lumas(await board(gm));
+    expect(Math.abs(after.east - before.east), 'preview off restores the full map').toBeLessThan(10);
+    return `GM east luma ${before.east} -> preview ${preview.east} -> off ${after.east}`;
+  });
+
+  await phase('GM sets night darkness; both views darken and show the GM light', async () => {
+    const gBefore = lumas(await board(gm));
+    const pBefore = lumas(await board(pl));
+    await gm.getByTestId('gm-lighting').selectOption('NIGHT_MOONLIGHT');
+    await expect.poll(() => latestState(plFrames)?.ambient_lighting).toBe('NIGHT_MOONLIGHT');
+    const g = lumas(await board(gm));
+    const p = lumas(await board(pl));
+    await shot(both, 'night-lights-gm-vs-player');
+    for (const [who, before, now] of [['GM', gBefore, g], ['player', pBefore, p]] as const) {
+      const values = `before ${JSON.stringify(before)} after ${JSON.stringify(now)}`;
+      expect(now.unlit, `${who}: unlit floor darkens (${values})`).toBeLessThan(before.unlit - 30);
+      expect(now.lit, `${who}: GM light brightens its area (${values})`).toBeGreaterThan(now.unlit + 25);
+    }
+    return `unlit luma GM ${gBefore.unlit}->${g.unlit}, player ${pBefore.unlit}->${p.unlit}; lit GM ${g.lit}, player ${p.lit}`;
   });
 
   await phase('Player projection: monster shows a health tier, never HP/AC', async () => {
