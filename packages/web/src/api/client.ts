@@ -679,6 +679,7 @@ export class ApiClient {
         return;
       case "DiceRolled":
         s.diceLog.value = [...s.diceLog.value, envelope.roll].slice(-DICE_LOG_LIMIT);
+        this.applyInitiativeRoll(envelope.roll);
         return;
       case "PointerPingBroadcast":
         s.pointerPings.value = [
@@ -709,6 +710,22 @@ export class ApiClient {
         this.onHandoutRevealed?.(envelope.handout);
         return;
     }
+  }
+
+  /**
+   * Records the total of a server initiative roll (`Initiative: {token name}`).
+   * The roll names the token, not its id, so the first visible token with that
+   * name and no recorded total receives it; masked rolls carry no total.
+   */
+  private applyInitiativeRoll(roll: ProjectedDiceRoll): void {
+    const prefix = "Initiative: ";
+    const table = this.state.table.value;
+    if (!table || roll.total === null || !roll.reason.startsWith(prefix)) return;
+    const name = roll.reason.slice(prefix.length);
+    const totals = this.state.initiativeTotals.value;
+    const candidates = [...Object.values(table.tokens), ...Object.values(table.public_tokens ?? {})];
+    const token = candidates.find((tok) => tok.name === name && totals[tok.id] === undefined);
+    if (token) this.state.initiativeTotals.value = { ...totals, [token.id]: roll.total };
   }
 
   /** Folds the event-only facts (initiative totals, prompt closures) into session signals. */

@@ -81,6 +81,85 @@ export function activateScene(sceneId: Uuid): WireTrameCommand {
   return { cmd: "ACTIVATE_SCENE", scene_id: sceneId };
 }
 
+/** Ambient lighting preset (`AmbientLightingPreset`). */
+export type AmbientLightingPreset = "DAYLIGHT" | "DUSK" | "NIGHT_MOONLIGHT" | "PITCH_DARKNESS";
+
+/** Every `AmbientLightingPreset`, brightest first. */
+export const AMBIENT_LIGHTING_PRESETS: readonly AmbientLightingPreset[] = ["DAYLIGHT", "DUSK", "NIGHT_MOONLIGHT", "PITCH_DARKNESS"];
+
+/** `SET_AMBIENT_LIGHTING`: GM-only global lighting preset. */
+export function setAmbientLighting(preset: AmbientLightingPreset): WireTrameCommand {
+  return { cmd: "SET_AMBIENT_LIGHTING", preset };
+}
+
+/** Linked-actor fields copied onto a new token (`SpawnTokenInput`). */
+export interface SpawnTokenInput {
+  /** New token UUID. */
+  tokenId: Uuid;
+  /** Persistent actor sheet linked to the token (ADR-0037), when any. */
+  actorId: Uuid | null;
+  name: string;
+  /** Controlling player, `null` for GM-controlled NPCs. */
+  ownerUserId: Uuid | null;
+  /** Top-left canvas coordinate in pixels (`px`). */
+  topLeft: WirePoint2D;
+  hp: number;
+  maxHp: number;
+  ac: number;
+  dexMod: number;
+  /** Walking speed in feet (`ft`). */
+  speedFt: number;
+}
+
+/**
+ * `SPAWN_TOKEN`: GM-only. Sends a complete `TokenState` (the engine has no
+ * defaults for most fields): a 1x1 Medium token on the material channel with
+ * the engine's default senses, full action economy, and no effects.
+ */
+export function spawnToken(input: SpawnTokenInput): WireTrameCommand {
+  const maxHp = Math.max(1, Math.trunc(input.maxHp));
+  return {
+    cmd: "SPAWN_TOKEN",
+    token: {
+      id: input.tokenId,
+      name: input.name,
+      owner_user_id: input.ownerUserId,
+      actor_id: input.actorId,
+      top_left: input.topLeft,
+      grid_w: 1,
+      grid_h: 1,
+      is_squeezing: false,
+      elevation_ft: 0,
+      height_ft: 5,
+      visibility_channel: 1,
+      invisible: false,
+      senses: {
+        normal_range_ft: 120,
+        darkvision_range_ft: 60,
+        blindsight_range_ft: 0,
+        tremorsense_range_ft: 0,
+        truesight_range_ft: 0,
+        devils_sight: false,
+        see_invisibility: false,
+        perceives_channels: 1,
+      },
+      hp: Math.min(maxHp, nonNegativeInt(input.hp)),
+      max_hp: maxHp,
+      temp_hp: 0,
+      ac: Math.trunc(input.ac),
+      dex_mod: Math.trunc(input.dexMod),
+      speed_max_ft: input.speedFt,
+      speed_remaining_ft: input.speedFt,
+      has_action: true,
+      has_bonus_action: true,
+      has_reaction: true,
+      concentrating_on_aoe_id: null,
+      active_effects: [],
+      conditions: [],
+    },
+  };
+}
+
 /** `COMMIT_MCP_STAGING`: applies a staged MCP batch atomically (GM-only). */
 export function commitMcpStaging(proposalId: Uuid): WireTrameCommand {
   return { cmd: "COMMIT_MCP_STAGING", proposal_id: proposalId };

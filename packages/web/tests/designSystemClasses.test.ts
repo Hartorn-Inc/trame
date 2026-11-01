@@ -37,6 +37,15 @@ describe("ds-* classes used by components resolve to tokens.css rules", () => {
     "src/lobby/CampaignLobby.tsx",
     "src/components/ShellToggles.tsx",
     "src/workspace/DocumentsWorkspaceTab.tsx",
+    "src/builder/CharacterBuilderModal.tsx",
+    "src/hud/HudDrawers.tsx",
+    "src/table/TableCanvas.tsx",
+    "src/table/CombatTrackerBar.tsx",
+    "src/table/GmOverrideToolbar.tsx",
+    "src/table/TokenVitalsPanel.tsx",
+    "src/table/ReactionBanner.tsx",
+    "src/table/DiceTray.tsx",
+    "src/table/TableTab.tsx",
   ];
 
   for (const file of files) {

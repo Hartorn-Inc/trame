@@ -15,7 +15,11 @@ export function setupMockDom() {
     parentNode: MockNode | null = null;
     childNodes: MockNode[] = [];
     attributes: Record<string, string> = {};
-    style: Record<string, string> = {};
+    style: Record<string, any> = {
+      setProperty(name: string, value: string) {
+        this[name] = value;
+      },
+    };
     classList = new MockClassList();
     data = "";
     _value = "";
