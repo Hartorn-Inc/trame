@@ -1,4 +1,4 @@
-import { type Point2D, type WallSegmentDto, intersectSegments } from "../engine/wasmBridge.ts";
+import { type WallSegmentDto, countSoundOccludingWalls } from "../engine/wasmBridge.ts";
 
 export interface AudioEmitterConfig {
   id: string;
@@ -65,32 +65,10 @@ export function computeOcclusionLowPassCutoff(nWalls: number): number {
 }
 
 /**
- * Raycasts between emitter and listener, counting all walls with `blocksSound !== false`
- * whose vertical span intersects the ray elevation.
+ * Raycasts between emitter and listener in the WASM engine, counting walls with
+ * `blocksSound !== false` whose vertical span intersects the ray elevation.
  */
-export function countSoundOccludingWalls(
-  emitter: { x: number; y: number; elevationFt: number },
-  listener: AudioListenerPosition,
-  walls: WallSegmentDto[],
-): number {
-  const p0: Point2D = { x: emitter.x, y: emitter.y };
-  const p1: Point2D = { x: listener.x, y: listener.y };
-  let count = 0;
-
-  for (const wall of walls) {
-    if (!wall.blocksSound) {
-      continue;
-    }
-    const hit = intersectSegments(p0, p1, wall.a, wall.b);
-    if (hit && hit.t > 1e-6 && hit.t < 1.0 - 1e-6) {
-      const rayZ = emitter.elevationFt + hit.t * (listener.elevationFt - emitter.elevationFt);
-      if (rayZ >= wall.bottomElevationFt && rayZ <= wall.topElevationFt) {
-        count++;
-      }
-    }
-  }
-  return count;
-}
+export { countSoundOccludingWalls };
 
 export const MAX_CONCURRENT_RAYCASTS = 16;
 

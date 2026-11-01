@@ -4,6 +4,7 @@ target/
 *.pdb
 pkg/
 packages/web/src/wasm/
+packages/trame-engine-node/
 
 # Node / Web
 node_modules/

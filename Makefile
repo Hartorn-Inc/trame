@@ -15,7 +15,7 @@ DEV_COMPOSE := $(DC) --project-name $(DEV_PROJECT) --project-directory "$(REPO_D
 help: ## Display available Docker-based development commands
 	@awk 'BEGIN {FS = ":.*##"; printf "TRAME Docker Development Workflow\nUsage: make <target>\n\nTargets:\n"} /^[a-zA-Z][a-zA-Z0-9_-]*:.*##/ {printf "  %-14s %s\n", $$1, $$2}' "$(MAKEFILE_PATH)"
 
-up: ## Start the isolated local development stack (Postgres 18, MinIO S3, Rust server, Web HMR)
+up: wasm ## Start the isolated local development stack (Postgres 18, MinIO S3, Rust server, Web HMR)
 	$(DEV_COMPOSE) up -d --build
 
 down: ## Stop the isolated local development stack without removing data volumes
@@ -27,10 +27,10 @@ logs: ## Follow logs across all local development containers
 ps: ## List running containers for this checkout
 	$(DEV_COMPOSE) ps
 
-wasm: ## Compile crates/trame-engine to WebAssembly via wasm-pack inside Docker
-	$(DEV_COMPOSE) run --rm --no-deps rust-dev wasm-pack build crates/trame-engine --target web --out-dir ../../packages/web/src/wasm
+wasm: ## Compile crates/trame-engine to WebAssembly (browser + Node targets) via wasm-pack inside Docker
+	$(DEV_COMPOSE) run --rm --no-deps rust-dev sh -c "wasm-pack build crates/trame-engine --target web --out-dir ../../packages/web/src/wasm && wasm-pack build crates/trame-engine --target nodejs --out-dir ../../packages/trame-engine-node"
 
-build: ## Build Rust workspace and Web frontend inside Docker
+build: wasm ## Build Rust workspace and Web frontend inside Docker
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev cargo build --workspace
 	$(DEV_COMPOSE) run --rm --no-deps web-dev npm run build
 
@@ -39,7 +39,7 @@ test: test-rust test-web ## Run all unit and integration tests (Rust + WASM + We
 test-rust: ## Run Cargo workspace tests inside the Rust Docker container
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev cargo test --workspace --all-targets
 
-test-web: test-game-systems ## Run Web frontend and game-system tests inside the Node Docker container
+test-web: wasm test-game-systems ## Run Web frontend (incl. WASM parity) and game-system tests inside the Node Docker container
 	$(DEV_COMPOSE) run --rm --no-deps web-dev npm test
 
 test-game-systems: ## Run packages/game-systems/dnd5e tests inside the Node Docker container
@@ -55,7 +55,7 @@ lint-rust: ## Run cargo fmt check and clippy inside the Rust Docker container
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev cargo fmt --all -- --check
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-lint-web: ## Run frontend lint and typecheck inside the Node Docker container
+lint-web: wasm ## Run frontend lint and typecheck inside the Node Docker container
 	$(DEV_COMPOSE) run --rm --no-deps web-dev sh -c "npm run lint && npm run typecheck"
 
 fmt: ## Format Rust workspace inside Docker

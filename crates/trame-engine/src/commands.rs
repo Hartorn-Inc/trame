@@ -223,6 +223,17 @@ pub enum ReactionPromptCloseReason {
     Stale,
 }
 
+/// Result of `TableState::preview_move`, serialized as `{ "collision": {x, y} | null, "costFt" }`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovePreview {
+    /// First movement-blocking wall crossing in pixels (`px`) between the token centers, or
+    /// `None` when the straight path is clear.
+    pub collision: Option<Point2D>,
+    /// Movement cost in feet (`ft`): 3D distance, doubled while squeezing.
+    pub cost_ft: f64,
+}
+
 /// Fully resolved scene payload consumed by `TrameCommand::ActivateScene`.
 ///
 /// Clients send `ActivateScene { scene_id }` only; the server resolves the persisted scene
@@ -1447,6 +1458,25 @@ impl TableState {
             });
         }
         Ok(())
+    }
+
+    /// Previews a straight `MoveToken` of `token` to `to_top_left` at `to_elevation_ft` with the
+    /// exact wall-collision and movement-cost rules `MoveToken` enforces, without mutating state.
+    /// Turn budget, turn order, and `ThreatReach` are not evaluated.
+    pub fn preview_move(
+        &self,
+        token: &TokenState,
+        to_top_left: Point2D,
+        to_elevation_ft: f64,
+    ) -> MovePreview {
+        let collision = match self.check_wall_collision(token, to_top_left, to_elevation_ft) {
+            Err(CommandError::WallCollision { x, y }) => Some(Point2D::new(x, y)),
+            _ => None,
+        };
+        MovePreview {
+            collision,
+            cost_ft: self.movement_cost_ft(token, to_top_left, to_elevation_ft),
+        }
     }
 
     /// Movement cost in feet (`ft`) of moving `token` from its position to `to_top_left` at
