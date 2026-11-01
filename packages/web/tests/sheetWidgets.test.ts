@@ -356,18 +356,10 @@ describe("Ticket #107: DeclarativeSheetRenderer PadlockEditMode, Tabular-Nums & 
           const btn = container.querySelector(`[data-testid="${tabId}"]`);
           assert.ok(btn, `Tab button ${tabId} must be present`);
 
-          // Check minimum dimensions via style attribute, rect, or dimensions contract
-          const style = btn.getAttribute("style") ?? "";
-          assert.match(
-            style,
-            /min-width:\s*44px/i,
-            `Tab button ${tabId} must enforce min-width: 44px`,
-          );
-          assert.match(
-            style,
-            /min-height:\s*44px/i,
-            `Tab button ${tabId} must enforce min-height: 44px`,
-          );
+          // CSSOM properties, not a `style` attribute: a strict CSP blocks the attribute.
+          assert.equal(btn.getAttribute("style"), null, `Tab button ${tabId} must not use a style attribute`);
+          assert.equal(btn.style.minWidth, "44px", `Tab button ${tabId} must enforce min-width: 44px`);
+          assert.equal(btn.style.minHeight, "44px", `Tab button ${tabId} must enforce min-height: 44px`);
 
           const dims = layout.getTabButtonDimensions(tabId);
           assert.ok(dims.minWidth >= 44, `minWidth ${dims.minWidth} must be >= 44`);

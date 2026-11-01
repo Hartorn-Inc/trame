@@ -363,7 +363,8 @@ export class MobileCompanionLayout {
       );
       btn.setAttribute("aria-pressed", this.activeTab === tab.id ? "true" : "false");
       if (isMobileCompanionMode(this.viewportWidth)) {
-        btn.setAttribute("style", "min-width: 44px; min-height: 44px;");
+        btn.style.minWidth = "44px";
+        btn.style.minHeight = "44px";
       }
       btn.textContent = t(tab.labelKey);
       btn.addEventListener("click", () => {
