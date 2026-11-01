@@ -485,6 +485,12 @@ export const EN = {
   "maps.atlas.emptyBody": "No maps revealed by GM yet.",
   "maps.atlas.thumbnail": "Map Thumbnail",
   "maps.atlas.dimensions": "Dimensions: {{width}}x{{height}}",
+  "sheetHeader.saveFailed": "Could not save the character sheet.",
+  "sheetHeader.conflict.message": "This sheet was changed elsewhere. Your change was not saved.",
+  "sheetHeader.conflict.messageVersion": "This sheet was changed elsewhere (now version {{version}}). Your change was not saved.",
+  "sheetHeader.conflict.reload": "Reload latest",
+  "sheetHeader.conflict.overwrite": "Overwrite with mine",
+  "hud.noSheet": "No character sheet is available for this token.",
 } as const;
 
 /** Every translatable UI message identifier. */

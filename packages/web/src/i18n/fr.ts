@@ -488,4 +488,10 @@ export const FR: Record<MessageKey, string> = {
   "maps.atlas.emptyBody": "Le MJ n'a encore révélé aucune carte.",
   "maps.atlas.thumbnail": "Miniature de la carte",
   "maps.atlas.dimensions": "Dimensions : {{width}}x{{height}}",
+  "sheetHeader.saveFailed": "Impossible d'enregistrer la fiche de personnage.",
+  "sheetHeader.conflict.message": "Cette fiche a été modifiée ailleurs. Votre modification n'a pas été enregistrée.",
+  "sheetHeader.conflict.messageVersion": "Cette fiche a été modifiée ailleurs (version {{version}}). Votre modification n'a pas été enregistrée.",
+  "sheetHeader.conflict.reload": "Recharger la dernière version",
+  "sheetHeader.conflict.overwrite": "Écraser avec la mienne",
+  "hud.noSheet": "Aucune fiche de personnage n'est disponible pour ce jeton.",
 };
