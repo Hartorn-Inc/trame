@@ -1893,6 +1893,12 @@ async fn a52_static_dir_serves_spa_without_shadowing_api() {
         .write_all(b"<html>TRAME SPA</html>")
         .unwrap();
     std::fs::write(dir.join("app.js"), b"console.log('trame')").unwrap();
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(
+        dir.join("assets/index-abc123.js"),
+        b"export const bundle = 1;",
+    )
+    .unwrap();
 
     let served = Harness::with_static_dir(Some(dir.clone())).app();
     let bare = Harness::new().app();
@@ -1933,6 +1939,34 @@ async fn a52_static_dir_serves_spa_without_shadowing_api() {
             Some("NOT_FOUND"),
         ),
         (
+            "vite_bundle_under_assets_served",
+            &served,
+            "/assets/index-abc123.js",
+            StatusCode::OK,
+            Some("export const bundle"),
+        ),
+        (
+            "missing_bundle_chunk_is_json_404_not_index",
+            &served,
+            "/assets/index-stale.js",
+            StatusCode::NOT_FOUND,
+            Some("NOT_FOUND"),
+        ),
+        (
+            "signed_download_stays_api_route",
+            &served,
+            "/assets/download/instances/i/campaigns/c/assets/x.webp?exp=1&sig=00",
+            StatusCode::FORBIDDEN,
+            Some("invalid or expired"),
+        ),
+        (
+            "bare_download_prefix_is_json_404",
+            &served,
+            "/assets/download",
+            StatusCode::NOT_FOUND,
+            Some("NOT_FOUND"),
+        ),
+        (
             "unknown_ws_is_json_404",
             &served,
             "/ws/nope",
@@ -1969,6 +2003,66 @@ async fn a52_static_dir_serves_spa_without_shadowing_api() {
             let text = String::from_utf8_lossy(&body);
             assert!(text.contains(n), "case {case}: {text}");
         }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a52_html_gets_spa_csp_everything_else_strict_csp() {
+    let dir = std::env::temp_dir().join(format!("trame-csp-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.html"), b"<html>TRAME SPA</html>").unwrap();
+    std::fs::write(dir.join("assets/index-abc123.js"), b"export {};").unwrap();
+    let app = Harness::with_static_dir(Some(dir.clone())).app();
+    let spa = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; \
+               img-src 'self'; font-src 'self'; \
+               connect-src 'self' ws://table.example.com:8080 wss://table.example.com:8080; \
+               form-action 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+    let strict = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+    let cases = [
+        ("index_html", "/", "table.example.com:8080", spa),
+        (
+            "deep_link_html",
+            "/campaigns/abc/table",
+            "table.example.com:8080",
+            spa,
+        ),
+        (
+            "bundle_js",
+            "/assets/index-abc123.js",
+            "table.example.com:8080",
+            strict,
+        ),
+        (
+            "api_json",
+            "/api/v1/campaigns",
+            "table.example.com:8080",
+            strict,
+        ),
+        (
+            "api_json_404",
+            "/api/v1/nope",
+            "table.example.com:8080",
+            strict,
+        ),
+        ("healthz_json", "/healthz", "table.example.com:8080", strict),
+        (
+            "html_with_unsafe_host_omits_ws_sources",
+            "/",
+            "evil.example;script-src",
+            "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; \
+             img-src 'self'; font-src 'self'; connect-src 'self'; form-action 'self'; \
+             object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        ),
+    ];
+    for (case, uri, host, expected) in cases {
+        let req = Request::builder()
+            .uri(uri)
+            .header("host", host)
+            .body(Body::empty())
+            .unwrap();
+        let (_, headers, _) = send_raw(&app, req).await;
+        assert_eq!(headers["content-security-policy"], expected, "case {case}");
     }
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -33,10 +33,35 @@
 //!        `Origin` must exactly match `allowed_origins`. Absent `Origin`
 //!        (CLI / MCP clients, which carry no ambient cookies) is accepted.
 //!   4. `Hardening Headers`:
-//!      - Every response gets `Content-Security-Policy: default-src 'none';
-//!        frame-ancestors 'none'; base-uri 'none'`, `X-Content-Type-Options:
-//!        nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`
-//!        unless a handler already set them.
+//!      - Every response gets `X-Content-Type-Options: nosniff`,
+//!        `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and a
+//!        `Content-Security-Policy` unless a handler already set them.
+//!   5. `Two Content Security Policies`:
+//!      - Non-HTML responses (JSON API, bundle files, asset downloads) get
+//!        `API_CSP` = `default-src 'none'; frame-ancestors 'none'; base-uri
+//!        'none'`: such a body opened as a document can load nothing.
+//!      - `text/html` responses (the SPA `index.html` and its deep-link
+//!        fallback) get `spa_csp`, derived from what the built
+//!        `packages/web` bundle actually loads:
+//!        - `script-src 'self' 'wasm-unsafe-eval'`: the hashed module bundle
+//!          under `/assets/`, plus `WebAssembly.instantiateStreaming` of the
+//!          `trame-engine` WASM. No `eval`/`new Function`, no inline script.
+//!        - `style-src 'self'`: the extracted `/assets/*.css`. No
+//!          `'unsafe-inline'` and no `style-src-attr`: Preact applies `style`
+//!          props through the CSSOM (`el.style.x = ...`, `cssText`,
+//!          `setProperty`), which CSP does not govern, and the bundle sets no
+//!          `style="..."` markup.
+//!        - `img-src 'self'` / `font-src 'self'`: `/brand/*`, self-hosted
+//!          `/fonts/*.woff2`, and battlemaps through relative presigned
+//!          `/assets/download/...` URLs. The bundle builds no `data:` or
+//!          `blob:` URLs, so neither is allowed.
+//!        - `connect-src 'self' ws://{host} wss://{host}`: REST, the WASM
+//!          fetch, and the same-origin table WebSocket. The explicit WebSocket
+//!          sources come from a validated `Host` and cover browsers that do not
+//!          yet match `ws:` against `'self'`.
+//!        - `form-action 'self'`, `object-src 'none'`, `frame-ancestors
+//!          'none'`, `base-uri 'none'`; everything else falls to
+//!          `default-src 'none'` (no workers, frames, or manifests are used).
 //! ============================================================================
 
 use crate::auth::password::extract_session_token;
@@ -256,15 +281,55 @@ pub async fn auth_rate_limit_middleware(
         .await
 }
 
+/// CSP for every non-HTML response (JSON API, bundle files, signed asset downloads):
+/// nothing may load or execute if such a response is ever rendered as a document.
+pub const API_CSP: &str = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+
+/// CSP for `text/html` responses (the SPA shell). See the module banner for why each
+/// source is allowed. `host` is the request `Host`; when it is a plain `host[:port]`, the
+/// same-origin `ws://` / `wss://` sources are added for browsers whose `'self'` predates
+/// CSP3 WebSocket matching.
+pub fn spa_csp(host: Option<&str>) -> String {
+    let ws = host
+        .filter(|h| {
+            !h.is_empty()
+                && h.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))
+        })
+        .map(|h| format!(" ws://{h} wss://{h}"))
+        .unwrap_or_default();
+    format!(
+        "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; \
+         img-src 'self'; font-src 'self'; connect-src 'self'{ws}; form-action 'self'; \
+         object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    )
+}
+
 /// Adds CSP, `nosniff`, `X-Frame-Options`, and `Referrer-Policy` headers to every response.
+/// HTML documents get `spa_csp`; everything else gets `API_CSP`.
 pub async fn security_headers_middleware(request: Request, next: Next) -> Response {
+    let host = request
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    let defaults: [(&str, &str); 4] = [
-        (
-            "content-security-policy",
-            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
-        ),
+    let is_html = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.trim_start().starts_with("text/html"));
+    let csp_name = HeaderName::from_static("content-security-policy");
+    if !headers.contains_key(&csp_name) {
+        let csp = if is_html {
+            HeaderValue::from_str(&spa_csp(host.as_deref()))
+                .unwrap_or_else(|_| HeaderValue::from_static(API_CSP))
+        } else {
+            HeaderValue::from_static(API_CSP)
+        };
+        headers.insert(csp_name, csp);
+    }
+    let defaults: [(&str, &str); 3] = [
         ("x-content-type-options", "nosniff"),
         ("x-frame-options", "DENY"),
         ("referrer-policy", "no-referrer"),
