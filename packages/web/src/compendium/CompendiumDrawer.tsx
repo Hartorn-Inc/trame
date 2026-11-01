@@ -74,7 +74,9 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
-      e.stopPropagation();
+      if (typeof e.stopPropagation === 'function') {
+        e.stopPropagation();
+      }
       props.onClose();
     }
   };
@@ -161,7 +163,9 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
                     'data-testid': `btn-add-entry-${entry.slug}`,
                     'aria-label': `Add ${entry.name} to character sheet`,
                     onClick: (e: Event) => {
-                      e.stopPropagation();
+                      if (typeof e?.stopPropagation === 'function') {
+                        e.stopPropagation();
+                      }
                       handleAddEntry(entry);
                     },
                   },

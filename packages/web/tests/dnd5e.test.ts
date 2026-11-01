@@ -444,7 +444,7 @@ describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.1) Specification Suite", () => {
 
     // Leveling up past 20 throws
     leveledWizard.attributes.level = 20;
-    assert.throws(() => applyLevelUp(leveledWizard, { hpIncreaseMode: "fixed" }), /level 20/);
+    assert.throws(() => applyLevelUp(leveledWizard, { hpIncreaseMode: "fixed" }), /Max level is 20/);
   });
 
   it("T-DND-16: executes 3-tier CompendiumResolver cascade with CAMPAIGN_HOMEBREW priority and search", () => {
