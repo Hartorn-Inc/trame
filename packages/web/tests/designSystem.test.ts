@@ -17,6 +17,7 @@ import {
   runAudit,
   validateCanonicalHeadings,
   validateDesignJson,
+  validateWoff2Buffer,
   walkFiles,
 } from "../../../scripts/check-impeccable-design.mjs";
 import {
@@ -454,6 +455,69 @@ describe("TRAME ATLAS v1.1 & Impeccable Design System Suite", () => {
           errs.some((e) => tc.expectedPattern.test(e)),
           `Expected error matching ${tc.expectedPattern}, got: ${JSON.stringify(errs)}`,
         );
+      });
+    }
+
+    const fontsDir = path.join(repoRoot, "packages/web/public/fonts");
+    const woff2Header = (fields: { length: number; numTables?: number; totalCompressedSize?: number }) => {
+      const buf = Buffer.alloc(fields.length);
+      buf.write("wOF2", 0, "latin1");
+      buf.writeUInt32BE(fields.length, 8);
+      buf.writeUInt16BE(fields.numTables ?? 1, 12);
+      buf.writeUInt32BE(fields.totalCompressedSize ?? 12, 20);
+      return buf;
+    };
+    const realFont = fs.readFileSync(path.join(fontsDir, "IBMPlexSans-Regular.woff2"));
+    const woff2RejectCases = [
+      {
+        id: "rejects_60_byte_header_only_placeholder",
+        buf: woff2Header({ length: 60 }),
+        expectedPattern: /below the 1024-byte minimum/,
+      },
+      {
+        id: "rejects_file_shorter_than_48_byte_header",
+        buf: Buffer.from("wOF2"),
+        expectedPattern: /truncated WOFF2 file \(4 bytes/,
+      },
+      {
+        id: "rejects_truncated_real_font_with_length_mismatch",
+        buf: realFont.subarray(0, realFont.length - 100),
+        expectedPattern: /length field \(bytes 8-11\) is \d+ but the file is \d+ bytes/,
+      },
+      {
+        id: "rejects_woff1_signature",
+        buf: Buffer.concat([Buffer.from("wOFF", "latin1"), realFont.subarray(4)]),
+        expectedPattern: /signature \(bytes 0-3\) is 'wOFF', expected 'wOF2'/,
+      },
+      {
+        id: "rejects_zero_num_tables",
+        buf: woff2Header({ length: 2048, numTables: 0 }),
+        expectedPattern: /numTables \(bytes 12-13\) is 0/,
+      },
+      {
+        id: "rejects_zero_total_compressed_size",
+        buf: woff2Header({ length: 2048, totalCompressedSize: 0 }),
+        expectedPattern: /totalCompressedSize \(bytes 20-23\) is 0/,
+      },
+    ];
+
+    for (const tc of woff2RejectCases) {
+      it(`[${tc.id}] validateWoff2Buffer reports the failing header field and file name`, () => {
+        const errs = validateWoff2Buffer("fonts/fixture.woff2", tc.buf);
+        assert.ok(
+          errs.some((e) => e.startsWith("fonts/fixture.woff2: ") && tc.expectedPattern.test(e)),
+          `Expected error matching ${tc.expectedPattern}, got: ${JSON.stringify(errs)}`,
+        );
+      });
+    }
+
+    const realFontFiles = fs.readdirSync(fontsDir).filter((f) => f.endsWith(".woff2"));
+    it("finds the five self-hosted WOFF2 fonts to validate", () => {
+      assert.equal(realFontFiles.length, 5);
+    });
+    for (const fontFile of realFontFiles) {
+      it(`[accepts_real_font_${fontFile}] validateWoff2Buffer accepts the shipped font`, () => {
+        assert.deepEqual(validateWoff2Buffer(fontFile, fs.readFileSync(path.join(fontsDir, fontFile))), []);
       });
     }
 
