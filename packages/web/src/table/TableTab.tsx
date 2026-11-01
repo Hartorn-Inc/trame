@@ -6,9 +6,9 @@
  * PURPOSE:
  * -----
  * Composes the live table: GM toolbar, combat tracker, reaction prompts,
- * board, selected-token vitals, dice tray, and the sheet/compendium HUD
- * drawers. Each child reads the session signals itself; this module only
- * lays them out and reports command rejections.
+ * board, selected-token vitals, and dice tray (the sheet/compendium drawers
+ * are mounted by the workspace). Each child reads the session signals itself;
+ * this module only lays them out and reports command rejections.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
@@ -21,7 +21,7 @@
  * ============================================================================
  */
 import type { ApiClient } from '../api/client.ts';
-import { HudDrawers, isCompendiumDrawerOpenSignal } from '../hud/HudDrawers.tsx';
+import { isCompendiumDrawerOpenSignal } from '../hud/HudDrawers.tsx';
 import { t } from '../i18n/index.ts';
 import { CombatTrackerBar } from './CombatTrackerBar.tsx';
 import { DiceTray } from './DiceTray.tsx';
@@ -70,7 +70,6 @@ export function TableTab({ campaignId, client, isGm }: TableTabProps) {
           {t('table.openCompendium')}
         </button>
       </aside>
-      <HudDrawers campaignId={campaignId} client={client} isTableCanvasMounted />
     </div>
   );
 }

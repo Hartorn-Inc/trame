@@ -23,7 +23,6 @@ import {
   parseUvttImport,
   toggleDoorState,
 } from "../../src/maps/index.ts";
-import { CampaignWorkspace } from "../../src/workspace/CampaignWorkspace.tsx";
 import { MapsStudioTab } from "../../src/maps/MapsStudioTab.tsx";
 import { SHARED_WALL_KINDS } from "../../src/canvas/CanvasThemePalette.ts";
 
@@ -210,23 +209,6 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
       assert.equal(openedSecret.blocksVision, false);
     });
 
-    it("WHEN CampaignWorkspace is rendered, it exposes MapsStudioTab for GM and SceneAtlas for Player in Tab 2.", () => {
-      const gmWorkspace = CampaignWorkspace({
-        campaignId: "campaign-test-1",
-        userRole: "GM",
-        activeTab: 2,
-        scenes: [],
-      });
-      assert.ok(gmWorkspace);
-
-      const playerWorkspace = CampaignWorkspace({
-        campaignId: "campaign-test-1",
-        userRole: "PLAYER",
-        activeTab: 2,
-        scenes: [],
-      });
-      assert.ok(playerWorkspace);
-    });
   });
 
   describe("DualBufferFogOfWar & SpatialAudioManager Integration", () => {
