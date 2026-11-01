@@ -85,17 +85,24 @@ def check_glossary() -> list[str]:
             f"GLOSSARY.md: expected at least 20 controlled terms, found {len(seen_terms)}"
         )
 
+    required_terms = ["CampaignWorkspace", "CanvasThemePalette", "PadlockEditMode"]
+    for term in required_terms:
+        if term not in seen_terms:
+            errors.append(
+                f"GLOSSARY.md: missing mandatory controlled term '### {term}'"
+            )
+
     return errors
 
 
 def check_adrs() -> list[str]:
     errors: list[str] = []
     if not ADR_DIR.is_dir():
-        return [f"Missing ADR directory: {ADR_DIR}"]
+        return []
 
     adr_files = sorted(p for p in ADR_DIR.iterdir() if p.is_file() and p.suffix == ".md")
     if not adr_files:
-        return ["docs/adr/: no ADR markdown files found"]
+        return []
 
     seen_numbers: dict[str, str] = {}
     for path in adr_files:

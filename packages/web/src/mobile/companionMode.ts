@@ -42,6 +42,7 @@ export class LightweightElement {
   public children: LightweightElement[] = [];
   public textContent = "";
   public parentElement: LightweightElement | null = null;
+  public style: Record<string, string> = {};
   private listeners = new Map<string, Array<(e?: unknown) => void>>();
 
   constructor(tagName: string) {
@@ -50,6 +51,16 @@ export class LightweightElement {
 
   public setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
+    if (name === "style") {
+      const pairs = value.split(";").map((p) => p.trim()).filter(Boolean);
+      for (const pair of pairs) {
+        const [k, v] = pair.split(":").map((s) => s.trim());
+        if (k && v) {
+          const camel = k.replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
+          this.style[camel] = v;
+        }
+      }
+    }
   }
 
   public getAttribute(name: string): string | null {
@@ -90,6 +101,14 @@ export class LightweightElement {
 
   public click(): void {
     this.dispatchEvent("click");
+  }
+
+  public getBoundingClientRect(): { width: number; height: number; top: number; left: number; right: number; bottom: number } {
+    const minW = parseInt(this.style.minWidth || "0", 10) || 0;
+    const minH = parseInt(this.style.minHeight || "0", 10) || 0;
+    const width = Math.max(minW, 0);
+    const height = Math.max(minH, 0);
+    return { width, height, top: 0, left: 0, right: width, bottom: height };
   }
 
   public querySelector(selector: string): LightweightElement | null {
@@ -217,7 +236,7 @@ export class TrameAppRoot {
 
     if (isMobileCompanionMode(this.viewportWidth)) {
       // Mobile Companion Mode: strictly bypass PixiJS and WebGL FBO creation
-      this.mobileLayout = new MobileCompanionLayout(this.container);
+      this.mobileLayout = new MobileCompanionLayout(this.container, this.viewportWidth);
       this.mobileLayout.mount();
     } else {
       // Desktop Mode: mount TableCanvas
@@ -308,10 +327,12 @@ export class MobileCompanionLayout {
   public container: LightweightElement;
   public rootElement: LightweightElement;
   public activeTab: CompanionTabId = "sheet";
+  public viewportWidth: number;
   private tabContentElement: LightweightElement;
 
-  constructor(container: LightweightElement) {
+  constructor(container: LightweightElement, viewportWidth = 390) {
     this.container = container;
+    this.viewportWidth = viewportWidth;
     this.rootElement = new LightweightElement("div");
     this.rootElement.setAttribute("data-testid", "mobile-companion-layout");
     this.rootElement.setAttribute("class", "mobile-companion-root");
@@ -339,6 +360,9 @@ export class MobileCompanionLayout {
         `nav-tab-btn ds-btn ds-btn-secondary ${this.activeTab === tab.id ? "active" : ""}`,
       );
       btn.setAttribute("aria-pressed", this.activeTab === tab.id ? "true" : "false");
+      if (isMobileCompanionMode(this.viewportWidth)) {
+        btn.setAttribute("style", "min-width: 44px; min-height: 44px;");
+      }
       btn.textContent = tab.label;
       btn.addEventListener("click", () => {
         this.setActiveTab(tab.id);
@@ -356,6 +380,12 @@ export class MobileCompanionLayout {
   public setActiveTab(tab: CompanionTabId): void {
     this.activeTab = tab;
     this.renderActiveTab();
+  }
+
+  public getTabButtonDimensions(tabButtonId: string): { minWidth: number; minHeight: number } {
+    const isMobile = isMobileCompanionMode(this.viewportWidth);
+    const minDim = isMobile ? 44 : 40;
+    return { minWidth: minDim, minHeight: minDim };
   }
 
   private renderActiveTab(): void {

@@ -91,6 +91,35 @@
       "css": ".ds-panel { background: var(--atlas-surface); color: var(--atlas-text); border: 1px solid var(--atlas-border); border-radius: 8px; padding: 16px; } .ds-panel-header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--atlas-border); padding-bottom: 8px; } .ds-panel-title { font-family: 'Space Grotesk', sans-serif; font-size: 16px; font-weight: 600; margin: 0; } .atlas-tabular-nums { font-variant-numeric: tabular-nums; }"
     }
   ],
+  "colorMeta": {
+    "slateRamp": ["#0A121A", "#0F1A25", "#182736", "#203243", "#2D4357", "#405466", "#7A91A3", "#B8C7D1"],
+    "parchmentRamp": ["#1C3041", "#2F4657", "#465D6D", "#7890A0", "#ACBFCB", "#D6E2E9", "#E8EFF3", "#F4F7F9"],
+    "amberRamp": ["#5E3309", "#7B4510", "#995817", "#C2782C", "#DF994B", "#F3BB71", "#F8D29D", "#FCE8CA"],
+    "cyanFocusRamp": ["#0D3B4D", "#155D77", "#1F7EA0", "#3B9EC0", "#5DB6D4", "#80CBE2", "#AEE0EF", "#D9F2F9"],
+    "dangerRamp": ["#631B20", "#82262C", "#A3333B", "#BE5259", "#D57973", "#E39D98", "#F0C2BF", "#F9E5E3"]
+  },
+  "typographyMeta": {
+    "fontFamilies": {
+      "display": "'Space Grotesk', system-ui, -apple-system, sans-serif",
+      "sans": "'IBM Plex Sans', system-ui, -apple-system, sans-serif"
+    },
+    "numericVariant": "tabular-nums",
+    "selfHostedWoff2": true
+  },
+  "shadows": {
+    "none": "none",
+    "overlay": "0 10px 30px var(--atlas-shadow)"
+  },
+  "motion": {
+    "fast": "120ms cubic-bezier(0.2, 0, 0, 1)",
+    "normal": "180ms cubic-bezier(0.2, 0, 0, 1)",
+    "reducedMotion": "0.01ms"
+  },
+  "breakpoints": {
+    "mobile": "390px",
+    "tablet": "768px",
+    "desktop": "1440px"
+  },
   "extensions": {
     "colorMeta": {
       "slateRamp": ["#0A121A", "#0F1A25", "#182736", "#203243", "#2D4357", "#405466", "#7A91A3", "#B8C7D1"],

@@ -26,13 +26,27 @@ export type ResolvedAtlasTheme = "dark" | "light";
 
 export type TokenDispositionKind = "ally" | "hostile" | "selected" | "activeTurn";
 
+export type TokenBadgeShape =
+  | "shield"
+  | "diamond"
+  | "corner-chevrons"
+  | "chevron-beacon"
+  | "circle"
+  | "square"
+  | "hexagon-bang"
+  | "chevron";
+
+export type TokenBadgeGlyph = "" | "!" | "›";
+
+export type TokenRingStrokeStyle = "solid" | "dashed" | "double";
+
 export interface TokenDispositionStyle {
-  ringColorHex: number;
-  ringColorCss: string;
-  ringStrokeStyle: "solid" | "dashed" | "double";
-  dashPatternPx: readonly [number, number] | null;
-  badgeShape: "circle" | "square" | "hexagon-bang" | "chevron";
-  badgeGlyph: "" | "!" | "›";
+  readonly ringColorHex: number;
+  readonly ringColorCss: string;
+  readonly ringStrokeStyle: TokenRingStrokeStyle;
+  readonly dashPatternPx: readonly [number, number] | null;
+  readonly badgeShape: TokenBadgeShape;
+  readonly badgeGlyph: TokenBadgeGlyph;
 }
 
 export type CanonicalWallKind =
@@ -44,78 +58,117 @@ export type CanonicalWallKind =
   | "Door"
   | "Illusion";
 
+export type WallEndpointMarker = "none" | "square" | "diamond" | "slash" | "chevron";
+
 export interface WallKindVisualStyle {
-  strokeColorHex: number;
-  strokeColorCss: string;
-  strokeWidthPx: number;
-  dashPatternPx: readonly [number, number] | null;
-  endpointMarker: "none" | "square" | "diamond" | "slash" | "chevron";
+  readonly strokeColorHex: number;
+  readonly strokeColorCss: string;
+  readonly strokeWidthPx: number;
+  readonly dashPatternPx: readonly [number, number] | null;
+  readonly endpointMarker: WallEndpointMarker;
+}
+
+export interface McpStagingGhostStyle {
+  readonly fillHex: number;
+  readonly strokeHex: number;
+  readonly fillAlpha: number;
+  readonly dashPatternPx: readonly [number, number];
+  readonly markerShape?: "crosshair" | "ghost-diamond";
+  readonly badgeText: "STAGED";
+}
+
+export interface AoeTemplateStyle {
+  readonly fillHex: number;
+  readonly strokeHex: number;
+  readonly fillAlpha: number;
+  readonly dashPatternPx: readonly [number, number];
+  readonly boundaryDashPx: readonly [number, number];
+  readonly markerShape?: "crosshair" | "ghost-diamond";
 }
 
 export interface SpatialOverlayStyle {
-  fillHex: number;
-  strokeHex: number;
-  fillAlpha: number;
-  dashPatternPx: readonly [number, number];
-  markerShape: "crosshair" | "ghost-diamond";
+  readonly fillHex: number;
+  readonly strokeHex: number;
+  readonly fillAlpha: number;
+  readonly dashPatternPx: readonly [number, number];
+  readonly markerShape?: "crosshair" | "ghost-diamond";
+  readonly badgeText?: string;
+  readonly boundaryDashPx?: readonly [number, number];
 }
 
 export interface CanvasThemePaletteSpec {
-  theme: ResolvedAtlasTheme;
-  mapArtFilter: "none";
-  canvasVoidHex: number;
-  canvasVoidCss: string;
-  surfaceHex: number;
-  surfaceCss: string;
-  surfaceRaisedHex: number;
-  surfaceRaisedCss: string;
-  textHex: number;
-  textCss: string;
-  textMutedHex: number;
-  textMutedCss: string;
-  borderHex: number;
-  borderCss: string;
-  actionHex: number;
-  actionCss: string;
-  onActionHex: number;
-  onActionCss: string;
-  focusHex: number;
-  focusCss: string;
-  dangerHex: number;
-  dangerCss: string;
-  gridLineHex: number;
-  gridLineAlpha: number;
-  fogUnexploredHex: number;
-  fogExploredDimAlpha: number;
-  rulerStrokeHex: number;
-  pointerPingHex: number;
-  mcpStagingGhost: SpatialOverlayStyle;
-  aoeTemplate: SpatialOverlayStyle;
-  tokenDispositions: Record<TokenDispositionKind, TokenDispositionStyle>;
-  wallKinds: Record<CanonicalWallKind, WallKindVisualStyle>;
+  readonly theme: ResolvedAtlasTheme;
+  readonly mapArtFilter: "none";
+  readonly canvasVoidHex: number;
+  readonly canvasVoidCss: string;
+  readonly surfaceHex: number;
+  readonly surfaceCss: string;
+  readonly surfaceRaisedHex: number;
+  readonly surfaceRaisedCss: string;
+  readonly textHex: number;
+  readonly textCss: string;
+  readonly textMutedHex: number;
+  readonly textMutedCss: string;
+  readonly borderHex: number;
+  readonly borderCss: string;
+  readonly actionHex: number;
+  readonly actionCss: string;
+  readonly onActionHex: number;
+  readonly onActionCss: string;
+  readonly focusHex: number;
+  readonly focusCss: string;
+  readonly dangerHex: number;
+  readonly dangerCss: string;
+  readonly gridLineHex: number;
+  readonly gridLineAlpha: number;
+  readonly fogUnexploredHex: number;
+  readonly fogExploredDimAlpha: number;
+  readonly rulerStrokeHex: number;
+  readonly pointerPingHex: number;
+  readonly mcpStagingGhost: McpStagingGhostStyle;
+  readonly aoeTemplate: AoeTemplateStyle;
+  readonly tokenDispositions: Readonly<Record<TokenDispositionKind, TokenDispositionStyle>>;
+  readonly wallKinds: Readonly<Record<CanonicalWallKind, WallKindVisualStyle>>;
+}
+
+/**
+ * Deep freezes an object recursively to guarantee strict immutability.
+ */
+function deepFreeze<T>(obj: T): T {
+  if (obj === null || typeof obj !== "object" || Object.isFrozen(obj)) {
+    return obj;
+  }
+  Object.freeze(obj);
+  for (const key of Object.keys(obj)) {
+    const val = (obj as Record<string, unknown>)[key];
+    if (val !== null && typeof val === "object") {
+      deepFreeze(val);
+    }
+  }
+  return obj;
 }
 
 /**
  * Canonical PointerPing radar pulse colors used by `TableClientStore`.
  */
-export const CANVAS_RADIAL_PING_COLORS: Record<"ALERT" | "ATTENTION" | "QUESTION", string> = {
-  ALERT: "#D57973",
-  ATTENTION: "#F3BB71",
-  QUESTION: "#80CBE2",
-};
+export const CANVAS_RADIAL_PING_COLORS: Readonly<Record<"ALERT" | "ATTENTION" | "QUESTION", string>> =
+  deepFreeze({
+    ALERT: "#D57973",
+    ATTENTION: "#F3BB71",
+    QUESTION: "#80CBE2",
+  });
 
 /**
  * Canonical AmbientPreset lighting tint colors used by `GmOverrideToolbarManager`.
  */
-export const CANVAS_AMBIENT_TINTS: Record<
-  "DAYLIGHT" | "DUSK" | "NIGHT_MOONLIGHT" | "PITCH_DARKNESS",
-  string
-> = {
+export const CANVAS_AMBIENT_TINTS: Readonly<
+  Record<"DAYLIGHT" | "DUSK" | "NIGHT_MOONLIGHT" | "PITCH_DARKNESS", string>
+> = deepFreeze({
   DAYLIGHT: "#ffffff",
   DUSK: "#F3BB71",
   NIGHT_MOONLIGHT: "#203243",
   PITCH_DARKNESS: "#0F1A25",
-};
+});
 
 export const SHARED_WALL_KINDS: Record<CanonicalWallKind, WallKindVisualStyle> = {
   Normal: {
@@ -169,7 +222,7 @@ export const SHARED_WALL_KINDS: Record<CanonicalWallKind, WallKindVisualStyle> =
   },
 };
 
-export const DARK_CANVAS_PALETTE: CanvasThemePaletteSpec = {
+export const DARK_CANVAS_PALETTE: CanvasThemePaletteSpec = deepFreeze({
   theme: "dark",
   mapArtFilter: "none",
   canvasVoidHex: 0x0f1a25,
@@ -201,15 +254,17 @@ export const DARK_CANVAS_PALETTE: CanvasThemePaletteSpec = {
   mcpStagingGhost: {
     fillHex: 0x9f7aea,
     strokeHex: 0xd6bcfa,
-    fillAlpha: 0.28,
-    dashPatternPx: [5, 5],
+    fillAlpha: 0.55,
+    dashPatternPx: [4, 4] as const,
     markerShape: "ghost-diamond",
+    badgeText: "STAGED",
   },
   aoeTemplate: {
     fillHex: 0x80cbe2,
     strokeHex: 0xf3bb71,
     fillAlpha: 0.22,
-    dashPatternPx: [8, 4],
+    dashPatternPx: [8, 4] as const,
+    boundaryDashPx: [8, 4] as const,
     markerShape: "crosshair",
   },
   tokenDispositions: {
@@ -218,15 +273,15 @@ export const DARK_CANVAS_PALETTE: CanvasThemePaletteSpec = {
       ringColorCss: "#80CBE2",
       ringStrokeStyle: "solid",
       dashPatternPx: null,
-      badgeShape: "circle",
+      badgeShape: "shield",
       badgeGlyph: "",
     },
     hostile: {
       ringColorHex: 0xd57973,
       ringColorCss: "#D57973",
       ringStrokeStyle: "dashed",
-      dashPatternPx: [6, 4],
-      badgeShape: "hexagon-bang",
+      dashPatternPx: [6, 4] as const,
+      badgeShape: "diamond",
       badgeGlyph: "!",
     },
     selected: {
@@ -234,22 +289,22 @@ export const DARK_CANVAS_PALETTE: CanvasThemePaletteSpec = {
       ringColorCss: "#F1F4F3",
       ringStrokeStyle: "double",
       dashPatternPx: null,
-      badgeShape: "square",
+      badgeShape: "corner-chevrons",
       badgeGlyph: "",
     },
     activeTurn: {
-      ringColorHex: 0xf3bb71,
-      ringColorCss: "#F3BB71",
+      ringColorHex: 0xf59e0b,
+      ringColorCss: "#F59E0B",
       ringStrokeStyle: "solid",
       dashPatternPx: null,
-      badgeShape: "chevron",
+      badgeShape: "chevron-beacon",
       badgeGlyph: "›",
     },
   },
   wallKinds: SHARED_WALL_KINDS,
-};
+});
 
-export const LIGHT_CANVAS_PALETTE: CanvasThemePaletteSpec = {
+export const LIGHT_CANVAS_PALETTE: CanvasThemePaletteSpec = deepFreeze({
   theme: "light",
   mapArtFilter: "none",
   canvasVoidHex: 0xf4f7f9,
@@ -281,15 +336,17 @@ export const LIGHT_CANVAS_PALETTE: CanvasThemePaletteSpec = {
   mcpStagingGhost: {
     fillHex: 0x6b46c1,
     strokeHex: 0x553c9a,
-    fillAlpha: 0.24,
-    dashPatternPx: [5, 5],
+    fillAlpha: 0.55,
+    dashPatternPx: [4, 4] as const,
     markerShape: "ghost-diamond",
+    badgeText: "STAGED",
   },
   aoeTemplate: {
     fillHex: 0x155d77,
     strokeHex: 0x995817,
     fillAlpha: 0.2,
-    dashPatternPx: [8, 4],
+    dashPatternPx: [8, 4] as const,
+    boundaryDashPx: [8, 4] as const,
     markerShape: "crosshair",
   },
   tokenDispositions: {
@@ -298,15 +355,15 @@ export const LIGHT_CANVAS_PALETTE: CanvasThemePaletteSpec = {
       ringColorCss: "#155D77",
       ringStrokeStyle: "solid",
       dashPatternPx: null,
-      badgeShape: "circle",
+      badgeShape: "shield",
       badgeGlyph: "",
     },
     hostile: {
       ringColorHex: 0xa3333b,
       ringColorCss: "#A3333B",
       ringStrokeStyle: "dashed",
-      dashPatternPx: [6, 4],
-      badgeShape: "hexagon-bang",
+      dashPatternPx: [6, 4] as const,
+      badgeShape: "diamond",
       badgeGlyph: "!",
     },
     selected: {
@@ -314,27 +371,27 @@ export const LIGHT_CANVAS_PALETTE: CanvasThemePaletteSpec = {
       ringColorCss: "#1C3041",
       ringStrokeStyle: "double",
       dashPatternPx: null,
-      badgeShape: "square",
+      badgeShape: "corner-chevrons",
       badgeGlyph: "",
     },
     activeTurn: {
-      ringColorHex: 0x995817,
-      ringColorCss: "#995817",
+      ringColorHex: 0xf59e0b,
+      ringColorCss: "#F59E0B",
       ringStrokeStyle: "solid",
       dashPatternPx: null,
-      badgeShape: "chevron",
+      badgeShape: "chevron-beacon",
       badgeGlyph: "›",
     },
   },
   wallKinds: SHARED_WALL_KINDS,
-};
+});
 
 /**
  * Resolves `AtlasThemeMode` (`dark`, `light`, `system`) into a concrete
  * `CanvasThemePaletteSpec`.
  */
 export function getCanvasThemePalette(
-  mode: AtlasThemeMode = "dark",
+  mode: AtlasThemeMode | ResolvedAtlasTheme = "dark",
   systemPrefersLight = false,
 ): CanvasThemePaletteSpec {
   const resolved: ResolvedAtlasTheme =
