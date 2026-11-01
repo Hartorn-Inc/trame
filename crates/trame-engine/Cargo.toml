@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.11.1"
 thiserror.workspace = true
 uuid.workspace = true
 # Pure-Rust trig shared by native and wasm32 builds so geometry results are bit-identical.

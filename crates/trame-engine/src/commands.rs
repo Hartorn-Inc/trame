@@ -38,17 +38,23 @@
 //!        updated geometry.
 //!   5. `ThreatReach Opportunity Prompts (Turn-by-Turn only)`:
 //!      - A non-teleport `MoveToken` whose straight path leaves the `reach_ft`
-//!        of a hostile, conscious token that still has its reaction stops on
-//!        the exit square and opens a `ReactionPrompt` addressed to the
-//!        reactor's owner (`None` = GM). There is no timer. Until the prompt
-//!        is decided, players cannot move the interrupted token.
+//!        of a hostile token that still has its reaction, is not GM-hidden or
+//!        incapacitated, and can see the mover stops on the exit square and
+//!        opens a `ReactionPrompt` addressed to the reactor's owner (`None` =
+//!        GM). There is no timer. Until the prompt is decided, players cannot
+//!        move the interrupted token.
+//!      - `prompt_id` is a SHA-256-derived UUIDv8 over mover, reactor, round,
+//!        and `reaction_prompt_seq`: players who see the mover cannot recover
+//!        a hidden reactor's ID, and WAL replay reproduces the same IDs.
+//!      - `UndoLastAction` emits `ReactionPromptOpened` / `ReactionPromptClosed
+//!        { Undone }` for every prompt the restored snapshot adds, changes, or
+//!        drops, so event-driven clients stay in sync with state.
 //!      - Hostility is side-based: a `HeroToken` (`owner_user_id.is_some()`)
 //!        and a GM-controlled token (`owner_user_id.is_none()`) are hostile.
 //!      - `Pass` (including a GM-forced `Pass`) resumes the remaining move,
 //!        re-checking walls, budget, and the other reactors' reach. `Trigger`
 //!        spends the reaction and leaves the token on the exit square; once the
-//!        attack is resolved, its controller re-issues `MoveToken` with the
-//!        preserved movement budget.
+//!        attack is resolved, `ResolveReaction` resumes the remaining move.
 //!   6. `Validate-Then-Snapshot Reactions`:
 //!      - `DecideReaction` verifies that the prompt exists, that `actor_id`
 //!        is its reactor, that the issuer owns the reactor (GM may force), and
@@ -81,10 +87,11 @@ use crate::aoe::{AoeTemplate, GridCell, TokenSpatialRef};
 pub use crate::geometry::Point2D;
 use crate::geometry::{
     Bvh2D, CHANNEL_ETHEREAL, CHANNEL_GM_HIDDEN, CHANNEL_MATERIAL, SenseProfile, WallKind,
-    WallSegment, segment_intersection, segment_intersects_segment,
+    WallSegment, can_token_see_target, segment_intersection, segment_intersects_segment,
 };
 use crate::rules::{ActiveEffect, DamageAffinity, DamageResolution, resolve_damage_application};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use thiserror::Error;
 use uuid::Uuid;
@@ -221,6 +228,8 @@ pub enum ReactionPromptCloseReason {
     /// The prompt no longer applies: combat ended, the trigger or reactor token was removed,
     /// or the GM moved the trigger token.
     Stale,
+    /// `UndoLastAction` restored a state in which the prompt does not exist.
+    Undone,
 }
 
 /// Result of `TableState::preview_move`, serialized as `{ "collision": {x, y} | null, "costFt" }`.
@@ -340,6 +349,24 @@ fn default_token_ac() -> i32 {
 
 fn default_reach_ft() -> f64 {
     5.0
+}
+
+/// SRD condition IDs that include Incapacitated (no actions or reactions).
+const INCAPACITATING_CONDITIONS: [&str; 5] = [
+    "incapacitated",
+    "paralyzed",
+    "petrified",
+    "stunned",
+    "unconscious",
+];
+
+/// `true` when `token` carries a condition that includes Incapacitated (case-insensitive).
+fn is_incapacitated(token: &TokenState) -> bool {
+    token.conditions.iter().any(|c| {
+        INCAPACITATING_CONDITIONS
+            .iter()
+            .any(|id| c.eq_ignore_ascii_case(id))
+    })
 }
 
 /// Authoritative spatial, vitality, action-economy, and sensory state of a single tabletop token.
@@ -1067,6 +1094,10 @@ pub struct TableSnapshotData {
     /// Handout identifiers revealed to the table through `RevealHandout`.
     #[serde(default)]
     pub revealed_handout_ids: BTreeSet<String>,
+    /// Monotonic count of reaction prompts ever opened on this table (`0..`), hashed into each
+    /// `prompt_id`. Survives undo so an undone prompt's ID is never reissued to another prompt.
+    #[serde(default)]
+    pub reaction_prompt_seq: u64,
 }
 
 /// Authoritative in-memory tabletop state machine combining serializable `TableSnapshotData`,
@@ -1174,6 +1205,7 @@ impl TableState {
                 map_width_px: default_map_dimension_px(),
                 map_height_px: default_map_dimension_px(),
                 revealed_handout_ids: BTreeSet::new(),
+                reaction_prompt_seq: 0,
             },
             bvh,
             undo_stack: VecDeque::with_capacity(MAX_UNDO_HISTORY),
@@ -1184,11 +1216,13 @@ impl TableState {
     ///
     /// `revealed_handout_ids` is kept from the current state: a reveal is an out-of-band
     /// disclosure that players have already seen, so undoing earlier or enclosing commands must
-    /// not silently hide it again.
+    /// not silently hide it again. `reaction_prompt_seq` is kept too, so prompt IDs stay unique.
     pub fn apply_undo_delta(&mut self, entry: UndoEntry) {
         let revealed_handout_ids = std::mem::take(&mut self.data.revealed_handout_ids);
+        let reaction_prompt_seq = self.data.reaction_prompt_seq;
         self.data = entry.snapshot;
         self.data.revealed_handout_ids = revealed_handout_ids;
+        self.data.reaction_prompt_seq = reaction_prompt_seq;
         if let Some(cell_size_px) = entry.cell_size_px {
             self.cell_size_px = cell_size_px;
         }
@@ -1339,8 +1373,11 @@ impl TableState {
     /// Finds the first hostile `ThreatReach` that `mover` leaves along the straight path to
     /// `to_top_left`, returning `(reactor_id, exit_top_left, exit_elevation_ft)`.
     ///
-    /// Eligible reactors: hostile side, alive and above 0 HP, `has_reaction`, and not in
-    /// `excluded`. The path is sampled every 1/10 cell; a reactor triggers on the first
+    /// Eligible reactors: hostile side, alive and above 0 HP, `has_reaction`, not GM-hidden
+    /// (`CHANNEL_GM_HIDDEN`), not incapacitated (`is_incapacitated`), and not in `excluded`. The
+    /// reactor must also see the mover at its last in-reach position (`can_token_see_target`:
+    /// walls via the BVH, senses, channels, invisibility); ambient light level is not modelled,
+    /// so darkness alone does not suppress the prompt. The path is sampled every 1/10 cell; a reactor triggers on the first
     /// out-of-reach sample that follows an in-reach sample, so passing through reach (enter then
     /// exit) prompts exactly like starting inside it. The exit point is the last in-reach sample
     /// snapped to the grid when the snapped square is still in reach. Ties on the exit sample go
@@ -1374,6 +1411,8 @@ impl TableState {
                 && reactor.has_reaction
                 && reactor.hp > 0
                 && !reactor.is_dead
+                && (reactor.visibility_channel & CHANNEL_GM_HIDDEN) == 0
+                && !is_incapacitated(reactor)
                 && !excluded.contains(&reactor.id);
             if !eligible {
                 continue;
@@ -1386,8 +1425,28 @@ impl TableState {
                 was_inside = inside;
                 exited
             });
+            let sees_exit = |i: usize| {
+                let (pos, elev) = lerp((i - 1) as f64 / steps as f64);
+                can_token_see_target(
+                    &self.bvh,
+                    reactor.top_left,
+                    reactor.grid_w,
+                    reactor.grid_h,
+                    reactor.elevation_ft + reactor.height_ft * 0.8,
+                    &reactor.senses,
+                    pos,
+                    mover.grid_w,
+                    mover.grid_h,
+                    elev + mover.height_ft * 0.5,
+                    mover.visibility_channel,
+                    mover.invisible,
+                    self.cell_size_px,
+                    self.feet_per_cell,
+                )
+            };
             if let Some(i) = exit_step
                 && best.is_none_or(|(best_i, _)| i < best_i)
+                && sees_exit(i)
             {
                 best = Some((i, reactor.id));
             }
@@ -1536,10 +1595,7 @@ impl TableState {
         if let Some((reactor_id, _, _)) = threat {
             let mut resolved_reactor_ids = excluded_reactors;
             resolved_reactor_ids.push(reactor_id);
-            // WAL replay re-applies commands, so the prompt ID must be derived, not random. A mover
-            // has at most one open prompt per reactor, which keeps the pair unique while active.
-            let prompt_id =
-                Uuid::from_u128(token_id.as_u128() ^ reactor_id.as_u128().rotate_left(64));
+            let prompt_id = self.next_reaction_prompt_id(token_id, reactor_id);
             let prompt = ReactionPrompt {
                 prompt_id,
                 reactor_actor_id: reactor_id,
@@ -1587,6 +1643,61 @@ impl TableState {
             in_combat,
             prompt.resolved_reactor_ids.clone(),
         )
+    }
+
+    /// Derives the next `prompt_id` and bumps `reaction_prompt_seq`.
+    ///
+    /// `prompt_id` reaches players who can see the mover, so it must not reveal the reactor
+    /// (which may be GM-hidden). It is the first 16 bytes of
+    /// `SHA-256("trame/reaction-prompt/v1" || mover || reactor || round_be || seq_be)` stamped as a
+    /// UUIDv8: one-way, distinct across rounds and repeated prompts, and deterministic so WAL
+    /// replay of the same commands reproduces the same IDs.
+    fn next_reaction_prompt_id(&mut self, mover_id: Uuid, reactor_id: Uuid) -> Uuid {
+        let seq = self.data.reaction_prompt_seq;
+        self.data.reaction_prompt_seq += 1;
+        let digest = Sha256::new()
+            .chain_update(b"trame/reaction-prompt/v1")
+            .chain_update(mover_id.as_bytes())
+            .chain_update(reactor_id.as_bytes())
+            .chain_update(self.data.round.to_be_bytes())
+            .chain_update(seq.to_be_bytes())
+            .finalize();
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&digest[..16]);
+        uuid::Builder::from_custom_bytes(bytes).into_uuid()
+    }
+
+    /// Gives `token_id` a fresh turn: full speed, action, bonus action, and reaction.
+    fn reset_turn_resources(&mut self, token_id: Uuid) {
+        if let Some(tok) = self.data.tokens.get_mut(&token_id) {
+            tok.speed_remaining_ft = tok.speed_max_ft;
+            tok.has_action = true;
+            tok.has_bonus_action = true;
+            tok.has_reaction = true;
+        }
+    }
+
+    /// Emits `ReactionPromptOpened` for prompts that undo restored or changed and
+    /// `ReactionPromptClosed { Undone }` for prompts it removed, so clients that track prompts
+    /// from events match the restored state.
+    fn reaction_prompt_undo_diff(
+        before: &BTreeMap<Uuid, ReactionPrompt>,
+        after: &BTreeMap<Uuid, ReactionPrompt>,
+    ) -> Vec<TrameEvent> {
+        let closed = before
+            .keys()
+            .filter(|id| !after.contains_key(id))
+            .map(|&prompt_id| TrameEvent::ReactionPromptClosed {
+                prompt_id,
+                reason: ReactionPromptCloseReason::Undone,
+            });
+        let opened = after
+            .iter()
+            .filter(|(id, prompt)| before.get(id) != Some(prompt))
+            .map(|(_, prompt)| TrameEvent::ReactionPromptOpened {
+                prompt: prompt.clone(),
+            });
+        closed.chain(opened).collect()
     }
 
     /// Removes every reaction prompt matching `stale`, emitting `ReactionPromptClosed { Stale }`.
@@ -1912,13 +2023,8 @@ impl TableState {
                         self.data.active_turn_index = 0;
                         self.data.round += 1;
                     }
-                    if let Some(next_id) = self.active_turn_token_id()
-                        && let Some(tok) = self.data.tokens.get_mut(&next_id)
-                    {
-                        tok.speed_remaining_ft = tok.speed_max_ft;
-                        tok.has_action = true;
-                        tok.has_bonus_action = true;
-                        tok.has_reaction = true;
+                    if let Some(next_id) = self.active_turn_token_id() {
+                        self.reset_turn_resources(next_id);
                     }
                 }
                 Ok(vec![TrameEvent::TurnAdvanced {
@@ -2304,12 +2410,35 @@ impl TableState {
                 }
                 self.push_undo(format!("Remove token {token_id}"));
                 self.data.tokens.remove(&token_id);
-                self.data.initiative_order.retain(|id| *id != token_id);
                 self.data.initiative_totals.remove(&token_id);
-                if self.data.active_turn_index >= self.data.initiative_order.len() {
-                    self.data.active_turn_index = 0;
-                }
+                let removed_pos = self
+                    .data
+                    .initiative_order
+                    .iter()
+                    .position(|id| *id == token_id);
                 let mut events = vec![TrameEvent::TokenRemoved { token_id }];
+                if let Some(pos) = removed_pos {
+                    self.data.initiative_order.remove(pos);
+                    let active = self.data.active_turn_index;
+                    if pos < active {
+                        self.data.active_turn_index = active - 1;
+                    } else if pos == active {
+                        // The next combatant slid into the active slot; wrapping starts a round.
+                        if active >= self.data.initiative_order.len() {
+                            self.data.active_turn_index = 0;
+                            if !self.data.initiative_order.is_empty() {
+                                self.data.round += 1;
+                            }
+                        }
+                        if let Some(next_id) = self.active_turn_token_id() {
+                            self.reset_turn_resources(next_id);
+                        }
+                        events.push(TrameEvent::TurnAdvanced {
+                            active_turn_token_id: self.active_turn_token_id(),
+                            round: self.data.round,
+                        });
+                    }
+                }
                 events.extend(self.close_stale_prompts(|p| {
                     p.trigger_token_id == token_id || p.reactor_actor_id == token_id
                 }));
@@ -2640,8 +2769,14 @@ impl TableState {
                     .pop_back()
                     .ok_or(CommandError::NothingToUndo)?;
                 let description = entry.description.clone();
+                let prompts_before = std::mem::take(&mut self.data.active_reaction_prompts);
                 self.apply_undo_delta(entry);
-                Ok(vec![TrameEvent::ActionUndone { description }])
+                let mut events = vec![TrameEvent::ActionUndone { description }];
+                events.extend(Self::reaction_prompt_undo_diff(
+                    &prompts_before,
+                    &self.data.active_reaction_prompts,
+                ));
+                Ok(events)
             }
         }
     }

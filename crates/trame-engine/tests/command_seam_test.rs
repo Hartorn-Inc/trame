@@ -1955,3 +1955,412 @@ fn walls_masked_for_players_hide_secrets_only() {
         }
     }
 }
+
+/// Hero (player-owned) adjacent to the goblin, Turn-by-Turn with the hero active.
+fn adjacent_hero_and_goblin() -> TableState {
+    let hero = token(HERO_ID, "Kyra", 100.0, 0.0, Some(PLAYER_ID));
+    let goblin = token(GOBLIN_ID, "Goblin", 0.0, 0.0, None);
+    table(vec![hero, goblin], vec![HERO_ID, GOBLIN_ID])
+}
+
+fn first_prompt_id(state: &mut TableState) -> Uuid {
+    let events = state
+        .apply_command(&player(), move_cmd(HERO_ID, 400.0, false))
+        .unwrap();
+    opened_prompts(&events).remove(0).prompt_id
+}
+
+#[test]
+fn threat_reach_skips_reactors_that_cannot_react() {
+    struct Case {
+        id: &'static str,
+        prepare: fn(&mut TableState),
+        expect_prompt: bool,
+    }
+    let cases = [
+        Case {
+            id: "eligible_reactor_prompts",
+            prepare: |_| {},
+            expect_prompt: true,
+        },
+        Case {
+            id: "gm_hidden_reactor_does_not_prompt",
+            prepare: |s| {
+                s.data
+                    .tokens
+                    .get_mut(&GOBLIN_ID)
+                    .unwrap()
+                    .visibility_channel |= trame_engine::geometry::CHANNEL_GM_HIDDEN;
+            },
+            expect_prompt: false,
+        },
+        Case {
+            id: "incapacitated_reactor_does_not_prompt",
+            prepare: |s| {
+                s.data.tokens.get_mut(&GOBLIN_ID).unwrap().conditions =
+                    vec!["incapacitated".into()];
+            },
+            expect_prompt: false,
+        },
+        Case {
+            id: "stunned_label_matches_case_insensitively",
+            prepare: |s| {
+                s.data.tokens.get_mut(&GOBLIN_ID).unwrap().conditions = vec!["Stunned".into()];
+            },
+            expect_prompt: false,
+        },
+        Case {
+            id: "non_incapacitating_condition_still_prompts",
+            prepare: |s| {
+                s.data.tokens.get_mut(&GOBLIN_ID).unwrap().conditions = vec!["prone".into()];
+            },
+            expect_prompt: true,
+        },
+        Case {
+            id: "dead_reactor_does_not_prompt",
+            prepare: |s| s.data.tokens.get_mut(&GOBLIN_ID).unwrap().is_dead = true,
+            expect_prompt: false,
+        },
+        Case {
+            id: "reactor_without_reaction_does_not_prompt",
+            prepare: |s| s.data.tokens.get_mut(&GOBLIN_ID).unwrap().has_reaction = false,
+            expect_prompt: false,
+        },
+        Case {
+            id: "wall_blocking_line_of_sight_does_not_prompt",
+            prepare: |s| {
+                s.apply_command(
+                    &gm(),
+                    TrameCommand::AddWall {
+                        wall: WallSegment::normal_wall(
+                            Uuid::from_u128(0x99),
+                            Point2D::new(100.0, -50.0),
+                            Point2D::new(100.0, 150.0),
+                        ),
+                    },
+                )
+                .unwrap();
+                s.undo_stack.clear();
+            },
+            expect_prompt: false,
+        },
+        Case {
+            id: "invisible_mover_does_not_prompt",
+            prepare: |s| s.data.tokens.get_mut(&HERO_ID).unwrap().invisible = true,
+            expect_prompt: false,
+        },
+    ];
+
+    for c in cases {
+        let mut state = adjacent_hero_and_goblin();
+        (c.prepare)(&mut state);
+        let events = state
+            .apply_command(&player(), move_cmd(HERO_ID, 400.0, false))
+            .unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+        assert_eq!(
+            !opened_prompts(&events).is_empty(),
+            c.expect_prompt,
+            "case {} prompt",
+            c.id
+        );
+        let expect_x = if c.expect_prompt { 100.0 } else { 400.0 };
+        assert_eq!(
+            state.data.tokens[&HERO_ID].top_left.x, expect_x,
+            "case {} stop square",
+            c.id
+        );
+    }
+}
+
+#[test]
+fn reaction_prompt_ids_are_one_way_and_unique_per_prompt() {
+    struct Case {
+        id: &'static str,
+        /// Runs after the first prompt was opened on the same table and returns a new prompt ID.
+        next_prompt: fn(&mut TableState) -> Uuid,
+        expect_same_as_first: bool,
+    }
+    let cases = [
+        Case {
+            id: "replaying_the_same_commands_reproduces_the_id",
+            next_prompt: |_| first_prompt_id(&mut adjacent_hero_and_goblin()),
+            expect_same_as_first: true,
+        },
+        Case {
+            id: "undo_then_repeat_issues_a_new_id",
+            next_prompt: |s| {
+                s.apply_command(&gm(), TrameCommand::UndoLastAction)
+                    .unwrap();
+                first_prompt_id(s)
+            },
+            expect_same_as_first: false,
+        },
+        Case {
+            id: "same_pair_next_round_issues_a_new_id",
+            next_prompt: |s| {
+                s.apply_command(&gm(), TrameCommand::UndoLastAction)
+                    .unwrap();
+                s.apply_command(&gm(), TrameCommand::AdvanceTurn).unwrap();
+                s.apply_command(&gm(), TrameCommand::AdvanceTurn).unwrap();
+                assert_eq!(s.data.round, 2);
+                first_prompt_id(s)
+            },
+            expect_same_as_first: false,
+        },
+    ];
+
+    for c in cases {
+        let mut state = adjacent_hero_and_goblin();
+        let first = first_prompt_id(&mut state);
+        let next = (c.next_prompt)(&mut state);
+        assert_eq!(first == next, c.expect_same_as_first, "case {} id", c.id);
+        for prompt_id in [first, next] {
+            assert_eq!(prompt_id.get_version_num(), 8, "case {} UUIDv8", c.id);
+            assert_ne!(
+                prompt_id.as_u128() ^ HERO_ID.as_u128(),
+                GOBLIN_ID.as_u128().rotate_left(64),
+                "case {} reactor not recoverable by XOR",
+                c.id
+            );
+        }
+    }
+}
+
+#[test]
+fn remove_token_keeps_the_active_turn_consistent() {
+    struct Case {
+        id: &'static str,
+        order: Vec<Uuid>,
+        advances_before: usize,
+        removed: Uuid,
+        expect_active: Option<Uuid>,
+        expect_round: u32,
+        expect_turn_advanced: bool,
+    }
+    let abc = vec![HERO_ID, GOBLIN_ID, GOBLIN_B_ID];
+    let cases = [
+        Case {
+            id: "removing_a_combatant_before_the_active_one_keeps_the_turn",
+            order: abc.clone(),
+            advances_before: 1,
+            removed: HERO_ID,
+            expect_active: Some(GOBLIN_ID),
+            expect_round: 1,
+            expect_turn_advanced: false,
+        },
+        Case {
+            id: "removing_a_combatant_after_the_active_one_keeps_the_turn",
+            order: abc.clone(),
+            advances_before: 0,
+            removed: GOBLIN_B_ID,
+            expect_active: Some(HERO_ID),
+            expect_round: 1,
+            expect_turn_advanced: false,
+        },
+        Case {
+            id: "removing_the_active_combatant_passes_the_turn_on",
+            order: abc.clone(),
+            advances_before: 1,
+            removed: GOBLIN_ID,
+            expect_active: Some(GOBLIN_B_ID),
+            expect_round: 1,
+            expect_turn_advanced: true,
+        },
+        Case {
+            id: "removing_the_active_last_combatant_wraps_to_a_new_round",
+            order: abc.clone(),
+            advances_before: 2,
+            removed: GOBLIN_B_ID,
+            expect_active: Some(HERO_ID),
+            expect_round: 2,
+            expect_turn_advanced: true,
+        },
+        Case {
+            id: "removing_the_only_combatant_clears_the_turn",
+            order: vec![GOBLIN_ID],
+            advances_before: 0,
+            removed: GOBLIN_ID,
+            expect_active: None,
+            expect_round: 1,
+            expect_turn_advanced: true,
+        },
+        Case {
+            id: "removing_a_token_outside_initiative_keeps_the_turn",
+            order: vec![HERO_ID, GOBLIN_ID],
+            advances_before: 1,
+            removed: GOBLIN_B_ID,
+            expect_active: Some(GOBLIN_ID),
+            expect_round: 1,
+            expect_turn_advanced: false,
+        },
+    ];
+
+    for c in cases {
+        let tokens = vec![
+            token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID)),
+            token(GOBLIN_ID, "Goblin", 500.0, 0.0, None),
+            token(GOBLIN_B_ID, "Goblin B", 1000.0, 0.0, None),
+        ];
+        let mut state = table(tokens, c.order.clone());
+        for _ in 0..c.advances_before {
+            state
+                .apply_command(&gm(), TrameCommand::AdvanceTurn)
+                .unwrap();
+        }
+        for tok in state.data.tokens.values_mut() {
+            tok.speed_remaining_ft = 0.0;
+            tok.has_action = false;
+            tok.has_bonus_action = false;
+            tok.has_reaction = false;
+        }
+
+        let events = state
+            .apply_command(
+                &gm(),
+                TrameCommand::RemoveToken {
+                    token_id: c.removed,
+                },
+            )
+            .unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+
+        assert_eq!(
+            state.active_turn_token_id(),
+            c.expect_active,
+            "case {} active",
+            c.id
+        );
+        assert_eq!(state.data.round, c.expect_round, "case {} round", c.id);
+        let advanced = events.contains(&TrameEvent::TurnAdvanced {
+            active_turn_token_id: c.expect_active,
+            round: c.expect_round,
+        });
+        assert_eq!(
+            advanced, c.expect_turn_advanced,
+            "case {} TurnAdvanced",
+            c.id
+        );
+        if let Some(active) = c.expect_active {
+            let tok = &state.data.tokens[&active];
+            let fresh = tok.has_action && tok.has_reaction && tok.speed_remaining_ft == 30.0;
+            assert_eq!(
+                fresh, c.expect_turn_advanced,
+                "case {} start-of-turn reset",
+                c.id
+            );
+        }
+    }
+}
+
+#[test]
+fn undo_emits_reaction_prompt_diffs() {
+    #[derive(Debug, PartialEq)]
+    enum Expect {
+        Closed,
+        Reopened { awaiting_resolution: bool },
+        Nothing,
+    }
+    struct Case {
+        id: &'static str,
+        /// Runs after the prompt was opened; the next `UndoLastAction` reverts its last command.
+        then: fn(&mut TableState, Uuid),
+        expect: Expect,
+    }
+    let cases = [
+        Case {
+            id: "undoing_the_move_closes_its_prompt",
+            then: |_, _| {},
+            expect: Expect::Closed,
+        },
+        Case {
+            id: "undoing_a_pass_reopens_the_prompt",
+            then: |s, prompt_id| {
+                s.apply_command(
+                    &gm(),
+                    TrameCommand::DecideReaction {
+                        prompt_id,
+                        actor_id: GOBLIN_ID,
+                        decision: ReactionDecision::Pass,
+                    },
+                )
+                .unwrap();
+            },
+            expect: Expect::Reopened {
+                awaiting_resolution: false,
+            },
+        },
+        Case {
+            id: "undoing_a_trigger_reopens_the_undecided_prompt",
+            then: |s, prompt_id| {
+                s.apply_command(
+                    &gm(),
+                    TrameCommand::DecideReaction {
+                        prompt_id,
+                        actor_id: GOBLIN_ID,
+                        decision: ReactionDecision::Trigger { ability_id: None },
+                    },
+                )
+                .unwrap();
+            },
+            expect: Expect::Reopened {
+                awaiting_resolution: false,
+            },
+        },
+        Case {
+            id: "undoing_end_turn_by_turn_reopens_the_stale_prompt",
+            then: |s, _| {
+                s.apply_command(&gm(), TrameCommand::EndTurnByTurn).unwrap();
+            },
+            expect: Expect::Reopened {
+                awaiting_resolution: false,
+            },
+        },
+        Case {
+            id: "undoing_an_unrelated_command_emits_no_prompt_events",
+            then: |s, _| {
+                s.apply_command(&gm(), goblin_spawn(0x30, 900.0)).unwrap();
+            },
+            expect: Expect::Nothing,
+        },
+    ];
+
+    for c in cases {
+        let mut state = adjacent_hero_and_goblin();
+        let prompt_id = first_prompt_id(&mut state);
+        (c.then)(&mut state, prompt_id);
+
+        let events = state
+            .apply_command(&gm(), TrameCommand::UndoLastAction)
+            .unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+
+        let prompt_events: Vec<Expect> = events
+            .iter()
+            .filter_map(|e| match e {
+                TrameEvent::ReactionPromptClosed {
+                    prompt_id: closed,
+                    reason: ReactionPromptCloseReason::Undone,
+                } if *closed == prompt_id => Some(Expect::Closed),
+                TrameEvent::ReactionPromptOpened { prompt } if prompt.prompt_id == prompt_id => {
+                    Some(Expect::Reopened {
+                        awaiting_resolution: prompt.awaiting_resolution,
+                    })
+                }
+                TrameEvent::ReactionPromptOpened { .. }
+                | TrameEvent::ReactionPromptClosed { .. } => {
+                    panic!("case {}: unexpected prompt event {e:?}", c.id)
+                }
+                _ => None,
+            })
+            .collect();
+        let expected: Vec<Expect> = match c.expect {
+            Expect::Nothing => vec![],
+            other => vec![other],
+        };
+        assert_eq!(prompt_events, expected, "case {} prompt events", c.id);
+        assert_eq!(
+            state.data.active_reaction_prompts.contains_key(&prompt_id),
+            !matches!(expected.first(), Some(Expect::Closed)),
+            "case {} stored prompt",
+            c.id
+        );
+    }
+}
