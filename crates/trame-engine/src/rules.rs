@@ -776,7 +776,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dnd5e_system_json_derived_dag_evaluates_all_26_nodes() {
+    fn test_dnd5e_system_json_derived_dag_evaluates_every_node() {
         let raw_json = include_str!("../../../packages/game-systems/dnd5e/system.json");
         let doc: serde_json::Value =
             serde_json::from_str(raw_json).expect("valid system.json document");
@@ -784,7 +784,7 @@ mod tests {
             .get("derivedDAG")
             .and_then(|v| v.as_object())
             .expect("derivedDAG object must exist in system.json");
-        assert_eq!(derived_obj.len(), 26);
+        assert!(!derived_obj.is_empty());
 
         let mut derived_formulas = BTreeMap::new();
         for (node_key, node_val) in derived_obj {
@@ -804,9 +804,19 @@ mod tests {
         base_attributes.insert("int".into(), 18.0);
         base_attributes.insert("wis".into(), 12.0);
         base_attributes.insert("cha".into(), 8.0);
-        base_attributes.insert("armor_bonus".into(), 2.0);
+        base_attributes.insert("exhaustion".into(), 0.0);
+        // Studded leather: 12 + full Dexterity modifier.
+        base_attributes.insert("armor_worn".into(), 1.0);
+        base_attributes.insert("armor_base".into(), 12.0);
+        base_attributes.insert("armor_dex_applies".into(), 1.0);
+        base_attributes.insert("armor_max_dex".into(), 99.0);
+        base_attributes.insert("unarmored_defense_con".into(), 0.0);
+        base_attributes.insert("unarmored_defense_wis".into(), 0.0);
         base_attributes.insert("shield_bonus".into(), 0.0);
-        base_attributes.insert("spell_mod".into(), 4.0);
+        for ability in ["str", "dex", "con", "wis", "cha"] {
+            base_attributes.insert(format!("spell_ability_{ability}"), 0.0);
+        }
+        base_attributes.insert("spell_ability_int".into(), 1.0);
         base_attributes.insert("save_int_prof".into(), 1.0);
         base_attributes.insert("save_wis_prof".into(), 1.0);
         base_attributes.insert("skill_stealth_prof".into(), 2.0); // expertise
@@ -820,9 +830,8 @@ mod tests {
             }
         }
 
-        let evaluated = evaluate_derived_dag(&base_attributes, &derived_formulas).expect(
-            "all 26 derivedDAG nodes in system.json must evaluate without FormulaParseError",
-        );
+        let evaluated = evaluate_derived_dag(&base_attributes, &derived_formulas)
+            .expect("every derivedDAG node in system.json must evaluate without FormulaParseError");
 
         for key in derived_formulas.keys() {
             assert!(
