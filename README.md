@@ -50,7 +50,7 @@ make test-rust TEST_DATABASE_URL=postgresql://trame:trame_dev_password@postgres:
 
 | Variable | Required outside dev | Purpose |
 | :--- | :--- | :--- |
-| `TRAME_ENV` | No | `dev` substitutes public development keys and Vite origins for missing values. Never set it in production. |
+| `TRAME_ENV` | No | `dev` substitutes public development keys and Vite origins for missing values and logs pretty coloured lines. Any other value (or unset) logs one JSON object per line without ANSI colour. Never set it to `dev` in production. |
 | `MASTER_ENCRYPTION_KEY` | Yes | 64 hex characters (AES-256-GCM) encrypting TOTP secrets at rest. |
 | `TRAME_JWT_SECRET` | Yes | At least 32 bytes; signs presigned asset URLs (legacy alias: `JWT_SECRET`). |
 | `TRAME_INVITE_JWT_SECRET` | Yes, unless a fallback is set | At least 32 bytes; signs Magic Link invite JWTs. Falls back to `TRAME_SESSION_SECRET`, then `JWT_SECRET`. |
@@ -59,7 +59,7 @@ make test-rust TEST_DATABASE_URL=postgresql://trame:trame_dev_password@postgres:
 | `TRAME_ALLOWED_ORIGINS` | No | Extra comma-separated WebSocket origins. |
 | `TRAME_COOKIE_SECURE` | No | Session cookies carry `Secure` unless set to `false`/`0`/`no`/`off` (plain-HTTP LAN tables). |
 | `TRAME_TRUST_FORWARDED_FOR` | No | `true` keys rate limits on the right-most `X-Forwarded-For` hop; set only behind a trusted proxy. |
-| `TRAME_STATIC_DIR` | No | Directory of the built web client served with an `index.html` SPA fallback (set to `/app/static` in the production image). |
+| `TRAME_STATIC_DIR` | No | Directory of the built web client served with an `index.html` SPA fallback (set to `/app/static` in the production image). Bundle files under `/assets/` are served as-is (`/assets/download/*` stays the signed asset route); HTML responses carry a CSP that allows the app's own scripts, styles, fonts, images, the WASM engine and the same-origin WebSocket, while API responses keep `default-src 'none'`. |
 | `DATABASE_URL` | No | PostgreSQL URL (alias: `TRAME_DATABASE_URL`). Migrations run at startup. Without it the server uses in-memory persistence. |
 | `TRAME_PORT` | No | Listen port (fallback `PORT`, default `8080`). |
 | `TRAME_INSTANCE_ID` | No | Instance UUID; a random one is generated when unset. |

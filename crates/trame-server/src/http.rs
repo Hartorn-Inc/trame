@@ -555,7 +555,12 @@ pub async fn list_campaign_notes_internal(state: &AppState, campaign_id: Uuid) -
 }
 
 /// Path prefixes owned by the API; the SPA fallback never answers them (JSON `404` instead).
-const RESERVED_PREFIXES: [&str; 4] = ["/api", "/ws", "/assets", "/healthz"];
+/// Only `/assets/download` is reserved: the rest of `/assets/` is the Vite bundle.
+const RESERVED_PREFIXES: [&str; 4] = ["/api", "/ws", "/assets/download", "/healthz"];
+
+/// Directory where Vite emits the hashed JS/CSS/WASM bundle. A missing file there is a JSON
+/// `404`, never `index.html`, so a stale chunk URL cannot be parsed as JavaScript.
+const BUNDLE_PREFIX: &str = "/assets/";
 
 fn is_reserved_path(path: &str) -> bool {
     RESERVED_PREFIXES.iter().any(|prefix| {
@@ -567,7 +572,8 @@ fn is_reserved_path(path: &str) -> bool {
 }
 
 /// Fallback serving the built SPA from `dir` (`ServeDir`, unknown paths -> `index.html`) for
-/// client-side routes. Reserved API prefixes get a JSON `404` so they are never shadowed.
+/// client-side routes. Reserved API prefixes get a JSON `404` so they are never shadowed;
+/// bundle files under `/assets/` are served without the `index.html` fallback.
 fn spa_fallback(
     dir: std::path::PathBuf,
 ) -> impl Fn(Request<Body>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>
@@ -576,13 +582,26 @@ fn spa_fallback(
 + Sync
 + 'static {
     use tower::ServiceExt;
-    let serve = tower_http::services::ServeDir::new(&dir)
+    let bundle = tower_http::services::ServeDir::new(&dir);
+    let serve = bundle
+        .clone()
         .fallback(tower_http::services::ServeFile::new(dir.join("index.html")));
     move |req: Request<Body>| {
         let serve = serve.clone();
+        let bundle = bundle.clone();
         Box::pin(async move {
-            if is_reserved_path(req.uri().path()) {
-                return error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "route not found");
+            let not_found =
+                || error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "route not found");
+            let path = req.uri().path();
+            if is_reserved_path(path) {
+                return not_found();
+            }
+            if path.starts_with(BUNDLE_PREFIX) {
+                return match bundle.oneshot(req).await {
+                    Ok(resp) if resp.status() == StatusCode::NOT_FOUND => not_found(),
+                    Ok(resp) => resp.into_response(),
+                    Err(never) => match never {},
+                };
             }
             match serve.oneshot(req).await {
                 Ok(resp) => resp.into_response(),

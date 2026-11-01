@@ -30,6 +30,10 @@
 //!      - WebSocket `Origin` allow-list = `TRAME_PUBLIC_ORIGIN` plus the
 //!        comma-separated `TRAME_ALLOWED_ORIGINS`; `TRAME_PUBLIC_ORIGIN` is
 //!        required outside dev.
+//!   4. `Log Format Follows TRAME_ENV`:
+//!      - `TRAME_ENV=dev` logs pretty ANSI lines; every other value (including
+//!        unset) logs JSON without ANSI escapes, so production log collectors
+//!        receive one structured object per line. No separate variable exists.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -90,6 +94,34 @@ pub enum RuntimeEnv {
     Dev,
     /// Any other value (or unset): missing secrets abort startup.
     Production,
+}
+
+/// Log line format selected by the runtime environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogFormat {
+    /// Human-readable, ANSI-coloured lines for local development.
+    Pretty,
+    /// One JSON object per line, no ANSI escapes, for log collectors.
+    Json,
+}
+
+impl RuntimeEnv {
+    /// `dev` (case-insensitive, surrounding whitespace ignored) is `Dev`; any other value,
+    /// empty or unset, is `Production`.
+    pub fn from_value(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some(v) if v.eq_ignore_ascii_case("dev") => RuntimeEnv::Dev,
+            _ => RuntimeEnv::Production,
+        }
+    }
+
+    /// Pretty logs in `Dev`, JSON logs everywhere else.
+    pub fn log_format(self) -> LogFormat {
+        match self {
+            RuntimeEnv::Dev => LogFormat::Pretty,
+            RuntimeEnv::Production => LogFormat::Json,
+        }
+    }
 }
 
 /// Validated cryptographic material shared by the auth, TOTP, and asset subsystems.
@@ -160,10 +192,7 @@ impl ServerConfig {
     /// Resolves configuration from an arbitrary variable lookup (empty values count as unset).
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
         let get = |key: &str| lookup(key).filter(|v| !v.trim().is_empty());
-        let env = match get(TRAME_ENV_VAR).as_deref().map(str::trim) {
-            Some(v) if v.eq_ignore_ascii_case("dev") => RuntimeEnv::Dev,
-            _ => RuntimeEnv::Production,
-        };
+        let env = RuntimeEnv::from_value(get(TRAME_ENV_VAR).as_deref());
         let dev = env == RuntimeEnv::Dev;
         let mut missing = Vec::new();
         let mut invalid = Vec::new();

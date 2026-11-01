@@ -49,9 +49,9 @@ use trame_server::http::{
 };
 use trame_server::maps::{CampaignMapScene, InMemoryMapStorage};
 use trame_server::mcp::TimelineCursor;
-use trame_server::room::{ConnectedClient, RoomLeaseManager, TableRoomHandle};
+use trame_server::room::{ConnectedClient, OutboundClientFrame, RoomLeaseManager, TableRoomHandle};
 use trame_server::security::SecurityPolicy;
-use trame_server::sync::ClientEnvelope;
+use trame_server::sync::{ClientEnvelope, ServerEnvelope};
 use trame_server::timeline::{InMemoryTimelineStorage, TimelineStorage};
 use trame_server::wal::{InMemoryWalStorage, WalStorage};
 use uuid::Uuid;
@@ -514,6 +514,96 @@ async fn a03_player_note_edit_preserves_dm_blocks() {
             stored.contains("The innkeeper is a spy."),
             "case {case}: dm block lost: {stored}"
         );
+    }
+}
+
+#[tokio::test]
+async fn a03_handout_reveal_matches_block_id_and_reaches_player() {
+    let note = "The crypt smells of old incense.\n\
+                :::handout{id=\"ancient-map\" title=\"Ancient Map\"}\n\
+                A faded map marks a hidden stair.\n\
+                :::\n\
+                :::handout{revealed='false' title='Letter: id=decoy' id='sealed-letter'}\n\
+                Meet at midnight.\n\
+                :::\n";
+    // (case_id, handout id in the URL, expected status, expected title)
+    let cases = [
+        (
+            "double_quoted_attrs",
+            "ancient-map",
+            StatusCode::OK,
+            Some("Ancient Map"),
+        ),
+        (
+            "single_quoted_attrs_any_order",
+            "sealed-letter",
+            StatusCode::OK,
+            Some("Letter: id=decoy"),
+        ),
+        (
+            "id_inside_title_is_not_an_id",
+            "decoy",
+            StatusCode::NOT_FOUND,
+            None,
+        ),
+        ("unknown_handout", "missing", StatusCode::NOT_FOUND, None),
+    ];
+    for (case, handout_id, expected, title) in cases {
+        let h = Harness::new();
+        let app = h.app();
+        let (campaign_id, _, gm) = h.campaign(&app).await;
+        let (player_id, _) = h.account().await;
+        h.join(campaign_id, player_id, "PLAYER").await;
+        let (status, _) = call(
+            &app,
+            "PUT",
+            &format!("/api/v1/campaigns/{campaign_id}/notes/crypt"),
+            Some(&gm),
+            json!({ "title": "Crypt Lore", "content_markdown": note }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "case {case}");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        h.room(campaign_id)
+            .await
+            .connect_client(ConnectedClient {
+                session_id: Uuid::new_v4(),
+                user_id: player_id,
+                role: CampaignRole::Player,
+                tx,
+            })
+            .await
+            .unwrap();
+
+        let (status, body) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/campaigns/{campaign_id}/handouts/{handout_id}/reveal"),
+            Some(&gm),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, expected, "case {case}: {body}");
+        h.room(campaign_id).await.metrics().await.unwrap();
+        let broadcast = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|frame| match frame {
+            OutboundClientFrame::Binary(bytes) => {
+                match rmp_serde::from_slice::<ServerEnvelope>(&bytes).ok()? {
+                    ServerEnvelope::HandoutRevealed(revealed) => Some(revealed),
+                    _ => None,
+                }
+            }
+            _ => None,
+        });
+        match title {
+            Some(title) => {
+                assert_eq!(body["handout"]["title"], json!(title), "case {case}");
+                let b = broadcast.unwrap_or_else(|| panic!("case {case}: player got no broadcast"));
+                assert_eq!(b.handout_id, handout_id, "case {case}");
+                assert_eq!(b.title, title, "case {case}");
+                assert!(!b.content.is_empty(), "case {case}");
+            }
+            None => assert!(broadcast.is_none(), "case {case}: unexpected broadcast"),
+        }
     }
 }
 
@@ -1893,6 +1983,12 @@ async fn a52_static_dir_serves_spa_without_shadowing_api() {
         .write_all(b"<html>TRAME SPA</html>")
         .unwrap();
     std::fs::write(dir.join("app.js"), b"console.log('trame')").unwrap();
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(
+        dir.join("assets/index-abc123.js"),
+        b"export const bundle = 1;",
+    )
+    .unwrap();
 
     let served = Harness::with_static_dir(Some(dir.clone())).app();
     let bare = Harness::new().app();
@@ -1933,6 +2029,34 @@ async fn a52_static_dir_serves_spa_without_shadowing_api() {
             Some("NOT_FOUND"),
         ),
         (
+            "vite_bundle_under_assets_served",
+            &served,
+            "/assets/index-abc123.js",
+            StatusCode::OK,
+            Some("export const bundle"),
+        ),
+        (
+            "missing_bundle_chunk_is_json_404_not_index",
+            &served,
+            "/assets/index-stale.js",
+            StatusCode::NOT_FOUND,
+            Some("NOT_FOUND"),
+        ),
+        (
+            "signed_download_stays_api_route",
+            &served,
+            "/assets/download/instances/i/campaigns/c/assets/x.webp?exp=1&sig=00",
+            StatusCode::FORBIDDEN,
+            Some("invalid or expired"),
+        ),
+        (
+            "bare_download_prefix_is_json_404",
+            &served,
+            "/assets/download",
+            StatusCode::NOT_FOUND,
+            Some("NOT_FOUND"),
+        ),
+        (
             "unknown_ws_is_json_404",
             &served,
             "/ws/nope",
@@ -1969,6 +2093,66 @@ async fn a52_static_dir_serves_spa_without_shadowing_api() {
             let text = String::from_utf8_lossy(&body);
             assert!(text.contains(n), "case {case}: {text}");
         }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a52_html_gets_spa_csp_everything_else_strict_csp() {
+    let dir = std::env::temp_dir().join(format!("trame-csp-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.html"), b"<html>TRAME SPA</html>").unwrap();
+    std::fs::write(dir.join("assets/index-abc123.js"), b"export {};").unwrap();
+    let app = Harness::with_static_dir(Some(dir.clone())).app();
+    let spa = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; \
+               img-src 'self'; font-src 'self'; \
+               connect-src 'self' ws://table.example.com:8080 wss://table.example.com:8080; \
+               form-action 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+    let strict = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+    let cases = [
+        ("index_html", "/", "table.example.com:8080", spa),
+        (
+            "deep_link_html",
+            "/campaigns/abc/table",
+            "table.example.com:8080",
+            spa,
+        ),
+        (
+            "bundle_js",
+            "/assets/index-abc123.js",
+            "table.example.com:8080",
+            strict,
+        ),
+        (
+            "api_json",
+            "/api/v1/campaigns",
+            "table.example.com:8080",
+            strict,
+        ),
+        (
+            "api_json_404",
+            "/api/v1/nope",
+            "table.example.com:8080",
+            strict,
+        ),
+        ("healthz_json", "/healthz", "table.example.com:8080", strict),
+        (
+            "html_with_unsafe_host_omits_ws_sources",
+            "/",
+            "evil.example;script-src",
+            "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; \
+             img-src 'self'; font-src 'self'; connect-src 'self'; form-action 'self'; \
+             object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        ),
+    ];
+    for (case, uri, host, expected) in cases {
+        let req = Request::builder()
+            .uri(uri)
+            .header("host", host)
+            .body(Body::empty())
+            .unwrap();
+        let (_, headers, _) = send_raw(&app, req).await;
+        assert_eq!(headers["content-security-policy"], expected, "case {case}");
     }
     let _ = std::fs::remove_dir_all(dir);
 }
