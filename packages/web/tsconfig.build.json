@@ -1,0 +1,7 @@
+{
+  // Production build (Dockerfile web-builder): type-check only the shipped app sources and what
+  // they import. tsconfig.json also covers tests/ and the Node-only game-system entry, which need
+  // repo tooling and the Node WASM build; `npm run typecheck`, `make lint-web` and CI keep checking those.
+  "extends": "./tsconfig.json",
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}

@@ -47,6 +47,8 @@ export default defineConfig({
       '/api': {
         target: apiOrigin,
         changeOrigin: true,
+        // The live table socket lives under `/api/v1/campaigns/{id}/ws`.
+        ws: true,
       },
       '/ws': {
         target: apiOrigin.replace(/^http/, 'ws'),
