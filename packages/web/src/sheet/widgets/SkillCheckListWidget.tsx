@@ -1,5 +1,5 @@
 import { h, type VNode } from 'preact';
-import { t, type MessageKey } from '../../i18n/index.ts';
+import { hasMessage, t, type MessageKey } from '../../i18n/index.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
@@ -9,11 +9,17 @@ const RANK_LABEL_KEYS: readonly MessageKey[] = [
   'sheet.proficiency.expertise',
 ];
 
+/** Localized skill name for SRD ids (`skill.<id>`); unknown system-pack ids pass through. */
+function skillLabel(key: string): string {
+  const messageKey = `skill.${key}`;
+  return hasMessage(messageKey) ? t(messageKey) : key;
+}
+
 export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
   const rawSkills = (props.boundValues?.skills as Record<string, any>) ?? {};
   const isLocked = props.isLocked !== false;
 
-  const sortedSkills = Object.entries(rawSkills).sort(([a], [b]) => a.localeCompare(b));
+  const sortedSkills = Object.entries(rawSkills).sort(([a], [b]) => skillLabel(a).localeCompare(skillLabel(b)));
 
   const handleSkillClick = (key: string, mod: number) => {
     if (!isLocked) return;
@@ -70,8 +76,9 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
         const modDisplay = mod >= 0 ? `+${mod}` : `${mod}`;
         const rankText = t(RANK_LABEL_KEYS[rank] ?? 'sheet.proficiency.none');
         const rankGlyph = rank === 2 ? '[E]' : rank === 1 ? '[P]' : '[ ]';
+        const skill = skillLabel(key);
         const details = [
-          h('span', { class: 'ds-skill-name' }, key),
+          h('span', { class: 'ds-skill-name' }, skill),
           h('span', { class: 'ds-skill-passive atlas-tabular-nums', 'data-testid': `skill-passive-${key}` }, `(${passive})`),
           h('span', { class: 'ds-skill-mod atlas-tabular-nums', 'data-testid': `skill-mod-${key}` }, modDisplay),
         ];
@@ -86,7 +93,7 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
                   type: 'button',
                   class: 'ds-skill-roll',
                   'data-testid': `skill-roll-${key}`,
-                  'aria-label': t('sheet.skills.rollAria', { skill: key, modifier: modDisplay, rank: rankText, passive }),
+                  'aria-label': t('sheet.skills.rollAria', { skill, modifier: modDisplay, rank: rankText, passive }),
                   onClick: () => handleSkillClick(key, mod),
                 },
                 h('span', { class: `ds-prof-pip rank-${rank}`, 'aria-hidden': 'true' }, rankGlyph),
@@ -100,7 +107,7 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
                     class: `ds-prof-pip rank-${rank}`,
                     'data-testid': `skill-prof-cycle-${key}`,
                     'data-rank': rank,
-                    'aria-label': t('sheet.skills.cycleAria', { skill: key, rank: rankText }),
+                    'aria-label': t('sheet.skills.cycleAria', { skill, rank: rankText }),
                     onClick: () => handleCycleRank(key, rank),
                   },
                   rankGlyph,

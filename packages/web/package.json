@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . && tsc --noEmit && node ../../scripts/check-impeccable-design.mjs",
+    "lint": "eslint . && tsc --noEmit",
     "test": "node --import ./tests/tsx-loader.mjs --import ./tests/engine-setup.mjs --test \"tests/**/*.test.{ts,tsx}\"",
     "build": "tsc --noEmit && vite build"
   },

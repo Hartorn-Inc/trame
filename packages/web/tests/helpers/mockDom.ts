@@ -24,6 +24,7 @@ export function setupMockDom() {
     type = "text";
     name = "";
     id = "";
+    isSvg = false;
     listeners: Record<string, Function[]> = {};
 
     constructor(nodeName: string = "DIV", nodeType: number = 1) {
@@ -117,7 +118,14 @@ export function setupMockDom() {
       return false;
     }
 
-    setAttribute(name: string, value: any) {
+    // HTML attribute names are case-insensitive (Preact writes `tabIndex` via
+    // setAttribute); SVG names such as `viewBox` keep their case.
+    attrName(name: string): string {
+      return this.isSvg ? name : name.toLowerCase();
+    }
+
+    setAttribute(rawName: string, value: any) {
+      const name = this.attrName(rawName);
       const strVal = String(value);
       this.attributes[name] = strVal;
       if (name === "class") {
@@ -133,15 +141,15 @@ export function setupMockDom() {
     }
 
     getAttribute(name: string): string | null {
-      return this.attributes[name] ?? null;
+      return this.attributes[this.attrName(name)] ?? null;
     }
 
     hasAttribute(name: string): boolean {
-      return name in this.attributes;
+      return this.attrName(name) in this.attributes;
     }
 
     removeAttribute(name: string) {
-      delete this.attributes[name];
+      delete this.attributes[this.attrName(name)];
     }
 
     addEventListener(type: string, listener: Function) {
@@ -247,15 +255,31 @@ export function setupMockDom() {
     }
   }
 
+  // `document` is the end of the bubbling path (body -> html -> document), so
+  // document-level listeners such as the modal focus trap see dispatched events.
   const mockDoc = {
     nodeType: 9,
     nodeName: "#document",
     activeElement: null as MockNode | null,
+    listeners: {} as Record<string, Function[]>,
+    addEventListener(type: string, listener: Function) {
+      (this.listeners[type] ??= []).push(listener);
+    },
+    removeEventListener(type: string, listener: Function) {
+      this.listeners[type] = (this.listeners[type] ?? []).filter((l) => l !== listener);
+    },
+    dispatchEvent(event: { type: string; [k: string]: any }): boolean {
+      const eventObj = { preventDefault: () => {}, stopPropagation: () => {}, target: mockDoc, ...event };
+      for (const handler of [...(this.listeners[event.type] ?? [])]) handler.call(this, eventObj);
+      return true;
+    },
     createElement(tag: string) {
       return new MockNode(tag, 1);
     },
-    createElementNS(_ns: string, tag: string) {
-      return new MockNode(tag, 1);
+    createElementNS(ns: string | null, tag: string) {
+      const node = new MockNode(tag, 1);
+      node.isSvg = ns === "http://www.w3.org/2000/svg";
+      return node;
     },
     createTextNode(text: string) {
       const n = new MockNode("#text", 3);
@@ -265,17 +289,22 @@ export function setupMockDom() {
     createDocumentFragment() {
       return new MockNode("#document-fragment", 11);
     },
+    documentElement: new MockNode("HTML", 1),
     body: new MockNode("BODY", 1),
   };
+  mockDoc.documentElement.appendChild(mockDoc.body);
+  (mockDoc.documentElement as any).parentNode = mockDoc;
 
   (globalThis as any).document = mockDoc;
   (globalThis as any).window = globalThis;
   (globalThis as any).Event = class {
     type: string;
     bubbles = true;
+    stopPropagation = () => {};
+    preventDefault = () => {};
     constructor(type: string, opts?: any) {
       this.type = type;
-      if (opts?.bubbles !== undefined) this.bubbles = opts.bubbles;
+      if (opts) Object.assign(this, opts);
     }
   };
   return mockDoc;

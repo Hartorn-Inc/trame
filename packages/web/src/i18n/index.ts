@@ -22,6 +22,9 @@
  *    - `tn()` selects `<key>.one` / `<key>.other` through `Intl.PluralRules`
  *      (French treats 0 as singular), and distances format decimals with the
  *      active locale (`1.5 m` vs `1,5 m`).
+ * 4. `Document Language`:
+ *    - `<html lang>` follows `localeSignal` from startup onward, so assistive
+ *      technology never reads French UI with an English voice.
  * ============================================================================
  */
 import { signal } from "@preact/signals";
@@ -70,6 +73,19 @@ export function getInitialLocale(): LocaleCode {
 export const localeSignal = signal<LocaleCode>(getInitialLocale());
 export const unitSystemSignal = signal<UnitSystem>("imperial_ft");
 export const mobileCompanionOverrideSignal = signal<boolean>(false);
+
+/**
+ * Mirrors the active locale onto `<html lang>` (WCAG 3.1.1) so screen readers
+ * pick the right voice and hyphenation. No-op outside a browser document.
+ */
+export function applyDocumentLang(locale: LocaleCode): void {
+  if (typeof document !== "undefined" && document.documentElement) {
+    document.documentElement.lang = locale;
+  }
+}
+
+// `subscribe` runs immediately with the startup locale, then on every change.
+localeSignal.subscribe(applyDocumentLang);
 
 localeSignal.subscribe((val) => {
   try {
@@ -123,7 +139,12 @@ export function t(key: MessageKey, vars?: MessageVars): string {
  * by third-party system layouts pass through unchanged.
  */
 export function translateLayoutText(text: string): string {
-  return Object.hasOwn(EN, text) ? t(text as MessageKey) : text;
+  return hasMessage(text) ? t(text) : text;
+}
+
+/** True when `key` exists in the canonical English dictionary. */
+export function hasMessage(key: string): key is MessageKey {
+  return Object.hasOwn(EN, key);
 }
 
 /**
@@ -153,6 +174,13 @@ export function formatDistanceFt(feet: number): string {
     value: formatNumber(feet * 0.3),
     squares: tn("distance.squares", squares),
   });
+}
+
+/** Size of one grid square in the active unit system: `5 ft`, or `1.5 m` / `1,5 m`. */
+export function formatGridUnit(): string {
+  return unitSystemSignal.value === "imperial_ft"
+    ? t("distance.feet", { value: formatNumber(5) })
+    : t("distance.metersShort", { value: formatNumber(1.5) });
 }
 
 /** Compendium entry carrying an English name and optional localized names. */
