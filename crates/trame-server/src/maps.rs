@@ -5,83 +5,43 @@
 //! PURPOSE:
 //! --------
 //! Implements REST storage and retrieval endpoints for campaign map scenes
-//! under `/api/v1/campaigns/{campaign_id}/maps`.
+//! under `/api/v1/campaigns/{campaign_id}/maps`, and resolves persisted scenes
+//! into the engine `SceneActivation` payload that `ActivateScene` requires.
 //!
 //! INVARIANTS & SAFETY BOUNDARIES:
 //! -------------------------------
-//!   1. Server-side Zero-Trust RBAC:
+//!   1. `Single Wall Type (A29)`:
+//!      - Scenes store the engine `WallSegment`. Its tolerant deserializer accepts the
+//!        map-editor shape (`p1`/`p2`, `wallType`, `doorState`); walls missing blocking
+//!        flags default to blocking. Responses carry the canonical `kind` plus the
+//!        editor fields (`p1`, `p2`, `wall_type`, `door_state`) so the editor round-trips
+//!        without losing `OneWay` normals.
+//!   2. `Server-side Zero-Trust RBAC`:
 //!      - GM accounts receive full unredacted scene geometry and staged tokens.
-//!      - Player accounts receive scenes with `revealed_to_players == true` only.
-//!      - Player payloads sanitize closed SecretDoor segments to Normal,
-//!        remove Illusion tags, strip GmHidden tokens, and remove GM-only audio.
+//!      - Player accounts receive scenes with `revealed_to_players == true` only, with
+//!        closed secret doors and illusions masked (`sync::mask_wall_for_player`),
+//!        GM-hidden staged tokens stripped, and GM-only audio removed.
+//!   3. `No Silent Save Failures (A25)`:
+//!      - A PostgreSQL scene write error returns `500` instead of `204`.
+//!   4. `Server-Resolved Scene Activation`:
+//!      - `resolve_scene_command` replaces any client-supplied `ActivateScene.scene` with the
+//!        persisted scene, so WAL replays are deterministic and clients cannot inject geometry.
 //! ============================================================================
 
+use crate::http::{AppState, ErrorResponse};
+use crate::sync::mask_wall_for_player;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use trame_engine::commands::{
+    LightSource as EngineLightSource, SceneActivation, TokenState, TrameCommand,
+};
+use trame_engine::geometry::{CHANNEL_GM_HIDDEN, Point2D as EnginePoint, WallKind, WallSegment};
 use uuid::Uuid;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WallType {
-    Normal,
-    Window,
-    Terrain,
-    OneWay,
-    Door,
-    SecretDoor,
-    Illusion,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum DoorState {
-    Open,
-    Closed,
-    Locked,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum DoorStateRaw {
-    Str(String),
-    Obj {
-        #[serde(default, alias = "isOpen")]
-        is_open: bool,
-        #[serde(default, alias = "isLocked")]
-        is_locked: bool,
-    },
-}
-
-impl<'de> Deserialize<'de> for DoorState {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let raw = DoorStateRaw::deserialize(deserializer)?;
-        match raw {
-            DoorStateRaw::Str(s) => match s.to_ascii_lowercase().as_str() {
-                "open" => Ok(DoorState::Open),
-                "closed" => Ok(DoorState::Closed),
-                "locked" => Ok(DoorState::Locked),
-                other => Err(serde::de::Error::unknown_variant(
-                    other,
-                    &["Open", "Closed", "Locked"],
-                )),
-            },
-            DoorStateRaw::Obj { is_open, is_locked } => {
-                if is_locked {
-                    Ok(DoorState::Locked)
-                } else if is_open {
-                    Ok(DoorState::Open)
-                } else {
-                    Ok(DoorState::Closed)
-                }
-            }
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum VisibilityChannel {
@@ -94,31 +54,6 @@ pub enum VisibilityChannel {
 pub struct Point2D {
     pub x: f32,
     pub y: f32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WallSegment {
-    pub id: Uuid,
-    #[serde(alias = "a")]
-    pub p1: Point2D,
-    #[serde(alias = "b")]
-    pub p2: Point2D,
-    #[serde(alias = "wallType")]
-    pub wall_type: WallType,
-    #[serde(default, alias = "doorState")]
-    pub door_state: Option<DoorState>,
-    #[serde(default, alias = "bottomElevationFt")]
-    pub bottom_elevation_ft: f32,
-    #[serde(default, alias = "topElevationFt")]
-    pub top_elevation_ft: f32,
-    #[serde(default, alias = "blocksLight")]
-    pub blocks_light: bool,
-    #[serde(default, alias = "blocksMovement")]
-    pub blocks_movement: bool,
-    #[serde(default, alias = "blocksSound")]
-    pub blocks_sound: bool,
-    #[serde(default, alias = "blocksVision")]
-    pub blocks_vision: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -216,7 +151,13 @@ pub struct CampaignMapScene {
     pub revealed_to_players: bool,
     #[serde(default, alias = "spawnPoints")]
     pub spawn_points: Vec<SpawnPoint>,
-    #[serde(default, alias = "walls", alias = "wallSegments")]
+    /// Engine walls; serialized with editor-compatible extra fields (`serialize_editor_walls`).
+    #[serde(
+        default,
+        alias = "walls",
+        alias = "wallSegments",
+        serialize_with = "serialize_editor_walls"
+    )]
     pub wall_segments: Vec<WallSegment>,
     #[serde(default, alias = "lights", alias = "lightSources")]
     pub light_sources: Vec<LightSource>,
@@ -226,6 +167,64 @@ pub struct CampaignMapScene {
     pub staged_tokens: Vec<StagedToken>,
     #[serde(default, alias = "exploredFogTexture")]
     pub explored_fog_texture: Option<Vec<u8>>,
+}
+
+/// Map-editor `wall_type` label for an engine `WallKind`.
+fn editor_wall_type(kind: &WallKind) -> &'static str {
+    match kind {
+        WallKind::Normal => "Normal",
+        WallKind::Window => "Window",
+        WallKind::Terrain => "Terrain",
+        WallKind::OneWay { .. } => "OneWay",
+        WallKind::Door { .. } => "Door",
+        WallKind::SecretDoor { .. } => "SecretDoor",
+        WallKind::Illusion { .. } => "Illusion",
+    }
+}
+
+/// Map-editor `door_state` label (`None` for non-door walls).
+fn editor_door_state(kind: &WallKind) -> Option<&'static str> {
+    match kind {
+        WallKind::Door {
+            is_locked: true, ..
+        } => Some("Locked"),
+        WallKind::Door { is_open: true, .. } | WallKind::SecretDoor { is_open: true } => {
+            Some("Open")
+        }
+        WallKind::Door { .. } | WallKind::SecretDoor { .. } => Some("Closed"),
+        _ => None,
+    }
+}
+
+struct EditorWall<'a>(&'a WallSegment);
+
+impl Serialize for EditorWall<'_> {
+    /// Emits `p1`/`p2` (never `a`/`b`: both names present would be a duplicate field for the
+    /// tolerant deserializer) plus `kind`, which takes precedence over `wall_type` on read.
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let w = self.0;
+        let mut map = serializer.serialize_map(Some(12))?;
+        map.serialize_entry("id", &w.id)?;
+        map.serialize_entry("p1", &w.a)?;
+        map.serialize_entry("p2", &w.b)?;
+        map.serialize_entry("kind", &w.kind)?;
+        map.serialize_entry("wall_type", editor_wall_type(&w.kind))?;
+        map.serialize_entry("door_state", &editor_door_state(&w.kind))?;
+        map.serialize_entry("blocks_movement", &w.blocks_movement)?;
+        map.serialize_entry("blocks_vision", &w.blocks_vision)?;
+        map.serialize_entry("blocks_light", &w.blocks_light)?;
+        map.serialize_entry("blocks_sound", &w.blocks_sound)?;
+        map.serialize_entry("bottom_elevation_ft", &w.bottom_elevation_ft)?;
+        map.serialize_entry("top_elevation_ft", &w.top_elevation_ft)?;
+        map.end()
+    }
+}
+
+fn serialize_editor_walls<S: Serializer>(
+    walls: &[WallSegment],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(walls.iter().map(EditorWall))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -266,23 +265,11 @@ pub struct PutCampaignMapsPayload {
 }
 
 pub fn sanitize_scene_for_player(mut scene: CampaignMapScene) -> CampaignMapScene {
-    for wall in &mut scene.wall_segments {
-        if wall.wall_type == WallType::SecretDoor && wall.door_state != Some(DoorState::Open) {
-            wall.wall_type = WallType::Normal;
-            wall.door_state = None;
-            wall.blocks_vision = true;
-            wall.blocks_movement = true;
-            wall.blocks_sound = true;
-            wall.blocks_light = true;
-        }
-        if wall.wall_type == WallType::Illusion {
-            wall.wall_type = WallType::Normal;
-            wall.blocks_vision = true;
-            wall.blocks_movement = true;
-            wall.blocks_sound = true;
-            wall.blocks_light = true;
-        }
-    }
+    scene.wall_segments = scene
+        .wall_segments
+        .iter()
+        .map(mask_wall_for_player)
+        .collect();
     scene
         .staged_tokens
         .retain(|t| t.visibility != VisibilityChannel::GmHidden);
@@ -290,30 +277,146 @@ pub fn sanitize_scene_for_player(mut scene: CampaignMapScene) -> CampaignMapScen
     scene
 }
 
+/// Loads the scenes of `campaign_id` from PostgreSQL when configured (falling back to the
+/// in-memory cache when the table is empty), otherwise from memory.
+pub async fn load_campaign_scenes(
+    state: &AppState,
+    campaign_id: Uuid,
+) -> Result<Vec<CampaignMapScene>, String> {
+    if let Some(ref pg) = state.postgres_store {
+        let scenes = pg.load_campaign_scenes_async(campaign_id).await?;
+        if !scenes.is_empty() {
+            return Ok(scenes);
+        }
+    }
+    Ok(state.map_storage.get_campaign_maps(campaign_id))
+}
+
+/// Persists `scenes` to PostgreSQL (when configured) and the in-memory cache.
+pub async fn save_campaign_scenes(
+    state: &AppState,
+    campaign_id: Uuid,
+    scenes: Vec<CampaignMapScene>,
+) -> Result<(), String> {
+    if let Some(ref pg) = state.postgres_store {
+        pg.save_campaign_scenes_async(campaign_id, &scenes).await?;
+    }
+    state.map_storage.save_campaign_maps(campaign_id, scenes);
+    Ok(())
+}
+
+/// Converts a persisted scene into the engine `ActivateScene` payload. Staged tokens become
+/// default tokens sized `size_cells` (min 1) and GM-hidden when the scene marks them so;
+/// spawn points become `HeroToken` spawn coordinates in order.
+pub fn scene_activation(scene: &CampaignMapScene) -> SceneActivation {
+    let lights = scene
+        .light_sources
+        .iter()
+        .map(|l| {
+            let (x, y) = l.origin.as_ref().map_or((l.x, l.y), |p| (p.x, p.y));
+            EngineLightSource {
+                id: l.id,
+                position: EnginePoint::new(f64::from(x), f64::from(y)),
+                elevation_ft: f64::from(l.elevation_ft),
+                bright_radius_ft: f64::from(l.bright_radius_ft.unwrap_or(l.radius_ft / 2.0)),
+                dim_radius_ft: f64::from(l.radius_ft),
+                color_hex: l.color_hex.clone(),
+                intensity: f64::from(l.intensity),
+            }
+        })
+        .collect();
+    let staged_tokens = scene
+        .staged_tokens
+        .iter()
+        .map(|t| {
+            let mut token = TokenState::new_default(
+                t.id,
+                t.name.clone(),
+                EnginePoint::new(f64::from(t.x), f64::from(t.y)),
+            );
+            let size = u8::try_from(t.size_cells.clamp(1, 8)).unwrap_or(1);
+            token.grid_w = size;
+            token.grid_h = size;
+            token.elevation_ft = f64::from(t.elevation_ft);
+            if t.visibility == VisibilityChannel::GmHidden {
+                token.visibility_channel |= CHANNEL_GM_HIDDEN;
+            }
+            token
+        })
+        .collect();
+    SceneActivation {
+        map_asset_id: scene.background_image_url.clone(),
+        width_px: scene.width_px,
+        height_px: scene.height_px,
+        pixels_per_grid: f64::from(scene.grid_size_px),
+        walls: scene.wall_segments.clone(),
+        lights,
+        staged_tokens,
+        hero_spawn_points: scene
+            .spawn_points
+            .iter()
+            .map(|p| EnginePoint::new(f64::from(p.x), f64::from(p.y)))
+            .collect(),
+    }
+}
+
+/// Fills `ActivateScene.scene` from storage (overwriting any client-supplied payload); other
+/// commands pass through unchanged. Unknown scene IDs are rejected.
+pub async fn resolve_scene_command(
+    state: &AppState,
+    campaign_id: Uuid,
+    cmd: TrameCommand,
+) -> Result<TrameCommand, String> {
+    let TrameCommand::ActivateScene { scene_id, .. } = cmd else {
+        return Ok(cmd);
+    };
+    let scenes = load_campaign_scenes(state, campaign_id).await?;
+    let scene = scenes
+        .iter()
+        .find(|s| s.id == scene_id)
+        .ok_or_else(|| format!("not found: scene {scene_id} does not exist in this campaign"))?;
+    Ok(TrameCommand::ActivateScene {
+        scene_id,
+        scene: Some(scene_activation(scene)),
+    })
+}
+
+fn unauthorized() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorResponse {
+            code: Some("UNAUTHORIZED".to_string()),
+            error: "valid authentication credentials required".to_string(),
+        }),
+    )
+        .into_response()
+}
+
+fn storage_error(err: String) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            code: Some("STORAGE_ERROR".to_string()),
+            error: err,
+        }),
+    )
+        .into_response()
+}
+
 pub async fn get_campaign_maps_handler(
-    State(state): State<crate::http::AppState>,
+    State(state): State<AppState>,
     Path(campaign_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
-    let user_id = match crate::http::resolve_authenticated_user(&state, &headers).await {
-        Ok(uid) => uid,
-        Err(status) => {
-            return (
-                status,
-                Json(crate::http::ErrorResponse {
-                    code: Some("UNAUTHORIZED".to_string()),
-                    error: "valid authentication credentials required".to_string(),
-                }),
-            )
-                .into_response();
-        }
+    let Ok(user_id) = crate::http::resolve_authenticated_user(&state, &headers).await else {
+        return unauthorized();
     };
 
     let is_gm = crate::http::is_authorized_campaign_gm(&state, campaign_id, user_id).await;
     if !is_gm && !crate::http::is_authorized_campaign_member(&state, campaign_id, user_id).await {
         return (
             StatusCode::FORBIDDEN,
-            Json(crate::http::ErrorResponse {
+            Json(ErrorResponse {
                 code: Some("FORBIDDEN".to_string()),
                 error: "user is not an active member of this campaign".to_string(),
             }),
@@ -321,13 +424,9 @@ pub async fn get_campaign_maps_handler(
             .into_response();
     }
 
-    let scenes = if let Some(ref pg) = state.postgres_store {
-        match pg.load_campaign_scenes_async(campaign_id).await {
-            Ok(db_scenes) if !db_scenes.is_empty() => db_scenes,
-            _ => state.map_storage.get_campaign_maps(campaign_id),
-        }
-    } else {
-        state.map_storage.get_campaign_maps(campaign_id)
+    let scenes = match load_campaign_scenes(&state, campaign_id).await {
+        Ok(s) => s,
+        Err(err) => return storage_error(err),
     };
     if is_gm {
         return Json(scenes).into_response();
@@ -343,30 +442,20 @@ pub async fn get_campaign_maps_handler(
 }
 
 pub async fn put_campaign_maps_handler(
-    State(state): State<crate::http::AppState>,
+    State(state): State<AppState>,
     Path(campaign_id): Path<Uuid>,
     headers: HeaderMap,
     Json(payload): Json<PutCampaignMapsPayload>,
 ) -> Response {
-    let user_id = match crate::http::resolve_authenticated_user(&state, &headers).await {
-        Ok(uid) => uid,
-        Err(status) => {
-            return (
-                status,
-                Json(crate::http::ErrorResponse {
-                    code: Some("UNAUTHORIZED".to_string()),
-                    error: "valid authentication credentials required".to_string(),
-                }),
-            )
-                .into_response();
-        }
+    let Ok(user_id) = crate::http::resolve_authenticated_user(&state, &headers).await else {
+        return unauthorized();
     };
 
     let is_gm = crate::http::is_authorized_campaign_gm(&state, campaign_id, user_id).await;
     if !is_gm {
         return (
             StatusCode::FORBIDDEN,
-            Json(crate::http::ErrorResponse {
+            Json(ErrorResponse {
                 code: Some("FORBIDDEN".to_string()),
                 error: "only a campaign GM may update campaign map scenes".to_string(),
             }),
@@ -378,17 +467,17 @@ pub async fn put_campaign_maps_handler(
     for scene in &mut scenes {
         scene.campaign_id = campaign_id;
         for light in &mut scene.light_sources {
-            if let Some(ref pt) = light.origin {
-                if light.x == 0.0 && light.y == 0.0 {
-                    light.x = pt.x;
-                    light.y = pt.y;
-                }
+            if let Some(ref pt) = light.origin
+                && light.x == 0.0
+                && light.y == 0.0
+            {
+                light.x = pt.x;
+                light.y = pt.y;
             }
         }
     }
-    if let Some(ref pg) = state.postgres_store {
-        let _ = pg.save_campaign_scenes_async(campaign_id, &scenes).await;
+    match save_campaign_scenes(&state, campaign_id, scenes).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => storage_error(err),
     }
-    state.map_storage.save_campaign_maps(campaign_id, scenes);
-    StatusCode::NO_CONTENT.into_response()
 }

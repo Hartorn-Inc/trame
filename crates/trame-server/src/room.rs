@@ -64,7 +64,7 @@ use crate::sync::{
     filter_events_for_recipient, project_state_for_recipient,
 };
 use crate::wal::{TableStateSnapshot, WalEntry, WalError, WalStorage, recover_table_state};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -147,6 +147,44 @@ pub struct ActorTacticalSync {
     pub speed_ft: Option<f64>,
     /// Updated list of active condition labels (`conditions`).
     pub conditions: Option<Vec<String>>,
+    /// Updated `(resistances, immunities, vulnerabilities)` damage-type lists (A68), copied
+    /// onto `TokenState::damage_*` so typed `ApplyDamage` derives the affinity server-side.
+    pub damage_affinities: Option<(Vec<String>, Vec<String>, Vec<String>)>,
+}
+
+/// Vitals of an actor-linked token after a tabletop command changed them, forwarded to the
+/// persistence sink so the actor sheet in storage follows the table (S1). Synthetic tokens
+/// (`actor_id == None`) never produce one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedVitalsChange {
+    /// Campaign hosting the room.
+    pub campaign_id: Uuid,
+    /// Persistent actor linked through `TokenState::actor_id`.
+    pub actor_id: Uuid,
+    /// Current hit points after the command (`0..=max_hp`).
+    pub hp: i32,
+    /// Temporary hit points after the command (`>= 0`).
+    pub temp_hp: i32,
+}
+
+/// Room-side record of a dice roll or initiative result destined for the session timeline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimelineNote {
+    /// Campaign hosting the room.
+    pub campaign_id: Uuid,
+    /// Timeline event type (`"dice_roll"`, `"initiative"`).
+    pub event_type: String,
+    /// JSON payload; carries `"visibility": "gm"` for rolls players must not see.
+    pub payload: serde_json::Value,
+}
+
+/// Out-of-band channels a room uses to reach storage without blocking its mailbox.
+#[derive(Clone, Default)]
+pub struct RoomSinks {
+    /// Receives linked-token vitals changes (`LinkedVitalsChange`).
+    pub vitals: Option<mpsc::UnboundedSender<LinkedVitalsChange>>,
+    /// Receives dice and initiative timeline records (`TimelineNote`).
+    pub timeline: Option<mpsc::UnboundedSender<TimelineNote>>,
 }
 
 /// Represents a live WebSocket client session attached to a `TableRoomActor`.
@@ -211,7 +249,7 @@ pub enum RoomActorMessage {
         version: u64,
         /// Full serialized actor payload.
         data: serde_json::Value,
-        /// Tactical combat fields to sync onto linked tokens (`token.actor_id == Some(actor_id)` or `token.id == actor_id`).
+        /// Tactical combat fields to sync onto linked tokens (`token.actor_id == Some(actor_id)`).
         tactical_sync: ActorTacticalSync,
         /// Oneshot channel receiving the number of linked tabletop tokens updated.
         reply: oneshot::Sender<Result<usize, RoomError>>,
@@ -227,6 +265,27 @@ pub enum RoomActorMessage {
     GetTableSnapshot {
         /// Oneshot channel receiving `(seq_id, TableState)`.
         reply: oneshot::Sender<(u64, TableState)>,
+    },
+    /// Applies `commands` atomically through `TableState::apply_batch` (one composite undo entry).
+    DispatchBatch {
+        /// Authenticated caller identity and role.
+        actor: CommandActor,
+        /// Commands applied all-or-nothing.
+        commands: Vec<TrameCommand>,
+        /// Undo label of the composite entry.
+        description: String,
+        /// Oneshot channel receiving `(seq_id, events)` on acceptance.
+        reply: oneshot::Sender<Result<(u64, Vec<TrameEvent>), RoomError>>,
+    },
+    /// Records a dice roll made outside the WebSocket (REST) in the live table log.
+    BroadcastDiceRoll {
+        /// Completed roll (already persisted to the timeline by the caller).
+        outcome: crate::dice::DiceRollOutcome,
+    },
+    /// Sends revealed handout content to every connected client.
+    BroadcastHandout {
+        /// Journal-persisted handout payload.
+        handout: crate::notes::HandoutRevealedBroadcast,
     },
 }
 
@@ -373,6 +432,50 @@ impl TableRoomHandle {
         reply_rx.await.map_err(|_| RoomError::ActorClosed)?
     }
 
+    /// Applies `commands` all-or-nothing as one undoable step. The batch is made durable by a
+    /// snapshot at the new `seq_id` (a batch is not a single `WalEntry` command), so recovery
+    /// never replays half of it.
+    pub async fn dispatch_batch(
+        &self,
+        actor: CommandActor,
+        commands: Vec<TrameCommand>,
+        description: String,
+    ) -> Result<(u64, Vec<TrameEvent>), RoomError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(RoomActorMessage::DispatchBatch {
+                actor,
+                commands,
+                description,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RoomError::ActorClosed)?;
+        reply_rx.await.map_err(|_| RoomError::ActorClosed)?
+    }
+
+    /// Fans a REST dice roll out to connected clients, projected per recipient.
+    pub async fn broadcast_dice_roll(
+        &self,
+        outcome: crate::dice::DiceRollOutcome,
+    ) -> Result<(), RoomError> {
+        self.tx
+            .send(RoomActorMessage::BroadcastDiceRoll { outcome })
+            .await
+            .map_err(|_| RoomError::ActorClosed)
+    }
+
+    /// Sends revealed handout content to every connected client.
+    pub async fn broadcast_handout(
+        &self,
+        handout: crate::notes::HandoutRevealedBroadcast,
+    ) -> Result<(), RoomError> {
+        self.tx
+            .send(RoomActorMessage::BroadcastHandout { handout })
+            .await
+            .map_err(|_| RoomError::ActorClosed)
+    }
+
     /// Retrieves a clone of the current `(seq_id, TableState)` from the room actor.
     pub async fn get_table_snapshot(&self) -> Result<(u64, TableState), RoomError> {
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -400,6 +503,7 @@ pub struct TableRoomActor {
     /// starts with `"initiative"`, case-insensitive), consumed by the next auto-roll so their
     /// tokens keep the player's own result instead of being re-rolled.
     player_initiative_rolls: HashMap<Uuid, i32>,
+    sinks: RoomSinks,
 }
 
 impl TableRoomActor {
@@ -409,6 +513,16 @@ impl TableRoomActor {
         campaign_id: Uuid,
         wal: Arc<dyn WalStorage>,
         snapshot_interval: u64,
+    ) -> Result<TableRoomHandle, RoomError> {
+        Self::spawn_with_sinks(campaign_id, wal, snapshot_interval, RoomSinks::default())
+    }
+
+    /// Same as `spawn`, forwarding linked vitals and timeline records to `sinks`.
+    pub fn spawn_with_sinks(
+        campaign_id: Uuid,
+        wal: Arc<dyn WalStorage>,
+        snapshot_interval: u64,
+        sinks: RoomSinks,
     ) -> Result<TableRoomHandle, RoomError> {
         let (state, seq_id) = recover_table_state(wal.as_ref(), campaign_id)?;
         let (tx, rx) = mpsc::channel(256);
@@ -424,6 +538,7 @@ impl TableRoomActor {
             wal,
             rx,
             player_initiative_rolls: HashMap::new(),
+            sinks,
         };
         tokio::spawn(actor.run());
         Ok(TableRoomHandle { campaign_id, tx })
@@ -507,7 +622,40 @@ impl TableRoomActor {
                     self.last_activity_ms = now_ms();
                     let updated_tokens =
                         self.apply_actor_tactical_sync(actor_id, version, data, tactical_sync);
-                    let _ = reply.send(Ok(updated_tokens));
+                    // Tactical sync bypasses the WAL command stream, so persist it as a
+                    // snapshot or a restart would resurrect the stale token fields.
+                    let res = if updated_tokens > 0 {
+                        self.flush_snapshot()
+                            .map(|()| updated_tokens)
+                            .map_err(RoomError::Wal)
+                    } else {
+                        Ok(0)
+                    };
+                    let _ = reply.send(res);
+                }
+                RoomActorMessage::DispatchBatch {
+                    actor,
+                    commands,
+                    description,
+                    reply,
+                } => {
+                    self.last_activity_ms = now_ms();
+                    let res = self.execute_and_broadcast_batch(actor, commands, description);
+                    let _ = reply.send(res);
+                }
+                RoomActorMessage::BroadcastDiceRoll { outcome } => {
+                    self.last_activity_ms = now_ms();
+                    self.fan_out_roll(&outcome);
+                }
+                RoomActorMessage::BroadcastHandout { handout } => {
+                    self.last_activity_ms = now_ms();
+                    if let Ok(bytes) =
+                        encode_server_envelope(&ServerEnvelope::HandoutRevealed(handout))
+                    {
+                        for client in self.clients.values() {
+                            let _ = client.tx.send(OutboundClientFrame::Binary(bytes.clone()));
+                        }
+                    }
                 }
                 RoomActorMessage::StageMcpProposal { proposal, reply } => {
                     self.last_activity_ms = now_ms();
@@ -515,6 +663,14 @@ impl TableRoomActor {
                         .data
                         .mcp_staging_proposals
                         .insert(proposal.proposal_id, proposal.clone());
+                    if let Err(err) = self.flush_snapshot() {
+                        self.state
+                            .data
+                            .mcp_staging_proposals
+                            .remove(&proposal.proposal_id);
+                        let _ = reply.send(Err(RoomError::Wal(err)));
+                        continue;
+                    }
                     let out = ServerEnvelope::McpStagingProposed {
                         proposal: proposal.clone(),
                     };
@@ -582,16 +738,8 @@ impl TableRoomActor {
                             self.player_initiative_rolls
                                 .insert(actor_user_id, outcome.total);
                         }
-                        for client in self.clients.values() {
-                            if let Some(projected_roll) =
-                                project_roll_for_recipient(&outcome, client.user_id, client.role)
-                            {
-                                let out = ServerEnvelope::DiceRolled(projected_roll);
-                                if let Ok(bytes) = encode_server_envelope(&out) {
-                                    let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
-                                }
-                            }
-                        }
+                        self.fan_out_roll(&outcome);
+                        self.note_timeline(roll_timeline_note(self.campaign_id, &outcome));
                     }
                     Err(err) => {
                         let out = ServerEnvelope::CommandRejected {
@@ -641,49 +789,119 @@ impl TableRoomActor {
         self.authorize_command(&actor, &cmd)
             .map_err(RoomError::CommandRejected)?;
         let resolved_cmd = self.resolve_authoritative_initiative(&actor, cmd);
-        match self.state.apply_command(&actor, resolved_cmd.clone()) {
-            Ok(events) => {
-                self.seq_id += 1;
-                let entry = WalEntry {
-                    seq_id: self.seq_id,
-                    campaign_id: self.campaign_id,
-                    timestamp_ms: self.last_activity_ms,
-                    actor_user_id: actor.user_id,
-                    role: actor.role,
-                    command: resolved_cmd,
-                    events: events.clone(),
-                };
-                self.wal.append_entry(entry)?;
+        let prior_prompts = self.state.data.active_reaction_prompts.clone();
+        let prior_vitals = self.linked_vitals();
+        let events = self
+            .state
+            .apply_command(&actor, resolved_cmd.clone())
+            .map_err(|err| RoomError::CommandRejected(err.to_string()))?;
+        self.seq_id += 1;
+        let entry = WalEntry {
+            seq_id: self.seq_id,
+            campaign_id: self.campaign_id,
+            timestamp_ms: self.last_activity_ms,
+            actor_user_id: actor.user_id,
+            role: actor.role,
+            command: resolved_cmd,
+            events: events.clone(),
+        };
+        self.wal.append_entry(entry)?;
+        if self.seq_id - self.last_snapshot_seq >= self.snapshot_interval {
+            self.flush_snapshot()?;
+        }
+        self.after_accepted(&events, &prior_prompts, &prior_vitals);
+        Ok((self.seq_id, events))
+    }
 
-                if self.seq_id - self.last_snapshot_seq >= self.snapshot_interval {
-                    self.flush_snapshot()?;
-                }
+    /// Applies an atomic batch (`TableState::apply_batch`). Durability comes from a snapshot at
+    /// the bumped `seq_id` instead of a `WalEntry`, because the WAL replays single commands.
+    fn execute_and_broadcast_batch(
+        &mut self,
+        actor: CommandActor,
+        commands: Vec<TrameCommand>,
+        description: String,
+    ) -> Result<(u64, Vec<TrameEvent>), RoomError> {
+        for cmd in &commands {
+            self.authorize_command(&actor, cmd)
+                .map_err(RoomError::CommandRejected)?;
+        }
+        let prior_prompts = self.state.data.active_reaction_prompts.clone();
+        let prior_vitals = self.linked_vitals();
+        let events = self
+            .state
+            .apply_batch(&actor, commands, description)
+            .map_err(|err| RoomError::CommandRejected(err.to_string()))?;
+        self.seq_id += 1;
+        self.flush_snapshot()?;
+        self.after_accepted(&events, &prior_prompts, &prior_vitals);
+        Ok((self.seq_id, events))
+    }
 
-                for client in self.clients.values() {
-                    let filtered_events = filter_events_for_recipient(
-                        &self.state,
-                        &events,
-                        client.user_id,
-                        client.role,
-                    );
-                    let projected_state = project_state_for_recipient(
-                        self.campaign_id,
-                        &self.state,
-                        client.user_id,
-                        client.role,
-                    );
-                    let out = ServerEnvelope::CommandAccepted {
-                        seq_id: self.seq_id,
-                        events: filtered_events,
-                        state: projected_state,
-                    };
-                    if let Ok(bytes) = encode_server_envelope(&out) {
-                        let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
-                    }
-                }
-                Ok((self.seq_id, events))
+    /// Post-commit fan-out shared by single commands and batches: per-recipient
+    /// `CommandAccepted`, linked vitals persistence, and initiative timeline records.
+    fn after_accepted(
+        &self,
+        events: &[TrameEvent],
+        prior_prompts: &std::collections::BTreeMap<Uuid, trame_engine::commands::ReactionPrompt>,
+        prior_vitals: &BTreeMap<(Uuid, Uuid), (i32, i32)>,
+    ) {
+        for client in self.clients.values() {
+            let filtered_events = filter_events_for_recipient(
+                &self.state,
+                prior_prompts,
+                events,
+                client.user_id,
+                client.role,
+            );
+            let projected_state = project_state_for_recipient(
+                self.campaign_id,
+                &self.state,
+                client.user_id,
+                client.role,
+            );
+            let out = ServerEnvelope::CommandAccepted {
+                seq_id: self.seq_id,
+                events: filtered_events,
+                state: projected_state,
+            };
+            if let Ok(bytes) = encode_server_envelope(&out) {
+                let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
             }
-            Err(err) => Err(RoomError::CommandRejected(err.to_string())),
+        }
+        self.forward_linked_vitals(prior_vitals);
+        for ev in events {
+            if let TrameEvent::TableModeChanged {
+                mode: TableMode::TurnByTurn,
+                ..
+            }
+            | TrameEvent::InitiativeUpdated { .. } = ev
+            {
+                let order = &self.state.data.initiative_order;
+                let entries: Vec<serde_json::Value> = order
+                    .iter()
+                    .filter_map(|id| self.state.data.tokens.get(id))
+                    .map(|t| {
+                        serde_json::json!({
+                            "token_id": t.id,
+                            "name": t.name,
+                            "total": self.state.data.initiative_totals.get(&t.id),
+                            "hidden": is_gm_hidden(t),
+                        })
+                    })
+                    .collect();
+                let any_hidden = entries
+                    .iter()
+                    .any(|e| e["hidden"].as_bool().unwrap_or(false));
+                let mut payload = serde_json::json!({ "seq_id": self.seq_id, "order": entries });
+                if any_hidden {
+                    payload["visibility"] = serde_json::json!("gm");
+                }
+                self.note_timeline(TimelineNote {
+                    campaign_id: self.campaign_id,
+                    event_type: "initiative".to_string(),
+                    payload,
+                });
+            }
         }
     }
 
@@ -691,10 +909,27 @@ impl TableRoomActor {
     /// - `ApplyDamage.raw_damage` must lie in `0..=MAX_RAW_DAMAGE` so engine damage
     ///   multipliers (vulnerability doubling) can never overflow `i32`.
     /// - Non-GM actors may only damage tokens they control (`owner_user_id`).
-    /// - Non-GM actors must send `DamageAffinity::Normal`: `TokenState` carries no server-side
-    ///   resistances yet, so a client-chosen `Immune` / `Resistant` would let a player shrug
-    ///   off damage. Only the GM may apply an affinity until the engine stores it per token.
+    /// - Non-GM actors must send `DamageAffinity::Normal`. Typed damage (`damage_type`) is the
+    ///   player path: the engine derives the affinity from the target's server-side
+    ///   `damage_resistances` / `damage_immunities` / `damage_vulnerabilities` (A68), so a
+    ///   client-chosen `Immune` / `Resistant` can never let a player shrug off damage.
+    /// - `HealActor.amount` is bounded like damage (`0..=MAX_RAW_DAMAGE`).
+    /// - `ActivateScene` must carry the server-resolved payload; the WebSocket and MCP paths
+    ///   overwrite whatever the client sent with the stored scene before dispatch.
+    /// - Every other new command (`ClearAoe`, `RefundAction`, `RevealHandout`,
+    ///   `SetInitiativeTotal`, `ResolveReaction`) relies on the engine's RBAC (GM or token
+    ///   controller), which runs before any state change.
     fn authorize_command(&self, actor: &CommandActor, cmd: &TrameCommand) -> Result<(), String> {
+        if let TrameCommand::HealActor { amount, .. } = cmd
+            && !(0..=MAX_RAW_DAMAGE).contains(amount)
+        {
+            return Err(format!(
+                "invalid configuration: amount must be within 0..={MAX_RAW_DAMAGE}"
+            ));
+        }
+        if let TrameCommand::ActivateScene { scene: None, .. } = cmd {
+            return Err("invalid configuration: scene payload was not resolved".to_string());
+        }
         if let TrameCommand::ApplyDamage {
             token_id,
             raw_damage,
@@ -746,10 +981,11 @@ impl TableRoomActor {
                 ref initiative_order,
                 ..
             } if initiative_order.is_empty() => {
-                let rolled_order = self.roll_table_initiative(actor.user_id);
+                let (initiative_order, initiative_totals) =
+                    self.roll_table_initiative(actor.user_id);
                 TrameCommand::StartTurnByTurn {
-                    initiative_order: rolled_order,
-                    initiative_totals: Default::default(),
+                    initiative_order,
+                    initiative_totals,
                 }
             }
             TrameCommand::SetTableMode {
@@ -758,12 +994,13 @@ impl TableRoomActor {
                 ref initiative_order,
                 ..
             } if initiative_order.is_empty() => {
-                let rolled_order = self.roll_table_initiative(actor.user_id);
+                let (initiative_order, initiative_totals) =
+                    self.roll_table_initiative(actor.user_id);
                 TrameCommand::SetTableMode {
                     mode: TableMode::TurnByTurn,
                     exploration_paused,
-                    initiative_order: rolled_order,
-                    initiative_totals: Default::default(),
+                    initiative_order,
+                    initiative_totals,
                 }
             }
             other => other,
@@ -774,7 +1011,8 @@ impl TableRoomActor {
     /// names and results never reach player sockets through the public initiative feed.
     /// Tokens whose owner already rolled initiative themselves (`player_initiative_rolls`)
     /// reuse that total and are not auto-rolled; the stored rolls are consumed.
-    fn roll_table_initiative(&mut self, actor_user_id: Uuid) -> Vec<Uuid> {
+    /// Returns the sorted order and each token's total (fed to `initiative_totals`).
+    fn roll_table_initiative(&mut self, actor_user_id: Uuid) -> (Vec<Uuid>, BTreeMap<Uuid, i32>) {
         type Candidate = (Uuid, String, i32, bool, Option<Uuid>);
         let to_candidate = |t: &trame_engine::commands::TokenState| -> Candidate {
             (
@@ -822,16 +1060,8 @@ impl TableRoomActor {
                 .dice_roller
                 .roll(actor_user_id, &expr, visibility, reason)
             {
-                for client in self.clients.values() {
-                    if let Some(projected_roll) =
-                        project_roll_for_recipient(&outcome, client.user_id, client.role)
-                    {
-                        let out = ServerEnvelope::DiceRolled(projected_roll);
-                        if let Ok(bytes) = encode_server_envelope(&out) {
-                            let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
-                        }
-                    }
-                }
+                self.fan_out_roll(&outcome);
+                self.note_timeline(roll_timeline_note(self.campaign_id, &outcome));
                 rolled.push((outcome.total, dex_mod, token_id));
             }
         }
@@ -843,11 +1073,67 @@ impl TableRoomActor {
                 .then_with(|| a.2.cmp(&b.2))
         });
 
-        rolled.into_iter().map(|(_, _, id)| id).collect()
+        let totals = rolled.iter().map(|(total, _, id)| (*id, *total)).collect();
+        let order = rolled.into_iter().map(|(_, _, id)| id).collect();
+        (order, totals)
     }
 
-    /// Synchronizes tactical fields onto any `TokenState` linked to `actor_id` without pushing to `undo_stack`,
-    /// then broadcasts `ServerEnvelope::ActorUpdated` to all connected clients (`ADR-0037`).
+    /// Sends `outcome` to every connected client through `project_roll_for_recipient`.
+    fn fan_out_roll(&self, outcome: &crate::dice::DiceRollOutcome) {
+        for client in self.clients.values() {
+            if let Some(projected_roll) =
+                project_roll_for_recipient(outcome, client.user_id, client.role)
+            {
+                let out = ServerEnvelope::DiceRolled(projected_roll);
+                if let Ok(bytes) = encode_server_envelope(&out) {
+                    let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
+                }
+            }
+        }
+    }
+
+    fn note_timeline(&self, note: TimelineNote) {
+        if let Some(tx) = &self.sinks.timeline {
+            let _ = tx.send(note);
+        }
+    }
+
+    /// `(hp, temp_hp)` of every actor-linked token, keyed by `(token_id, actor_id)`.
+    fn linked_vitals(&self) -> BTreeMap<(Uuid, Uuid), (i32, i32)> {
+        self.state
+            .data
+            .tokens
+            .values()
+            .filter_map(|t| t.actor_id.map(|a| ((t.id, a), (t.hp, t.temp_hp))))
+            .collect()
+    }
+
+    /// Forwards linked tokens whose vitals differ from `before` to the vitals sink. Diffing
+    /// (rather than matching damage events) also covers undo, batches, and staged commits;
+    /// tokens absent from `before` (just spawned from the sheet) are not echoed back.
+    fn forward_linked_vitals(&self, before: &BTreeMap<(Uuid, Uuid), (i32, i32)>) {
+        let Some(tx) = &self.sinks.vitals else {
+            return;
+        };
+        for ((token_id, actor_id), vitals) in self.linked_vitals() {
+            if before
+                .get(&(token_id, actor_id))
+                .is_some_and(|prev| *prev != vitals)
+            {
+                let _ = tx.send(LinkedVitalsChange {
+                    campaign_id: self.campaign_id,
+                    actor_id,
+                    hp: vitals.0,
+                    temp_hp: vitals.1,
+                });
+            }
+        }
+    }
+
+    /// Synchronizes tactical fields onto every `LinkedActorToken` (`token.actor_id == Some(actor_id)`)
+    /// without pushing to `undo_stack`; synthetic tokens are never touched even when their
+    /// `token.id` happens to equal `actor_id`. Then broadcasts `ServerEnvelope::ActorUpdated`
+    /// to the GM and the linked tokens' controllers (`ADR-0037`).
     fn apply_actor_tactical_sync(
         &mut self,
         actor_id: Uuid,
@@ -858,7 +1144,7 @@ impl TableRoomActor {
         let mut updated_count = 0usize;
         let mut sheet_owners: Vec<Uuid> = Vec::new();
         for token in self.state.data.tokens.values_mut() {
-            if token.actor_id == Some(actor_id) || token.id == actor_id {
+            if token.actor_id == Some(actor_id) {
                 if let Some(owner) = token.owner_user_id {
                     sheet_owners.push(owner);
                 }
@@ -893,6 +1179,11 @@ impl TableRoomActor {
                 }
                 if let Some(ref conditions) = sync.conditions {
                     token.conditions = conditions.clone();
+                }
+                if let Some((ref resist, ref immune, ref vuln)) = sync.damage_affinities {
+                    token.damage_resistances = resist.clone();
+                    token.damage_immunities = immune.clone();
+                    token.damage_vulnerabilities = vuln.clone();
                 }
                 updated_count += 1;
             }
@@ -937,7 +1228,11 @@ pub struct RoomLeaseManager {
     wal: Arc<dyn WalStorage>,
     snapshot_interval: u64,
     idle_timeout_ms: u64,
+    sinks: std::sync::Mutex<RoomSinks>,
 }
+
+/// Default `Idle-Lease`: rooms with no connection and no activity for 15 minutes hibernate.
+pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
 impl RoomLeaseManager {
     /// Creates a new `RoomLeaseManager` backed by `wal`, taking write-behind snapshots every
@@ -948,7 +1243,33 @@ impl RoomLeaseManager {
             wal,
             snapshot_interval,
             idle_timeout_ms,
+            sinks: std::sync::Mutex::new(RoomSinks::default()),
         }
+    }
+
+    /// Installs the storage sinks handed to rooms woken from now on.
+    pub fn set_sinks(&self, sinks: RoomSinks) {
+        if let Ok(mut guard) = self.sinks.lock() {
+            *guard = sinks;
+        }
+    }
+
+    /// Spawns the `Idle-Lease` sweeper: every `period` it calls `sweep_idle_rooms`, which
+    /// hibernates (final snapshot + close 1001) rooms idle for `idle_timeout_ms` with no
+    /// connections. Latency `Ping`s do not refresh activity, so idle tabs cannot pin a room.
+    pub fn spawn_idle_sweeper(self: &Arc<Self>, period: Duration) -> tokio::task::JoinHandle<()> {
+        let mgr = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                let hibernated = mgr.sweep_idle_rooms(now_ms()).await;
+                if !hibernated.is_empty() {
+                    tracing::info!(rooms = ?hibernated, "idle-lease sweep hibernated rooms");
+                }
+            }
+        })
     }
 
     /// Gets an active room handle or wakes a hibernated room transparently from WAL storage.
@@ -973,7 +1294,13 @@ impl RoomLeaseManager {
             return Err(RoomError::ShuttingDown);
         }
 
-        let handle = TableRoomActor::spawn(campaign_id, self.wal.clone(), self.snapshot_interval)?;
+        let sinks = self.sinks.lock().map(|g| g.clone()).unwrap_or_default();
+        let handle = TableRoomActor::spawn_with_sinks(
+            campaign_id,
+            self.wal.clone(),
+            self.snapshot_interval,
+            sinks,
+        )?;
         guard.insert(campaign_id, handle.clone());
         Ok(handle)
     }
@@ -1038,7 +1365,31 @@ impl RoomLeaseManager {
     }
 }
 
-fn now_ms() -> u64 {
+/// Timeline record of a dice roll; anything but a `Public` roll is GM-only in the timeline.
+pub fn roll_timeline_note(
+    campaign_id: Uuid,
+    outcome: &crate::dice::DiceRollOutcome,
+) -> TimelineNote {
+    let mut payload = serde_json::json!({
+        "roll_id": outcome.roll_id,
+        "roller_user_id": outcome.roller_user_id,
+        "expression": outcome.expression,
+        "reason": outcome.reason,
+        "total": outcome.total,
+        "is_critical_success": outcome.is_critical_success,
+        "is_critical_failure": outcome.is_critical_failure,
+    });
+    if outcome.visibility != RollVisibility::Public {
+        payload["visibility"] = serde_json::json!("gm");
+    }
+    TimelineNote {
+        campaign_id,
+        event_type: "dice_roll".to_string(),
+        payload,
+    }
+}
+
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)

@@ -79,7 +79,7 @@ use crate::storage::blob::{
     AssetDescriptor, BlobStore, BlobStoreError, BlobStream, Sha256Hasher, slice_to_stream,
     stream_to_bytes,
 };
-use crate::sync::decode_client_envelope;
+use crate::sync::{ClientEnvelope, decode_client_envelope};
 use crate::timeline::{
     InMemoryTimelineStorage, SessionTimelineEvent, SessionTimelineResponse, TimelineStorage,
 };
@@ -98,7 +98,7 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
-use trame_engine::commands::CampaignRole;
+use trame_engine::commands::{CampaignRole, TrameCommand};
 use uuid::Uuid;
 
 /// Maximum archive upload size accepted by `POST /api/v1/campaigns/import` (64 MiB).
@@ -392,6 +392,10 @@ pub struct AppState {
     /// Authoritative PostgreSQL store when `DATABASE_URL` is configured; `None` keeps the
     /// in-memory fallbacks above as the source of truth.
     pub postgres_store: Option<Arc<SqlxPostgresStore>>,
+    /// In-memory campaigns, actors, notes, settings, and journal (used without PostgreSQL).
+    pub campaign_data: crate::campaigns::InMemoryCampaignData,
+    /// `TRAME_STATIC_DIR`: built SPA served as the router fallback; `None` disables it.
+    pub static_dir: Option<std::path::PathBuf>,
 }
 
 impl AppState {
@@ -500,6 +504,8 @@ pub fn build_in_memory_router_with_config(
         db_healthy: Arc::new(AtomicBool::new(true)),
         map_storage: InMemoryMapStorage::new(),
         postgres_store: None,
+        campaign_data: Default::default(),
+        static_dir: config.static_dir.clone(),
     };
     build_router_with_state(state)
 }
@@ -525,6 +531,8 @@ pub fn build_router_with_postgres_store(
         db_healthy: Arc::new(AtomicBool::new(true)),
         map_storage: InMemoryMapStorage::new(),
         postgres_store: Some(store),
+        campaign_data: Default::default(),
+        static_dir: config.static_dir.clone(),
     };
     build_router_with_state(state)
 }
@@ -538,14 +546,15 @@ pub async fn list_campaign_notes_internal(state: &AppState, campaign_id: Uuid) -
             .await
             .unwrap_or_default();
     }
-    state.campaign_store.all_notes()
+    state.campaign_store.notes_for_campaign(campaign_id)
 }
 
 /// Constructs the authoritative Axum `Router` from a pre-configured `AppState`, wrapped in
-/// `security_headers_middleware`.
+/// `security_headers_middleware`. Also connects the rooms' storage sinks (linked vitals,
+/// timeline).
 pub fn build_router_with_state(state: AppState) -> Router {
     let auth_router = build_auth_router(state.auth_state.clone());
-
+    crate::campaigns::install_room_sinks(&state);
     Router::new()
         .route("/healthz", get(healthz_handler))
         .route("/ws/campaigns/{campaign_id}", get(ws_campaign_handler))
@@ -574,6 +583,7 @@ pub fn build_router_with_state(state: AppState) -> Router {
             "/api/v1/campaigns/{campaign_id}/maps",
             get(get_campaign_maps_handler).put(put_campaign_maps_handler),
         )
+        .merge(crate::campaigns::campaign_routes())
         .with_state(state)
         .merge(auth_router)
         .layer(axum::middleware::from_fn(security_headers_middleware))
@@ -650,7 +660,7 @@ pub async fn resolve_campaign_role(
     }
 }
 
-fn error_response(status: StatusCode, code: &str, error: &str) -> Response {
+pub(crate) fn error_response(status: StatusCode, code: &str, error: &str) -> Response {
     (
         status,
         Json(ErrorResponse {
@@ -762,22 +772,42 @@ pub async fn export_campaign_handler(
             .into_response();
     }
 
-    let metadata = state
-        .campaign_store
-        .get_campaign(&campaign_id)
-        .unwrap_or_else(|| CampaignMetadata {
-            id: campaign_id,
-            name: format!("Campaign {campaign_id}"),
-            system: "dnd5e".to_string(),
-            description: None,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-        });
-
-    let source = ScopedCampaignExportSource {
-        metadata,
-        entities: state.campaign_store.entities_for_campaign(campaign_id),
-        notes: state.campaign_store.notes_for_campaign(campaign_id),
-        asset_ids: state.campaign_store.asset_ids_for_campaign(campaign_id),
+    let fallback_metadata = || CampaignMetadata {
+        id: campaign_id,
+        name: format!("Campaign {campaign_id}"),
+        system: "dnd5e".to_string(),
+        description: None,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+    };
+    let source = if let Some(pg) = &state.postgres_store {
+        let loaded = async {
+            Ok::<_, String>(ScopedCampaignExportSource {
+                metadata: pg
+                    .get_campaign_async(campaign_id)
+                    .await?
+                    .unwrap_or_else(fallback_metadata),
+                entities: pg.list_entities_for_campaign_async(campaign_id).await?,
+                notes: pg.list_notes_for_campaign_async(campaign_id).await?,
+                asset_ids: state.campaign_store.asset_ids_for_campaign(campaign_id),
+            })
+        }
+        .await;
+        match loaded {
+            Ok(source) => source,
+            Err(err) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "EXPORT_ERROR", &err);
+            }
+        }
+    } else {
+        ScopedCampaignExportSource {
+            metadata: state
+                .campaign_store
+                .get_campaign(&campaign_id)
+                .unwrap_or_else(fallback_metadata),
+            entities: state.campaign_store.entities_for_campaign(campaign_id),
+            notes: state.campaign_store.notes_for_campaign(campaign_id),
+            asset_ids: state.campaign_store.asset_ids_for_campaign(campaign_id),
+        }
     };
 
     let exporter = ArchiveExporter::new(source, state.blob_store.clone());
@@ -866,12 +896,21 @@ pub async fn import_campaign_handler(
         }
     };
 
-    let importer = ArchiveImporter::new(state.campaign_store.clone(), state.blob_store.clone());
+    let reader = Cursor::new(body_bytes.to_vec());
+    let imported = match &state.postgres_store {
+        Some(pg) => {
+            ArchiveImporter::new((**pg).clone(), state.blob_store.clone())
+                .import_stream(reader, true)
+                .await
+        }
+        None => {
+            ArchiveImporter::new(state.campaign_store.clone(), state.blob_store.clone())
+                .import_stream(reader, true)
+                .await
+        }
+    };
 
-    match importer
-        .import_stream(Cursor::new(body_bytes.to_vec()), true)
-        .await
-    {
+    match imported {
         Ok(ImportResult {
             campaign_id,
             name,
@@ -1006,7 +1045,13 @@ pub async fn create_campaign_invite_handler(
         ttl,
     ) {
         Ok((token, claims)) => {
-            let invite_url = format!("https://trame.app/join?token={token}");
+            let origin = state
+                .auth_state
+                .security
+                .public_origin
+                .as_deref()
+                .unwrap_or("");
+            let invite_url = format!("{origin}/?invite={token}");
             (
                 StatusCode::CREATED,
                 Json(CampaignInviteResponse {
@@ -1142,9 +1187,7 @@ pub async fn ws_campaign_handler(
 
     ws.max_message_size(policy.ws_max_message_bytes)
         .max_frame_size(policy.ws_max_message_bytes)
-        .on_upgrade(move |socket| {
-            handle_ws_connection(socket, state.lease_manager, campaign_id, user_id, role)
-        })
+        .on_upgrade(move |socket| handle_ws_connection(socket, state, campaign_id, user_id, role))
         .into_response()
 }
 
@@ -1227,14 +1270,43 @@ pub async fn presign_asset_handler(
     }
 }
 
+/// Replaces a client `ActivateScene` payload with the stored scene. A failed lookup becomes a
+/// command without payload, which the room rejects back to the sender.
+async fn resolve_client_envelope(
+    state: &AppState,
+    campaign_id: Uuid,
+    envelope: ClientEnvelope,
+) -> ClientEnvelope {
+    let ClientEnvelope::SubmitCommand(cmd) = envelope else {
+        return envelope;
+    };
+    let TrameCommand::ActivateScene { scene_id, .. } = *cmd else {
+        return ClientEnvelope::SubmitCommand(cmd);
+    };
+    let resolved = crate::maps::resolve_scene_command(
+        state,
+        campaign_id,
+        TrameCommand::ActivateScene {
+            scene_id,
+            scene: None,
+        },
+    )
+    .await
+    .unwrap_or(TrameCommand::ActivateScene {
+        scene_id,
+        scene: None,
+    });
+    ClientEnvelope::SubmitCommand(Box::new(resolved))
+}
+
 async fn handle_ws_connection(
     socket: WebSocket,
-    mgr: Arc<RoomLeaseManager>,
+    state: AppState,
     campaign_id: Uuid,
     user_id: Uuid,
     role: CampaignRole,
 ) {
-    let Ok(room_handle) = mgr.get_or_wake_room(campaign_id).await else {
+    let Ok(room_handle) = state.lease_manager.get_or_wake_room(campaign_id).await else {
         return;
     };
 
@@ -1277,6 +1349,7 @@ async fn handle_ws_connection(
         if let Message::Binary(bin) = msg
             && let Ok(envelope) = decode_client_envelope(&bin)
         {
+            let envelope = resolve_client_envelope(&state, campaign_id, envelope).await;
             let _ = room_handle.send_envelope(session_id, envelope).await;
         }
     }

@@ -113,6 +113,8 @@ impl Harness {
             db_healthy: Arc::new(AtomicBool::new(true)),
             map_storage: InMemoryMapStorage::new(),
             postgres_store: None,
+            campaign_data: Default::default(),
+            static_dir: None,
         };
         Self {
             state,
@@ -1503,6 +1505,7 @@ async fn a24_a68_damage_authority_and_bounds() {
                     raw_damage,
                     affinity,
                     is_critical: false,
+                    damage_type: None,
                 })),
             )
             .await;
@@ -1688,6 +1691,7 @@ async fn a65_vitality_events_reach_only_the_controller() {
                     raw_damage: 1,
                     affinity: DamageAffinity::Normal,
                     is_critical: false,
+                    damage_type: None,
                 })),
             )
             .await;

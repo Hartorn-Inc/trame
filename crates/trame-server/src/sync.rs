@@ -140,7 +140,9 @@ pub struct ProjectedTableState {
     /// Active battlemap height in canvas pixels (`px`).
     #[serde(default)]
     pub map_height_px: u32,
-    /// Active 5-second tactical reaction prompts keyed by `prompt_id`.
+    /// Active tactical reaction prompts keyed by `prompt_id`; prompts never expire on a timer
+    /// (G2). Non-GM recipients only receive prompts they are party to, without
+    /// `resolved_reactor_ids` and without hidden movers' `pending_destination`.
     #[serde(default)]
     pub active_reaction_prompts: BTreeMap<Uuid, ReactionPrompt>,
     /// Queued MCP dry-run staging proposals keyed by `proposal_id` (included only for `Gm` recipients).
@@ -268,6 +270,8 @@ pub enum ServerEnvelope {
         /// Authoritative room actor timestamp in milliseconds (`ms`).
         server_time_ms: u64,
     },
+    /// Handout content revealed by the GM (`POST .../handouts/{id}/reveal`), sent to every client.
+    HandoutRevealed(crate::notes::HandoutRevealedBroadcast),
     /// Broadcasts an out-of-band persistent actor sheet update (`ADR-0037`) without polluting the tactical undo stack.
     ActorUpdated {
         /// Unique identifier of the updated persistent actor sheet.
@@ -394,6 +398,33 @@ fn recipient_controls(state: &TableState, token_id: &Uuid, recipient_user_id: Uu
         .is_some_and(|t| t.owner_user_id == Some(recipient_user_id))
 }
 
+/// Recipient predicate shared by prompt projection and prompt events: the reactor's owner,
+/// the controller of the reactor token, or the controller of the triggering token.
+fn prompt_concerns_recipient(
+    state: &TableState,
+    prompt: &ReactionPrompt,
+    recipient_user_id: Uuid,
+) -> bool {
+    prompt.reactor_owner_user_id == Some(recipient_user_id)
+        || recipient_controls(state, &prompt.reactor_actor_id, recipient_user_id)
+        || recipient_controls(state, &prompt.trigger_token_id, recipient_user_id)
+}
+
+/// Strips GM knowledge from a prompt sent to a non-GM: the list of other reactors already
+/// prompted, and the mover's destination when the recipient cannot see the mover.
+fn redact_prompt_for_player(
+    prompt: &ReactionPrompt,
+    visible_ids: &HashSet<Uuid>,
+) -> ReactionPrompt {
+    let mut redacted = prompt.clone();
+    redacted.resolved_reactor_ids.clear();
+    if !visible_ids.contains(&prompt.trigger_token_id) {
+        redacted.pending_destination = None;
+        redacted.pending_elevation_ft = None;
+    }
+    redacted
+}
+
 /// Re-indexes the authoritative active turn into the recipient's filtered initiative list.
 fn recipient_active_turn_index(state: &TableState, filtered_order: &[Uuid]) -> Option<usize> {
     let active = state.active_turn_token_id()?;
@@ -461,8 +492,8 @@ pub fn project_state_for_recipient(
             .data
             .active_reaction_prompts
             .iter()
-            .filter(|(_, p)| recipient_controls(state, &p.reactor_actor_id, recipient_user_id))
-            .map(|(id, p)| (*id, p.clone()))
+            .filter(|(_, p)| prompt_concerns_recipient(state, p, recipient_user_id))
+            .map(|(id, p)| (*id, redact_prompt_for_player(p, &visible_ids)))
             .collect()
     };
 
@@ -503,9 +534,15 @@ pub fn project_state_for_recipient(
 ///   masked; closing a secret door is dropped entirely.
 /// - `AoeProjected` keeps only visible affected tokens and hides invisible casters.
 /// - Turn events clear `active_turn_token_id` when the active combatant is hidden.
+/// - Reaction prompt events (`ReactionPromptOpened`, `ReactionDecided`,
+///   `ReactionPromptClosed`) reach only the prompt's reactor owner and the controllers of the
+///   reactor and trigger tokens. Decided and closed prompts are usually gone from `state`, so
+///   the predicate is evaluated against `prior_prompts` (the prompts open before the command).
+/// - `AoeCleared` drops the caster ID when the caster is hidden from the recipient.
 /// - MCP staging and undo descriptions are GM-only.
 pub fn filter_events_for_recipient(
     state: &TableState,
+    prior_prompts: &BTreeMap<Uuid, ReactionPrompt>,
     events: &[TrameEvent],
     recipient_user_id: Uuid,
     recipient_role: CampaignRole,
@@ -545,12 +582,28 @@ pub fn filter_events_for_recipient(
             TrameEvent::TokenHealed { token_id, .. } => {
                 recipient_controls(state, token_id, recipient_user_id).then(|| ev.clone())
             }
-            TrameEvent::ReactionPromptOpened { prompt } => (prompt.reactor_owner_user_id
-                == Some(recipient_user_id)
-                || recipient_controls(state, &prompt.trigger_token_id, recipient_user_id))
-            .then(|| ev.clone()),
+            TrameEvent::ReactionPromptOpened { prompt } => {
+                prompt_concerns_recipient(state, prompt, recipient_user_id).then(|| {
+                    TrameEvent::ReactionPromptOpened {
+                        prompt: redact_prompt_for_player(prompt, &visible_ids),
+                    }
+                })
+            }
+            TrameEvent::ReactionDecided { prompt_id, .. }
+            | TrameEvent::ReactionPromptClosed { prompt_id, .. } => prior_prompts
+                .get(prompt_id)
+                .or_else(|| state.data.active_reaction_prompts.get(prompt_id))
+                .is_some_and(|p| prompt_concerns_recipient(state, p, recipient_user_id))
+                .then(|| ev.clone()),
             TrameEvent::SceneActivated { .. } | TrameEvent::InitiativeUpdated { .. } => None,
-            TrameEvent::AoeCleared { .. } | TrameEvent::HandoutRevealed { .. } => Some(ev.clone()),
+            TrameEvent::AoeCleared {
+                aoe_id,
+                caster_token_id,
+            } => Some(TrameEvent::AoeCleared {
+                aoe_id: *aoe_id,
+                caster_token_id: caster_token_id.filter(|id| visible_ids.contains(id)),
+            }),
+            TrameEvent::HandoutRevealed { .. } => Some(ev.clone()),
             TrameEvent::ConcentrationBroken {
                 caster_token_id, ..
             } => visible_ids.contains(caster_token_id).then(|| ev.clone()),
@@ -616,9 +669,7 @@ pub fn filter_events_for_recipient(
             | TrameEvent::TokenRemoved { .. }
             | TrameEvent::LightAdded { .. }
             | TrameEvent::FogOverrideChanged { .. }
-            | TrameEvent::MapConfigChanged { .. }
-            | TrameEvent::ReactionDecided { .. }
-            | TrameEvent::ReactionPromptClosed { .. } => Some(ev.clone()),
+            | TrameEvent::MapConfigChanged { .. } => Some(ev.clone()),
         })
         .collect()
 }

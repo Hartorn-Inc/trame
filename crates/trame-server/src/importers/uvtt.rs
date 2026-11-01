@@ -318,23 +318,8 @@ pub async fn import_uvtt_map<S: AssetStore + ?Sized>(
         .decode(&cleaned_base64)
         .map_err(|e| UvttImportError::InvalidBase64(e.to_string()))?;
 
-    let _detected_format = detect_magic_bytes(&raw_image_bytes)?;
-
-    let (hdr_width, hdr_height) = image_dimensions(&raw_image_bytes)?;
-    if hdr_width > MAX_IMAGE_DIMENSION || hdr_height > MAX_IMAGE_DIMENSION {
-        return Err(UvttImportError::ImageDimensionExceeded {
-            width: hdr_width,
-            height: hdr_height,
-        });
-    }
-
-    let decoded_img: DynamicImage = image::load_from_memory(&raw_image_bytes)
-        .map_err(|e| UvttImportError::ImageDecodeFailure(e.to_string()))?;
-
+    let decoded_img = decode_guarded_image(&raw_image_bytes)?;
     let (width, height) = decoded_img.dimensions();
-    if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
-        return Err(UvttImportError::ImageDimensionExceeded { width, height });
-    }
 
     // Encode primary map image as WebP (or fallback to PNG if WebP writer unsupported)
     let primary_bytes = encode_image(&decoded_img, ImageFormat::WebP)?;
@@ -379,6 +364,33 @@ pub async fn import_uvtt_map<S: AssetStore + ?Sized>(
         walls,
         lights,
     })
+}
+
+/// Magic-byte check (PNG/JPEG/WebP), header-only dimension guard, then full decode. The
+/// header check runs first so a decompression bomb is rejected before any pixel allocation.
+fn decode_guarded_image(raw: &[u8]) -> Result<DynamicImage, UvttImportError> {
+    detect_magic_bytes(raw)?;
+    let (hdr_width, hdr_height) = image_dimensions(raw)?;
+    if hdr_width > MAX_IMAGE_DIMENSION || hdr_height > MAX_IMAGE_DIMENSION {
+        return Err(UvttImportError::ImageDimensionExceeded {
+            width: hdr_width,
+            height: hdr_height,
+        });
+    }
+    let decoded = image::load_from_memory(raw)
+        .map_err(|e| UvttImportError::ImageDecodeFailure(e.to_string()))?;
+    let (width, height) = decoded.dimensions();
+    if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
+        return Err(UvttImportError::ImageDimensionExceeded { width, height });
+    }
+    Ok(decoded)
+}
+
+/// Validates an uploaded raster with the same guards as map import and re-encodes it as
+/// WebP, returning the encoded bytes. Re-encoding strips polyglot trailers and metadata.
+pub fn transcode_upload_to_webp(raw: &[u8]) -> Result<Vec<u8>, UvttImportError> {
+    let decoded = decode_guarded_image(raw)?;
+    encode_image(&decoded, ImageFormat::WebP)
 }
 
 fn encode_image(img: &DynamicImage, format: ImageFormat) -> Result<Vec<u8>, UvttImportError> {

@@ -62,6 +62,7 @@ pub const CHANNEL_GM_HIDDEN: u8 = 0b100;
 
 /// A 2D coordinate on the tabletop canvas measured in pixels (`px`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Point2D {
     /// Horizontal canvas coordinate in pixels (`px`), increasing rightward.
     pub x: f64,
@@ -91,6 +92,7 @@ impl Point2D {
 
 /// Axis-Aligned Bounding Box (AABB) in 2D canvas pixel coordinates (`px`) used by `Bvh2D` nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BoundingBox2D {
     /// Minimum X coordinate in pixels (`px`).
     pub min_x: f64,
@@ -137,6 +139,7 @@ impl BoundingBox2D {
 /// Architectural classification of a `WallSegment`, governing how vision, light,
 /// movement, and player wire masking behave.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum WallKind {
     /// Standard opaque masonry/dungeon wall that immediately blocks vision, light, and movement.
@@ -183,6 +186,7 @@ pub enum WallKind {
 /// camelCase field names, the map-editor `wallType` + `doorState` pair, and missing
 /// elevation/blocking fields (full height, blocking by default).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(from = "WallSegmentWire")]
 pub struct WallSegment {
     /// Unique identifier for the wall or door segment.
@@ -301,6 +305,7 @@ fn default_wall_top_ft() -> f64 {
 
 /// Map-editor wall classification (`wallType`) accepted on input for `WallSegment`.
 #[derive(Debug, Clone, Copy, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 enum LegacyWallType {
     Normal,
     Window,
@@ -313,6 +318,7 @@ enum LegacyWallType {
 
 /// Map-editor door state (`doorState`): `"Open"` / `"Closed"` / `"Locked"` or `{ isOpen, isLocked }`.
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 enum LegacyDoorState {
     Label(String),
@@ -345,6 +351,7 @@ impl LegacyDoorState {
 /// Field order mirrors the canonical `WallSegment` order (legacy-only fields last) so positional
 /// encodings such as non-named MessagePack still decode.
 #[derive(Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 struct WallSegmentWire {
     id: Uuid,
     #[serde(alias = "p1")]
@@ -409,6 +416,7 @@ impl From<WallSegmentWire> for WallSegment {
 
 /// Sensory capabilities and planar perception bitmask attached to a token (`01-TABLE-SPEC.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SenseProfile {
     /// Maximum bright/dim vision radius in feet (`ft`, default `120.0`).
     pub normal_range_ft: f64,

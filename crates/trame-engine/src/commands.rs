@@ -114,6 +114,7 @@ fn default_map_dimension_px() -> u32 {
 
 /// Dynamic 2.5D point light source placed on the tabletop scene (`01-TABLE-SPEC.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LightSource {
     /// Unique identifier of the light source emitter.
     pub id: Uuid,
@@ -143,6 +144,7 @@ pub struct LightSource {
 
 /// Manual Game Master fog-of-war brush operation mode applied to a discrete grid cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FogOverrideMode {
     /// Forces the grid cell to remain revealed to players regardless of dynamic line-of-sight.
@@ -158,6 +160,7 @@ pub enum FogOverrideMode {
 
 /// Discrete grid cell coordinate and manual GM fog-of-war override state stored in `TableState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FogOverrideCell {
     /// Discrete horizontal grid column index (`cell_x`).
     pub cell_x: i32,
@@ -169,6 +172,7 @@ pub struct FogOverrideCell {
 
 /// Player or GM decision in response to a tactical reaction prompt (e.g., Opportunity Attack, Shield).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "decision", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ReactionDecision {
     /// Triggers and consumes the reaction, optionally specifying the ability or spell identifier.
@@ -186,6 +190,7 @@ pub enum ReactionDecision {
 /// Active tactical reaction window awaiting a `DecideReaction` command from the reacting
 /// token's owner or the GM. Prompts never expire on a timer (G2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ReactionPrompt {
     /// Unique identifier of this reaction prompt.
     pub prompt_id: Uuid,
@@ -214,6 +219,7 @@ pub struct ReactionPrompt {
 
 /// Why a `ReactionPrompt` left `active_reaction_prompts` without a `DecideReaction` `Pass`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ReactionPromptCloseReason {
     /// The triggered reaction was played out (`ResolveReaction`); movement may have resumed.
@@ -225,6 +231,7 @@ pub enum ReactionPromptCloseReason {
 
 /// Result of `TableState::preview_move`, serialized as `{ "collision": {x, y} | null, "costFt" }`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct MovePreview {
     /// First movement-blocking wall crossing in pixels (`px`) between the token centers, or
@@ -239,6 +246,7 @@ pub struct MovePreview {
 /// Clients send `ActivateScene { scene_id }` only; the server resolves the persisted scene
 /// into this payload before applying, so WAL replays stay deterministic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SceneActivation {
     /// Asset store key or SHA-256 hash of the background battlemap (`None` = no background).
     #[serde(default)]
@@ -266,6 +274,7 @@ pub struct SceneActivation {
 
 /// Action-economy resource restored by `TrameCommand::RefundAction`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RefundableResource {
     /// Restores the primary Action (`has_action = true`).
@@ -280,6 +289,7 @@ pub enum RefundableResource {
 
 /// Queued MCP dry-run staging batch awaiting explicit GM confirmation (`CommitMcpStaging`) or rejection (`RejectMcpStaging`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpStagingProposal {
     /// Unique identifier of the staged MCP proposal.
     pub proposal_id: Uuid,
@@ -291,6 +301,7 @@ pub struct McpStagingProposal {
 
 /// Operating mode of the active tabletop session (`01-TABLE-SPEC.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TableMode {
     /// Free-form exploration where owned tokens move without initiative order unless `exploration_paused` is set.
@@ -301,6 +312,7 @@ pub enum TableMode {
 
 /// Global ambient illumination preset applied to the tabletop scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AmbientLightingPreset {
     /// Full bright daylight across unoccluded areas.
@@ -315,6 +327,7 @@ pub enum AmbientLightingPreset {
 
 /// Campaign-scoped authorization role assigned to a connected user session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CampaignRole {
     /// Game Master with full authority over all tokens, secret doors, table modes, lighting, and undo history.
@@ -327,6 +340,7 @@ pub enum CampaignRole {
 
 /// Authenticated identity and campaign role of the user issuing a `TrameCommand`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CommandActor {
     /// Unique identifier of the authenticated user.
     pub user_id: Uuid,
@@ -344,6 +358,7 @@ fn default_reach_ft() -> f64 {
 
 /// Authoritative spatial, vitality, action-economy, and sensory state of a single tabletop token.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TokenState {
     /// Unique identifier of the token.
     pub id: Uuid,
@@ -413,6 +428,15 @@ pub struct TokenState {
     /// `true` after `InstantDeath` or a third death saving throw failure; dead tokens cannot be healed.
     #[serde(default)]
     pub is_dead: bool,
+    /// Damage types this token takes half damage from (lowercase SRD ids, e.g. `"fire"`).
+    #[serde(default)]
+    pub damage_resistances: Vec<String>,
+    /// Damage types this token ignores entirely (lowercase SRD ids).
+    #[serde(default)]
+    pub damage_immunities: Vec<String>,
+    /// Damage types this token takes double damage from (lowercase SRD ids).
+    #[serde(default)]
+    pub damage_vulnerabilities: Vec<String>,
 }
 
 impl TokenState {
@@ -449,6 +473,29 @@ impl TokenState {
             death_save_successes: 0,
             death_save_failures: 0,
             is_dead: false,
+            damage_resistances: Vec::new(),
+            damage_immunities: Vec::new(),
+            damage_vulnerabilities: Vec::new(),
+        }
+    }
+
+    /// Derives this token's `DamageAffinity` toward `damage_type` (case-insensitive) from its
+    /// own damage lists (G6), so clients never choose the affinity for typed damage.
+    ///
+    /// Resolution order: immunity wins; resistance and vulnerability to the same type cancel
+    /// out (SRD: halve, then double) to `Normal`; otherwise the single matching list applies.
+    pub fn damage_affinity_for(&self, damage_type: &str) -> DamageAffinity {
+        let has = |list: &[String]| list.iter().any(|t| t.eq_ignore_ascii_case(damage_type));
+        if has(&self.damage_immunities) {
+            return DamageAffinity::Immune;
+        }
+        match (
+            has(&self.damage_resistances),
+            has(&self.damage_vulnerabilities),
+        ) {
+            (true, false) => DamageAffinity::Resistant,
+            (false, true) => DamageAffinity::Vulnerable,
+            _ => DamageAffinity::Normal,
         }
     }
 
@@ -476,6 +523,7 @@ impl TokenState {
 
 /// Authoritative CQRS mutation commands submitted by connected clients (`01-TABLE-SPEC.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "cmd", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TrameCommand {
     /// Moves a token to a new canvas position and optional elevation, validating wall collisions and turn speed budgets.
@@ -549,11 +597,16 @@ pub enum TrameCommand {
         token_id: Uuid,
         /// Unmitigated incoming damage amount (`>= 0`).
         raw_damage: i32,
-        /// Target's resistance, vulnerability, or immunity toward the damage type.
+        /// Target's resistance, vulnerability, or immunity toward the damage type. Ignored when
+        /// `damage_type` is set.
         affinity: DamageAffinity,
         /// Whether the hit is a critical hit (adds 2 death saving throw failures at 0 HP).
         #[serde(default)]
         is_critical: bool,
+        /// Typed damage (lowercase SRD id, e.g. `"fire"`). When set, the affinity is derived from
+        /// the target's `damage_*` lists (`TokenState::damage_affinity_for`) instead of `affinity`.
+        #[serde(default)]
+        damage_type: Option<String>,
     },
     /// Restores hit points to a token, capped at `max_hp` (GM: any token; players: owned tokens only).
     ///
@@ -739,6 +792,7 @@ pub enum TrameCommand {
 
 /// Domain events emitted after a `TrameCommand` is accepted and applied to `TableState`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "event", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TrameEvent {
     /// Emitted when a token's position or elevation changes.
@@ -853,8 +907,8 @@ pub enum TrameEvent {
     },
     /// Emitted when a token is spawned onto the tabletop.
     TokenSpawned {
-        /// Newly spawned token state.
-        token: TokenState,
+        /// Newly spawned token state (boxed to keep `TrameEvent` small; JSON shape unchanged).
+        token: Box<TokenState>,
     },
     /// Emitted when a token is removed from the tabletop.
     TokenRemoved {
@@ -1008,6 +1062,7 @@ pub enum TrameEvent {
 
 /// Single compensating snapshot entry stored in the `TableState::undo_stack` ring buffer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UndoEntry {
     /// Human-readable label describing the action that was taken immediately after this snapshot.
     pub description: String,
@@ -1021,6 +1076,7 @@ pub struct UndoEntry {
 
 /// Purely serializable tabletop state payload persisted in snapshots and the undo ring buffer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TableSnapshotData {
     /// Current tabletop mode (`Exploration` or `TurnByTurn`).
     pub mode: TableMode,
@@ -1932,8 +1988,12 @@ impl TableState {
                 raw_damage,
                 affinity,
                 is_critical,
+                damage_type,
             } => {
                 let token = self.require_token_control(actor, token_id)?.clone();
+                let affinity = damage_type
+                    .as_deref()
+                    .map_or(affinity, |t| token.damage_affinity_for(t));
 
                 self.push_undo(format!("Apply {raw_damage} damage to {}", token.name));
                 let is_concentrating = token.concentrating_on_aoe_id.is_some();
@@ -2294,7 +2354,9 @@ impl TableState {
                 Self::require_gm(actor)?;
                 self.push_undo(format!("Spawn token {}", token.name));
                 self.data.tokens.insert(token.id, token.clone());
-                Ok(vec![TrameEvent::TokenSpawned { token }])
+                Ok(vec![TrameEvent::TokenSpawned {
+                    token: Box::new(token),
+                }])
             }
 
             TrameCommand::RemoveToken { token_id } => {

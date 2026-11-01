@@ -544,10 +544,14 @@ impl SqlxPostgresStore {
             .await
             .map_err(ActorConcurrencyError::Database)?;
 
+        if !payload.is_object() {
+            payload = serde_json::json!({});
+        }
         if let Some(obj) = payload.as_object_mut() {
             obj.insert("id".to_string(), serde_json::json!(actor_id));
             obj.insert("campaign_id".to_string(), serde_json::json!(campaign_id));
             obj.insert("version".to_string(), serde_json::json!(1));
+            obj.insert("name".to_string(), serde_json::json!(name));
         }
 
         let row = sqlx::query(
@@ -573,15 +577,15 @@ impl SqlxPostgresStore {
         let version: i64 = row.try_get("version").unwrap_or(1);
         let stored_payload: serde_json::Value = row.try_get("payload").unwrap_or(payload);
 
-        let _ = self
-            .upsert_entity(
-                campaign_id,
-                actor_id,
-                "actor",
-                owner_user_id,
-                &stored_payload,
-            )
-            .await;
+        self.upsert_entity(
+            campaign_id,
+            actor_id,
+            "actor",
+            owner_user_id,
+            &stored_payload,
+        )
+        .await
+        .map_err(ActorConcurrencyError::Database)?;
 
         Ok(ActorRecord {
             id: actor_id,
@@ -607,6 +611,9 @@ impl SqlxPostgresStore {
         mut payload: serde_json::Value,
     ) -> Result<ActorRecord, ActorConcurrencyError> {
         let next_version = expected_version.saturating_add(1);
+        if !payload.is_object() {
+            payload = serde_json::json!({});
+        }
         if let Some(obj) = payload.as_object_mut() {
             obj.insert("id".to_string(), serde_json::json!(actor_id));
             obj.insert("campaign_id".to_string(), serde_json::json!(campaign_id));
@@ -617,7 +624,7 @@ impl SqlxPostgresStore {
             "UPDATE actors
              SET name = COALESCE($4, name),
                  version = version + 1,
-                 payload = $5,
+                 payload = jsonb_set($5, '{name}', to_jsonb(COALESCE($4, name))),
                  updated_at = NOW()
              WHERE campaign_id = $1 AND id = $2 AND version = $3
              RETURNING owner_user_id, name, version, payload",
@@ -639,15 +646,15 @@ impl SqlxPostgresStore {
             let version: i64 = row.try_get("version").unwrap_or(next_version);
             let stored_payload: serde_json::Value = row.try_get("payload").unwrap_or(payload);
 
-            let _ = self
-                .upsert_entity(
-                    campaign_id,
-                    actor_id,
-                    "actor",
-                    owner_user_id,
-                    &stored_payload,
-                )
-                .await;
+            self.upsert_entity(
+                campaign_id,
+                actor_id,
+                "actor",
+                owner_user_id,
+                &stored_payload,
+            )
+            .await
+            .map_err(ActorConcurrencyError::Database)?;
 
             return Ok(ActorRecord {
                 id: actor_id,
@@ -751,13 +758,14 @@ impl SqlxPostgresStore {
             .await
             .map_err(|e| e.to_string())?;
 
-        let _ = sqlx::query(
+        sqlx::query(
             "DELETE FROM campaign_entities WHERE campaign_id = $1 AND id = $2 AND entity_type = 'actor'",
         )
         .bind(campaign_id)
         .bind(actor_id)
         .execute(&self.pool)
-        .await;
+        .await
+        .map_err(|e| e.to_string())?;
 
         Ok(res.rows_affected() > 0)
     }
@@ -900,6 +908,36 @@ impl SqlxPostgresStore {
             });
         }
         Ok(notes)
+    }
+
+    /// Reads the campaign `settings` JSON object (`{}` when the campaign row is missing).
+    pub async fn get_campaign_settings(
+        &self,
+        campaign_id: Uuid,
+    ) -> Result<serde_json::Value, String> {
+        let value: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT settings FROM campaigns WHERE id = $1")
+                .bind(campaign_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        Ok(value.unwrap_or_else(|| serde_json::json!({})))
+    }
+
+    /// Replaces the campaign `settings` JSON object.
+    pub async fn set_campaign_settings(
+        &self,
+        campaign_id: Uuid,
+        settings: &serde_json::Value,
+    ) -> Result<(), String> {
+        self.ensure_campaign_row(campaign_id).await?;
+        sqlx::query("UPDATE campaigns SET settings = $2, updated_at = NOW() WHERE id = $1")
+            .bind(campaign_id)
+            .bind(settings)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// Deletes a session by token hash (used by logout).
@@ -1304,6 +1342,18 @@ impl SessionStore for SqlxPostgresStore {
                 });
             }
             Ok(out)
+        })
+    }
+
+    fn list_campaign_members(
+        &self,
+        campaign_id: Uuid,
+    ) -> BoxFuture<'_, Result<Vec<CampaignMemberRecord>, SessionError>> {
+        Box::pin(async move {
+            self.get_campaign_details(campaign_id)
+                .await
+                .map(|d| d.map(|(_, members)| members).unwrap_or_default())
+                .map_err(SessionError::Storage)
         })
     }
 }
@@ -1741,8 +1791,19 @@ impl CampaignImportTarget for SqlxPostgresStore {
                 .and_then(|s| Uuid::parse_str(s).ok())
                 .unwrap_or_else(Uuid::new_v4);
 
+            if entity.entity_type == "actor" {
+                let name = entity
+                    .data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Imported actor");
+                self.create_actor(campaign_id, entity_id, None, name, entity.data.clone())
+                    .await
+                    .map_err(|e| ArchiveError::Io(std::io::Error::other(e.to_string())))?;
+                continue;
+            }
             let valid_type = match entity.entity_type.as_str() {
-                "actor" | "scene" | "item" => entity.entity_type.as_str(),
+                "scene" | "item" => entity.entity_type.as_str(),
                 _ => "item",
             };
             sqlx::query(
@@ -2126,6 +2187,10 @@ impl AssetStore for SqlxPostgresStore {
                 sig_hex
             ))
         })
+    }
+
+    fn verify_presigned_get(&self, key: &str, exp: u64, sig_hex: &str) -> bool {
+        crate::assets::store::verify_asset_signature(&self.signing_secret, key, exp, sig_hex)
     }
 }
 

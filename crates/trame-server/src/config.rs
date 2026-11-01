@@ -22,7 +22,8 @@
 //!   2. `Key Strength`:
 //!      - `MASTER_ENCRYPTION_KEY` must be exactly 64 hex characters (AES-256).
 //!      - HMAC secrets (`TRAME_JWT_SECRET`, `TRAME_INVITE_JWT_SECRET`) must be at
-//!        least `MIN_SECRET_BYTES` (32) bytes.
+//!        least `MIN_SECRET_BYTES` (32) bytes. The invite (session bootstrap) key
+//!        falls back to `TRAME_SESSION_SECRET`, then the legacy `JWT_SECRET`.
 //!   3. `Transport Defaults`:
 //!      - Session cookies carry `Secure` unless `TRAME_COOKIE_SECURE` is
 //!        explicitly `false`/`0`/`no`/`off` (plain-HTTP LAN tables).
@@ -52,8 +53,12 @@ pub const JWT_SECRET_VAR: &str = "TRAME_JWT_SECRET";
 pub const INVITE_JWT_SECRET_VAR: &str = "TRAME_INVITE_JWT_SECRET";
 /// Legacy shared alias accepted for both HMAC secrets.
 pub const LEGACY_JWT_SECRET_VAR: &str = "JWT_SECRET";
+/// Session bootstrap key: signs Magic Link invite JWTs when `TRAME_INVITE_JWT_SECRET` is unset.
+pub const SESSION_SECRET_VAR: &str = "TRAME_SESSION_SECRET";
 /// Public browser origin of the web client (e.g. `https://table.example.com`).
 pub const PUBLIC_ORIGIN_VAR: &str = "TRAME_PUBLIC_ORIGIN";
+/// Directory of the built web client served by the SPA fallback.
+pub const STATIC_DIR_VAR: &str = "TRAME_STATIC_DIR";
 /// Optional comma-separated extra allowed WebSocket origins.
 pub const ALLOWED_ORIGINS_VAR: &str = "TRAME_ALLOWED_ORIGINS";
 /// `Secure` cookie attribute toggle (default `true`).
@@ -119,6 +124,10 @@ pub struct ServerConfig {
     pub secrets: ServerSecrets,
     /// Transport security policy (cookies, origins, WebSocket limits, rate limits).
     pub security: Arc<SecurityPolicy>,
+    /// Normalized `TRAME_PUBLIC_ORIGIN` used to build absolute invite URLs (`None` = relative).
+    pub public_origin: Option<String>,
+    /// `TRAME_STATIC_DIR`: directory of the built SPA served as fallback (`None` = no static).
+    pub static_dir: Option<std::path::PathBuf>,
 }
 
 /// Startup configuration failure listing every offending variable at once.
@@ -138,6 +147,8 @@ impl ServerConfig {
             env: RuntimeEnv::Dev,
             secrets: ServerSecrets::dev(),
             security: Arc::new(SecurityPolicy::default()),
+            public_origin: None,
+            static_dir: None,
         }
     }
 
@@ -171,8 +182,11 @@ impl ServerConfig {
             }
         };
 
-        let mut hmac_secret = |primary: &str| -> Vec<u8> {
-            match get(primary).or_else(|| get(LEGACY_JWT_SECRET_VAR)) {
+        let mut hmac_secret = |primary: &str, alias: Option<&str>| -> Vec<u8> {
+            let value = get(primary)
+                .or_else(|| alias.and_then(get))
+                .or_else(|| get(LEGACY_JWT_SECRET_VAR));
+            match value {
                 Some(secret) if secret.len() >= MIN_SECRET_BYTES => secret.into_bytes(),
                 Some(_) => {
                     invalid.push(format!(
@@ -187,12 +201,13 @@ impl ServerConfig {
                 }
             }
         };
-        let asset_signing_secret = hmac_secret(JWT_SECRET_VAR);
-        let invite_jwt_secret = hmac_secret(INVITE_JWT_SECRET_VAR);
+        let asset_signing_secret = hmac_secret(JWT_SECRET_VAR, None);
+        let invite_jwt_secret = hmac_secret(INVITE_JWT_SECRET_VAR, Some(SESSION_SECRET_VAR));
 
         let mut allowed_origins: Vec<String> = Vec::new();
-        match get(PUBLIC_ORIGIN_VAR) {
-            Some(origin) => allowed_origins.push(normalize_origin(&origin)),
+        let public_origin = get(PUBLIC_ORIGIN_VAR).map(|o| normalize_origin(&o));
+        match &public_origin {
+            Some(origin) => allowed_origins.push(origin.clone()),
             None if dev => allowed_origins.extend(DEV_ALLOWED_ORIGINS.map(normalize_origin)),
             None => missing.push(PUBLIC_ORIGIN_VAR.to_string()),
         }
@@ -225,8 +240,11 @@ impl ServerConfig {
                 allowed_origins,
                 trust_forwarded_for,
                 rate_limiter: AuthRateLimiter::default(),
+                public_origin: public_origin.clone(),
                 ..SecurityPolicy::default()
             }),
+            public_origin,
+            static_dir: get(STATIC_DIR_VAR).map(|d| std::path::PathBuf::from(d.trim())),
         })
     }
 }

@@ -158,6 +158,13 @@ pub trait SessionStore: Send + Sync {
     ) -> BoxFuture<'_, Result<Vec<CampaignMemberRecord>, SessionError>> {
         Box::pin(async { Ok(Vec::new()) })
     }
+    /// Lists every member of `campaign_id`.
+    fn list_campaign_members(
+        &self,
+        _campaign_id: Uuid,
+    ) -> BoxFuture<'_, Result<Vec<CampaignMemberRecord>, SessionError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
 }
 
 /// Unified trait combining `SessionStore`, `IdentityStore`, `PatStore`, and `OAuthStore`.
@@ -306,6 +313,22 @@ impl SessionStore for InMemorySessionStore {
                 .filter(|m| m.user_id == user_id)
                 .cloned()
                 .collect();
+            Ok(list)
+        })
+    }
+
+    fn list_campaign_members(
+        &self,
+        campaign_id: Uuid,
+    ) -> BoxFuture<'_, Result<Vec<CampaignMemberRecord>, SessionError>> {
+        Box::pin(async move {
+            let map = self.campaign_members.read().await;
+            let mut list: Vec<CampaignMemberRecord> = map
+                .values()
+                .filter(|m| m.campaign_id == campaign_id)
+                .cloned()
+                .collect();
+            list.sort_by_key(|m| (m.joined_at, m.user_id));
             Ok(list)
         })
     }
@@ -638,6 +661,13 @@ impl<T: SessionStore + ?Sized> SessionStore for Arc<T> {
         user_id: Uuid,
     ) -> BoxFuture<'_, Result<Vec<CampaignMemberRecord>, SessionError>> {
         (**self).get_campaign_members_for_user(user_id)
+    }
+
+    fn list_campaign_members(
+        &self,
+        campaign_id: Uuid,
+    ) -> BoxFuture<'_, Result<Vec<CampaignMemberRecord>, SessionError>> {
+        (**self).list_campaign_members(campaign_id)
     }
 }
 
@@ -1178,9 +1208,47 @@ pub async fn me_handler(State(state): State<AuthState>, headers: HeaderMap) -> R
     }
 }
 
+fn storage_error_response(err: impl std::fmt::Display) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(AuthErrorResponse {
+            code: Some("STORAGE_ERROR".to_string()),
+            error: err.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+/// Returns the user and session behind a valid, unexpired `trame_session` cookie, if any.
+async fn current_cookie_session(
+    state: &AuthState,
+    headers: &HeaderMap,
+) -> Option<(UserRecord, SessionRecord)> {
+    let token = extract_session_token(headers)?;
+    let session = state
+        .session_store
+        .get_session_by_token_hash(&hash_session_token(&token))
+        .await
+        .ok()
+        .flatten()
+        .filter(|s| s.expires_at >= now_epoch_seconds())?;
+    let user = state
+        .session_store
+        .get_user_by_id(session.user_id)
+        .await
+        .ok()
+        .flatten()?;
+    Some((user, session))
+}
+
 /// Axum handler consuming magic link JWTs at POST /api/v1/auth/magic-link and POST /api/v1/auth/magic-link/redeem.
+///
+/// When the request already carries a valid session cookie, the invite attaches to that user
+/// (no guest account, no new cookie). An existing membership keeps its role so a GM opening
+/// their own player invite is never downgraded. Otherwise a guest user and session are created.
 pub async fn magic_link_login_handler(
     State(state): State<AuthState>,
+    headers: HeaderMap,
     Json(payload): Json<MagicLinkLoginRequest>,
 ) -> Response {
     let claims = match state
@@ -1221,18 +1289,46 @@ pub async fn magic_link_login_handler(
         }
     };
 
+    if let Some((user, session)) = current_cookie_session(&state, &headers).await {
+        let existing = match state
+            .session_store
+            .get_campaign_member(claims.campaign_id, user.id)
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => return storage_error_response(e),
+        };
+        let member = match existing {
+            Some(m) => m,
+            None => match state
+                .session_store
+                .assign_campaign_member(
+                    claims.campaign_id,
+                    user.id,
+                    claims.character_id,
+                    &claims.role,
+                )
+                .await
+            {
+                Ok(m) => m,
+                Err(e) => return storage_error_response(e),
+            },
+        };
+        let resp = MagicLinkLoginResponse {
+            user_id: user.id,
+            username: user.username.clone(),
+            campaign_id: claims.campaign_id,
+            character_id: member.character_id,
+            role: member.role,
+            session_id: session.session_id,
+            user: AuthUserDto::from(user),
+        };
+        return (StatusCode::OK, Json(resp)).into_response();
+    }
+
     let mut guest_user = match state.session_store.create_guest_user(&claims.role).await {
         Ok(u) => u,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(AuthErrorResponse {
-                    code: Some("STORAGE_ERROR".to_string()),
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
-        }
+        Err(e) => return storage_error_response(e),
     };
 
     if let Some(nick) = payload
@@ -1242,7 +1338,9 @@ pub async fn magic_link_login_handler(
         .filter(|s| !s.is_empty())
     {
         guest_user.username = nick.to_string();
-        let _ = state.session_store.save_user(guest_user.clone()).await;
+        if let Err(e) = state.session_store.save_user(guest_user.clone()).await {
+            return storage_error_response(e);
+        }
     }
 
     if let Err(e) = state
