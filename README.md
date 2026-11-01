@@ -50,7 +50,7 @@ make test-rust TEST_DATABASE_URL=postgresql://trame:trame_dev_password@postgres:
 
 | Variable | Required outside dev | Purpose |
 | :--- | :--- | :--- |
-| `TRAME_ENV` | No | `dev` substitutes public development keys and Vite origins for missing values. Never set it in production. |
+| `TRAME_ENV` | No | `dev` substitutes public development keys and Vite origins for missing values and logs pretty coloured lines. Any other value (or unset) logs one JSON object per line without ANSI colour. Never set it to `dev` in production. |
 | `MASTER_ENCRYPTION_KEY` | Yes | 64 hex characters (AES-256-GCM) encrypting TOTP secrets at rest. |
 | `TRAME_JWT_SECRET` | Yes | At least 32 bytes; signs presigned asset URLs (legacy alias: `JWT_SECRET`). |
 | `TRAME_INVITE_JWT_SECRET` | Yes, unless a fallback is set | At least 32 bytes; signs Magic Link invite JWTs. Falls back to `TRAME_SESSION_SECRET`, then `JWT_SECRET`. |

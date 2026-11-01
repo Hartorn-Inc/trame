@@ -36,6 +36,11 @@
 //!        and is `None` when the active combatant is hidden; turn events clear
 //!        `active_turn_token_id` the same way, so a hidden monster's turn never
 //!        leaks through the tracker.
+//!   5. `Shared Combat Tracker`:
+//!      - Initiative order and totals are shared table knowledge: players receive
+//!        them in `InitiativeUpdated` and in the snapshot's `initiative_totals`,
+//!        both limited to combatants in `visible_ids`, so GM-hidden or occluded
+//!        tokens contribute neither an entry nor a total.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -119,6 +124,11 @@ pub struct ProjectedTableState {
     pub persistent_aoes: BTreeMap<Uuid, AoeTemplate>,
     /// Combat initiative order filtered to tokens visible to this recipient.
     pub initiative_order: Vec<Uuid>,
+    /// Initiative totals keyed by token ID, limited to the entries of `initiative_order`
+    /// (a hidden combatant's total never reaches a player). Lets a reconnecting client
+    /// rebuild the combat tracker without replaying `InitiativeUpdated` events.
+    #[serde(default)]
+    pub initiative_totals: BTreeMap<Uuid, i32>,
     /// Zero-based index of the active combatant inside this recipient's filtered
     /// `initiative_order`; `None` when the active combatant is hidden from the recipient or
     /// the order is empty.
@@ -425,6 +435,18 @@ fn redact_prompt_for_player(
     redacted
 }
 
+/// Initiative totals of the combatants the recipient can see.
+fn visible_totals(
+    totals: &BTreeMap<Uuid, i32>,
+    visible_ids: &HashSet<Uuid>,
+) -> BTreeMap<Uuid, i32> {
+    totals
+        .iter()
+        .filter(|(id, _)| visible_ids.contains(id))
+        .map(|(id, total)| (*id, *total))
+        .collect()
+}
+
 /// Re-indexes the authoritative active turn into the recipient's filtered initiative list.
 fn recipient_active_turn_index(state: &TableState, filtered_order: &[Uuid]) -> Option<usize> {
     let active = state.active_turn_token_id()?;
@@ -473,6 +495,11 @@ pub fn project_state_for_recipient(
         .copied()
         .collect();
     let active_turn_index = recipient_active_turn_index(state, &initiative_order);
+    let initiative_totals = if is_gm {
+        state.data.initiative_totals.clone()
+    } else {
+        visible_totals(&state.data.initiative_totals, &visible_ids)
+    };
 
     let persistent_aoes = if is_gm {
         state.data.persistent_aoes.clone()
@@ -509,6 +536,7 @@ pub fn project_state_for_recipient(
         walls,
         persistent_aoes,
         initiative_order,
+        initiative_totals,
         active_turn_index,
         round: state.data.round,
         lights: state.data.lights.clone(),
@@ -534,6 +562,7 @@ pub fn project_state_for_recipient(
 ///   masked; closing a secret door is dropped entirely.
 /// - `AoeProjected` keeps only visible affected tokens and hides invisible casters.
 /// - Turn events clear `active_turn_token_id` when the active combatant is hidden.
+/// - `InitiativeUpdated` keeps only visible combatants' order entries and totals.
 /// - Reaction prompt events (`ReactionPromptOpened`, `ReactionDecided`,
 ///   `ReactionPromptClosed`) reach only the prompt's reactor owner and the controllers of the
 ///   reactor and trigger tokens. Decided and closed prompts are usually gone from `state`, so
@@ -595,7 +624,20 @@ pub fn filter_events_for_recipient(
                 .or_else(|| state.data.active_reaction_prompts.get(prompt_id))
                 .is_some_and(|p| prompt_concerns_recipient(state, p, recipient_user_id))
                 .then(|| ev.clone()),
-            TrameEvent::SceneActivated { .. } | TrameEvent::InitiativeUpdated { .. } => None,
+            TrameEvent::SceneActivated { .. } => None,
+            TrameEvent::InitiativeUpdated {
+                initiative_order,
+                initiative_totals,
+                active_turn_token_id,
+            } => Some(TrameEvent::InitiativeUpdated {
+                initiative_order: initiative_order
+                    .iter()
+                    .filter(|id| visible_ids.contains(id))
+                    .copied()
+                    .collect(),
+                initiative_totals: visible_totals(initiative_totals, &visible_ids),
+                active_turn_token_id: visible_turn(active_turn_token_id),
+            }),
             TrameEvent::AoeCleared {
                 aoe_id,
                 caster_token_id,

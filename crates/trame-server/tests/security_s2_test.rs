@@ -30,6 +30,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use bytes::Bytes;
 use futures_lite::io::AsyncWriteExt as _;
+use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -39,7 +40,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tower::ServiceExt;
-use trame_engine::commands::{CampaignRole, TableMode, TableState, TokenState, TrameCommand};
+use trame_engine::commands::{
+    CampaignRole, TableMode, TableState, TokenState, TrameCommand, TrameEvent,
+};
 use trame_engine::geometry::{CHANNEL_GM_HIDDEN, Point2D, WallKind, WallSegment};
 use trame_engine::rules::DamageAffinity;
 use trame_server::archive::{
@@ -55,7 +58,8 @@ use trame_server::auth::session::{
 use trame_server::auth::totp::TotpService;
 use trame_server::config::{
     ALLOWED_ORIGINS_VAR, COOKIE_SECURE_VAR, ConfigError, INVITE_JWT_SECRET_VAR, JWT_SECRET_VAR,
-    MASTER_ENCRYPTION_KEY_VAR, PUBLIC_ORIGIN_VAR, RuntimeEnv, ServerConfig, TRAME_ENV_VAR,
+    LogFormat, MASTER_ENCRYPTION_KEY_VAR, PUBLIC_ORIGIN_VAR, RuntimeEnv, ServerConfig,
+    TRAME_ENV_VAR,
 };
 use trame_server::dice::RollVisibility;
 use trame_server::http::{
@@ -220,6 +224,54 @@ fn actor_entity(campaign_id: Uuid, name: &str) -> ExportEntity {
 // ---------------------------------------------------------------------------
 // A22 — fail-closed secrets
 // ---------------------------------------------------------------------------
+
+#[test]
+fn a22_log_format_follows_trame_env() {
+    // (case_id, TRAME_ENV value, expected env, expected log format)
+    let cases = [
+        (
+            "dev_is_pretty",
+            Some("dev"),
+            RuntimeEnv::Dev,
+            LogFormat::Pretty,
+        ),
+        (
+            "dev_any_case_padded",
+            Some("  DEV "),
+            RuntimeEnv::Dev,
+            LogFormat::Pretty,
+        ),
+        (
+            "unset_is_production_json",
+            None,
+            RuntimeEnv::Production,
+            LogFormat::Json,
+        ),
+        (
+            "empty_is_production_json",
+            Some(""),
+            RuntimeEnv::Production,
+            LogFormat::Json,
+        ),
+        (
+            "production_is_json",
+            Some("production"),
+            RuntimeEnv::Production,
+            LogFormat::Json,
+        ),
+        (
+            "other_value_is_json",
+            Some("staging"),
+            RuntimeEnv::Production,
+            LogFormat::Json,
+        ),
+    ];
+    for (case, value, env, format) in cases {
+        let resolved = RuntimeEnv::from_value(value);
+        assert_eq!(resolved, env, "case {case}");
+        assert_eq!(resolved.log_format(), format, "case {case}");
+    }
+}
 
 #[test]
 fn a22_config_fails_closed_outside_dev() {
@@ -1666,6 +1718,99 @@ async fn a64_a66_player_snapshot_projection() {
         };
         assert_eq!(gm_proj.tokens.len(), 3, "case {case}");
         assert_eq!(gm_proj.active_turn_index, Some(active), "case {case}");
+    }
+}
+
+#[tokio::test]
+async fn a64_initiative_totals_shared_except_hidden_combatants() {
+    let player_user = Uuid::new_v4();
+    // (case_id, recipient is GM, expected order as [hero, goblin, lich] indices)
+    let cases = [
+        (
+            "player_sees_visible_combatants_only",
+            false,
+            vec![1usize, 0],
+        ),
+        ("gm_sees_hidden_combatant_too", true, vec![2usize, 1, 0]),
+    ];
+    for (case, as_gm, expected_idx) in cases {
+        let (mut state, ids, _) = privacy_table(player_user, 1);
+        let [hero, goblin, lich] = ids;
+        state.data.initiative_totals = BTreeMap::from([(lich, 18), (hero, 12), (goblin, 9)]);
+        let expected_order: Vec<Uuid> = expected_idx.iter().map(|i| ids[*i]).collect();
+        let expected_totals: BTreeMap<Uuid, i32> =
+            BTreeMap::from([(lich, 18), (hero, 12), (goblin, 15)])
+                .into_iter()
+                .filter(|(id, _)| expected_order.contains(id))
+                .collect();
+
+        let mut table = Table::open(state, player_user).await;
+        Table::drain(&mut table.gm.1);
+        Table::drain(&mut table.player.1);
+        table
+            .submit(
+                true,
+                ClientEnvelope::SubmitCommand(Box::new(TrameCommand::SetInitiativeTotal {
+                    token_id: goblin,
+                    total: 15,
+                })),
+            )
+            .await;
+        let rx = if as_gm {
+            &mut table.gm.1
+        } else {
+            &mut table.player.1
+        };
+        let frames = Table::drain(rx);
+        let Some((events, projected)) = frames.iter().find_map(|f| match f {
+            ServerEnvelope::CommandAccepted { events, state, .. } => Some((events, state)),
+            _ => None,
+        }) else {
+            panic!("case {case}: expected CommandAccepted");
+        };
+        let Some(TrameEvent::InitiativeUpdated {
+            initiative_order,
+            initiative_totals,
+            ..
+        }) = events
+            .iter()
+            .find(|e| matches!(e, TrameEvent::InitiativeUpdated { .. }))
+        else {
+            panic!("case {case}: InitiativeUpdated withheld: {events:?}");
+        };
+        assert_eq!(
+            initiative_order, &expected_order,
+            "case {case}: event order"
+        );
+        assert_eq!(
+            initiative_totals, &expected_totals,
+            "case {case}: event totals"
+        );
+        assert_eq!(
+            projected.initiative_totals, expected_totals,
+            "case {case}: state totals"
+        );
+
+        let role = if as_gm {
+            CampaignRole::Gm
+        } else {
+            CampaignRole::Player
+        };
+        let user = if as_gm { Uuid::new_v4() } else { player_user };
+        let (_, mut rejoined) = connect(&table.room, user, role).await;
+        let Some(ServerEnvelope::StateSnapshot { state: snap, .. }) =
+            Table::drain(&mut rejoined).into_iter().next()
+        else {
+            panic!("case {case}: expected reconnect snapshot");
+        };
+        assert_eq!(
+            snap.initiative_order, expected_order,
+            "case {case}: reconnect order"
+        );
+        assert_eq!(
+            snap.initiative_totals, expected_totals,
+            "case {case}: reconnect totals"
+        );
     }
 }
 

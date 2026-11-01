@@ -44,7 +44,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use trame_server::assets::store::InMemoryAssetStore;
-use trame_server::config::{RuntimeEnv, ServerConfig};
+use trame_server::config::{LogFormat, RuntimeEnv, ServerConfig, TRAME_ENV_VAR};
 use trame_server::http::{
     InMemoryMembershipValidator, build_in_memory_router_with_config,
     build_router_with_postgres_store,
@@ -69,11 +69,17 @@ const IDLE_LEASE_MS: u64 = 900_000;
 const IDLE_SWEEP_PERIOD_MS: u64 = 60_000;
 
 /// Installs the global `tracing` subscriber. `RUST_LOG` selects levels
-/// (e.g. `RUST_LOG=trame_server=debug`); unset defaults to `info`.
+/// (e.g. `RUST_LOG=trame_server=debug`); unset defaults to `info`. The format comes from
+/// `TRAME_ENV` directly because tracing starts before `ServerConfig` can report errors.
 fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let env = RuntimeEnv::from_value(std::env::var(TRAME_ENV_VAR).ok().as_deref());
+    let builder = tracing_subscriber::fmt().with_env_filter(filter);
+    match env.log_format() {
+        LogFormat::Pretty => builder.init(),
+        LogFormat::Json => builder.json().with_ansi(false).init(),
+    }
 }
 
 /// Coordinates graceful termination upon receiving SIGTERM or SIGINT.

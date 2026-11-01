@@ -49,9 +49,9 @@ use trame_server::http::{
 };
 use trame_server::maps::{CampaignMapScene, InMemoryMapStorage};
 use trame_server::mcp::TimelineCursor;
-use trame_server::room::{ConnectedClient, RoomLeaseManager, TableRoomHandle};
+use trame_server::room::{ConnectedClient, OutboundClientFrame, RoomLeaseManager, TableRoomHandle};
 use trame_server::security::SecurityPolicy;
-use trame_server::sync::ClientEnvelope;
+use trame_server::sync::{ClientEnvelope, ServerEnvelope};
 use trame_server::timeline::{InMemoryTimelineStorage, TimelineStorage};
 use trame_server::wal::{InMemoryWalStorage, WalStorage};
 use uuid::Uuid;
@@ -514,6 +514,96 @@ async fn a03_player_note_edit_preserves_dm_blocks() {
             stored.contains("The innkeeper is a spy."),
             "case {case}: dm block lost: {stored}"
         );
+    }
+}
+
+#[tokio::test]
+async fn a03_handout_reveal_matches_block_id_and_reaches_player() {
+    let note = "The crypt smells of old incense.\n\
+                :::handout{id=\"ancient-map\" title=\"Ancient Map\"}\n\
+                A faded map marks a hidden stair.\n\
+                :::\n\
+                :::handout{revealed='false' title='Letter: id=decoy' id='sealed-letter'}\n\
+                Meet at midnight.\n\
+                :::\n";
+    // (case_id, handout id in the URL, expected status, expected title)
+    let cases = [
+        (
+            "double_quoted_attrs",
+            "ancient-map",
+            StatusCode::OK,
+            Some("Ancient Map"),
+        ),
+        (
+            "single_quoted_attrs_any_order",
+            "sealed-letter",
+            StatusCode::OK,
+            Some("Letter: id=decoy"),
+        ),
+        (
+            "id_inside_title_is_not_an_id",
+            "decoy",
+            StatusCode::NOT_FOUND,
+            None,
+        ),
+        ("unknown_handout", "missing", StatusCode::NOT_FOUND, None),
+    ];
+    for (case, handout_id, expected, title) in cases {
+        let h = Harness::new();
+        let app = h.app();
+        let (campaign_id, _, gm) = h.campaign(&app).await;
+        let (player_id, _) = h.account().await;
+        h.join(campaign_id, player_id, "PLAYER").await;
+        let (status, _) = call(
+            &app,
+            "PUT",
+            &format!("/api/v1/campaigns/{campaign_id}/notes/crypt"),
+            Some(&gm),
+            json!({ "title": "Crypt Lore", "content_markdown": note }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "case {case}");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        h.room(campaign_id)
+            .await
+            .connect_client(ConnectedClient {
+                session_id: Uuid::new_v4(),
+                user_id: player_id,
+                role: CampaignRole::Player,
+                tx,
+            })
+            .await
+            .unwrap();
+
+        let (status, body) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/campaigns/{campaign_id}/handouts/{handout_id}/reveal"),
+            Some(&gm),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, expected, "case {case}: {body}");
+        h.room(campaign_id).await.metrics().await.unwrap();
+        let broadcast = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|frame| match frame {
+            OutboundClientFrame::Binary(bytes) => {
+                match rmp_serde::from_slice::<ServerEnvelope>(&bytes).ok()? {
+                    ServerEnvelope::HandoutRevealed(revealed) => Some(revealed),
+                    _ => None,
+                }
+            }
+            _ => None,
+        });
+        match title {
+            Some(title) => {
+                assert_eq!(body["handout"]["title"], json!(title), "case {case}");
+                let b = broadcast.unwrap_or_else(|| panic!("case {case}: player got no broadcast"));
+                assert_eq!(b.handout_id, handout_id, "case {case}");
+                assert_eq!(b.title, title, "case {case}");
+                assert!(!b.content.is_empty(), "case {case}");
+            }
+            None => assert!(broadcast.is_none(), "case {case}: unexpected broadcast"),
+        }
     }
 }
 

@@ -254,8 +254,10 @@ pub fn parse_markdown_ast(markdown: &str) -> Vec<DirectiveAstNode> {
             }
             nodes.push(DirectiveAstNode::HandoutDirective {
                 raw: raw_lines.join("\n"),
-                id: String::new(),
-                title: String::new(),
+                id: handout_attr(trimmed, "id").unwrap_or_default().to_string(),
+                title: handout_attr(trimmed, "title")
+                    .unwrap_or_default()
+                    .to_string(),
                 revealed,
                 content: content_lines.join("\n"),
             });
@@ -472,27 +474,25 @@ fn tokenize_directive_attrs(input: &str) -> Vec<&str> {
     tokens
 }
 
-pub(crate) fn parse_handout_revealed_attr(header: &str) -> bool {
-    let Some(start_brace) = header.find('{') else {
-        return false;
-    };
-    let Some(end_brace) = header.rfind('}') else {
-        return false;
-    };
+/// Returns the unquoted value of attribute `name` in a `:::handout{...}` header, matching
+/// whole quote-aware tokens so `title="revealed=true"` never reads as the `revealed` flag.
+fn handout_attr<'a>(header: &'a str, name: &str) -> Option<&'a str> {
+    let start_brace = header.find('{')?;
+    let end_brace = header.rfind('}')?;
     if end_brace <= start_brace {
-        return false;
+        return None;
     }
-    let attrs_str = &header[start_brace + 1..end_brace];
-    for part in tokenize_directive_attrs(attrs_str) {
-        if let Some((k, v)) = part.split_once('=') {
+    tokenize_directive_attrs(&header[start_brace + 1..end_brace])
+        .into_iter()
+        .find_map(|part| {
+            let (k, v) = part.split_once('=')?;
             let key = k.trim().trim_matches('"').trim_matches('\'');
-            let val = v.trim().trim_matches('"').trim_matches('\'');
-            if key == "revealed" {
-                return val.eq_ignore_ascii_case("true");
-            }
-        }
-    }
-    false
+            (key == name).then(|| v.trim().trim_matches('"').trim_matches('\''))
+        })
+}
+
+pub(crate) fn parse_handout_revealed_attr(header: &str) -> bool {
+    handout_attr(header, "revealed").is_some_and(|v| v.eq_ignore_ascii_case("true"))
 }
 
 fn now_ms() -> u64 {
