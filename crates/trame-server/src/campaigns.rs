@@ -61,8 +61,9 @@ use crate::maps::{
     scene_save_error,
 };
 use crate::notes::{
-    DirectiveAstNode, FilteredNoteDocument, InMemoryPartyJournalStorage, PartyJournalStorage,
-    RevealHandoutCommand, UserRole, merge_party_note_ast, parse_markdown_ast, reveal_handout,
+    DirectiveAstNode, FilteredNoteDocument, InMemoryPartyJournalStorage, NotesError,
+    PartyJournalStorage, RevealHandoutCommand, UserRole, merge_party_note_ast, parse_markdown_ast,
+    reveal_handout,
 };
 use crate::room::{ActorTacticalSync, LinkedVitalsChange, RoomSinks, TimelineNote};
 use crate::storage::blob::Sha256Hasher;
@@ -1212,6 +1213,9 @@ pub async fn reveal_handout_handler(
         state.timeline_storage.as_ref(),
     ) {
         Ok(b) => b,
+        Err(err @ NotesError::HandoutTitleTooLong(_)) => {
+            return bad_request("HANDOUT_TITLE_TOO_LONG", &err.to_string());
+        }
         Err(err) => return storage_error(err),
     };
     if let Ok(room) = state.lease_manager.get_or_wake_room(campaign_id).await {
