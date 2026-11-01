@@ -85,10 +85,12 @@ e2e-image: ## Build the production Dockerfile image used by the browser E2E suit
 
 e2e: ## Run the GM + player Playwright journey (with videos) against the production image and Postgres, then tear down
 	mkdir -p "$(REPO_DIR)/e2e/artifacts"
-	rm -rf "$(REPO_DIR)/e2e/static"
-	cid=$$(docker create trame-server:e2e) && docker cp "$$cid:/app/static" "$(REPO_DIR)/e2e/static"; rc=$$?; docker rm "$$cid" >/dev/null; exit $$rc
-	$(E2E_COMPOSE) up -d --wait postgres trame-server spa-proxy
-	$(E2E_COMPOSE) run --rm playwright; rc=$$?; $(E2E_COMPOSE) logs --no-color trame-server > "$(REPO_DIR)/e2e/artifacts/server.log" 2>&1; $(E2E_COMPOSE) --profile e2e down -v --remove-orphans; exit $$rc
+	$(E2E_COMPOSE) up -d --wait postgres trame-server
+	$(E2E_COMPOSE) run --rm playwright; rc=$$?; \
+	$(E2E_COMPOSE) logs --no-color --no-log-prefix trame-server > "$(REPO_DIR)/e2e/artifacts/server.log" 2>&1; \
+	$(E2E_COMPOSE) logs --no-color --no-log-prefix postgres > "$(REPO_DIR)/e2e/artifacts/postgres.log" 2>&1; \
+	$(E2E_COMPOSE) --profile e2e down -v --remove-orphans; \
+	sh "$(REPO_DIR)/e2e/scripts/check-json-logs.sh" "$(REPO_DIR)/e2e/artifacts" || rc=1; exit $$rc
 
 e2e-video: ## Combine e2e/artifacts/gm.webm and player.webm into a labelled side-by-side MP4
 	sh "$(REPO_DIR)/e2e/scripts/side-by-side.sh" "$(REPO_DIR)/e2e/artifacts"
