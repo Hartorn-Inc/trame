@@ -4,7 +4,7 @@
 Accepted
 
 ## Context
-The `@trame/game-system-dnd5e` package initially contained a minimal `applyLevelUp` function in `packages/game-systems/dnd5e/src/progression.ts` without support for subclass selection, Ability Score Improvement (`+2` or `+1/+1`) versus Feat choices, spell learning, or multiclass/Pact Magic slot progression. In addition, no rest mechanics (`ShortRest`, `LongRest`) were defined in the engine, and `@trame/web` lacked UI modals (`LevelUpModal`, `RestModal`) for executing progression or rests from `CampaignWorkspace` or `HudDrawers.tsx`. Finally, the embedded `compendium.ts` only included a small subset of SRD 5.1 items and monsters without bilingual (`en`/`fr`) metadata.
+The `@trame/game-system-dnd5e` package initially contained a minimal `applyLevelUp` function in `packages/game-systems/dnd5e/src/progression.ts` without support for subclass selection, Ability Score Improvement (`+2` or `+1/+1`) versus Feat choices, spell learning, or multiclass/Pact Magic slot progression. In addition, `@trame/web` lacked UI modals (`LevelUpModal`, `RestModal`) for executing progression or rests from `CampaignWorkspace` or `HudDrawers.tsx`. Finally, the embedded `compendium.ts` only included a small subset of SRD 5.1 items and monsters without bilingual (`en`/`fr`) metadata.
 
 ## Decision
 1. **Modular Separation in `@trame/game-system-dnd5e`**:
@@ -30,4 +30,4 @@ The `@trame/game-system-dnd5e` package initially contained a minimal `applyLevel
 - Unified player and GM experience across asynchronous campaign preparation (`CampaignWorkspace`) and live table sessions (`HudDrawers.tsx`).
 
 ### Negative
-- Maintaining dual persistence channels (REST and CQRS) requires sharing a single pure state transition model and delegating persistence to an injected environment adapter.
+- Maintaining dual persistence channels (REST and CQRS) is mitigated by sharing a single pure state transition model and delegating persistence to an injected environment adapter.
