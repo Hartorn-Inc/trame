@@ -8,6 +8,10 @@ use thiserror::Error;
 pub enum TimelineError {
     #[error("Storage lock poisoned")]
     LockPoisoned,
+    /// Persistent storage rejected the operation. The field holds the cause for server logs;
+    /// `Display` stays generic because handlers echo it to clients.
+    #[error("storage backend error")]
+    Storage(String),
     #[error("Invalid limit: {0}")]
     InvalidLimit(String),
 }

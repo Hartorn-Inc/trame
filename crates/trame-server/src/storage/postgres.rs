@@ -364,6 +364,18 @@ impl SqlxPostgresStore {
         })
     }
 
+    /// Records `user_id` as the campaign's owning GM (`campaigns.gm_user_id`). Archive import
+    /// writes the campaign before the caller is known, so the import route calls this after.
+    pub async fn set_campaign_gm(&self, campaign_id: Uuid, user_id: Uuid) -> Result<(), String> {
+        sqlx::query("UPDATE campaigns SET gm_user_id = $2, updated_at = NOW() WHERE id = $1")
+            .bind(campaign_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Adds or updates a member in `campaign_members`.
     pub async fn upsert_campaign_member(
         &self,
@@ -1795,6 +1807,8 @@ impl CampaignImportTarget for SqlxPostgresStore {
     }
 
     async fn save_campaign(&self, campaign: &CampaignMetadata) -> Result<(), ArchiveError> {
+        // The archive carries no owner: the system GM satisfies the FK until the import
+        // route replaces it with the caller through `set_campaign_gm`.
         let gm_user_id = Uuid::from_u128(1);
         sqlx::query(
             "INSERT INTO users (id, email, display_name, is_ephemeral, role)
@@ -1979,36 +1993,69 @@ impl CampaignMembershipValidator for SqlxPostgresStore {
     }
 }
 
+/// UUIDv5 namespace for party journal row ids (`{campaign_id}:{handout_id}`).
+const JOURNAL_ROW_NAMESPACE: Uuid = Uuid::from_u128(0x6f1c_2a7e_93d4_4b58_a0e2_5c71_d8b9_4e36);
+
+/// Deterministic journal row id, so revealing the same handout again updates one row even
+/// when the handout id is a free-form slug such as `ancient-map`.
+pub fn journal_row_id(campaign_id: Uuid, handout_id: &str) -> Uuid {
+    Uuid::new_v5(
+        &JOURNAL_ROW_NAMESPACE,
+        format!("{campaign_id}:{handout_id}").as_bytes(),
+    )
+}
+
+/// Logs a party journal storage failure with ids only and wraps the cause.
+fn journal_error(op: &'static str, campaign_id: &str, err: impl std::fmt::Display) -> NotesError {
+    tracing::error!(op, campaign_id, error = %err, "party journal storage failure");
+    NotesError::Storage(err.to_string())
+}
+
+/// Logs a session timeline storage failure with ids only and wraps the cause.
+fn timeline_error(
+    op: &'static str,
+    campaign_id: &str,
+    session_num: u32,
+    err: impl std::fmt::Display,
+) -> TimelineError {
+    tracing::error!(op, campaign_id, session_num, error = %err, "session timeline storage failure");
+    TimelineError::Storage(err.to_string())
+}
+
 impl PartyJournalStorage for SqlxPostgresStore {
+    /// Upserts the entry with the revealing user (`entry.revealed_by`) as author. Repeat
+    /// reveals of the same `(campaign_id, handout_id)` replace the row and refresh `created_at`.
     fn insert_entry(&self, entry: PartyJournalEntry) -> Result<(), NotesError> {
         let pool = self.pool.clone();
         run_pg_blocking(async move {
-            let campaign_uuid =
-                Uuid::parse_str(&entry.campaign_id).unwrap_or_else(|_| Uuid::from_u128(1));
+            let cid = entry.campaign_id.as_str();
+            let fail = |err: &dyn std::fmt::Display| journal_error("insert_entry", cid, err);
+            let campaign_uuid = Uuid::parse_str(cid).map_err(|e| fail(&e))?;
+            let author_id = Uuid::parse_str(&entry.revealed_by).map_err(|e| fail(&e))?;
             Self::ensure_campaign_row_on_pool(&pool, campaign_uuid)
                 .await
-                .map_err(|_| NotesError::LockPoisoned)?;
-            let author_id = Uuid::from_u128(1);
-            let payload = serde_json::to_value(&entry).map_err(|_| NotesError::LockPoisoned)?;
-            let row_id = Uuid::parse_str(&entry.handout_id).unwrap_or_else(|_| Uuid::new_v4());
+                .map_err(|e| fail(&e))?;
+            let payload = serde_json::to_value(&entry).map_err(|e| fail(&e))?;
 
             sqlx::query(
                 "INSERT INTO party_journal_entries (id, campaign_id, session_num, author_user_id, title, body_markdown, payload)
                  VALUES ($1, $2, 1, $3, $4, $5, $6)
                  ON CONFLICT (id) DO UPDATE SET
+                   author_user_id = EXCLUDED.author_user_id,
                    title = EXCLUDED.title,
                    body_markdown = EXCLUDED.body_markdown,
-                   payload = EXCLUDED.payload",
+                   payload = EXCLUDED.payload,
+                   created_at = NOW()",
             )
-            .bind(row_id)
+            .bind(journal_row_id(campaign_uuid, &entry.handout_id))
             .bind(campaign_uuid)
             .bind(author_id)
             .bind(&entry.title)
             .bind(&entry.content)
-            .bind(payload)
+            .bind(&payload)
             .execute(&pool)
             .await
-            .map_err(|_| NotesError::LockPoisoned)?;
+            .map_err(|e| fail(&e))?;
             Ok(())
         })
     }
@@ -2017,7 +2064,8 @@ impl PartyJournalStorage for SqlxPostgresStore {
         let pool = self.pool.clone();
         let cid_str = campaign_id.to_string();
         run_pg_blocking(async move {
-            let campaign_uuid = Uuid::parse_str(&cid_str).unwrap_or_else(|_| Uuid::from_u128(1));
+            let fail = |err: &dyn std::fmt::Display| journal_error("list_entries", &cid_str, err);
+            let campaign_uuid = Uuid::parse_str(&cid_str).map_err(|e| fail(&e))?;
             let rows = sqlx::query(
                 "SELECT payload FROM party_journal_entries
                  WHERE campaign_id = $1
@@ -2026,7 +2074,7 @@ impl PartyJournalStorage for SqlxPostgresStore {
             .bind(campaign_uuid)
             .fetch_all(&pool)
             .await
-            .map_err(|_| NotesError::LockPoisoned)?;
+            .map_err(|e| fail(&e))?;
 
             let mut out = Vec::with_capacity(rows.len());
             for row in rows {
@@ -2047,7 +2095,7 @@ impl PartyJournalStorage for SqlxPostgresStore {
             let rows = sqlx::query("SELECT payload FROM party_journal_entries")
                 .fetch_all(&pool)
                 .await
-                .map_err(|_| NotesError::LockPoisoned)?;
+                .map_err(|e| journal_error("get_entry", "*", e))?;
 
             for row in rows {
                 if let Ok(payload) = row.try_get::<serde_json::Value, _>("payload")
@@ -2072,10 +2120,13 @@ impl TimelineStorage for SqlxPostgresStore {
         let pool = self.pool.clone();
         let cid_str = campaign_id.to_string();
         run_pg_blocking(async move {
-            let campaign_uuid = Uuid::parse_str(&cid_str).unwrap_or_else(|_| Uuid::from_u128(1));
+            let fail = |err: &dyn std::fmt::Display| {
+                timeline_error("append_event", &cid_str, session_num, err)
+            };
+            let campaign_uuid = Uuid::parse_str(&cid_str).map_err(|e| fail(&e))?;
             Self::ensure_campaign_row_on_pool(&pool, campaign_uuid)
                 .await
-                .map_err(|_| TimelineError::LockPoisoned)?;
+                .map_err(|e| fail(&e))?;
 
             let max_seq: Option<i64> = sqlx::query_scalar(
                 "SELECT MAX(sequence_num) FROM session_timeline_events
@@ -2085,7 +2136,7 @@ impl TimelineStorage for SqlxPostgresStore {
             .bind(session_num as i32)
             .fetch_one(&pool)
             .await
-            .map_err(|_| TimelineError::LockPoisoned)?;
+            .map_err(|e| fail(&e))?;
 
             let next_seq = (max_seq.unwrap_or(0) + 1).max(1) as u64;
             let timestamp = input
@@ -2099,7 +2150,7 @@ impl TimelineStorage for SqlxPostgresStore {
                 actor_id: input.actor_id.clone(),
                 payload: input.payload.clone(),
             };
-            let ev_json = serde_json::to_value(&ev).map_err(|_| TimelineError::LockPoisoned)?;
+            let ev_json = serde_json::to_value(&ev).map_err(|e| fail(&e))?;
 
             sqlx::query(
                 "INSERT INTO session_timeline_events (id, campaign_id, session_num, sequence_num, event_kind, description, payload)
@@ -2114,7 +2165,7 @@ impl TimelineStorage for SqlxPostgresStore {
             .bind(ev_json)
             .execute(&pool)
             .await
-            .map_err(|_| TimelineError::LockPoisoned)?;
+            .map_err(|e| fail(&e))?;
 
             Ok(ev)
         })
@@ -2131,7 +2182,10 @@ impl TimelineStorage for SqlxPostgresStore {
         let cid_str = campaign_id.to_string();
         let effective_limit = limit.clamp(1, 200);
         run_pg_blocking(async move {
-            let campaign_uuid = Uuid::parse_str(&cid_str).unwrap_or_else(|_| Uuid::from_u128(1));
+            let fail = |err: &dyn std::fmt::Display| {
+                timeline_error("get_timeline", &cid_str, session_num, err)
+            };
+            let campaign_uuid = Uuid::parse_str(&cid_str).map_err(|e| fail(&e))?;
             let rows = sqlx::query(
                 "SELECT payload FROM session_timeline_events
                  WHERE campaign_id = $1 AND session_num = $2 AND sequence_num > $3
@@ -2144,7 +2198,7 @@ impl TimelineStorage for SqlxPostgresStore {
             .bind((effective_limit + 1) as i64)
             .fetch_all(&pool)
             .await
-            .map_err(|_| TimelineError::LockPoisoned)?;
+            .map_err(|e| fail(&e))?;
 
             let mut events = Vec::with_capacity(rows.len());
             for row in rows {
