@@ -62,6 +62,39 @@ pub trait AssetStore: Send + Sync {
         key: &'a str,
         ttl: Duration,
     ) -> BoxFuture<'a, Result<String, AssetStoreError>>;
+
+    /// Checks a presigned GET (`exp` epoch seconds, hex `sig`) minted by this store.
+    /// Stores without signing support reject everything (fail closed).
+    fn verify_presigned_get(&self, _key: &str, _exp: u64, _sig_hex: &str) -> bool {
+        false
+    }
+}
+
+/// Verifies `sig_hex == hex(HMAC-SHA256(secret, "{key}:{exp}"))` in constant time and that
+/// `exp` (epoch seconds) is not in the past.
+pub fn verify_asset_signature(secret: &[u8], key: &str, exp: u64, sig_hex: &str) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(u64::MAX);
+    if exp < now || secret.is_empty() {
+        return false;
+    }
+    let key = key.trim_start_matches('/');
+    let expected = crate::auth::magic_link::hmac_sha256(secret, format!("{key}:{exp}").as_bytes());
+    let mut expected_hex = String::with_capacity(64);
+    for b in expected {
+        use std::fmt::Write;
+        let _ = write!(&mut expected_hex, "{b:02x}");
+    }
+    let given = sig_hex.as_bytes();
+    let wanted = expected_hex.as_bytes();
+    given.len() == wanted.len()
+        && given
+            .iter()
+            .zip(wanted)
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
 }
 
 /// Pure in-memory asset store with short-lived presigned token validation for tests and local runtime.
@@ -210,5 +243,9 @@ impl AssetStore for InMemoryAssetStore {
             );
             Ok(url)
         })
+    }
+
+    fn verify_presigned_get(&self, key: &str, exp: u64, sig_hex: &str) -> bool {
+        verify_asset_signature(&self.signing_secret, key, exp, sig_hex)
     }
 }

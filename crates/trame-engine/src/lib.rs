@@ -366,6 +366,7 @@ mod tests {
                     raw_damage: 28,
                     affinity: DamageAffinity::Resistant,
                     is_critical: false,
+                    damage_type: None,
                 },
             )
             .unwrap();

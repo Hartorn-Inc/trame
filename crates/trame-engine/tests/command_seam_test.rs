@@ -804,6 +804,7 @@ fn damage(token_id: Uuid, raw: i32) -> TrameCommand {
         raw_damage: raw,
         affinity: trame_engine::DamageAffinity::Normal,
         is_critical: false,
+        damage_type: None,
     }
 }
 
@@ -1244,6 +1245,7 @@ fn apply_damage_tracks_death_saves_and_enforces_ownership() {
                 raw_damage: c.raw,
                 affinity: trame_engine::DamageAffinity::Normal,
                 is_critical: c.critical,
+                damage_type: None,
             },
         );
 
@@ -1261,6 +1263,101 @@ fn apply_damage_tracks_death_saves_and_enforces_ownership() {
                 assert!(state.undo_stack.is_empty(), "case {} no undo", c.id);
             }
         }
+    }
+}
+
+#[test]
+fn typed_damage_derives_affinity_from_the_target_token() {
+    struct Case {
+        id: &'static str,
+        resist: &'static [&'static str],
+        immune: &'static [&'static str],
+        vulnerable: &'static [&'static str],
+        damage_type: Option<&'static str>,
+        claimed: trame_engine::DamageAffinity,
+        expected_hp: i32,
+    }
+    let to_vec = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let cases = [
+        Case {
+            id: "untyped_damage_uses_the_claimed_affinity",
+            resist: &["fire"],
+            immune: &[],
+            vulnerable: &[],
+            damage_type: None,
+            claimed: trame_engine::DamageAffinity::Normal,
+            expected_hp: 10,
+        },
+        Case {
+            id: "resistant_target_halves_typed_damage",
+            resist: &["fire"],
+            immune: &[],
+            vulnerable: &[],
+            damage_type: Some("Fire"),
+            claimed: trame_engine::DamageAffinity::Normal,
+            expected_hp: 15,
+        },
+        Case {
+            id: "immunity_beats_a_claimed_vulnerability",
+            resist: &[],
+            immune: &["poison"],
+            vulnerable: &[],
+            damage_type: Some("poison"),
+            claimed: trame_engine::DamageAffinity::Vulnerable,
+            expected_hp: 20,
+        },
+        Case {
+            id: "claimed_immunity_is_ignored_for_typed_damage",
+            resist: &[],
+            immune: &[],
+            vulnerable: &[],
+            damage_type: Some("cold"),
+            claimed: trame_engine::DamageAffinity::Immune,
+            expected_hp: 10,
+        },
+        Case {
+            id: "resistance_and_vulnerability_cancel_out",
+            resist: &["fire"],
+            immune: &[],
+            vulnerable: &["fire"],
+            damage_type: Some("fire"),
+            claimed: trame_engine::DamageAffinity::Normal,
+            expected_hp: 10,
+        },
+        Case {
+            id: "vulnerable_target_takes_double_typed_damage",
+            resist: &[],
+            immune: &[],
+            vulnerable: &["radiant"],
+            damage_type: Some("radiant"),
+            claimed: trame_engine::DamageAffinity::Resistant,
+            expected_hp: 0,
+        },
+    ];
+
+    for c in cases {
+        let mut target = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+        target.damage_resistances = to_vec(c.resist);
+        target.damage_immunities = to_vec(c.immune);
+        target.damage_vulnerabilities = to_vec(c.vulnerable);
+        let mut state = table(vec![target], vec![]);
+        state
+            .apply_command(
+                &gm(),
+                TrameCommand::ApplyDamage {
+                    token_id: HERO_ID,
+                    raw_damage: 10,
+                    affinity: c.claimed,
+                    is_critical: false,
+                    damage_type: c.damage_type.map(str::to_string),
+                },
+            )
+            .unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+        assert_eq!(
+            state.data.tokens[&HERO_ID].hp, c.expected_hp,
+            "case {}",
+            c.id
+        );
     }
 }
 

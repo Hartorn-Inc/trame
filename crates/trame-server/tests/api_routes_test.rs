@@ -6,6 +6,7 @@ use std::time::Instant;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+use trame_engine::geometry::{Point2D, WallKind, WallSegment};
 use trame_server::archive::importer::InMemoryCampaignStore;
 use trame_server::assets::store::InMemoryAssetStore;
 use trame_server::auth::magic_link::MagicLinkService;
@@ -51,6 +52,8 @@ fn create_test_app_state() -> (AppState, Arc<InMemoryMembershipValidator>) {
         db_healthy: Arc::new(AtomicBool::new(true)),
         map_storage: InMemoryMapStorage::new(),
         postgres_store: None,
+        campaign_data: Default::default(),
+        static_dir: None,
     };
     (state, membership)
 }
@@ -96,12 +99,11 @@ async fn test_campaign_maps_rbac_and_sanitization() {
         default_ground_elevation_ft: 0.0,
         revealed_to_players: true,
         spawn_points: vec![],
-        wall_segments: vec![trame_server::maps::WallSegment {
+        wall_segments: vec![WallSegment {
             id: Uuid::new_v4(),
-            p1: trame_server::maps::Point2D { x: 0.0, y: 0.0 },
-            p2: trame_server::maps::Point2D { x: 100.0, y: 0.0 },
-            wall_type: trame_server::maps::WallType::SecretDoor,
-            door_state: Some(trame_server::maps::DoorState::Closed),
+            a: Point2D::new(0.0, 0.0),
+            b: Point2D::new(100.0, 0.0),
+            kind: WallKind::SecretDoor { is_open: false },
             bottom_elevation_ft: 0.0,
             top_elevation_ft: 10.0,
             blocks_light: true,
@@ -192,9 +194,13 @@ async fn test_campaign_maps_rbac_and_sanitization() {
         serde_json::from_slice(&gm_body).unwrap();
     assert_eq!(gm_scenes.len(), 1);
     assert_eq!(
-        gm_scenes[0].wall_segments[0].wall_type,
-        trame_server::maps::WallType::SecretDoor
+        gm_scenes[0].wall_segments[0].kind,
+        WallKind::SecretDoor { is_open: false }
     );
+    let raw_gm: serde_json::Value = serde_json::from_slice(&gm_body).unwrap();
+    assert_eq!(raw_gm[0]["wall_segments"][0]["wall_type"], "SecretDoor");
+    assert_eq!(raw_gm[0]["wall_segments"][0]["door_state"], "Closed");
+    assert!(raw_gm[0]["wall_segments"][0]["p1"].is_object());
     assert_eq!(gm_scenes[0].staged_tokens.len(), 1);
     assert_eq!(gm_scenes[0].spatial_audio_emitters.len(), 1);
 
@@ -284,10 +290,7 @@ async fn test_campaign_maps_rbac_and_sanitization() {
     let player_scenes: Vec<trame_server::maps::CampaignMapScene> =
         serde_json::from_slice(&player_body).unwrap();
     assert_eq!(player_scenes.len(), 1);
-    assert_eq!(
-        player_scenes[0].wall_segments[0].wall_type,
-        trame_server::maps::WallType::Normal
-    );
+    assert_eq!(player_scenes[0].wall_segments[0].kind, WallKind::Normal);
     assert!(player_scenes[0].wall_segments[0].blocks_vision);
     assert_eq!(player_scenes[0].staged_tokens.len(), 0);
     assert_eq!(player_scenes[0].spatial_audio_emitters.len(), 0);

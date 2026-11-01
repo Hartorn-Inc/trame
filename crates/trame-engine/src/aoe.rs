@@ -41,6 +41,7 @@ use uuid::Uuid;
 
 /// Geometric primitive describing the unclipped 2.5D volume of an Area of Effect.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "shape", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AoeShape {
     /// 3D spherical volume centered at `(origin, origin_elevation_ft)`.
@@ -84,6 +85,7 @@ pub enum AoeShape {
 
 /// Ruleset selector determining how continuous geometric shapes map onto discrete grid squares (`01-TABLE-SPEC.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum GridDiscretizationMode {
     /// Standard 5e DMG: cell is affected if its center point `(cx, cy)` is inside the clipped shape.
@@ -98,6 +100,7 @@ pub enum GridDiscretizationMode {
 
 /// Complete specification of a projected or persistent Area of Effect on the tabletop.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AoeTemplate {
     /// Unique identifier for this AoE instance.
     pub id: Uuid,
@@ -117,6 +120,7 @@ pub struct AoeTemplate {
 
 /// Discrete 2D grid coordinate `(col, row)` indexing a single tabletop square.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GridCell {
     /// Zero-based horizontal column index (can be negative off-canvas).
     pub col: i32,
@@ -126,6 +130,7 @@ pub struct GridCell {
 
 /// Lightweight spatial projection of a token used during AoE target evaluation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TokenSpatialRef {
     /// Unique identifier of the token.
     pub id: Uuid,

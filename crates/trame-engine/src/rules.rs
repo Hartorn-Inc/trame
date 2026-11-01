@@ -112,6 +112,7 @@ impl FormulaError {
 
 /// Canonical execution phase within the 5-phase attribute modifier pipeline (`02-GAME-ENGINE-AND-DND5E.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ModifierPhase {
     /// Phase 1: Raises the initial base value if `modifier.value > base` (e.g., *Barkskin* or *Mage Armor* base AC).
@@ -130,6 +131,7 @@ pub enum ModifierPhase {
 
 /// Single attribute modification entry belonging to an `ActiveEffect`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AttributeModifier {
     /// Dot-separated attribute path targeted by this modifier (e.g., `"ac.base"`, `"abilities.str.score"`).
     pub target: String,
@@ -147,6 +149,7 @@ pub struct AttributeModifier {
 
 /// Bonus, penalty, condition, or equipment effect attached to a token or actor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ActiveEffect {
     /// Unique identifier for this active effect instance.
     pub id: Uuid,
@@ -658,6 +661,7 @@ fn eval_builtin_fn(name: &str, args: &[f64]) -> Result<f64, FormulaError> {
 
 /// Target affinity toward a specific damage type (`02-GAME-ENGINE-AND-DND5E.md` §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum DamageAffinity {
     /// Unmodified damage (`final_damage = raw`).
@@ -673,6 +677,7 @@ pub enum DamageAffinity {
 /// Complete outcome of applying damage to a token, including Temporary HP depletion,
 /// Instant Death detection, and Concentration saving throw DC calculation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DamageResolution {
     /// Post-mitigation damage points (`>= 0`) after applying `DamageAffinity`.
     pub final_damage: i32,

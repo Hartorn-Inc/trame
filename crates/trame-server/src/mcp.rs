@@ -180,6 +180,95 @@ async fn authorize_campaign_gm(
     Ok(())
 }
 
+/// Wraps the `schemars` schema of `TrameCommand` into a tool `inputSchema`: the command
+/// definitions move to the root `$defs` (so every `#/$defs/...` reference resolves from the
+/// tool schema root) and `command_slot(ref)` places the `TrameCommand` reference.
+fn tool_schema(
+    required: &[&str],
+    command_slot: impl FnOnce(Value) -> (String, Value),
+    extra: Value,
+) -> Value {
+    let mut root =
+        serde_json::to_value(schemars::schema_for!(TrameCommand)).unwrap_or_else(|_| json!({}));
+    let mut defs = root
+        .as_object_mut()
+        .and_then(|o| o.remove("$defs"))
+        .unwrap_or_else(|| json!({}));
+    if let Some(o) = root.as_object_mut() {
+        o.remove("$schema");
+    }
+    defs["TrameCommand"] = root;
+    let (slot_name, slot_schema) = command_slot(json!({ "$ref": "#/$defs/TrameCommand" }));
+    let mut properties = json!({
+        "campaign_id": { "type": "string", "format": "uuid" },
+        "summary": { "type": "string" },
+    });
+    properties[slot_name] = slot_schema;
+    if let (Some(props), Some(extra)) = (properties.as_object_mut(), extra.as_object()) {
+        props.extend(extra.clone());
+    }
+    json!({
+        "type": "object",
+        "required": required,
+        "properties": properties,
+        "$defs": defs,
+    })
+}
+
+/// `tools/list` result; command schemas are generated from `TrameCommand` (A13).
+pub fn tools_list() -> Value {
+    let staging_flag = json!({
+        "mcp_staging_mode": {
+            "type": "boolean",
+            "default": false,
+            "description": "Stage instead of executing; forced on when the campaign setting is enabled."
+        }
+    });
+    let batch = |r: Value| {
+        (
+            "commands".to_string(),
+            json!({ "type": "array", "minItems": 1, "maxItems": MAX_MCP_BATCH_COMMANDS, "items": r }),
+        )
+    };
+    json!({
+        "tools": [
+            {
+                "name": "trame.dispatch_command",
+                "description": "Dispatches a single authoritative TrameCommand to a campaign room (staged when mcp_staging_mode or the campaign staging setting is on).",
+                "inputSchema": tool_schema(
+                    &["campaign_id", "command"],
+                    |r| ("command".to_string(), r),
+                    staging_flag.clone(),
+                ),
+            },
+            {
+                "name": "mcp.execute_batch",
+                "description": "Applies up to 25 TrameCommands atomically as one undoable step (staged when mcp_staging_mode or the campaign staging setting is on).",
+                "inputSchema": tool_schema(&["campaign_id", "commands"], batch, staging_flag),
+            },
+            {
+                "name": "mcp.stage_encounter",
+                "description": "Stages an encounter batch (up to 25 TrameCommands) as a dry-run McpStagingProposal for GM approval on the tabletop.",
+                "inputSchema": tool_schema(&["campaign_id", "commands"], batch, json!({})),
+            }
+        ]
+    })
+}
+
+/// Fills `ActivateScene` payloads from storage so staged and executed commands never carry
+/// client-supplied geometry.
+async fn resolve_commands(
+    state: &AppState,
+    campaign_id: Uuid,
+    commands: Vec<TrameCommand>,
+) -> Result<Vec<TrameCommand>, String> {
+    let mut out = Vec::with_capacity(commands.len());
+    for cmd in commands {
+        out.push(crate::maps::resolve_scene_command(state, campaign_id, cmd).await?);
+    }
+    Ok(out)
+}
+
 /// Axum handler for `POST /api/v1/mcp` implementing JSON-RPC 2.0 over HTTP.
 pub async fn mcp_jsonrpc_handler(
     State(state): State<AppState>,
@@ -235,66 +324,11 @@ pub async fn mcp_jsonrpc_handler(
             )
                 .into_response()
         }
-        "tools/list" => {
-            let result = json!({
-                "tools": [
-                    {
-                        "name": "trame.dispatch_command",
-                        "description": "Dispatches a single authoritative TrameCommand to a campaign room (or stages it if mcp_staging_mode is true).",
-                        "inputSchema": {
-                            "type": "object",
-                            "required": ["campaign_id", "command"],
-                            "properties": {
-                                "campaign_id": { "type": "string", "format": "uuid" },
-                                "command": { "type": "object" },
-                                "mcp_staging_mode": { "type": "boolean", "default": false },
-                                "summary": { "type": "string" }
-                            }
-                        }
-                    },
-                    {
-                        "name": "mcp.execute_batch",
-                        "description": "Executes up to 25 authoritative TrameCommands in sequence on a campaign room (or stages them if mcp_staging_mode is true).",
-                        "inputSchema": {
-                            "type": "object",
-                            "required": ["campaign_id", "commands"],
-                            "properties": {
-                                "campaign_id": { "type": "string", "format": "uuid" },
-                                "commands": {
-                                    "type": "array",
-                                    "maxItems": MAX_MCP_BATCH_COMMANDS,
-                                    "items": { "type": "object" }
-                                },
-                                "mcp_staging_mode": { "type": "boolean", "default": false },
-                                "summary": { "type": "string" }
-                            }
-                        }
-                    },
-                    {
-                        "name": "mcp.stage_encounter",
-                        "description": "Stages an encounter batch (up to 25 TrameCommands) as a dry-run McpStagingProposal for GM approval on the tabletop.",
-                        "inputSchema": {
-                            "type": "object",
-                            "required": ["campaign_id", "commands"],
-                            "properties": {
-                                "campaign_id": { "type": "string", "format": "uuid" },
-                                "summary": { "type": "string" },
-                                "commands": {
-                                    "type": "array",
-                                    "maxItems": MAX_MCP_BATCH_COMMANDS,
-                                    "items": { "type": "object" }
-                                }
-                            }
-                        }
-                    }
-                ]
-            });
-            (
-                StatusCode::OK,
-                Json(JsonRpcResponse::success(req_id, result)),
-            )
-                .into_response()
-        }
+        "tools/list" => (
+            StatusCode::OK,
+            Json(JsonRpcResponse::success(req_id, tools_list())),
+        )
+            .into_response(),
         "tools/call" => handle_tools_call(&state, &caller, req_id, params).await,
         "resources/read" => handle_resources_read(&state, &caller, req_id, params).await,
         other => (
@@ -368,229 +402,153 @@ async fn handle_tools_call(
             .into_response();
     }
 
-    let staging_flag = args
+    let rpc_error = |code: i32, msg: String| {
+        (
+            StatusCode::OK,
+            Json(JsonRpcResponse::error(req_id.clone(), code, msg)),
+        )
+            .into_response()
+    };
+
+    let raw_commands: Vec<Value> = match tool_name {
+        "trame.dispatch_command" => match args.get("command") {
+            Some(c) => vec![c.clone()],
+            None => return rpc_error(-32602, "missing 'command' argument".to_string()),
+        },
+        "mcp.execute_batch" | "mcp.stage_encounter" => {
+            match args.get("commands").and_then(Value::as_array) {
+                Some(arr) => arr.clone(),
+                None => return rpc_error(-32602, "missing 'commands' array argument".to_string()),
+            }
+        }
+        other => return rpc_error(-32601, format!("unknown tool: {other}")),
+    };
+    if raw_commands.is_empty() || raw_commands.len() > MAX_MCP_BATCH_COMMANDS {
+        return rpc_error(
+            -32602,
+            format!(
+                "batch must contain between 1 and {MAX_MCP_BATCH_COMMANDS} commands (got {})",
+                raw_commands.len()
+            ),
+        );
+    }
+    let mut commands = Vec::with_capacity(raw_commands.len());
+    for raw in raw_commands {
+        match serde_json::from_value::<TrameCommand>(raw) {
+            Ok(c) => commands.push(c),
+            Err(e) => return rpc_error(-32602, format!("invalid TrameCommand payload: {e}")),
+        }
+    }
+    let commands = match resolve_commands(state, campaign_id, commands).await {
+        Ok(c) => c,
+        Err(e) => return rpc_error(-32602, e),
+    };
+
+    let setting_staging = match crate::campaigns::load_settings(state, campaign_id).await {
+        Ok(s) => s.mcp_staging_mode,
+        Err(e) => return rpc_error(-32603, e),
+    };
+    let requested_staging = args
         .get("mcp_staging_mode")
         .or_else(|| args.get("staging"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let stage = tool_name == "mcp.stage_encounter" || requested_staging || setting_staging;
 
-    match tool_name {
-        "trame.dispatch_command" => {
-            let Some(cmd_val) = args.get("command").cloned() else {
-                return (
-                    StatusCode::OK,
-                    Json(JsonRpcResponse::error(
-                        req_id,
-                        -32602,
-                        "missing 'command' argument",
-                    )),
-                )
-                    .into_response();
-            };
-            let cmd: TrameCommand = match serde_json::from_value(cmd_val) {
-                Ok(c) => c,
-                Err(e) => {
-                    return (
-                        StatusCode::OK,
-                        Json(JsonRpcResponse::error(
-                            req_id,
-                            -32602,
-                            format!("invalid TrameCommand payload: {e}"),
-                        )),
-                    )
-                        .into_response();
-                }
-            };
-
-            let room = match state.lease_manager.get_or_wake_room(campaign_id).await {
-                Ok(r) => r,
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(JsonRpcResponse::error(req_id, -32603, e.to_string())),
-                    )
-                        .into_response();
-                }
-            };
-
-            if staging_flag {
-                let summary = args
-                    .get("summary")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Staged MCP command")
-                    .to_string();
-                let proposal = McpStagingProposal {
-                    proposal_id: Uuid::new_v4(),
-                    summary,
-                    commands: vec![cmd],
-                };
-                match room.stage_mcp_proposal(proposal).await {
-                    Ok(staged) => {
-                        let out = json!({
-                            "staged": true,
-                            "proposal_id": staged.proposal_id,
-                            "proposal": staged,
-                            "content": [{ "type": "text", "text": format!("Staged proposal {}", staged.proposal_id) }]
-                        });
-                        (StatusCode::OK, Json(JsonRpcResponse::success(req_id, out)))
-                            .into_response()
-                    }
-                    Err(e) => (
-                        StatusCode::OK,
-                        Json(JsonRpcResponse::error(req_id, -32603, e.to_string())),
-                    )
-                        .into_response(),
-                }
-            } else {
-                let actor = CommandActor {
-                    user_id: caller.user_id,
-                    role: CampaignRole::Gm,
-                };
-                match room.dispatch_direct_command(actor, cmd).await {
-                    Ok((seq_id, events)) => {
-                        let out = json!({
-                            "staged": false,
-                            "seq_id": seq_id,
-                            "events": events,
-                            "content": [{ "type": "text", "text": format!("Executed command at seq_id {seq_id}") }]
-                        });
-                        (StatusCode::OK, Json(JsonRpcResponse::success(req_id, out)))
-                            .into_response()
-                    }
-                    Err(e) => (
-                        StatusCode::OK,
-                        Json(JsonRpcResponse::error(req_id, -32000, e.to_string())),
-                    )
-                        .into_response(),
-                }
-            }
+    let room = match state.lease_manager.get_or_wake_room(campaign_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonRpcResponse::error(req_id, -32603, e.to_string())),
+            )
+                .into_response();
         }
-        "mcp.execute_batch" | "mcp.stage_encounter" => {
-            let force_stage = tool_name == "mcp.stage_encounter" || staging_flag;
-            let Some(cmds_arr) = args.get("commands").and_then(Value::as_array) else {
-                return (
-                    StatusCode::OK,
-                    Json(JsonRpcResponse::error(
-                        req_id,
-                        -32602,
-                        "missing 'commands' array argument",
-                    )),
-                )
-                    .into_response();
-            };
+    };
+    let summary = args
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("MCP {tool_name} ({} commands)", commands.len()));
 
-            if cmds_arr.is_empty() || cmds_arr.len() > MAX_MCP_BATCH_COMMANDS {
-                return (
-                    StatusCode::OK,
-                    Json(JsonRpcResponse::error(
-                        req_id,
-                        -32602,
-                        format!(
-                            "batch must contain between 1 and {MAX_MCP_BATCH_COMMANDS} commands (got {})",
-                            cmds_arr.len()
-                        ),
-                    )),
-                )
-                    .into_response();
-            }
-
-            let mut parsed_cmds = Vec::with_capacity(cmds_arr.len());
-            for raw in cmds_arr {
-                match serde_json::from_value::<TrameCommand>(raw.clone()) {
-                    Ok(c) => parsed_cmds.push(c),
-                    Err(e) => {
-                        return (
-                            StatusCode::OK,
-                            Json(JsonRpcResponse::error(
-                                req_id,
-                                -32602,
-                                format!("invalid TrameCommand in batch: {e}"),
-                            )),
-                        )
-                            .into_response();
-                    }
-                }
-            }
-
-            let room = match state.lease_manager.get_or_wake_room(campaign_id).await {
-                Ok(r) => r,
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(JsonRpcResponse::error(req_id, -32603, e.to_string())),
-                    )
-                        .into_response();
-                }
-            };
-
-            if force_stage {
-                let summary = args
-                    .get("summary")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Staged MCP encounter batch")
-                    .to_string();
-                let proposal = McpStagingProposal {
-                    proposal_id: Uuid::new_v4(),
-                    summary,
-                    commands: parsed_cmds,
-                };
-                match room.stage_mcp_proposal(proposal).await {
-                    Ok(staged) => {
-                        let out = json!({
-                            "staged": true,
-                            "proposal_id": staged.proposal_id,
-                            "proposal": staged,
-                            "content": [{ "type": "text", "text": format!("Staged encounter proposal {}", staged.proposal_id) }]
-                        });
-                        (StatusCode::OK, Json(JsonRpcResponse::success(req_id, out)))
-                            .into_response()
-                    }
-                    Err(e) => (
-                        StatusCode::OK,
-                        Json(JsonRpcResponse::error(req_id, -32603, e.to_string())),
-                    )
-                        .into_response(),
-                }
-            } else {
-                let actor = CommandActor {
-                    user_id: caller.user_id,
-                    role: CampaignRole::Gm,
-                };
-                let mut last_seq_id = 0u64;
-                let mut all_events = Vec::new();
-                for cmd in parsed_cmds {
-                    match room.dispatch_direct_command(actor.clone(), cmd).await {
-                        Ok((seq, evs)) => {
-                            last_seq_id = seq;
-                            all_events.extend(evs);
-                        }
-                        Err(e) => {
-                            return (
-                                StatusCode::OK,
-                                Json(JsonRpcResponse::error(req_id, -32000, e.to_string())),
-                            )
-                                .into_response();
-                        }
-                    }
-                }
+    if stage {
+        let proposal = McpStagingProposal {
+            proposal_id: Uuid::new_v4(),
+            summary,
+            commands,
+        };
+        return match room.stage_mcp_proposal(proposal).await {
+            Ok(staged) => {
                 let out = json!({
-                    "staged": false,
-                    "seq_id": last_seq_id,
-                    "events": all_events,
-                    "content": [{ "type": "text", "text": format!("Executed batch up to seq_id {last_seq_id}") }]
+                    "staged": true,
+                    "proposal_id": staged.proposal_id,
+                    "proposal": staged,
+                    "content": [{ "type": "text", "text": format!("Staged proposal {}", staged.proposal_id) }]
                 });
                 (StatusCode::OK, Json(JsonRpcResponse::success(req_id, out))).into_response()
             }
+            Err(e) => rpc_error(-32603, e.to_string()),
+        };
+    }
+
+    let actor = CommandActor {
+        user_id: caller.user_id,
+        role: CampaignRole::Gm,
+    };
+    let result = if tool_name == "trame.dispatch_command" {
+        let cmd = commands.into_iter().next().expect("one command");
+        room.dispatch_direct_command(actor, cmd).await
+    } else {
+        room.dispatch_batch(actor, commands, summary).await
+    };
+    match result {
+        Ok((seq_id, events)) => {
+            let out = json!({
+                "staged": false,
+                "seq_id": seq_id,
+                "events": events,
+                "content": [{ "type": "text", "text": format!("Executed at seq_id {seq_id}") }]
+            });
+            (StatusCode::OK, Json(JsonRpcResponse::success(req_id, out))).into_response()
         }
-        other => (
-            StatusCode::OK,
-            Json(JsonRpcResponse::error(
-                req_id,
-                -32601,
-                format!("unknown tool: {other}"),
-            )),
-        )
-            .into_response(),
+        Err(e) => rpc_error(-32000, e.to_string()),
+    }
+}
+
+/// Pagination cursor parsed from a `trame://campaigns/{id}/timeline?...` URI.
+///
+/// Unknown or malformed parameters fall back to their defaults so an agent
+/// asking for `?after=abc` still gets the first page instead of an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimelineCursor {
+    /// Session number (`session_num`), defaults to `1`.
+    pub session_num: u32,
+    /// Exclusive `seq_id` lower bound (`after`), defaults to `0`.
+    pub after: u64,
+    /// Page size (`limit`), defaults to `100`; storage clamps it to `1..=200`.
+    pub limit: usize,
+}
+
+impl TimelineCursor {
+    /// Parses a raw `a=1&b=2` query string (without the leading `?`).
+    pub fn parse(query: &str) -> Self {
+        let mut cursor = Self {
+            session_num: 1,
+            after: 0,
+            limit: 100,
+        };
+        for pair in query.split('&') {
+            let Some((key, value)) = pair.split_once('=') else {
+                continue;
+            };
+            match key {
+                "session_num" => cursor.session_num = value.parse().unwrap_or(cursor.session_num),
+                "after" => cursor.after = value.parse().unwrap_or(cursor.after),
+                "limit" => cursor.limit = value.parse().unwrap_or(cursor.limit),
+                _ => {}
+            }
+        }
+        cursor
     }
 }
 
@@ -624,7 +582,8 @@ async fn handle_resources_read(
             .into_response();
     };
 
-    let parts: Vec<&str> = rest.split('/').collect();
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let parts: Vec<&str> = path.split('/').collect();
     if parts.len() != 2 {
         return (
             StatusCode::OK,
@@ -666,12 +625,23 @@ async fn handle_resources_read(
 
     match parts[1] {
         "timeline" => {
-            let entries = state
-                .timeline_storage
-                .get_timeline(&campaign_id.to_string(), 1, 0, 100)
-                .map(|resp| resp.events)
-                .unwrap_or_default();
-            let text_json = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
+            let cursor = TimelineCursor::parse(query);
+            let page = match state.timeline_storage.get_timeline(
+                &campaign_id.to_string(),
+                cursor.session_num,
+                cursor.after,
+                cursor.limit,
+            ) {
+                Ok(page) => page,
+                Err(e) => {
+                    return (
+                        StatusCode::OK,
+                        Json(JsonRpcResponse::error(req_id, -32603, e.to_string())),
+                    )
+                        .into_response();
+                }
+            };
+            let text_json = serde_json::to_string(&page).unwrap_or_else(|_| "{}".to_string());
             let result = json!({
                 "contents": [{
                     "uri": uri,

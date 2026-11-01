@@ -35,7 +35,8 @@
 //!     ├── 1. Resolve port, instance id, and optional `DATABASE_URL`.
 //!     ├── 2. Build `RoomLeaseManager` over the PostgreSQL or in-memory WAL.
 //!     ├── 3. Construct the Axum `Router` and bind `0.0.0.0:{port}`.
-//!     └── 4. Serve with `with_graceful_shutdown(shutdown_handler)`.
+//!     ├── 4. Spawn the `Idle-Lease` sweeper (`tokio::time::interval`, 1 min).
+//!     └── 5. Serve with `with_graceful_shutdown(shutdown_handler)`.
 //! ============================================================================
 
 use std::net::SocketAddr;
@@ -63,23 +64,35 @@ const SNAPSHOT_INTERVAL_COMMANDS: u64 = 50;
 /// `Idle-Lease` hibernation threshold in milliseconds (15 minutes).
 const IDLE_LEASE_MS: u64 = 900_000;
 
+/// Period of the `Idle-Lease` sweeper tick in milliseconds (1 minute), so a room
+/// hibernates at most one tick after its 15-minute lease lapses.
+const IDLE_SWEEP_PERIOD_MS: u64 = 60_000;
+
+/// Installs the global `tracing` subscriber. `RUST_LOG` selects levels
+/// (e.g. `RUST_LOG=trame_server=debug`); unset defaults to `info`.
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
 /// Coordinates graceful termination upon receiving SIGTERM or SIGINT.
 pub async fn shutdown_handler(lease_manager: Arc<RoomLeaseManager>) {
     wait_for_signal().await;
 
     IS_SHUTTING_DOWN.store(true, Ordering::Release);
-    eprintln!("Shutdown signal received: rejecting new connections");
+    tracing::info!("shutdown signal received: rejecting new connections");
 
     let timeout = Duration::from_secs(SHUTDOWN_TIMEOUT_SECONDS);
     match lease_manager.hibernate_all(timeout).await {
         Ok(hibernated) => {
-            eprintln!(
-                "Scale-to-zero hibernation completed: {} room(s) cleanly saved",
-                hibernated.len()
+            tracing::info!(
+                rooms = hibernated.len(),
+                "scale-to-zero hibernation completed"
             );
         }
         Err(err) => {
-            eprintln!("Warning: hibernation completed with error: {err}");
+            tracing::warn!(error = %err, "hibernation completed with error");
         }
     }
 }
@@ -94,8 +107,8 @@ async fn wait_for_signal() {
         let mut sigint =
             signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
         tokio::select! {
-            _ = sigterm.recv() => eprintln!("Received SIGTERM"),
-            _ = sigint.recv() => eprintln!("Received SIGINT"),
+            _ = sigterm.recv() => tracing::info!("received SIGTERM"),
+            _ = sigint.recv() => tracing::info!("received SIGINT"),
         }
     }
 
@@ -104,21 +117,22 @@ async fn wait_for_signal() {
         tokio::signal::ctrl_c()
             .await
             .expect("failed to listen for ctrl_c");
-        eprintln!("Received Ctrl+C interrupt");
+        tracing::info!("received Ctrl+C interrupt");
     }
 }
 
 #[tokio::main]
 async fn main() {
+    init_tracing();
     let config = match ServerConfig::from_env() {
         Ok(config) => config,
         Err(err) => {
-            eprintln!("{err}");
+            tracing::error!("{err}");
             std::process::exit(1);
         }
     };
     if config.env == RuntimeEnv::Dev {
-        eprintln!("TRAME_ENV=dev: missing secrets use public development defaults");
+        tracing::warn!("TRAME_ENV=dev: missing secrets use public development defaults");
     }
 
     let port: u16 = std::env::var("TRAME_PORT")
@@ -144,7 +158,7 @@ async fn main() {
                 .expect("Failed to connect and migrate PostgreSQL store")
                 .with_signing_secret(config.secrets.asset_signing_secret.clone()),
         );
-        eprintln!("TRAME Server connected to PostgreSQL and applied migrations");
+        tracing::info!("connected to PostgreSQL and applied migrations");
         let lease_manager = Arc::new(RoomLeaseManager::new(
             store.clone(),
             SNAPSHOT_INTERVAL_COMMANDS,
@@ -154,9 +168,7 @@ async fn main() {
             build_router_with_postgres_store(store, lease_manager.clone(), instance_id, &config);
         (app, lease_manager)
     } else {
-        eprintln!(
-            "DATABASE_URL not set; starting TRAME Server with in-memory fallback persistence"
-        );
+        tracing::warn!("DATABASE_URL not set; using in-memory fallback persistence");
         let wal = Arc::new(InMemoryWalStorage::new());
         let lease_manager = Arc::new(RoomLeaseManager::new(
             wal,
@@ -184,7 +196,8 @@ async fn main() {
         .await
         .expect("Failed to bind TCP listener");
 
-    eprintln!("TRAME Server listening on http://{addr}");
+    let _sweeper = lease_manager.spawn_idle_sweeper(Duration::from_millis(IDLE_SWEEP_PERIOD_MS));
+    tracing::info!(%addr, "TRAME server listening");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -192,5 +205,5 @@ async fn main() {
     .with_graceful_shutdown(shutdown_handler(lease_manager))
     .await
     .expect("Axum server error");
-    eprintln!("TRAME Server cleanly terminated");
+    tracing::info!("TRAME server cleanly terminated");
 }

@@ -141,6 +141,8 @@ pub struct SecurityPolicy {
     pub trust_forwarded_for: bool,
     /// Credential endpoint rate limiter.
     pub rate_limiter: AuthRateLimiter,
+    /// Normalized `TRAME_PUBLIC_ORIGIN` prefixed to invite URLs; `None` yields relative URLs.
+    pub public_origin: Option<String>,
 }
 
 impl Default for SecurityPolicy {
@@ -152,6 +154,7 @@ impl Default for SecurityPolicy {
             ws_max_message_bytes: DEFAULT_WS_MAX_MESSAGE_BYTES,
             trust_forwarded_for: false,
             rate_limiter: AuthRateLimiter::default(),
+            public_origin: None,
         }
     }
 }

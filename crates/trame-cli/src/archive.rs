@@ -1006,6 +1006,8 @@ mod tests {
             db_healthy: Arc::new(AtomicBool::new(true)),
             map_storage: InMemoryMapStorage::new(),
             postgres_store: None,
+            campaign_data: Default::default(),
+            static_dir: None,
         };
 
         seed_campaign_for_export(
