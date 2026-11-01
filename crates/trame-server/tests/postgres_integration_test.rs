@@ -168,6 +168,108 @@ async fn pg_actor_put_returns_409_on_stale_version() {
     }
 }
 
+fn scene_set(expected_version: i64) -> Value {
+    json!({
+        "expected_version": expected_version,
+        "scenes": [{
+            "id": Uuid::new_v4(),
+            "campaign_id": Uuid::nil(),
+            "name": "Cragmaw Hideout",
+            "grid_size_px": 70,
+            "grid_cell_distance_ft": 5.0,
+            "width_px": 1400,
+            "height_px": 1400,
+            "revealed_to_players": false
+        }]
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_scene_put_enforces_expected_version() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    let gm = account(&store).await;
+    let (campaign_id, _) = create_campaign_with_actor(&app, &gm).await;
+    let uri = format!("/api/v1/campaigns/{campaign_id}/maps");
+
+    let (status, body) = call_json(&app, "GET", &uri, &gm, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], json!(0));
+
+    // (case, expected_version, status, version after)
+    let cases = [
+        ("version_zero_accepted", 0, StatusCode::OK, 1),
+        ("replayed_version_conflicts", 0, StatusCode::CONFLICT, 1),
+        ("next_version_accepted", 1, StatusCode::OK, 2),
+    ];
+    for (case, expected_version, status_want, version_after) in cases {
+        let (status, body) = call_json(&app, "PUT", &uri, &gm, scene_set(expected_version)).await;
+        assert_eq!(status, status_want, "case {case}: {body}");
+        if status_want == StatusCode::CONFLICT {
+            assert_eq!(body["code"], json!("VERSION_CONFLICT"), "case {case}");
+            assert_eq!(body["current_version"], json!(version_after), "case {case}");
+        } else {
+            assert_eq!(body["version"], json!(version_after), "case {case}");
+        }
+    }
+
+    let (a, b) = tokio::join!(
+        call_json(&app, "PUT", &uri, &gm, scene_set(2)),
+        call_json(&app, "PUT", &uri, &gm, scene_set(2)),
+    );
+    let statuses = [a.0, b.0];
+    assert!(
+        statuses.contains(&StatusCode::OK) && statuses.contains(&StatusCode::CONFLICT),
+        "concurrent saves: {a:?} {b:?}"
+    );
+    let (_, body) = call_json(&app, "GET", &uri, &gm, Value::Null).await;
+    assert_eq!(body["version"], json!(3));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_archive_import_starts_scene_set_at_version_zero() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    let gm = account(&store).await;
+    let (campaign_id, _) = create_campaign_with_actor(&app, &gm).await;
+    let maps = format!("/api/v1/campaigns/{campaign_id}/maps");
+    let (status, body) = call_json(&app, "PUT", &maps, &gm, scene_set(0)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, archive) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/campaigns/{campaign_id}/export"),
+        &gm,
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, bytes) = call(
+        &app,
+        "POST",
+        "/api/v1/campaigns/import",
+        &gm,
+        Body::from(archive),
+    )
+    .await;
+    let imported: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{imported}");
+    let new_maps = format!(
+        "/api/v1/campaigns/{}/maps",
+        imported["campaign_id"].as_str().unwrap()
+    );
+
+    let (status, body) = call_json(&app, "GET", &new_maps, &gm, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], json!(0));
+    let (status, body) = call_json(&app, "PUT", &new_maps, &gm, scene_set(0)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], json!(1));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn pg_archive_round_trip_restores_actors() {
     let Some((app, store)) = harness().await else {

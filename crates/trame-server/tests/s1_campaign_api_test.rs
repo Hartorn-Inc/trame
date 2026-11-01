@@ -1163,6 +1163,7 @@ async fn a26_uvtt_import_is_gm_only_and_creates_hidden_scene() {
             assert_eq!(scene["name"], json!("Cave"), "case {case}");
             assert_eq!(scene["revealed_to_players"], json!(false), "case {case}");
             assert_eq!(scene["width_px"], json!(64), "case {case}");
+            assert_eq!(resp["version"], json!(1), "case {case}");
             assert_eq!(
                 scene["wall_segments"].as_array().unwrap().len(),
                 1,
@@ -1171,6 +1172,209 @@ async fn a26_uvtt_import_is_gm_only_and_creates_hidden_scene() {
         }
     }
     assert_eq!(h.state.map_storage.get_campaign_maps(campaign_id).len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// A26b — Scene-set optimistic concurrency (ADR-0037 shape)
+// ---------------------------------------------------------------------------
+
+async fn get_scene_set(app: &Router, campaign_id: Uuid, cookie: &str) -> Value {
+    let uri = format!("/api/v1/campaigns/{campaign_id}/maps");
+    let (status, body) = call(app, "GET", &uri, Some(cookie), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+async fn put_scene_set(
+    app: &Router,
+    campaign_id: Uuid,
+    cookie: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    let uri = format!("/api/v1/campaigns/{campaign_id}/maps");
+    call(app, "PUT", &uri, Some(cookie), body).await
+}
+
+/// GM campaign whose scene set has been saved `prior_saves` times (version == prior_saves).
+async fn campaign_with_saves(h: &Harness, app: &Router, prior_saves: i64) -> (Uuid, String) {
+    let (campaign_id, _, gm) = h.campaign(app).await;
+    for v in 0..prior_saves {
+        let scene = stored_scene(campaign_id, &[]);
+        let (status, body) = put_scene_set(
+            app,
+            campaign_id,
+            &gm,
+            json!({ "expected_version": v, "scenes": [scene] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "seed save {v}: {body}");
+    }
+    (campaign_id, gm)
+}
+
+#[tokio::test]
+async fn a26b_scene_put_enforces_expected_version() {
+    // (case, prior saves, expected_version field, status, error code, version after)
+    let cases: [(&str, i64, Option<Value>, StatusCode, Option<&str>, i64); 6] = [
+        (
+            "first_save_from_version_zero",
+            0,
+            Some(json!(0)),
+            StatusCode::OK,
+            None,
+            1,
+        ),
+        (
+            "matching_version_after_two_saves",
+            2,
+            Some(json!(2)),
+            StatusCode::OK,
+            None,
+            3,
+        ),
+        (
+            "missing_expected_version",
+            1,
+            None,
+            StatusCode::BAD_REQUEST,
+            Some("MISSING_EXPECTED_VERSION"),
+            1,
+        ),
+        (
+            "null_expected_version",
+            1,
+            Some(Value::Null),
+            StatusCode::BAD_REQUEST,
+            Some("MISSING_EXPECTED_VERSION"),
+            1,
+        ),
+        (
+            "stale_expected_version",
+            2,
+            Some(json!(1)),
+            StatusCode::CONFLICT,
+            Some("VERSION_CONFLICT"),
+            2,
+        ),
+        (
+            "future_expected_version",
+            0,
+            Some(json!(5)),
+            StatusCode::CONFLICT,
+            Some("VERSION_CONFLICT"),
+            0,
+        ),
+    ];
+    for (case, prior, expected_version, status, code, version_after) in cases {
+        let h = Harness::new();
+        let app = h.app();
+        let (campaign_id, gm) = campaign_with_saves(&h, &app, prior).await;
+        let scene = stored_scene(campaign_id, &[]);
+        let mut body = json!({ "scenes": [scene] });
+        if let Some(v) = expected_version {
+            body["expected_version"] = v;
+        }
+
+        let (got, resp) = put_scene_set(&app, campaign_id, &gm, body).await;
+
+        assert_eq!(got, status, "case {case}: {resp}");
+        match code {
+            Some(code) => assert_eq!(resp["code"], json!(code), "case {case}"),
+            None => {
+                assert_eq!(resp["version"], json!(version_after), "case {case}");
+                assert_eq!(resp["scenes"][0]["id"], json!(scene.id), "case {case}");
+            }
+        }
+        if status == StatusCode::CONFLICT {
+            assert_eq!(resp["current_version"], json!(prior), "case {case}");
+        }
+        let stored = get_scene_set(&app, campaign_id, &gm).await;
+        assert_eq!(stored["version"], json!(version_after), "case {case}");
+    }
+}
+
+#[tokio::test]
+async fn a26b_concurrent_scene_saves_from_same_version_one_wins() {
+    let h = Harness::new();
+    let app = h.app();
+    let (campaign_id, gm) = campaign_with_saves(&h, &app, 1).await;
+    let read = get_scene_set(&app, campaign_id, &gm).await;
+    let base = read["version"].as_i64().unwrap();
+    let left = stored_scene(campaign_id, &[]);
+    let right = stored_scene(campaign_id, &[]);
+
+    let (a, b) = tokio::join!(
+        put_scene_set(
+            &app,
+            campaign_id,
+            &gm,
+            json!({ "expected_version": base, "scenes": [left] }),
+        ),
+        put_scene_set(
+            &app,
+            campaign_id,
+            &gm,
+            json!({ "expected_version": base, "scenes": [right] }),
+        ),
+    );
+
+    let statuses = [a.0, b.0];
+    assert!(
+        statuses.contains(&StatusCode::OK) && statuses.contains(&StatusCode::CONFLICT),
+        "exactly one save must win: {a:?} {b:?}"
+    );
+    let (winner, loser) = if a.0 == StatusCode::OK {
+        (a.1, b.1)
+    } else {
+        (b.1, a.1)
+    };
+    assert_eq!(winner["version"], json!(base + 1));
+    assert_eq!(loser["code"], json!("VERSION_CONFLICT"));
+    assert_eq!(loser["current_version"], json!(base + 1));
+    let stored = get_scene_set(&app, campaign_id, &gm).await;
+    assert_eq!(stored["version"], json!(base + 1));
+    assert_eq!(stored["scenes"], winner["scenes"]);
+}
+
+#[tokio::test]
+async fn a26b_uvtt_import_bumps_scene_set_version() {
+    let image = base64::engine::general_purpose::STANDARD.encode(png_bytes(64, 64));
+    // (case, prior saves, scenes after import)
+    let cases = [
+        ("import_into_empty_scene_set", 0_i64, 1_usize),
+        ("import_after_two_saves", 2, 2),
+    ];
+    for (case, prior, scene_count) in cases {
+        let h = Harness::new();
+        let app = h.app();
+        let (campaign_id, gm) = campaign_with_saves(&h, &app, prior).await;
+        let uri = format!("/api/v1/campaigns/{campaign_id}/maps/import?name=Cave");
+
+        let (status, resp) = raw_post(&app, &uri, &gm, uvtt(&image)).await;
+
+        assert_eq!(status, StatusCode::CREATED, "case {case}: {resp}");
+        assert_eq!(resp["version"], json!(prior + 1), "case {case}");
+        let stored = get_scene_set(&app, campaign_id, &gm).await;
+        assert_eq!(stored["version"], json!(prior + 1), "case {case}");
+        assert_eq!(
+            stored["scenes"].as_array().unwrap().len(),
+            scene_count,
+            "case {case}"
+        );
+        let (status, resp) = put_scene_set(
+            &app,
+            campaign_id,
+            &gm,
+            json!({ "expected_version": prior, "scenes": [] }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "case {case}: stale after import"
+        );
+        assert_eq!(resp["current_version"], json!(prior + 1), "case {case}");
+    }
 }
 
 // ---------------------------------------------------------------------------

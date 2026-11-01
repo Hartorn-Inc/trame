@@ -26,6 +26,13 @@
 //!   4. `Server-Resolved Scene Activation`:
 //!      - `resolve_scene_command` replaces any client-supplied `ActivateScene.scene` with the
 //!        persisted scene, so WAL replays are deterministic and clients cannot inject geometry.
+//!   5. `Scene-Set Optimistic Concurrency (ADR-0037)`:
+//!      - `PUT` replaces every scene, so without a guard two GMs silently overwrite each
+//!        other. Each campaign scene set carries one integer `version` (PostgreSQL
+//!        `campaigns.scenes_version`, default `0`). `GET` returns it; `PUT` must echo it as
+//!        `expected_version` (missing -> `400 MISSING_EXPECTED_VERSION`, stale ->
+//!        `409 VERSION_CONFLICT` with `current_version`). Every scene write, including
+//!        `POST .../maps/import`, goes through `save_campaign_scenes` and bumps it by one.
 //! ============================================================================
 
 use crate::http::{AppState, ErrorResponse};
@@ -227,9 +234,19 @@ fn serialize_editor_walls<S: Serializer>(
     serializer.collect_seq(walls.iter().map(EditorWall))
 }
 
+/// Why a versioned scene-set write was rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SceneSaveError {
+    /// `expected_version` no longer matches; carries the stored version (`409`).
+    VersionConflict { current_version: i64 },
+    /// The backing store failed (`500`).
+    Storage(String),
+}
+
+/// In-memory campaign scene sets, each stored with its optimistic-concurrency version.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryMapStorage {
-    scenes: Arc<RwLock<HashMap<Uuid, Vec<CampaignMapScene>>>>,
+    scenes: Arc<RwLock<HashMap<Uuid, (Vec<CampaignMapScene>, i64)>>>,
 }
 
 impl InMemoryMapStorage {
@@ -240,6 +257,11 @@ impl InMemoryMapStorage {
     }
 
     pub fn get_campaign_maps(&self, campaign_id: Uuid) -> Vec<CampaignMapScene> {
+        self.get_campaign_map_set(campaign_id).0
+    }
+
+    /// Scenes and version of `campaign_id`; an unknown campaign is `(vec![], 0)`.
+    pub fn get_campaign_map_set(&self, campaign_id: Uuid) -> (Vec<CampaignMapScene>, i64) {
         self.scenes
             .read()
             .ok()
@@ -247,9 +269,40 @@ impl InMemoryMapStorage {
             .unwrap_or_default()
     }
 
+    /// Unconditionally replaces the scenes and bumps the version (seeding and fixtures).
     pub fn save_campaign_maps(&self, campaign_id: Uuid, scenes: Vec<CampaignMapScene>) {
         if let Ok(mut map) = self.scenes.write() {
-            map.insert(campaign_id, scenes);
+            let entry = map.entry(campaign_id).or_default();
+            *entry = (scenes, entry.1 + 1);
+        }
+    }
+
+    /// Replaces the scenes only when the stored version equals `expected_version`; the
+    /// check and write share one write-lock so concurrent saves cannot both succeed.
+    pub fn save_campaign_maps_if_version(
+        &self,
+        campaign_id: Uuid,
+        scenes: Vec<CampaignMapScene>,
+        expected_version: i64,
+    ) -> Result<i64, SceneSaveError> {
+        let mut map = self
+            .scenes
+            .write()
+            .map_err(|_| SceneSaveError::Storage("map storage lock poisoned".to_string()))?;
+        let entry = map.entry(campaign_id).or_default();
+        if entry.1 != expected_version {
+            return Err(SceneSaveError::VersionConflict {
+                current_version: entry.1,
+            });
+        }
+        *entry = (scenes, expected_version + 1);
+        Ok(entry.1)
+    }
+
+    /// Overwrites the cached scene set with an already-committed PostgreSQL write.
+    fn mirror_committed(&self, campaign_id: Uuid, scenes: Vec<CampaignMapScene>, version: i64) {
+        if let Ok(mut map) = self.scenes.write() {
+            map.insert(campaign_id, (scenes, version));
         }
     }
 }
@@ -259,9 +312,22 @@ pub struct CampaignMapsQuery {
     pub user_id: Option<Uuid>,
 }
 
+/// `PUT .../maps` body. `expected_version` is optional only so its absence can be
+/// reported as `400 MISSING_EXPECTED_VERSION` instead of a generic deserialization error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PutCampaignMapsPayload {
     pub scenes: Vec<CampaignMapScene>,
+    /// Scene-set version the client last read; must equal the stored version.
+    #[serde(default)]
+    pub expected_version: Option<i64>,
+}
+
+/// `GET .../maps` and `PUT .../maps` response: the (role-filtered) scenes plus the
+/// campaign scene-set version to send back as the next `expected_version`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CampaignMapsResponse {
+    pub scenes: Vec<CampaignMapScene>,
+    pub version: i64,
 }
 
 pub fn sanitize_scene_for_player(mut scene: CampaignMapScene) -> CampaignMapScene {
@@ -283,26 +349,47 @@ pub async fn load_campaign_scenes(
     state: &AppState,
     campaign_id: Uuid,
 ) -> Result<Vec<CampaignMapScene>, String> {
-    if let Some(ref pg) = state.postgres_store {
-        let scenes = pg.load_campaign_scenes_async(campaign_id).await?;
-        if !scenes.is_empty() {
-            return Ok(scenes);
-        }
-    }
-    Ok(state.map_storage.get_campaign_maps(campaign_id))
+    Ok(load_campaign_scene_set(state, campaign_id).await?.0)
 }
 
-/// Persists `scenes` to PostgreSQL (when configured) and the in-memory cache.
+/// Like `load_campaign_scenes`, plus the scene-set version. With PostgreSQL the version is
+/// always `campaigns.scenes_version`, even when the scenes come from the in-memory fallback.
+pub async fn load_campaign_scene_set(
+    state: &AppState,
+    campaign_id: Uuid,
+) -> Result<(Vec<CampaignMapScene>, i64), String> {
+    let (cached, cached_version) = state.map_storage.get_campaign_map_set(campaign_id);
+    let Some(ref pg) = state.postgres_store else {
+        return Ok((cached, cached_version));
+    };
+    let version = pg.load_scenes_version_async(campaign_id).await?;
+    let scenes = pg.load_campaign_scenes_async(campaign_id).await?;
+    Ok((if scenes.is_empty() { cached } else { scenes }, version))
+}
+
+/// Replaces the scene set of `campaign_id` if its version still equals `expected_version`,
+/// writing PostgreSQL (when configured, authoritative) then the in-memory cache. Every
+/// scene-mutating path must go through here so they all bump the same version.
 pub async fn save_campaign_scenes(
     state: &AppState,
     campaign_id: Uuid,
     scenes: Vec<CampaignMapScene>,
-) -> Result<(), String> {
-    if let Some(ref pg) = state.postgres_store {
-        pg.save_campaign_scenes_async(campaign_id, &scenes).await?;
-    }
-    state.map_storage.save_campaign_maps(campaign_id, scenes);
-    Ok(())
+    expected_version: i64,
+) -> Result<i64, SceneSaveError> {
+    let Some(ref pg) = state.postgres_store else {
+        return state.map_storage.save_campaign_maps_if_version(
+            campaign_id,
+            scenes,
+            expected_version,
+        );
+    };
+    let version = pg
+        .save_campaign_scenes_async(campaign_id, &scenes, expected_version)
+        .await?;
+    state
+        .map_storage
+        .mirror_committed(campaign_id, scenes, version);
+    Ok(version)
 }
 
 /// Converts a persisted scene into the engine `ActivateScene` payload. Staged tokens become
@@ -424,21 +511,38 @@ pub async fn get_campaign_maps_handler(
             .into_response();
     }
 
-    let scenes = match load_campaign_scenes(&state, campaign_id).await {
-        Ok(s) => s,
+    let (scenes, version) = match load_campaign_scene_set(&state, campaign_id).await {
+        Ok(set) => set,
         Err(err) => return storage_error(err),
     };
-    if is_gm {
-        return Json(scenes).into_response();
+    let scenes = if is_gm {
+        scenes
+    } else {
+        scenes
+            .into_iter()
+            .filter(|s| s.revealed_to_players)
+            .map(sanitize_scene_for_player)
+            .collect()
+    };
+    Json(CampaignMapsResponse { scenes, version }).into_response()
+}
+
+/// Maps a rejected scene-set write to `409 VERSION_CONFLICT` (with `current_version`) or `500`.
+pub fn scene_save_error(err: SceneSaveError, expected_version: i64) -> Response {
+    match err {
+        SceneSaveError::VersionConflict { current_version } => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "code": "VERSION_CONFLICT",
+                "error": format!(
+                    "stale scene set version: expected {expected_version}, current {current_version}"
+                ),
+                "current_version": current_version,
+            })),
+        )
+            .into_response(),
+        SceneSaveError::Storage(err) => storage_error(err),
     }
-
-    let sanitized: Vec<CampaignMapScene> = scenes
-        .into_iter()
-        .filter(|s| s.revealed_to_players)
-        .map(sanitize_scene_for_player)
-        .collect();
-
-    Json(sanitized).into_response()
 }
 
 pub async fn put_campaign_maps_handler(
@@ -462,6 +566,17 @@ pub async fn put_campaign_maps_handler(
         )
             .into_response();
     }
+    let Some(expected_version) = payload.expected_version else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                code: Some("MISSING_EXPECTED_VERSION".to_string()),
+                error: "expected_version is required (optimistic concurrency, ADR-0037)"
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    };
 
     let mut scenes = payload.scenes;
     for scene in &mut scenes {
@@ -476,8 +591,8 @@ pub async fn put_campaign_maps_handler(
             }
         }
     }
-    match save_campaign_scenes(&state, campaign_id, scenes).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => storage_error(err),
+    match save_campaign_scenes(&state, campaign_id, scenes.clone(), expected_version).await {
+        Ok(version) => Json(CampaignMapsResponse { scenes, version }).into_response(),
+        Err(err) => scene_save_error(err, expected_version),
     }
 }
