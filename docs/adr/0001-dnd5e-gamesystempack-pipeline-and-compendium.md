@@ -1,7 +1,7 @@
 # ADR-0001: D&D 5e GameSystemPack Architecture, Multi-Type Damage Pipeline, Deterministic Rests, and 3-Tier Compendium
 
 ## Status
-Accepted
+Accepted, amended. Decision 1 is refined by the amendment at the end of this ADR (single WASM formula evaluator). Decision 6 is superseded by ADR-0037: `Actor` sheet changes always use REST `PUT` with `expected_version`, never WebSocket `UpdateActorData`.
 
 ## Context
 The TRAME V1 milestone requires a complete, out-of-the-box game system pack for Dungeons & Dragons 5e (SRD 5.1 licensed under Creative Commons CC-BY-4.0).
@@ -51,3 +51,12 @@ However, the full combat and progression rules of SRD 5.1 introduce requirements
 ### Negative
 - Combat turn evaluation requires explicitly passing `currentTurnActorId` when invoking `decrementConditionDurations`.
 - Level-up and rest UI modals require injecting an environment-specific `DiceRollService` adapter.
+
+## Amendment: single formula evaluator (2026-11-01)
+The browser used to compute derived stats twice: `computeDnd5eSheetDerived` in TypeScript and `evaluate_derived_dag` in Rust on the server, and the two drifted (unarmored defense, exhaustion on spell DC).
+
+- `evaluate_derived_dag` compiled to WASM is the only evaluator of `system.json` formulas, in the browser and on the server.
+- `computeDnd5eSheetDerived` keeps its public signature but delegates formula evaluation to the WASM engine.
+- D&D 5e rules that are pure formulas (armor vs. unarmored defense, Dexterity caps) live in `system.json` and use the exclusive base phase ("best wins").
+- `packages/game-systems/dnd5e` keeps the D&D procedures that are not formulas: level-up, rests, the damage pipeline orchestration, and the character builder.
+- Trade-off: the game-systems tests need the WASM build, in exchange for one source of truth and no client/server drift.

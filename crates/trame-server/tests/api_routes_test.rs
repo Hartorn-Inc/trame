@@ -9,7 +9,9 @@ use uuid::Uuid;
 use trame_server::archive::importer::InMemoryCampaignStore;
 use trame_server::assets::store::InMemoryAssetStore;
 use trame_server::auth::magic_link::MagicLinkService;
-use trame_server::auth::session::{AuthState, InMemorySessionStore};
+use trame_server::auth::session::{
+    AuthState, InMemorySessionStore, SessionStore, hash_session_token,
+};
 use trame_server::auth::totp::TotpService;
 use trame_server::http::{
     AppState, InMemoryBlobStore, InMemoryMembershipValidator, build_router_with_state,
@@ -47,8 +49,21 @@ fn create_test_app_state() -> (AppState, Arc<InMemoryMembershipValidator>) {
         auth_state,
         db_healthy: Arc::new(AtomicBool::new(true)),
         map_storage: InMemoryMapStorage::new(),
+        postgres_store: None,
     };
     (state, membership)
+}
+
+/// Seeds a live session for `user_id` and returns the matching `Cookie` header value.
+async fn session_cookie(state: &AppState, user_id: Uuid) -> String {
+    let token = format!("test-session-{user_id}");
+    state
+        .auth_state
+        .session_store
+        .create_session(user_id, &hash_session_token(&token), 3600)
+        .await
+        .unwrap();
+    format!("trame_session={token}")
 }
 
 #[tokio::test]
@@ -63,6 +78,9 @@ async fn test_campaign_maps_rbac_and_sanitization() {
 
     membership.add_member_with_role(campaign_id, gm_user_id, "GM");
     membership.add_member_with_role(campaign_id, player_user_id, "PLAYER");
+    let gm_cookie = session_cookie(&state, gm_user_id).await;
+    let player_cookie = session_cookie(&state, player_user_id).await;
+    let outsider_cookie = session_cookie(&state, outsider_user_id).await;
 
     let test_scene = trame_server::maps::CampaignMapScene {
         id: Uuid::new_v4(),
@@ -118,9 +136,8 @@ async fn test_campaign_maps_rbac_and_sanitization() {
 
     // 1. Outsider cannot access
     let req_outsider = Request::builder()
-        .uri(format!(
-            "/api/v1/campaigns/{campaign_id}/maps?user_id={outsider_user_id}"
-        ))
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps"))
+        .header("cookie", &outsider_cookie)
         .body(Body::empty())
         .unwrap();
     let res_outsider = app.clone().oneshot(req_outsider).await.unwrap();
@@ -140,9 +157,8 @@ async fn test_campaign_maps_rbac_and_sanitization() {
     };
     let req_player_put = Request::builder()
         .method("PUT")
-        .uri(format!(
-            "/api/v1/campaigns/{campaign_id}/maps?user_id={player_user_id}"
-        ))
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps"))
+        .header("cookie", &player_cookie)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&payload).unwrap()))
         .unwrap();
@@ -152,9 +168,8 @@ async fn test_campaign_maps_rbac_and_sanitization() {
     // 4. GM can PUT maps
     let req_gm_put = Request::builder()
         .method("PUT")
-        .uri(format!(
-            "/api/v1/campaigns/{campaign_id}/maps?user_id={gm_user_id}"
-        ))
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps"))
+        .header("cookie", &gm_cookie)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&payload).unwrap()))
         .unwrap();
@@ -163,9 +178,8 @@ async fn test_campaign_maps_rbac_and_sanitization() {
 
     // 5. GM GET returns unredacted scene
     let req_gm_get = Request::builder()
-        .uri(format!(
-            "/api/v1/campaigns/{campaign_id}/maps?user_id={gm_user_id}"
-        ))
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps"))
+        .header("cookie", &gm_cookie)
         .body(Body::empty())
         .unwrap();
     let res_gm_get = app.clone().oneshot(req_gm_get).await.unwrap();
@@ -236,9 +250,8 @@ async fn test_campaign_maps_rbac_and_sanitization() {
     });
     let req_camel_put = Request::builder()
         .method("PUT")
-        .uri(format!(
-            "/api/v1/campaigns/{campaign_id}/maps?user_id={gm_user_id}"
-        ))
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps"))
+        .header("cookie", &gm_cookie)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&camelcase_payload).unwrap()))
         .unwrap();
@@ -248,9 +261,8 @@ async fn test_campaign_maps_rbac_and_sanitization() {
     // Restore original test scene for subsequent assertions
     let req_restore_put = Request::builder()
         .method("PUT")
-        .uri(format!(
-            "/api/v1/campaigns/{campaign_id}/maps?user_id={gm_user_id}"
-        ))
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps"))
+        .header("cookie", &gm_cookie)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&payload).unwrap()))
         .unwrap();
@@ -259,9 +271,8 @@ async fn test_campaign_maps_rbac_and_sanitization() {
 
     // 6. Player GET returns sanitized scene
     let req_player_get = Request::builder()
-        .uri(format!(
-            "/api/v1/campaigns/{campaign_id}/maps?user_id={player_user_id}"
-        ))
+        .uri(format!("/api/v1/campaigns/{campaign_id}/maps"))
+        .header("cookie", &player_cookie)
         .body(Body::empty())
         .unwrap();
     let res_player_get = app.clone().oneshot(req_player_get).await.unwrap();

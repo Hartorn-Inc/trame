@@ -250,6 +250,12 @@ impl WallSegment {
             _ => true,
         }
     }
+
+    /// Evaluates whether this wall blocks physical non-ethereal token movement,
+    /// returning `false` when `blocks_movement` is `false`, the door is open, or the wall is an `Illusion`.
+    pub fn is_blocking_movement(&self) -> bool {
+        self.effective_blocks_movement(false)
+    }
 }
 
 /// Sensory capabilities and planar perception bitmask attached to a token (`01-TABLE-SPEC.md`).
@@ -752,4 +758,9 @@ pub fn segment_intersection(
     } else {
         None
     }
+}
+
+/// Returns `true` when 2D line segment `p0..p1` intersects segment `q0..q1` (within a `1e-9` epsilon).
+pub fn segment_intersects_segment(p0: Point2D, p1: Point2D, q0: Point2D, q1: Point2D) -> bool {
+    segment_intersection(p0, p1, q0, q1).is_some()
 }

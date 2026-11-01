@@ -110,6 +110,17 @@ pub struct ActiveEffect {
     pub modifiers: Vec<AttributeModifier>,
 }
 
+/// Evaluates topological `derivedDAG` formulas over `base_attributes` without active effects.
+///
+/// Topologically orders `derived_formulas` and evaluates each pure arithmetic expression,
+/// failing closed with `RulesEngineError` on circular dependencies or syntax errors.
+pub fn evaluate_derived_dag(
+    base_attributes: &BTreeMap<String, f64>,
+    derived_formulas: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, f64>, RulesEngineError> {
+    evaluate_actor_attributes(base_attributes, derived_formulas, &[])
+}
+
 /// Evaluates topological `derivedDAG` formulas and applies the 5-phase `ActiveEffect` modifier pipeline.
 ///
 /// Deduplicates enabled effects by `source_name`, applies modifiers to `base_attributes`,
@@ -616,5 +627,73 @@ pub fn resolve_damage_application(
         instant_death,
         unconscious,
         concentration_check_dc,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dnd5e_system_json_derived_dag_evaluates_all_26_nodes() {
+        let raw_json = include_str!("../../../packages/game-systems/dnd5e/system.json");
+        let doc: serde_json::Value =
+            serde_json::from_str(raw_json).expect("valid system.json document");
+        let derived_obj = doc
+            .get("derivedDAG")
+            .and_then(|v| v.as_object())
+            .expect("derivedDAG object must exist in system.json");
+        assert_eq!(derived_obj.len(), 26);
+
+        let mut derived_formulas = BTreeMap::new();
+        for (node_key, node_val) in derived_obj {
+            let expr = node_val
+                .as_str()
+                .or_else(|| node_val.get("expr").and_then(|e| e.as_str()))
+                .unwrap_or_else(|| panic!("missing expr string for derivedDAG.{node_key}"));
+            derived_formulas.insert(node_key.clone(), expr.to_string());
+        }
+
+        // Level 5 wizard/rogue test fixture
+        let mut base_attributes = BTreeMap::new();
+        base_attributes.insert("level".into(), 5.0);
+        base_attributes.insert("str".into(), 10.0);
+        base_attributes.insert("dex".into(), 16.0);
+        base_attributes.insert("con".into(), 14.0);
+        base_attributes.insert("int".into(), 18.0);
+        base_attributes.insert("wis".into(), 12.0);
+        base_attributes.insert("cha".into(), 8.0);
+        base_attributes.insert("armor_bonus".into(), 2.0);
+        base_attributes.insert("shield_bonus".into(), 0.0);
+        base_attributes.insert("spell_mod".into(), 4.0);
+        base_attributes.insert("save_int_prof".into(), 1.0);
+        base_attributes.insert("save_wis_prof".into(), 1.0);
+        base_attributes.insert("skill_stealth_prof".into(), 2.0); // expertise
+        base_attributes.insert("skill_perception_prof".into(), 1.0);
+
+        let evaluated = evaluate_derived_dag(&base_attributes, &derived_formulas).expect(
+            "all 26 derivedDAG nodes in system.json must evaluate without FormulaParseError",
+        );
+
+        for key in derived_formulas.keys() {
+            assert!(
+                evaluated.contains_key(key),
+                "missing evaluated node `{key}`"
+            );
+        }
+        assert_eq!(evaluated["prof_bonus"], 3.0);
+        assert_eq!(evaluated["str_mod"], 0.0);
+        assert_eq!(evaluated["dex_mod"], 3.0);
+        assert_eq!(evaluated["con_mod"], 2.0);
+        assert_eq!(evaluated["int_mod"], 4.0);
+        assert_eq!(evaluated["wis_mod"], 1.0);
+        assert_eq!(evaluated["cha_mod"], -1.0);
+        assert_eq!(evaluated["initiative"], 3.0);
+        assert_eq!(evaluated["ac"], 15.0);
+        assert_eq!(evaluated["spell_save_dc"], 15.0);
+        assert_eq!(evaluated["spell_attack_bonus"], 7.0);
+        assert_eq!(evaluated["save_int"], 7.0);
+        assert_eq!(evaluated["skill_stealth"], 9.0);
+        assert_eq!(evaluated["passive_perception"], 14.0);
     }
 }

@@ -51,7 +51,16 @@ pub mod geometry;
 pub mod rules;
 
 use crate::aoe::AoeTemplate;
-use crate::geometry::{Bvh2D, Point2D, WallSegment};
+pub use crate::commands::{
+    AmbientLightingPreset, CampaignRole, CommandActor, CommandError, FogOverrideCell,
+    FogOverrideMode, LightSource, McpStagingProposal, ReactionDecision, ReactionPrompt, TableMode,
+    TableSnapshotData, TableState, TokenState, TrameCommand, TrameEvent, UndoEntry,
+};
+pub use crate::geometry::{Bvh2D, Point2D, SenseProfile, WallKind, WallSegment};
+pub use crate::rules::{
+    ActiveEffect, AttributeModifier, DamageAffinity, DamageResolution, ModifierPhase,
+    RulesEngineError, evaluate_actor_attributes, evaluate_derived_dag, resolve_damage_application,
+};
 use wasm_bindgen::prelude::*;
 
 /// WebAssembly entrypoint that computes a JSON-serialized 2D radial visibility
@@ -391,5 +400,223 @@ mod tests {
             .unwrap();
         assert_eq!(state.data.tokens[&token_id].hp, 30);
         assert_eq!(state.data.tokens[&token_id].temp_hp, 5);
+    }
+
+    #[test]
+    fn test_move_token_wall_blocking_and_gm_override() {
+        let wall = WallSegment {
+            id: Uuid::new_v4(),
+            a: Point2D::new(150.0, 0.0),
+            b: Point2D::new(150.0, 500.0),
+            bottom_elevation_ft: 0.0,
+            top_elevation_ft: 10.0,
+            kind: WallKind::Door {
+                is_open: false,
+                is_locked: false,
+            },
+            blocks_vision: true,
+            blocks_light: true,
+            blocks_movement: true,
+            blocks_sound: true,
+        };
+        let mut state = TableState::new(100.0, 5.0, vec![wall.clone()]);
+        let player_id = Uuid::new_v4();
+        let token_id = Uuid::new_v4();
+        let mut tok = TokenState::new_default(token_id, "Valeros", Point2D::new(0.0, 100.0));
+        tok.owner_user_id = Some(player_id);
+        state.data.tokens.insert(token_id, tok);
+
+        let player = CommandActor {
+            user_id: player_id,
+            role: CampaignRole::Player,
+        };
+        let gm = CommandActor {
+            user_id: Uuid::new_v4(),
+            role: CampaignRole::Gm,
+        };
+
+        // Closed door blocks non-GM movement across x=150
+        let err = state
+            .apply_command(
+                &player,
+                TrameCommand::MoveToken {
+                    token_id,
+                    to_top_left: Point2D::new(200.0, 100.0),
+                    to_elevation_ft: Some(0.0),
+                    gm_teleport: false,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, CommandError::WallCollision { .. }));
+
+        // GM teleport bypasses wall blocking
+        state
+            .apply_command(
+                &gm,
+                TrameCommand::MoveToken {
+                    token_id,
+                    to_top_left: Point2D::new(200.0, 100.0),
+                    to_elevation_ft: Some(0.0),
+                    gm_teleport: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(state.data.tokens[&token_id].top_left.x, 200.0);
+
+        // Open the door -> player can move back across
+        state
+            .apply_command(
+                &player,
+                TrameCommand::ToggleDoor {
+                    wall_id: wall.id,
+                    is_open: true,
+                },
+            )
+            .unwrap();
+        state
+            .apply_command(
+                &player,
+                TrameCommand::MoveToken {
+                    token_id,
+                    to_top_left: Point2D::new(0.0, 100.0),
+                    to_elevation_ft: Some(0.0),
+                    gm_teleport: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(state.data.tokens[&token_id].top_left.x, 0.0);
+    }
+
+    #[test]
+    fn test_tabletop_setup_reactions_and_mcp_staging_commands() {
+        let mut state = TableState::new(100.0, 5.0, vec![]);
+        let gm = CommandActor {
+            user_id: Uuid::new_v4(),
+            role: CampaignRole::Gm,
+        };
+        let player_id = Uuid::new_v4();
+        let player = CommandActor {
+            user_id: player_id,
+            role: CampaignRole::Player,
+        };
+
+        // 1. SpawnToken & RemoveToken + Undo
+        let token_id = Uuid::new_v4();
+        let mut token = TokenState::new_default(token_id, "Kyra", Point2D::new(100.0, 100.0));
+        token.owner_user_id = Some(player_id);
+        state
+            .apply_command(&gm, TrameCommand::SpawnToken { token })
+            .unwrap();
+        assert!(state.data.tokens.contains_key(&token_id));
+
+        // 2. AddWall, AddLight, SetFogOverride, SetMapConfig
+        let wall_id = Uuid::new_v4();
+        state
+            .apply_command(
+                &gm,
+                TrameCommand::AddWall {
+                    wall: WallSegment::normal_wall(
+                        wall_id,
+                        Point2D::new(0.0, 0.0),
+                        Point2D::new(200.0, 0.0),
+                    ),
+                },
+            )
+            .unwrap();
+        assert_eq!(state.data.walls.len(), 1);
+
+        let light_id = Uuid::new_v4();
+        state
+            .apply_command(
+                &gm,
+                TrameCommand::AddLight {
+                    light: LightSource {
+                        id: light_id,
+                        position: Point2D::new(150.0, 150.0),
+                        elevation_ft: 5.0,
+                        bright_radius_ft: 20.0,
+                        dim_radius_ft: 40.0,
+                        color_hex: "#FFAA44".to_string(),
+                        intensity: 1.0,
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(state.data.lights.len(), 1);
+
+        state
+            .apply_command(
+                &gm,
+                TrameCommand::SetFogOverride {
+                    mode: FogOverrideMode::Reveal,
+                    cell_x: 3,
+                    cell_y: 4,
+                },
+            )
+            .unwrap();
+        assert_eq!(state.data.fog_overrides.len(), 1);
+
+        state
+            .apply_command(
+                &gm,
+                TrameCommand::SetMapConfig {
+                    background_url: Some("/api/v1/assets/hash123".to_string()),
+                    width_ft: 100,
+                    height_ft: 80,
+                },
+            )
+            .unwrap();
+        assert_eq!(state.data.map_width_px, 2000);
+        assert_eq!(state.data.map_height_px, 1600);
+
+        // 3. DecideReaction
+        let prompt_id = Uuid::new_v4();
+        state.data.active_reaction_prompts.insert(
+            prompt_id,
+            ReactionPrompt {
+                prompt_id,
+                reactor_actor_id: token_id,
+                trigger_token_id: Uuid::new_v4(),
+                pending_destination: Some(Point2D::new(300.0, 100.0)),
+                pending_elevation_ft: Some(0.0),
+            },
+        );
+        state
+            .apply_command(
+                &player,
+                TrameCommand::DecideReaction {
+                    prompt_id,
+                    actor_id: token_id,
+                    decision: ReactionDecision::Trigger {
+                        ability_id: Some("opportunity_attack".to_string()),
+                    },
+                },
+            )
+            .unwrap();
+        assert!(state.data.active_reaction_prompts.is_empty());
+        assert!(!state.data.tokens[&token_id].has_reaction);
+
+        // 4. CommitMcpStaging & RejectMcpStaging
+        let proposal_id = Uuid::new_v4();
+        let spawned_by_mcp = Uuid::new_v4();
+        state.data.mcp_staging_proposals.insert(
+            proposal_id,
+            McpStagingProposal {
+                proposal_id,
+                summary: "Spawn Goblin".to_string(),
+                commands: vec![TrameCommand::SpawnToken {
+                    token: TokenState::new_default(
+                        spawned_by_mcp,
+                        "Goblin",
+                        Point2D::new(250.0, 250.0),
+                    ),
+                }],
+            },
+        );
+        state
+            .apply_command(&gm, TrameCommand::CommitMcpStaging { proposal_id })
+            .unwrap();
+        assert!(state.data.tokens.contains_key(&spawned_by_mcp));
+        assert!(state.data.mcp_staging_proposals.is_empty());
     }
 }

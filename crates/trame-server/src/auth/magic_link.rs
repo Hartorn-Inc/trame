@@ -9,9 +9,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use uuid::Uuid;
 
+/// Minimum byte length required for HMAC-SHA256 invite JWT secrets (256 bits).
+pub const MIN_JWT_SECRET_BYTES: usize = 32;
+
 /// Error type for magic link JWT generation and validation operations.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum MagicLinkError {
+    #[error("JWT secret must be at least 32 bytes")]
+    WeakSecret,
     #[error("malformed JWT structure")]
     MalformedJwt,
     #[error("invalid base64 encoding")]
@@ -73,12 +78,26 @@ impl MagicLinkService {
         }
     }
 
-    /// Creates a service reading `JWT_SECRET` from environment with a fallback secret.
+    /// Creates a service reading `TRAME_INVITE_JWT_SECRET` or `JWT_SECRET` from environment with a fallback secret.
     pub fn from_env_or_secret(default_secret: &[u8]) -> Self {
-        let secret = std::env::var("JWT_SECRET")
+        let secret = std::env::var("TRAME_INVITE_JWT_SECRET")
+            .or_else(|_| std::env::var("JWT_SECRET"))
             .map(|s| s.into_bytes())
             .unwrap_or_else(|_| default_secret.to_vec());
         Self::new(secret, "trame-server")
+    }
+
+    /// Validates that the configured HMAC-SHA256 secret is at least 32 bytes (`MIN_JWT_SECRET_BYTES`).
+    pub fn validate_secret(&self) -> Result<(), MagicLinkError> {
+        if self.jwt_secret.len() < MIN_JWT_SECRET_BYTES {
+            return Err(MagicLinkError::WeakSecret);
+        }
+        Ok(())
+    }
+
+    /// Returns the length in bytes of the configured JWT secret.
+    pub fn secret_len(&self) -> usize {
+        self.jwt_secret.len()
     }
 
     /// Generates a signed HS256 JWT for inviting a player into a campaign.

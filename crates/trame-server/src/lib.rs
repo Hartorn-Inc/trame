@@ -56,6 +56,7 @@ pub mod dice;
 pub mod http;
 pub mod importers;
 pub mod maps;
+pub mod mcp;
 pub mod notes;
 pub mod room;
 pub mod storage;
@@ -151,6 +152,7 @@ mod tests {
 
         let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
             token: token.clone(),
+            nickname: None,
         })
         .unwrap();
         let req = Request::builder()
@@ -214,7 +216,11 @@ mod tests {
                 .expect("create invite token");
             assert_eq!(claims.role, custom_role);
 
-            let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+            let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
+                token,
+                nickname: None,
+            })
+            .unwrap();
             let req = Request::builder()
                 .method("POST")
                 .uri("/api/v1/auth/magic-link")
@@ -262,7 +268,11 @@ mod tests {
 
         session_store.revoke_invite(claims.jti).await.unwrap();
 
-        let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+        let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
+            token,
+            nickname: None,
+        })
+        .unwrap();
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/magic-link")
@@ -301,7 +311,11 @@ mod tests {
         };
         let token = magic_service.sign_claims(&expired_claims).unwrap();
 
-        let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+        let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
+            token,
+            nickname: None,
+        })
+        .unwrap();
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/magic-link")
@@ -327,9 +341,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_invite_link_handler_nominal() {
+    async fn test_create_invite_link_handler_rejects_unauthenticated_caller() {
         let session_store = Arc::new(InMemorySessionStore::new());
-        let magic_service = Arc::new(MagicLinkService::new(b"secret", "trame-test"));
+        let magic_service = Arc::new(MagicLinkService::new(
+            b"0123456789abcdef0123456789abcdef",
+            "trame-test",
+        ));
         let auth_state = AuthState {
             magic_link_service: magic_service,
             session_store,
@@ -344,6 +361,7 @@ mod tests {
             character_id: Some(character_id),
             role: Some("PLAYER".to_string()),
             ttl_seconds: Some(1800),
+            duration_seconds: None,
         })
         .unwrap();
 
@@ -355,7 +373,7 @@ mod tests {
             .unwrap();
 
         let resp = router.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -1251,12 +1269,12 @@ Hidden Text
         handle
             .send_envelope(
                 session_id,
-                ClientEnvelope::SubmitCommand(TrameCommand::MoveToken {
+                ClientEnvelope::SubmitCommand(Box::new(TrameCommand::MoveToken {
                     token_id,
                     to_top_left: Point2D::new(200.0, 0.0),
                     to_elevation_ft: None,
                     gm_teleport: false,
-                }),
+                })),
             )
             .await
             .unwrap();

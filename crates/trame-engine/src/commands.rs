@@ -48,7 +48,10 @@
 
 use crate::aoe::{AoeTemplate, GridCell, TokenSpatialRef};
 pub use crate::geometry::Point2D;
-use crate::geometry::{Bvh2D, CHANNEL_MATERIAL, SenseProfile, WallKind, WallSegment};
+use crate::geometry::{
+    Bvh2D, CHANNEL_ETHEREAL, CHANNEL_GM_HIDDEN, CHANNEL_MATERIAL, SenseProfile, WallKind,
+    WallSegment, segment_intersection, segment_intersects_segment,
+};
 use crate::rules::{ActiveEffect, DamageAffinity, DamageResolution, resolve_damage_application};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -57,6 +60,125 @@ use uuid::Uuid;
 
 /// Maximum number of compensating state snapshots retained in `TableState::undo_stack` (`50` entries).
 pub const MAX_UNDO_HISTORY: usize = 50;
+
+fn default_bright_radius_ft() -> f64 {
+    20.0
+}
+
+fn default_dim_radius_ft() -> f64 {
+    40.0
+}
+
+fn default_light_color_hex() -> String {
+    "#FFAA44".to_string()
+}
+
+fn default_light_intensity() -> f64 {
+    1.0
+}
+
+fn default_map_dimension_px() -> u32 {
+    2000
+}
+
+/// Dynamic 2.5D point light source placed on the tabletop scene (`01-TABLE-SPEC.md`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LightSource {
+    /// Unique identifier of the light source emitter.
+    pub id: Uuid,
+    /// 2D canvas coordinate of the light emitter in pixels (`px`).
+    #[serde(alias = "origin")]
+    pub position: Point2D,
+    /// Vertical height of the light emitter in feet (`ft`) relative to table zero.
+    #[serde(default)]
+    pub elevation_ft: f64,
+    /// Inner bright-light radius in feet (`ft`, default `20.0`).
+    #[serde(default = "default_bright_radius_ft", alias = "bright_radius_px")]
+    pub bright_radius_ft: f64,
+    /// Outer dim-light falloff radius in feet (`ft`, default `40.0`).
+    #[serde(
+        default = "default_dim_radius_ft",
+        alias = "radius_ft",
+        alias = "dim_radius_px"
+    )]
+    pub dim_radius_ft: f64,
+    /// Hexadecimal RGB color string (e.g., `"#FFAA44"`).
+    #[serde(default = "default_light_color_hex")]
+    pub color_hex: String,
+    /// Normalized luminous intensity in `0.0..=1.0` (default `1.0`).
+    #[serde(default = "default_light_intensity")]
+    pub intensity: f64,
+}
+
+/// Manual Game Master fog-of-war brush operation mode applied to a discrete grid cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FogOverrideMode {
+    /// Forces the grid cell to remain revealed to players regardless of dynamic line-of-sight.
+    #[serde(alias = "Reveal", alias = "reveal")]
+    Reveal,
+    /// Forces the grid cell to remain shrouded in fog regardless of dynamic line-of-sight.
+    #[serde(alias = "Hide", alias = "hide")]
+    Hide,
+    /// Clears any manual GM override on the grid cell, returning it to dynamic BVH line-of-sight.
+    #[serde(alias = "Clear", alias = "clear")]
+    Clear,
+}
+
+/// Discrete grid cell coordinate and manual GM fog-of-war override state stored in `TableState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FogOverrideCell {
+    /// Discrete horizontal grid column index (`cell_x`).
+    pub cell_x: i32,
+    /// Discrete vertical grid row index (`cell_y`).
+    pub cell_y: i32,
+    /// Active manual override mode (`Reveal` or `Hide`).
+    pub mode: FogOverrideMode,
+}
+
+/// Player or GM decision in response to a tactical 5-second reaction prompt (e.g., Opportunity Attack, Shield).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ReactionDecision {
+    /// Triggers and consumes the reaction, optionally specifying the ability or spell identifier.
+    #[serde(alias = "Trigger", alias = "trigger")]
+    Trigger {
+        /// Optional ability or spell identifier used for the reaction (e.g., `"opportunity_attack"`).
+        #[serde(default)]
+        ability_id: Option<String>,
+    },
+    /// Declines to spend the reaction, allowing the interrupted movement or action to resume.
+    #[serde(alias = "Pass", alias = "pass")]
+    Pass,
+}
+
+/// Active tactical reaction window awaiting a `DecideReaction` command from the reacting actor or GM.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReactionPrompt {
+    /// Unique identifier of this reaction prompt.
+    pub prompt_id: Uuid,
+    /// Token/actor UUID eligible to spend their reaction (`has_reaction == true`).
+    pub reactor_actor_id: Uuid,
+    /// Token UUID whose movement or action triggered the reaction window.
+    pub trigger_token_id: Uuid,
+    /// Optional destination top-left coordinate in pixels (`px`) to resume if the reactor passes.
+    #[serde(default)]
+    pub pending_destination: Option<Point2D>,
+    /// Optional destination elevation in feet (`ft`) to resume if the reactor passes.
+    #[serde(default)]
+    pub pending_elevation_ft: Option<f64>,
+}
+
+/// Queued MCP dry-run staging batch awaiting explicit GM confirmation (`CommitMcpStaging`) or rejection (`RejectMcpStaging`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpStagingProposal {
+    /// Unique identifier of the staged MCP proposal.
+    pub proposal_id: Uuid,
+    /// Human-readable summary of the proposed batch of tabletop commands.
+    pub summary: String,
+    /// Ordered sequence of `TrameCommand` mutations to execute atomically if committed.
+    pub commands: Vec<TrameCommand>,
+}
 
 /// Operating mode of the active tabletop session (`01-TABLE-SPEC.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +225,10 @@ pub struct CommandActor {
     pub role: CampaignRole,
 }
 
+fn default_token_ac() -> i32 {
+    10
+}
+
 /// Authoritative spatial, vitality, action-economy, and sensory state of a single tabletop token.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenState {
@@ -112,6 +238,9 @@ pub struct TokenState {
     pub name: String,
     /// Optional user ID of the player who controls this token (`None` = GM-only NPC/monster).
     pub owner_user_id: Option<Uuid>,
+    /// Optional persistent actor sheet UUID linked to this tactical token (`ADR-0037`).
+    #[serde(default)]
+    pub actor_id: Option<Uuid>,
     /// Top-left canvas coordinate of the token's footprint in pixels (`px`).
     pub top_left: Point2D,
     /// Nominal horizontal footprint width in grid cells (`>= 1`).
@@ -136,6 +265,12 @@ pub struct TokenState {
     pub max_hp: i32,
     /// Current Temporary Hit Points (`>= 0`).
     pub temp_hp: i32,
+    /// Armor Class (`AC`, default `10`).
+    #[serde(default = "default_token_ac")]
+    pub ac: i32,
+    /// Dexterity modifier used for authoritative `1d20 + dex_mod` initiative rolls (default `0`).
+    #[serde(default)]
+    pub dex_mod: i32,
     /// Maximum movement speed per combat turn in feet (`ft`, e.g., `30.0`).
     pub speed_max_ft: f64,
     /// Remaining movement budget for the current combat turn in feet (`ft`, `0.0..=speed_max_ft`).
@@ -150,6 +285,9 @@ pub struct TokenState {
     pub concentrating_on_aoe_id: Option<Uuid>,
     /// Active buffs, debuffs, and modifiers applied to this token.
     pub active_effects: Vec<ActiveEffect>,
+    /// Active D&D 5e condition labels synchronized from the persistent actor sheet (`ADR-0037`).
+    #[serde(default)]
+    pub conditions: Vec<String>,
 }
 
 impl TokenState {
@@ -159,6 +297,7 @@ impl TokenState {
             id,
             name: name.into(),
             owner_user_id: None,
+            actor_id: None,
             top_left,
             grid_w: 1,
             grid_h: 1,
@@ -171,6 +310,8 @@ impl TokenState {
             hp: 20,
             max_hp: 20,
             temp_hp: 0,
+            ac: 10,
+            dex_mod: 0,
             speed_max_ft: 30.0,
             speed_remaining_ft: 30.0,
             has_action: true,
@@ -178,6 +319,7 @@ impl TokenState {
             has_reaction: true,
             concentrating_on_aoe_id: None,
             active_effects: Vec::new(),
+            conditions: Vec::new(),
         }
     }
 
@@ -239,8 +381,17 @@ pub enum TrameCommand {
         /// Whether player movement is paused in `Exploration` mode.
         exploration_paused: bool,
         /// Ordered list of token IDs defining the combat initiative sequence.
+        #[serde(default)]
         initiative_order: Vec<Uuid>,
     },
+    /// Enters `TurnByTurn` combat mode at Round 1, Turn Index 0 with an explicit or auto-rolled `initiative_order` (GM only).
+    StartTurnByTurn {
+        /// Ordered list of token IDs defining the combat initiative sequence (if empty, `TableRoomActor` rolls `1d20 + dex_mod`).
+        #[serde(default)]
+        initiative_order: Vec<Uuid>,
+    },
+    /// Exits `TurnByTurn` combat mode and returns the tabletop to free-form `Exploration` mode (GM only).
+    EndTurnByTurn,
     /// Advances the combat tracker to the next token in `initiative_order`, wrapping rounds and refreshing action/movement budgets.
     AdvanceTurn,
     /// Applies raw damage with a specified `DamageAffinity` to a target token, resolving Temp HP and Concentration checks.
@@ -285,6 +436,105 @@ pub enum TrameCommand {
     SetAmbientLighting {
         /// New ambient lighting preset.
         preset: AmbientLightingPreset,
+    },
+    /// Loads a new battlemap scene into the room, replacing walls and grid dimensions while preserving hero tokens (GM only).
+    LoadScene {
+        /// Unique identifier of the loaded scene.
+        scene_id: Uuid,
+        /// Asset store key or SHA-256 hash of the background WebP battlemap.
+        map_asset_id: String,
+        /// Battlemap canvas width in pixels (`px`).
+        width_px: u32,
+        /// Battlemap canvas height in pixels (`px`).
+        height_px: u32,
+        /// Grid cell width/height in pixels (`px`, `> 0.0`).
+        pixels_per_grid: f64,
+        /// Wall and portal geometry segments extracted from the scene or `.uvtt` bundle.
+        walls: Vec<WallSegment>,
+    },
+    /// Spawns or replaces a token on the tabletop (GM only).
+    SpawnToken {
+        /// Complete initial state of the token to place on the map.
+        token: TokenState,
+    },
+    /// Removes a token from the tabletop and combat initiative order (GM only).
+    RemoveToken {
+        /// Target token ID to remove.
+        token_id: Uuid,
+    },
+    /// Appends or updates a 2.5D wall or portal segment on the active map and rebuilds the `Bvh2D` tree (GM only).
+    AddWall {
+        /// Authoritative wall or door segment primitive to add to the scene.
+        wall: WallSegment,
+    },
+    /// Appends or updates a dynamic point light emitter on the active map (GM only).
+    AddLight {
+        /// Dynamic light source emitter to place on the scene.
+        light: LightSource,
+    },
+    /// Applies a manual GM fog-of-war brush override (`Reveal`, `Hide`, or `Clear`) to a discrete grid cell (GM only).
+    SetFogOverride {
+        /// Brush operation mode (`Reveal`, `Hide`, or `Clear`).
+        mode: FogOverrideMode,
+        /// Discrete horizontal grid column index (`cell_x`).
+        cell_x: i32,
+        /// Discrete vertical grid row index (`cell_y`).
+        cell_y: i32,
+    },
+    /// Configures the active battlemap background URL/hash and physical dimensions in feet (GM only).
+    SetMapConfig {
+        /// Optional asset URL or SHA-256 hash of the map background image.
+        background_url: Option<String>,
+        /// Horizontal map width in tactical feet (`ft`, `> 0`).
+        width_ft: u32,
+        /// Vertical map height in tactical feet (`ft`, `> 0`).
+        height_ft: u32,
+    },
+    /// Toggles a token's GM-hidden channel bitmask (`CHANNEL_GM_HIDDEN`) or magical invisibility state (GM only).
+    SetTokenVisibility {
+        /// Target token ID.
+        token_id: Uuid,
+        /// When `true`, sets `CHANNEL_GM_HIDDEN` so the token is stripped from non-GM wire state.
+        gm_hidden: bool,
+        /// When `true`, marks the token as invisible (requiring `see_invisibility`, `truesight`, or `blindsight`).
+        invisible: bool,
+    },
+    /// Assigns or clears player ownership of a token on the tabletop (GM only).
+    AssignTokenOwner {
+        /// Target token ID.
+        token_id: Uuid,
+        /// User UUID granted control over the token (`None` for GM-only NPC/monster control).
+        owner_user_id: Option<Uuid>,
+    },
+    /// Reconfigures a door wall segment's open, locked, or secret status and rebuilds the `Bvh2D` (GM only).
+    ConfigureDoor {
+        /// Target wall segment ID.
+        wall_id: Uuid,
+        /// Optional new open state.
+        is_open: Option<bool>,
+        /// Optional new locked state.
+        is_locked: Option<bool>,
+        /// Optional conversion between `WallKind::SecretDoor` (`true`) and `WallKind::Door` (`false`).
+        is_secret: Option<bool>,
+    },
+    /// Resolves an active 5-second tactical reaction prompt (`Trigger` or `Pass`).
+    DecideReaction {
+        /// Unique identifier of the active reaction prompt being resolved.
+        prompt_id: Uuid,
+        /// Reacting actor/token UUID.
+        actor_id: Uuid,
+        /// Player or GM decision (`Trigger` with optional `ability_id`, or `Pass`).
+        decision: ReactionDecision,
+    },
+    /// Commits a queued MCP dry-run staging batch atomically as a single undoable step (GM only).
+    CommitMcpStaging {
+        /// Unique identifier of the staged MCP proposal to execute.
+        proposal_id: Uuid,
+    },
+    /// Rejects and discards a queued MCP dry-run staging batch without mutating the table (GM only).
+    RejectMcpStaging {
+        /// Unique identifier of the staged MCP proposal to discard.
+        proposal_id: Uuid,
     },
     /// Restores the most recent pre-mutation `TableSnapshotData` from the 50-action ring buffer (GM only).
     UndoLastAction,
@@ -388,6 +638,101 @@ pub enum TrameEvent {
         /// Newly active lighting preset.
         preset: AmbientLightingPreset,
     },
+    /// Emitted when a new battlemap scene is loaded into the room.
+    SceneLoaded {
+        /// Loaded scene ID.
+        scene_id: Uuid,
+        /// Background map asset key or SHA-256 hash.
+        map_asset_id: String,
+        /// Canvas width in pixels (`px`).
+        width_px: u32,
+        /// Canvas height in pixels (`px`).
+        height_px: u32,
+        /// Grid cell size in pixels (`px`).
+        pixels_per_grid: f64,
+    },
+    /// Emitted when a token is spawned onto the tabletop.
+    TokenSpawned {
+        /// Newly spawned token state.
+        token: TokenState,
+    },
+    /// Emitted when a token is removed from the tabletop.
+    TokenRemoved {
+        /// Removed token ID.
+        token_id: Uuid,
+    },
+    /// Emitted when a wall or portal segment is added or updated on the map.
+    WallAdded {
+        /// Added or updated wall segment primitive.
+        wall: WallSegment,
+    },
+    /// Emitted when a dynamic point light emitter is added or updated on the map.
+    LightAdded {
+        /// Added or updated light source emitter.
+        light: LightSource,
+    },
+    /// Emitted when the GM paints or clears a manual fog-of-war cell override.
+    FogOverrideChanged {
+        /// Applied override mode (`Reveal`, `Hide`, or `Clear`).
+        mode: FogOverrideMode,
+        /// Discrete horizontal grid column index (`cell_x`).
+        cell_x: i32,
+        /// Discrete vertical grid row index (`cell_y`).
+        cell_y: i32,
+    },
+    /// Emitted when the battlemap background URL or physical dimensions are updated.
+    MapConfigChanged {
+        /// Updated background image URL or asset hash.
+        background_url: Option<String>,
+        /// Updated horizontal map width in feet (`ft`).
+        width_ft: u32,
+        /// Updated vertical map height in feet (`ft`).
+        height_ft: u32,
+    },
+    /// Emitted when a token's GM-hidden bitmask or invisibility state changes.
+    TokenVisibilityChanged {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Updated planar visibility bitmask.
+        visibility_channel: u8,
+        /// Updated magical invisibility flag.
+        invisible: bool,
+    },
+    /// Emitted when a token's controlling user UUID changes.
+    TokenOwnerAssigned {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Updated owner user UUID (`None` if GM-only).
+        owner_user_id: Option<Uuid>,
+    },
+    /// Emitted when a door's open, locked, or secret properties are reconfigured by the GM.
+    DoorConfigured {
+        /// Target wall segment ID.
+        wall_id: Uuid,
+        /// Updated `WallKind` variant.
+        kind: WallKind,
+    },
+    /// Emitted when a tactical reaction prompt is resolved (`Trigger` or `Pass`).
+    ReactionDecided {
+        /// Resolved reaction prompt UUID.
+        prompt_id: Uuid,
+        /// Reacting actor/token UUID.
+        actor_id: Uuid,
+        /// Chosen reaction decision.
+        decision: ReactionDecision,
+        /// Whether the triggering token's movement was interrupted (`true` on `Trigger`, `false` on `Pass`).
+        movement_interrupted: bool,
+    },
+    /// Emitted when a queued MCP dry-run staging proposal is committed by the GM.
+    McpStagingCommitted {
+        /// Committed MCP staging proposal UUID.
+        proposal_id: Uuid,
+    },
+    /// Emitted when a queued MCP dry-run staging proposal is rejected and discarded by the GM.
+    McpStagingRejected {
+        /// Rejected MCP staging proposal UUID.
+        proposal_id: Uuid,
+    },
     /// Emitted when the GM pops and restores the last snapshot from the undo ring buffer.
     ActionUndone {
         /// Human-readable description of the undone command.
@@ -423,8 +768,29 @@ pub struct TableSnapshotData {
     pub tokens: BTreeMap<Uuid, TokenState>,
     /// Authoritative list of wall, window, terrain, and door segments on the map.
     pub walls: Vec<WallSegment>,
+    /// Dynamic point light sources placed on the active map.
+    #[serde(default)]
+    pub lights: Vec<LightSource>,
+    /// Manual GM fog-of-war cell overrides (`Reveal` / `Hide`).
+    #[serde(default)]
+    pub fog_overrides: Vec<FogOverrideCell>,
     /// Active persistent Area of Effect zones keyed by `AoeTemplate::id`.
     pub persistent_aoes: BTreeMap<Uuid, AoeTemplate>,
+    /// Active 5-second tactical reaction prompts keyed by `prompt_id`.
+    #[serde(default)]
+    pub active_reaction_prompts: BTreeMap<Uuid, ReactionPrompt>,
+    /// Queued MCP dry-run staging proposals keyed by `proposal_id`.
+    #[serde(default)]
+    pub mcp_staging_proposals: BTreeMap<Uuid, McpStagingProposal>,
+    /// Optional SHA-256 hash or asset URL of the active background battlemap image.
+    #[serde(default)]
+    pub background_asset_hash: Option<String>,
+    /// Active battlemap width in canvas pixels (`px`, default `2000`).
+    #[serde(default = "default_map_dimension_px")]
+    pub map_width_px: u32,
+    /// Active battlemap height in canvas pixels (`px`, default `2000`).
+    #[serde(default = "default_map_dimension_px")]
+    pub map_height_px: u32,
 }
 
 /// Authoritative in-memory tabletop state machine combining serializable `TableSnapshotData`,
@@ -477,6 +843,9 @@ pub enum CommandError {
     /// A non-GM actor attempted to open or close a locked door (`is_locked == true`).
     #[error("door is locked")]
     DoorLocked,
+    /// A scene, map, or door configuration parameter was out of valid bounds.
+    #[error("invalid configuration: {0}")]
+    InvalidConfiguration(String),
     /// The GM issued `UndoLastAction` while `undo_stack` was empty.
     #[error("undo stack is empty")]
     NothingToUndo,
@@ -505,11 +874,24 @@ impl TableState {
                 active_turn_index: 0,
                 tokens: BTreeMap::new(),
                 walls,
+                lights: Vec::new(),
+                fog_overrides: Vec::new(),
                 persistent_aoes: BTreeMap::new(),
+                active_reaction_prompts: BTreeMap::new(),
+                mcp_staging_proposals: BTreeMap::new(),
+                background_asset_hash: None,
+                map_width_px: default_map_dimension_px(),
+                map_height_px: default_map_dimension_px(),
             },
             bvh,
             undo_stack: VecDeque::with_capacity(MAX_UNDO_HISTORY),
         }
+    }
+
+    /// Restores a compensating `UndoEntry` snapshot and rebuilds the 2.5D `Bvh2D` spatial index.
+    pub fn apply_undo_delta(&mut self, entry: UndoEntry) {
+        self.data = entry.snapshot;
+        self.bvh = Bvh2D::build(self.data.walls.clone());
     }
 
     /// Returns the token `Uuid` whose turn is currently active according to `active_turn_index`,
@@ -596,18 +978,52 @@ impl TableState {
 
                 let new_elev = to_elevation_ft.unwrap_or(token.elevation_ft);
                 let px_per_ft = self.cell_size_px / self.feet_per_cell.max(1.0);
-                let half_px = self.cell_size_px * 0.5;
+                let half_w = f64::from(token.grid_w.max(1)) * self.cell_size_px * 0.5;
+                let half_h = f64::from(token.grid_h.max(1)) * self.cell_size_px * 0.5;
                 let from_center =
-                    Point2D::new(token.top_left.x + half_px, token.top_left.y + half_px);
-                let to_center = Point2D::new(to_top_left.x + half_px, to_top_left.y + half_px);
+                    Point2D::new(token.top_left.x + half_w, token.top_left.y + half_h);
+                let to_center = Point2D::new(to_top_left.x + half_w, to_top_left.y + half_h);
 
                 if !is_gm_teleport {
-                    let is_ethereal =
-                        (token.visibility_channel & crate::geometry::CHANNEL_ETHEREAL) != 0;
+                    let is_ethereal = (token.visibility_channel & CHANNEL_ETHEREAL) != 0;
+                    let check_elev = new_elev + token.height_ft * 0.5;
+
+                    if !is_ethereal {
+                        let token_bottom_ft = token.elevation_ft.min(new_elev);
+                        let token_top_ft =
+                            token.elevation_ft.max(new_elev) + token.height_ft.max(0.0);
+                        for wall in &self.data.walls {
+                            if !wall.is_blocking_movement() {
+                                continue;
+                            }
+                            let elev_overlaps = token_bottom_ft <= wall.top_elevation_ft
+                                && token_top_ft >= wall.bottom_elevation_ft
+                                && check_elev >= wall.bottom_elevation_ft
+                                && check_elev <= wall.top_elevation_ft;
+                            if elev_overlaps
+                                && segment_intersects_segment(
+                                    from_center,
+                                    to_center,
+                                    wall.a,
+                                    wall.b,
+                                )
+                            {
+                                let hit_pt =
+                                    segment_intersection(from_center, to_center, wall.a, wall.b)
+                                        .map(|(_, pt)| pt)
+                                        .unwrap_or(to_center);
+                                return Err(CommandError::WallCollision {
+                                    x: hit_pt.x,
+                                    y: hit_pt.y,
+                                });
+                            }
+                        }
+                    }
+
                     if let Some(hit_pt) = self.bvh.check_movement_collision(
                         from_center,
                         to_center,
-                        new_elev + token.height_ft * 0.5,
+                        check_elev,
                         is_ethereal,
                     ) {
                         return Err(CommandError::WallCollision {
@@ -741,6 +1157,46 @@ impl TableState {
                     exploration_paused,
                     active_turn_token_id: self.active_turn_token_id(),
                     round: self.data.round,
+                }])
+            }
+
+            TrameCommand::StartTurnByTurn { initiative_order } => {
+                Self::require_gm(actor)?;
+                self.push_undo("Start Turn-by-Turn mode");
+                self.data.mode = TableMode::TurnByTurn;
+                self.data.exploration_paused = false;
+                self.data.initiative_order = initiative_order;
+                self.data.active_turn_index = 0;
+                self.data.round = 1;
+                if let Some(first_id) = self.active_turn_token_id()
+                    && let Some(tok) = self.data.tokens.get_mut(&first_id)
+                {
+                    tok.speed_remaining_ft = tok.speed_max_ft;
+                    tok.has_action = true;
+                    tok.has_bonus_action = true;
+                    tok.has_reaction = true;
+                }
+                Ok(vec![TrameEvent::TableModeChanged {
+                    mode: TableMode::TurnByTurn,
+                    exploration_paused: false,
+                    active_turn_token_id: self.active_turn_token_id(),
+                    round: self.data.round,
+                }])
+            }
+
+            TrameCommand::EndTurnByTurn => {
+                Self::require_gm(actor)?;
+                self.push_undo("End Turn-by-Turn mode");
+                self.data.mode = TableMode::Exploration;
+                self.data.exploration_paused = false;
+                self.data.initiative_order.clear();
+                self.data.active_turn_index = 0;
+                self.data.round = 1;
+                Ok(vec![TrameEvent::TableModeChanged {
+                    mode: TableMode::Exploration,
+                    exploration_paused: false,
+                    active_turn_token_id: None,
+                    round: 1,
                 }])
             }
 
@@ -953,17 +1409,338 @@ impl TableState {
                 Ok(vec![TrameEvent::AmbientLightingChanged { preset }])
             }
 
+            TrameCommand::LoadScene {
+                scene_id,
+                map_asset_id,
+                width_px,
+                height_px,
+                pixels_per_grid,
+                walls,
+            } => {
+                Self::require_gm(actor)?;
+                if pixels_per_grid <= 0.0 || width_px == 0 || height_px == 0 {
+                    return Err(CommandError::InvalidConfiguration(
+                        "Scene dimensions and pixels_per_grid must be positive".to_string(),
+                    ));
+                }
+                self.push_undo("Load scene");
+                self.cell_size_px = pixels_per_grid;
+                self.data.background_asset_hash = Some(map_asset_id.clone());
+                self.data.map_width_px = width_px;
+                self.data.map_height_px = height_px;
+                self.data.walls = walls;
+                self.data.persistent_aoes.clear();
+                self.bvh = Bvh2D::build(self.data.walls.clone());
+
+                Ok(vec![TrameEvent::SceneLoaded {
+                    scene_id,
+                    map_asset_id,
+                    width_px,
+                    height_px,
+                    pixels_per_grid,
+                }])
+            }
+
+            TrameCommand::SpawnToken { token } => {
+                Self::require_gm(actor)?;
+                self.push_undo(format!("Spawn token {}", token.name));
+                self.data.tokens.insert(token.id, token.clone());
+                Ok(vec![TrameEvent::TokenSpawned { token }])
+            }
+
+            TrameCommand::RemoveToken { token_id } => {
+                Self::require_gm(actor)?;
+                if !self.data.tokens.contains_key(&token_id) {
+                    return Err(CommandError::NotFound(format!("token {token_id}")));
+                }
+                self.push_undo(format!("Remove token {token_id}"));
+                self.data.tokens.remove(&token_id);
+                self.data.initiative_order.retain(|id| *id != token_id);
+                if self.data.active_turn_index >= self.data.initiative_order.len() {
+                    self.data.active_turn_index = 0;
+                }
+                Ok(vec![TrameEvent::TokenRemoved { token_id }])
+            }
+
+            TrameCommand::AddWall { wall } => {
+                Self::require_gm(actor)?;
+                self.push_undo(format!("Add wall {}", wall.id));
+                if let Some(existing) = self.data.walls.iter_mut().find(|w| w.id == wall.id) {
+                    *existing = wall.clone();
+                } else {
+                    self.data.walls.push(wall.clone());
+                }
+                self.bvh = Bvh2D::build(self.data.walls.clone());
+                Ok(vec![TrameEvent::WallAdded { wall }])
+            }
+
+            TrameCommand::AddLight { light } => {
+                Self::require_gm(actor)?;
+                self.push_undo(format!("Add light {}", light.id));
+                if let Some(existing) = self.data.lights.iter_mut().find(|l| l.id == light.id) {
+                    *existing = light.clone();
+                } else {
+                    self.data.lights.push(light.clone());
+                }
+                Ok(vec![TrameEvent::LightAdded { light }])
+            }
+
+            TrameCommand::SetFogOverride {
+                mode,
+                cell_x,
+                cell_y,
+            } => {
+                Self::require_gm(actor)?;
+                self.push_undo(format!("Set fog override ({cell_x}, {cell_y})"));
+                self.data
+                    .fog_overrides
+                    .retain(|cell| !(cell.cell_x == cell_x && cell.cell_y == cell_y));
+                if mode != FogOverrideMode::Clear {
+                    self.data.fog_overrides.push(FogOverrideCell {
+                        cell_x,
+                        cell_y,
+                        mode,
+                    });
+                }
+                Ok(vec![TrameEvent::FogOverrideChanged {
+                    mode,
+                    cell_x,
+                    cell_y,
+                }])
+            }
+
+            TrameCommand::SetMapConfig {
+                background_url,
+                width_ft,
+                height_ft,
+            } => {
+                Self::require_gm(actor)?;
+                if width_ft == 0 || height_ft == 0 {
+                    return Err(CommandError::InvalidConfiguration(
+                        "Map width_ft and height_ft must be positive".to_string(),
+                    ));
+                }
+                self.push_undo("Configure map dimensions and background");
+                let px_per_ft = self.cell_size_px / self.feet_per_cell.max(1.0);
+                self.data.background_asset_hash = background_url.clone();
+                self.data.map_width_px = (f64::from(width_ft) * px_per_ft).round().max(1.0) as u32;
+                self.data.map_height_px =
+                    (f64::from(height_ft) * px_per_ft).round().max(1.0) as u32;
+                Ok(vec![TrameEvent::MapConfigChanged {
+                    background_url,
+                    width_ft,
+                    height_ft,
+                }])
+            }
+
+            TrameCommand::SetTokenVisibility {
+                token_id,
+                gm_hidden,
+                invisible,
+            } => {
+                Self::require_gm(actor)?;
+                if !self.data.tokens.contains_key(&token_id) {
+                    return Err(CommandError::NotFound(format!("token {token_id}")));
+                }
+                self.push_undo(format!("Set token visibility {token_id}"));
+                let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
+                if gm_hidden {
+                    tok.visibility_channel |= CHANNEL_GM_HIDDEN;
+                } else {
+                    tok.visibility_channel &= !CHANNEL_GM_HIDDEN;
+                    if tok.visibility_channel == 0 {
+                        tok.visibility_channel = CHANNEL_MATERIAL;
+                    }
+                }
+                tok.invisible = invisible;
+                let visibility_channel = tok.visibility_channel;
+                Ok(vec![TrameEvent::TokenVisibilityChanged {
+                    token_id,
+                    visibility_channel,
+                    invisible,
+                }])
+            }
+
+            TrameCommand::AssignTokenOwner {
+                token_id,
+                owner_user_id,
+            } => {
+                Self::require_gm(actor)?;
+                if !self.data.tokens.contains_key(&token_id) {
+                    return Err(CommandError::NotFound(format!("token {token_id}")));
+                }
+                self.push_undo(format!("Assign token owner {token_id}"));
+                let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
+                tok.owner_user_id = owner_user_id;
+                Ok(vec![TrameEvent::TokenOwnerAssigned {
+                    token_id,
+                    owner_user_id,
+                }])
+            }
+
+            TrameCommand::ConfigureDoor {
+                wall_id,
+                is_open,
+                is_locked,
+                is_secret,
+            } => {
+                Self::require_gm(actor)?;
+                let idx = self
+                    .data
+                    .walls
+                    .iter()
+                    .position(|w| w.id == wall_id)
+                    .ok_or_else(|| CommandError::NotFound(format!("wall {wall_id}")))?;
+
+                let (mut cur_open, mut cur_locked, mut cur_secret) =
+                    match &self.data.walls[idx].kind {
+                        WallKind::Door {
+                            is_open: o,
+                            is_locked: l,
+                        } => (*o, *l, false),
+                        WallKind::SecretDoor { is_open: o } => (*o, false, true),
+                        _ => {
+                            return Err(CommandError::InvalidConfiguration(
+                                "Wall segment is not a door".to_string(),
+                            ));
+                        }
+                    };
+
+                if let Some(o) = is_open {
+                    cur_open = o;
+                }
+                if let Some(l) = is_locked {
+                    cur_locked = l;
+                }
+                if let Some(s) = is_secret {
+                    cur_secret = s;
+                }
+
+                let new_kind = if cur_secret {
+                    WallKind::SecretDoor { is_open: cur_open }
+                } else {
+                    WallKind::Door {
+                        is_open: cur_open,
+                        is_locked: cur_locked,
+                    }
+                };
+
+                self.push_undo(format!("Configure door {wall_id}"));
+                self.data.walls[idx].kind = new_kind.clone();
+                self.bvh = Bvh2D::build(self.data.walls.clone());
+
+                Ok(vec![TrameEvent::DoorConfigured {
+                    wall_id,
+                    kind: new_kind,
+                }])
+            }
+
+            TrameCommand::DecideReaction {
+                prompt_id,
+                actor_id,
+                decision,
+            } => {
+                if actor.role == CampaignRole::Spectator {
+                    return Err(CommandError::PermissionDenied(
+                        "spectators cannot decide reactions".to_string(),
+                    ));
+                }
+                if actor.role == CampaignRole::Player && self.data.tokens.contains_key(&actor_id) {
+                    self.require_token_control(actor, actor_id)?;
+                }
+                if let Some(prompt) = self.data.active_reaction_prompts.get(&prompt_id)
+                    && actor.role != CampaignRole::Gm
+                    && prompt.reactor_actor_id != actor_id
+                {
+                    return Err(CommandError::PermissionDenied(
+                        "reaction prompt belongs to another actor".to_string(),
+                    ));
+                }
+
+                self.push_undo(format!("Decide reaction {prompt_id}"));
+                let removed_prompt = self.data.active_reaction_prompts.remove(&prompt_id);
+                let mut extra_events = Vec::new();
+
+                let movement_interrupted = match &decision {
+                    ReactionDecision::Trigger { .. } => {
+                        if let Some(reactor_tok) = self.data.tokens.get_mut(&actor_id) {
+                            reactor_tok.has_reaction = false;
+                        }
+                        true
+                    }
+                    ReactionDecision::Pass => {
+                        if let Some(prompt) = removed_prompt
+                            && let Some(dest) = prompt.pending_destination
+                            && let Some(moving_tok) =
+                                self.data.tokens.get_mut(&prompt.trigger_token_id)
+                        {
+                            let from_top_left = moving_tok.top_left;
+                            let new_elev = prompt
+                                .pending_elevation_ft
+                                .unwrap_or(moving_tok.elevation_ft);
+                            moving_tok.top_left = dest;
+                            moving_tok.elevation_ft = new_elev;
+                            extra_events.push(TrameEvent::TokenMoved {
+                                token_id: prompt.trigger_token_id,
+                                from_top_left,
+                                to_top_left: dest,
+                                elevation_ft: new_elev,
+                                speed_remaining_ft: moving_tok.speed_remaining_ft,
+                            });
+                        }
+                        false
+                    }
+                };
+
+                let mut events = vec![TrameEvent::ReactionDecided {
+                    prompt_id,
+                    actor_id,
+                    decision,
+                    movement_interrupted,
+                }];
+                events.extend(extra_events);
+                Ok(events)
+            }
+
+            TrameCommand::CommitMcpStaging { proposal_id } => {
+                Self::require_gm(actor)?;
+                let pre_batch_snapshot = self.data.clone();
+                let mut batch_events = Vec::new();
+                if let Some(proposal) = self.data.mcp_staging_proposals.remove(&proposal_id) {
+                    let undo_len_before = self.undo_stack.len();
+                    for staged_cmd in proposal.commands {
+                        let evs = self.apply_command(actor, staged_cmd)?;
+                        batch_events.extend(evs);
+                    }
+                    self.undo_stack.truncate(undo_len_before);
+                }
+                if self.undo_stack.len() >= MAX_UNDO_HISTORY {
+                    self.undo_stack.pop_front();
+                }
+                self.undo_stack.push_back(UndoEntry {
+                    description: format!("Commit MCP staging {proposal_id}"),
+                    snapshot: pre_batch_snapshot,
+                });
+                batch_events.push(TrameEvent::McpStagingCommitted { proposal_id });
+                Ok(batch_events)
+            }
+
+            TrameCommand::RejectMcpStaging { proposal_id } => {
+                Self::require_gm(actor)?;
+                self.push_undo(format!("Reject MCP staging {proposal_id}"));
+                self.data.mcp_staging_proposals.remove(&proposal_id);
+                Ok(vec![TrameEvent::McpStagingRejected { proposal_id }])
+            }
+
             TrameCommand::UndoLastAction => {
                 Self::require_gm(actor)?;
                 let entry = self
                     .undo_stack
                     .pop_back()
                     .ok_or(CommandError::NothingToUndo)?;
-                self.data = entry.snapshot;
-                self.bvh = Bvh2D::build(self.data.walls.clone());
-                Ok(vec![TrameEvent::ActionUndone {
-                    description: entry.description,
-                }])
+                let description = entry.description.clone();
+                self.apply_undo_delta(entry);
+                Ok(vec![TrameEvent::ActionUndone { description }])
             }
         }
     }

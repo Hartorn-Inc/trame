@@ -16,7 +16,7 @@
 //!        remove Illusion tags, strip GmHidden tokens, and remove GM-only audio.
 //! ============================================================================
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
@@ -293,23 +293,21 @@ pub fn sanitize_scene_for_player(mut scene: CampaignMapScene) -> CampaignMapScen
 pub async fn get_campaign_maps_handler(
     State(state): State<crate::http::AppState>,
     Path(campaign_id): Path<Uuid>,
-    Query(query): Query<CampaignMapsQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let user_id =
-        match crate::http::resolve_authenticated_user(&state, &headers, query.user_id).await {
-            Ok(uid) => uid,
-            Err(status) => {
-                return (
-                    status,
-                    Json(crate::http::ErrorResponse {
-                        code: Some("UNAUTHORIZED".to_string()),
-                        error: "valid authentication credentials required".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-        };
+    let user_id = match crate::http::resolve_authenticated_user(&state, &headers, None).await {
+        Ok(uid) => uid,
+        Err(status) => {
+            return (
+                status,
+                Json(crate::http::ErrorResponse {
+                    code: Some("UNAUTHORIZED".to_string()),
+                    error: "valid authentication credentials required".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
 
     let is_gm = crate::http::is_authorized_campaign_gm(&state, campaign_id, user_id).await;
     if !is_gm && !crate::http::is_authorized_campaign_member(&state, campaign_id, user_id).await {
@@ -323,7 +321,14 @@ pub async fn get_campaign_maps_handler(
             .into_response();
     }
 
-    let scenes = state.map_storage.get_campaign_maps(campaign_id);
+    let scenes = if let Some(ref pg) = state.postgres_store {
+        match pg.load_campaign_scenes_async(campaign_id).await {
+            Ok(db_scenes) if !db_scenes.is_empty() => db_scenes,
+            _ => state.map_storage.get_campaign_maps(campaign_id),
+        }
+    } else {
+        state.map_storage.get_campaign_maps(campaign_id)
+    };
     if is_gm {
         return Json(scenes).into_response();
     }
@@ -340,24 +345,22 @@ pub async fn get_campaign_maps_handler(
 pub async fn put_campaign_maps_handler(
     State(state): State<crate::http::AppState>,
     Path(campaign_id): Path<Uuid>,
-    Query(query): Query<CampaignMapsQuery>,
     headers: HeaderMap,
     Json(payload): Json<PutCampaignMapsPayload>,
 ) -> Response {
-    let user_id =
-        match crate::http::resolve_authenticated_user(&state, &headers, query.user_id).await {
-            Ok(uid) => uid,
-            Err(status) => {
-                return (
-                    status,
-                    Json(crate::http::ErrorResponse {
-                        code: Some("UNAUTHORIZED".to_string()),
-                        error: "valid authentication credentials required".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-        };
+    let user_id = match crate::http::resolve_authenticated_user(&state, &headers, None).await {
+        Ok(uid) => uid,
+        Err(status) => {
+            return (
+                status,
+                Json(crate::http::ErrorResponse {
+                    code: Some("UNAUTHORIZED".to_string()),
+                    error: "valid authentication credentials required".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
 
     let is_gm = crate::http::is_authorized_campaign_gm(&state, campaign_id, user_id).await;
     if !is_gm {
@@ -382,6 +385,9 @@ pub async fn put_campaign_maps_handler(
                 }
             }
         }
+    }
+    if let Some(ref pg) = state.postgres_store {
+        let _ = pg.save_campaign_scenes_async(campaign_id, &scenes).await;
     }
     state.map_storage.save_campaign_maps(campaign_id, scenes);
     StatusCode::NO_CONTENT.into_response()

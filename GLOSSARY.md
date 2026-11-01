@@ -71,9 +71,9 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ActiveEffect
 
-- **Definition**: Declarative mutation applied to a numeric or string actor property following the strict 5-phase order (`BASE_FORMULA` -> `ADD` -> `OVERRIDE_CONDITIONAL` -> `MULTIPLY` -> `FINAL_CLAMP`).
+- **Definition**: Declarative mutation applied to a numeric or string actor property following the strict 5-phase order (`BASE` -> `ADD` -> `MULTIPLY` -> `OVERRIDE` -> `CLAMP`, where `CLAMP` applies the lower bound before the upper bound).
 - **Allowed Context**: `ActiveEffect`, `active effect`, 5-phase modifier pipeline.
-- **_Avoid_**: `buff`, `debuff`, `stat modifier`, `status effect`.
+- **_Avoid_**: `buff`, `debuff`, `stat modifier`, `status effect`, `BASE_FORMULA`, `OVERRIDE_CONDITIONAL`, `FINAL_CLAMP`.
 
 ### Actor
 
@@ -101,7 +101,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### CampaignWorkspace
 
-- **Definition**: Campaign-scoped authenticated Preact shell housing the `Map`, `Actors`, `Journal`, `Compendium`, and `Settings` workspaces alongside the live tabletop canvas.
+- **Definition**: Campaign-scoped authenticated Preact shell housing the 5 top-level navigation tabs (`Table`, `Maps`, `Actors`, `Documents`, and `Compendium`) alongside slide-over `HudDrawers` on the live `Table` tab.
 - **Allowed Context**: Active campaign preparation, workspace tab switching, and live tabletop session framing.
 - **_Avoid_**: CampaignDashboard, GameRoomShell, TableWrapper.
 
@@ -267,11 +267,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: `ResourcePool`, `resource pool`.
 - **_Avoid_**: `feature counter`, `ability charge`, `resource tracker`.
 
-### ReversiblePatch
+### UndoEntry
 
-- **Definition**: Transactional state modification record storing forward mutations and inverse rollback data.
-- **Allowed Context**: Engine command stack, GM undo actions, and fog-of-war rollbacks.
-- **_Avoid_**: UndoAction, DeltaState, MutationSnapshot.
+- **Definition**: Inverse state record produced by each tactical `TrameCommand` and pushed onto the per-map 50-entry ring buffer so the Game Master can revert it.
+- **Allowed Context**: Engine command stack, GM undo actions, fog-of-war rollbacks, and composite MCP batch commits.
+- **_Avoid_**: ReversiblePatch, UndoAction, DeltaState, MutationSnapshot.
 
 ### RulerMetric
 
@@ -416,3 +416,83 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Campaign role enumeration (`GameMaster`, `Player`, `Spectator`) governing authority over notes, handouts, tokens, and table state mutations.
 - **Allowed Context**: Note RBAC evaluation, command dispatch permissions, and WebSocket envelope filtering.
 - **_Avoid_**: PlayerRole, CampaignRank, UserPrivilege.
+
+### ActivateScene
+
+- **Definition**: Atomic room transition command (`ActivateScene { scene_id }`) that loads a persisted map scene's walls, lights, audio emitters, and `StagedToken` entities into `TableRoomActor` while preserving active `HeroToken` instances and repositioning them onto scene spawn points.
+- **Allowed Context**: Scene transitions, `MapsStudioTab` activation, and `TableRoomActor` state swaps.
+- **_Avoid_**: PublishMapToTable, SwitchBattlemap, PushScene.
+
+### HeroToken
+
+- **Definition**: Persistent player-owned token (`owner_user_id.is_some()`) whose hit points, conditions, and inventory survive across `ActivateScene` transitions.
+- **Allowed Context**: Scene activation transitions, player token ownership, and spawn-point placement.
+- **_Avoid_**: PlayerPiece, AvatarToken, PersistentPawn.
+
+### LineAnchorNoteMerge
+
+- **Definition**: Deterministic Markdown AST reconciliation algorithm (`merge_party_note_ast`) that splices confidential `:::dm` and unrevealed `:::handout` `DirectiveBlock` segments back into their original line-anchored positions when a `Player` edits a `PARTY` note.
+- **Allowed Context**: Collaborative `PARTY` note saves, `FilteredNoteDocument` round-trip safety, and secret preservation.
+- **_Avoid_**: NoteDiffPatch, SecretReinjector, WikiMerge.
+
+### MapsStudioTab
+
+- **Definition**: Game Master preparation workspace tab within `CampaignWorkspace` for authoring 2.5D wall segments, doors, light sources, spatial audio emitters, spawn points, and `StagedToken` encounters prior to triggering `ActivateScene`.
+- **Allowed Context**: Campaign map authoring, UVTT import review, and scene preparation.
+- **_Avoid_**: MapEditorView, BattlemapBuilder, SceneDesigner.
+
+### SceneAtlas
+
+- **Definition**: Zero-trust player-facing map browser tab within `CampaignWorkspace` displaying only discovered scenes and explored fog-of-war snapshots with all secret doors, traps, and `GM_HIDDEN` tokens stripped.
+- **Allowed Context**: Player map navigation and discovered scene review.
+- **_Avoid_**: PlayerMapGallery, WorldMapTab, AtlasBrowser.
+
+### StagedToken
+
+- **Definition**: Encounter token pre-placed inside a persisted map scene (`MapsStudioTab`) with an initial `VisibilityChannel` (`MATERIAL` or `GM_HIDDEN`), instantiated into the live `TableRoomActor` when `ActivateScene` executes.
+- **Allowed Context**: Encounter preparation, ambush staging, and scene activation.
+- **_Avoid_**: PreplacedMonster, DraftToken, AmbushMarker.
+
+### AuthoritativeInitiativeRoll
+
+- **Definition**: Server-side `ChaCha20Rng` `1d20 + dex_mod` roll executed by `TableRoomActor` for every active combatant without a pre-supplied initiative score when transitioning to `Turn-by-Turn Mode`, sorted descending with ties broken by `dex_mod` then `token_id`.
+- **Allowed Context**: `StartTurnByTurn` execution, `CombatTracker` initialization, and encounter startup.
+- **_Avoid_**: ClientInitiativeBatch, ManualOrderPrompt.
+
+### GuestSessionUpgrade
+
+- **Definition**: Automatic onboarding flow where a player opening a Magic Link invite URL (`?invite=<jwt>`) receives an immediate authenticated guest `trame_session` cookie bound to the invited `Campaign`, with optional later credential binding via `POST /api/v1/auth/bind`.
+- **Allowed Context**: Magic Link invite redemption, 1-click player onboarding, and guest-to-account binding.
+- **_Avoid_**: ForcedSignupRedirect, AnonymousSpectatorToken.
+
+### LinkedActorToken
+
+- **Definition**: Table token bound to a persistent `Actor` (`actor_id` set), whose hit points, temporary hit points, conditions, and death saves stay synchronized in both directions with that `Actor`.
+- **Allowed Context**: Player character and named NPC tokens, `ApplyDamage` / `HealActor` persistence, and `ActorUpdated` token resynchronization.
+- **_Avoid_**: BoundToken, SheetToken.
+
+### SyntheticToken
+
+- **Definition**: Table token with no persistent `Actor` (`actor_id` empty) whose combat state lives only in its own `TokenState`, so damage to one instance never affects another.
+- **Allowed Context**: Compendium monster spawns, `StagedToken` instantiation, and encounter minions.
+- **_Avoid_**: UnlinkedToken, MinionCopy, DisposableActor.
+
+### PublicTokenView
+
+- **Definition**: Reduced view of a token sent to a participant who does not control it: name, portrait, position, size, visible conditions, and `BloodiedState`, with no armor class or hit point numbers.
+- **Allowed Context**: Player state projection, enemy and NPC tokens on the player canvas, and the player combat tracker.
+- **_Avoid_**: RedactedToken, MaskedToken, EnemyStub.
+
+### BloodiedState
+
+- **Definition**: Coarse health tier shown in a `PublicTokenView`: `Unhurt` above half of maximum hit points, `Bloodied` at half or below, and `Down` at 0 hit points.
+- **Allowed Context**: Player-facing health indicator on enemy tokens and in the combat tracker.
+- **_Avoid_**: HealthBarPercent, HpHint, WoundLevel.
+
+### McpStagingProposal
+
+- **Definition**: Pending batch of destructive or bulk `TrameCommand` mutations submitted via `/api/v1/mcp` while `MCP Staging Mode` is active, held in `TableRoomActor` and rendered as translucent purple ghost previews until the Game Master dispatches `CommitMcpStaging` or `RejectMcpStaging`.
+- **Allowed Context**: `/api/v1/mcp` tool execution, `TableRoomActor` staging queue, and Game Master canvas confirmation controls.
+- **_Avoid_**: AiDraftQueue, PendingBotCommands.
+
+

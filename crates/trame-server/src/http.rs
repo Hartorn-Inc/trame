@@ -64,6 +64,7 @@ use crate::auth::session::{
 use crate::auth::totp::TotpService;
 pub use crate::maps::{InMemoryMapStorage, get_campaign_maps_handler, put_campaign_maps_handler};
 use crate::room::{ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomLeaseManager};
+use crate::storage::SqlxPostgresStore;
 use crate::storage::blob::{
     AssetDescriptor, BlobStore, BlobStoreError, BlobStream, Sha256Hasher, slice_to_stream,
     stream_to_bytes,
@@ -414,6 +415,9 @@ pub struct AppState {
     pub db_healthy: Arc<AtomicBool>,
     /// In-memory storage for campaign map scenes.
     pub map_storage: InMemoryMapStorage,
+    /// Authoritative PostgreSQL store when `DATABASE_URL` is configured; `None` keeps the
+    /// in-memory fallbacks above as the source of truth.
+    pub postgres_store: Option<Arc<SqlxPostgresStore>>,
 }
 
 impl AppState {
@@ -492,8 +496,53 @@ pub fn build_full_router(
         auth_state,
         db_healthy: Arc::new(AtomicBool::new(true)),
         map_storage: InMemoryMapStorage::new(),
+        postgres_store: None,
     };
     build_router_with_state(state)
+}
+
+/// Constructs the full Axum `Router` backed by PostgreSQL for WAL, sessions, identities,
+/// PATs, membership, timeline, and assets.
+pub fn build_router_with_postgres_store(
+    store: Arc<SqlxPostgresStore>,
+    lease_manager: Arc<RoomLeaseManager>,
+    instance_id: Uuid,
+) -> Router {
+    let magic_link_service = Arc::new(MagicLinkService::new(
+        b"trame-default-hmac-sha256-signing-secret-key",
+        "trame-server",
+    ));
+    let auth_state = AuthState {
+        magic_link_service,
+        session_store: store.clone(),
+        totp_service: Arc::new(TotpService::default()),
+    };
+    let state = AppState {
+        lease_manager,
+        asset_store: store.clone(),
+        membership: store.clone(),
+        instance_id,
+        timeline_storage: store.clone(),
+        campaign_store: InMemoryCampaignStore::new(),
+        blob_store: InMemoryBlobStore::new(),
+        auth_state,
+        db_healthy: Arc::new(AtomicBool::new(true)),
+        map_storage: InMemoryMapStorage::new(),
+        postgres_store: Some(store),
+    };
+    build_router_with_state(state)
+}
+
+/// Lists the notes of `campaign_id` from PostgreSQL when configured, otherwise from the
+/// in-memory archive store.
+pub async fn list_campaign_notes_internal(state: &AppState, campaign_id: Uuid) -> Vec<NoteRecord> {
+    if let Some(pg) = &state.postgres_store {
+        return pg
+            .list_notes_for_campaign_async(campaign_id)
+            .await
+            .unwrap_or_default();
+    }
+    state.campaign_store.all_notes()
 }
 
 /// Constructs the authoritative Axum `Router` from a pre-configured `AppState`.
