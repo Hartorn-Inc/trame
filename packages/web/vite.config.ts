@@ -8,7 +8,7 @@
  * Configures the Vite build and development server for `@trame/web`, enabling
  * Preact automatic JSX transformation (`jsxImportSource: 'preact'`), top-level
  * WebAssembly loading (`trame-engine`), and local development proxying of
- * `/api`, `/ws` and `/assets` routes to `trame-server`.
+ * `/api`, `/ws` and `/assets/download` routes to `trame-server`.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -------------------------------
@@ -26,7 +26,7 @@
  *
  * EXECUTION LIFECYCLE:
  * --------------------
- *   1. `npm run dev` starts Vite on port 5173 and proxies `/api`, `/ws`, `/assets`.
+ *   1. `npm run dev` starts Vite on port 5173 and proxies `/api`, `/ws`, `/assets/download`.
  *   2. `npm run build` runs `tsc --noEmit && vite build` into `dist/`.
  * ============================================================================
  */
@@ -54,7 +54,8 @@ export default defineConfig({
         target: apiOrigin.replace(/^http/, 'ws'),
         ws: true,
       },
-      '/assets': {
+      // Only signed downloads are API routes; the rest of `/assets` is Vite's own bundle.
+      '/assets/download': {
         target: apiOrigin,
         changeOrigin: true,
       },
