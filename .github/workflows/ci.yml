@@ -47,6 +47,7 @@ jobs:
       - name: Install pinned Rust toolchain (rust-toolchain.toml)
         run: |
           rustup toolchain install
+          rustup target add wasm32-unknown-unknown
           rustup show active-toolchain
       - name: Install pinned wasm-pack
         run: |
@@ -67,8 +68,11 @@ jobs:
         env:
           DATABASE_URL: postgresql://trame:trame_ci_password@localhost:5432/trame
         run: cargo test --workspace --all-targets
-      - name: WASM Build (wasm-pack trame-engine)
-        run: wasm-pack build crates/trame-engine --target web --out-dir ../../packages/web/src/wasm
+      # Same outputs as `make wasm`; required by web lint/typecheck/tests/build and the parity test.
+      - name: WASM Build (wasm-pack trame-engine, browser + Node)
+        run: |
+          wasm-pack build crates/trame-engine --target web --out-dir ../../packages/web/src/wasm
+          wasm-pack build crates/trame-engine --target nodejs --out-dir ../../packages/trame-engine-node
       - name: Game System Tests (dnd5e)
         working-directory: packages/web
         run: node --test "../game-systems/dnd5e/tests/**/*.test.ts"

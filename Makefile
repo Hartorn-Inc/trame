@@ -34,7 +34,7 @@ build: wasm ## Build Rust workspace and Web frontend inside Docker
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev cargo build --workspace
 	$(DEV_COMPOSE) run --rm --no-deps web-dev npm run build
 
-test: test-rust test-web ## Run all unit and integration tests (Rust + WASM + Web) inside Docker
+test: test-rust wasm test-game-systems test-web ## Run all tests in order (Rust, WASM build, game systems, Web incl. WASM parity) inside Docker
 
 test-rust: ## Run Cargo workspace tests inside the Rust Docker container
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev cargo test --workspace --all-targets

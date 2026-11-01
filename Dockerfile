@@ -2,7 +2,10 @@
 #
 # Stages:
 #   1. rust-source   Pinned toolchain + locked workspace sources (shared by 2 and 3).
-#   2. wasm-builder  wasm-pack builds crates/trame-engine into packages/web/src/wasm.
+#   2. wasm-builder  wasm-pack builds crates/trame-engine for the browser
+#                    (packages/web/src/wasm) and Node (packages/trame-engine-node, which
+#                    `tsc` needs to typecheck the parity test). wasm-opt stays disabled
+#                    through crates/trame-engine/Cargo.toml.
 #   3. rust-builder  `cargo build --release --locked` for the trame-server binary.
 #   4. web-builder   `npm ci && npm run build` emits the SPA into packages/web/dist.
 #   5. runtime       distroless image: one binary on port 8080 plus the SPA under
@@ -25,8 +28,6 @@ FROM rust-source AS wasm-builder
 ARG WASM_PACK_VERSION=0.15.1
 ARG WASM_PACK_SHA256_X86_64=410101009739b9d01c7d5affaaad6e9c9a24b4cba6791a4805db8e89b9bf7af2
 ARG WASM_PACK_SHA256_AARCH64=7004853c7925ae1984033b5f25866ec604bbc921ef956d5e6c5595bc5af6d30c
-RUN apt-get update && apt-get install -y --no-install-recommends binaryen \
-    && rm -rf /var/lib/apt/lists/*
 RUN arch="$(uname -m)" \
     && case "$arch" in \
          x86_64) sha="$WASM_PACK_SHA256_X86_64" ;; \
@@ -38,7 +39,8 @@ RUN arch="$(uname -m)" \
     && echo "${sha}  /tmp/${name}.tar.gz" | sha256sum -c - \
     && tar -xzf "/tmp/${name}.tar.gz" --strip-components=1 -C /usr/local/cargo/bin "${name}/wasm-pack" \
     && rm "/tmp/${name}.tar.gz"
-RUN wasm-pack build crates/trame-engine --release --target web --out-dir ../../packages/web/src/wasm
+RUN wasm-pack build crates/trame-engine --release --target web --out-dir ../../packages/web/src/wasm \
+    && wasm-pack build crates/trame-engine --release --target nodejs --out-dir ../../packages/trame-engine-node
 
 FROM rust-source AS rust-builder
 RUN cargo build --release --locked --bin trame-server
@@ -50,6 +52,7 @@ RUN npm ci
 COPY packages/web ./
 COPY packages/game-systems ../game-systems
 COPY --from=wasm-builder /build/packages/web/src/wasm ./src/wasm
+COPY --from=wasm-builder /build/packages/trame-engine-node ../trame-engine-node
 RUN npm run build
 
 FROM gcr.io/distroless/cc-debian12:nonroot
