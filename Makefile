@@ -47,7 +47,7 @@ test-rust: ## Run Cargo workspace tests inside the Rust Docker container
 test-web: wasm test-game-systems ## Run Web frontend (incl. WASM parity) and game-system tests inside the Node Docker container
 	$(DEV_COMPOSE) run --rm --no-deps web-dev npm test
 
-test-game-systems: ## Run packages/game-systems/dnd5e tests inside the Node Docker container
+test-game-systems: wasm ## Run packages/game-systems/dnd5e tests inside the Node Docker container
 	$(DEV_COMPOSE) run --rm --no-deps web-dev node --test "../game-systems/dnd5e/tests/**/*.test.ts"
 
 lint: lint-rust lint-web lint-design ## Run all linters and format checks (glossary/ADR integrity, Impeccable design audit, rustfmt, clippy, eslint, tsc) inside Docker
