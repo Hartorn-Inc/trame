@@ -59,7 +59,7 @@ derived:
 | Effect type | Behavior in `trame-engine` | Concrete examples (D&D 5e) |
 | :--- | :--- | :--- |
 | **1. Passive modifier (`PassiveModifier`)** | Automatically changes a statistic, a speed or a vision sense while its activation condition is true (`when: "equipped && attuned"`). | • **Feat *Alert***: `ADD +5` to `initiative.bonus`.<br>• **Plate armor**: base formula `18` on `ac.value`.<br>• **Item *Goggles of Night***: `ADD 60` to `senses.darkvision` (immediately updates the token's vision on the table). |
-| **2. Action option / toggle (`ToggleModifier`)** | Adds a checkbox that can be toggled on the fly in the attack panel or on the token HUD. | • **Feat *Sharpshooter* / *Great Weapon Master***: checkbox `[-5 attack / +10 damage]`.<br>• **Feature *Rage***: toggles `+2 STR melee damage` and resistance to bludgeoning/piercing/slashing damage. |
+| **2. Action option / toggle (`ToggleModifier`)** | Adds a checkbox that can be toggled on the fly in the attack panel or on the token HUD. | • **Spell *Bless***: checkbox `[+1d4 attack rolls and saving throws]`.<br>• **Feature *Rage***: toggles `+2 STR melee damage` and resistance to bludgeoning/piercing/slashing damage. |
 | **3. Resource or action grant (`Grant`)** | Adds a rechargeable `ResourcePool`, an innate spell or an action usable in combat. | • **Feature *Second Wind***: grants 1 resource `1/short rest` + 1 Bonus Action (`1d10 + @level`).<br>• **Feat *Magic Initiate***: grants 2 cantrips and 1 level-1 spell (`1/long rest`). |
 | **4. Dynamic roll modifier (`RollHook`)** | Changes the dice formula or the advantage mode when a roll is resolved. | • **Condition *Poisoned***: forces `DISADVANTAGE` on attack rolls and ability checks.<br>• **Spell *Bless***: adds `+ 1d4` to attack rolls and saving throws. |
 
@@ -117,7 +117,7 @@ Every GM has their own style, so the campaign offers a 3-level setting (changeab
 
 ## 5. Compendium Editing, Homebrew & System Overrides (Q13)
 
-* The built-in `dnd5e` pack (`SystemSRD`, SRD 5.1 CC-BY-4.0) is provided as a **read-only base layer**, but each instance and each campaign has a **homebrew compendium layer** (`InstanceLibrary`, `CampaignHomebrew`), resolved by the `CompendiumResolver` in the order `CAMPAIGN_HOMEBREW` > `INSTANCE_LIBRARY` > `SYSTEM_SRD`:
+* The built-in `dnd5e` pack (`SystemSRD`, SRD 5.2.1 CC-BY-4.0, ADR-0038) is provided as a **read-only base layer**, but each instance and each campaign has a **homebrew compendium layer** (`InstanceLibrary`, `CampaignHomebrew`), resolved by the `CompendiumResolver` in the order `CAMPAIGN_HOMEBREW` > `INSTANCE_LIBRARY` > `SYSTEM_SRD`:
   * **Clone & edit in 1 click**: the GM can duplicate any SRD monster, spell, feat or magic item to create a house variant, or create one from scratch (in the UI or via the MCP tool `compendium.upsert_entry`).
   * **Cross-campaign sharing**: a GM can save their homebrew creations in their dedicated instance's library to reuse them in all their campaigns, or export them as a `.trame-pack.json` file.
 

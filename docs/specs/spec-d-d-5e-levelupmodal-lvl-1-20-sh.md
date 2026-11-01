@@ -1,5 +1,7 @@
 # Technical & Functional Specification: D&D 5e LevelUpModal (Lvl 1-20), ShortRest/LongRest UI & Expanded SRD 5.1 Compendium
 
+> **Rules baseline superseded:** the pack now targets SRD 5.2.1 (2024 rules), see [ADR-0038](../adr/0038-srd-521-rules-baseline.md). SRD 5.1 content, subclass levels, feats and attribution text below are historical.
+
 - **Identifier**: `spec-d-d-5e-levelupmodal-lvl-1-20-sh`
 - **Title**: Technical specification of level-up (levels 1-20), the rest interface and the SRD 5.1 compendium expansion
 - **Status**: Ready for implementation

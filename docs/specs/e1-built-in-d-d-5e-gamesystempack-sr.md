@@ -1,5 +1,7 @@
 # Technical & Functional Specification: Built-in D&D 5e GameSystemPack (SRD 5.1)
 
+> **Rules baseline superseded:** the pack now targets SRD 5.2.1 (2024 rules), see [ADR-0038](../adr/0038-srd-521-rules-baseline.md). SRD 5.1 content, subclass levels, feats and attribution text below are historical.
+
 ## 1. Context & Objectives
 
 This specification defines the complete implementation of the built-in D&D 5e system pack (`packages/game-systems/dnd5e`) for TRAME V1. The pack builds upon the generic `crates/trame-engine` core and standardizes the reference rules of the System Reference Document 5.1 (SRD 5.1) under the Creative Commons CC-BY-4.0 license.
