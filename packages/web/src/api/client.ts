@@ -139,6 +139,8 @@ export interface CampaignActor {
 
 /** Body of `POST /api/v1/campaigns/{id}/actors`. */
 export interface CreateActorInput {
+  /** Client-chosen actor UUID (the sheet id); the server generates one otherwise. */
+  id?: Uuid;
   name: string;
   /** Owner (honored for GMs only; players always own what they create). */
   ownerUserId?: Uuid | null;
@@ -481,6 +483,7 @@ export class ApiClient {
   /** Creates an actor sheet (`POST .../actors`) and stores it. */
   async createActor(campaignId: Uuid, input: CreateActorInput): Promise<CampaignActor> {
     const res = await this.request("POST", campaignPath(campaignId, "/actors"), {
+      ...(input.id ? { id: input.id } : {}),
       name: input.name,
       ...(input.ownerUserId !== undefined ? { owner_user_id: input.ownerUserId } : {}),
       data: input.data,
