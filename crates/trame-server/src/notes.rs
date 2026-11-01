@@ -87,6 +87,10 @@ pub enum NotesError {
     Forbidden(String),
     #[error("Storage lock poisoned")]
     LockPoisoned,
+    /// Persistent storage rejected the operation. The field holds the cause for server logs;
+    /// `Display` stays generic because handlers echo it to clients.
+    #[error("storage backend error")]
+    Storage(String),
     #[error("Timeline error: {0}")]
     Timeline(#[from] TimelineError),
 }
@@ -126,9 +130,11 @@ pub trait PartyJournalStorage: Send + Sync {
     fn get_entry(&self, handout_id: &str) -> Result<Option<PartyJournalEntry>, NotesError>;
 }
 
+/// Party journal keyed by `(campaign_id, handout_id)`: revealing the same handout again
+/// replaces its entry, matching the deterministic row id used by PostgreSQL.
 #[derive(Default)]
 pub struct InMemoryPartyJournalStorage {
-    entries: RwLock<HashMap<String, PartyJournalEntry>>,
+    entries: RwLock<HashMap<(String, String), PartyJournalEntry>>,
 }
 
 impl InMemoryPartyJournalStorage {
@@ -142,7 +148,7 @@ impl InMemoryPartyJournalStorage {
 impl PartyJournalStorage for InMemoryPartyJournalStorage {
     fn insert_entry(&self, entry: PartyJournalEntry) -> Result<(), NotesError> {
         let mut map = self.entries.write().map_err(|_| NotesError::LockPoisoned)?;
-        map.insert(entry.handout_id.clone(), entry);
+        map.insert((entry.campaign_id.clone(), entry.handout_id.clone()), entry);
         Ok(())
     }
 
@@ -159,7 +165,7 @@ impl PartyJournalStorage for InMemoryPartyJournalStorage {
 
     fn get_entry(&self, handout_id: &str) -> Result<Option<PartyJournalEntry>, NotesError> {
         let map = self.entries.read().map_err(|_| NotesError::LockPoisoned)?;
-        Ok(map.get(handout_id).cloned())
+        Ok(map.values().find(|e| e.handout_id == handout_id).cloned())
     }
 }
 

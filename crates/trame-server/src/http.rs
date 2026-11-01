@@ -1067,6 +1067,11 @@ pub async fn import_campaign_handler(
                     &err.to_string(),
                 );
             }
+            if let Some(pg) = &state.postgres_store
+                && let Err(err) = pg.set_campaign_gm(campaign_id, caller_user_id).await
+            {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "IMPORT_ERROR", &err);
+            }
             (StatusCode::CREATED, Json(result)).into_response()
         }
         Err(ArchiveError::CampaignAlreadyExists(existing_id)) => (

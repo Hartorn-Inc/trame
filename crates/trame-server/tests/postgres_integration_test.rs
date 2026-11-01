@@ -25,8 +25,13 @@ use trame_server::assets::store::AssetStore;
 use trame_server::auth::session::{IdentityStore, SessionStore, UserRecord, hash_session_token};
 use trame_server::config::ServerConfig;
 use trame_server::http::build_router_with_postgres_store;
+use trame_server::notes::{
+    InMemoryPartyJournalStorage, NotesError, PartyJournalEntry, PartyJournalStorage,
+};
 use trame_server::room::RoomLeaseManager;
 use trame_server::storage::SqlxPostgresStore;
+use trame_server::storage::postgres::journal_row_id;
+use trame_server::timeline::{AppendEventInput, TimelineError, TimelineStorage};
 use uuid::Uuid;
 
 async fn harness() -> Option<(Router, Arc<SqlxPostgresStore>)> {
@@ -530,7 +535,7 @@ async fn pg_archive_round_trip_restores_actors() {
     let Some((app, store)) = harness().await else {
         return;
     };
-    let gm = account(&store).await;
+    let (gm_id, gm) = account_with_id(&store).await;
     let (campaign_id, _) = create_campaign_with_actor(&app, &gm).await;
 
     let (status, archive) = call(
@@ -556,6 +561,12 @@ async fn pg_archive_round_trip_restores_actors() {
     assert_eq!(imported["actors_restored"], json!(1));
     let new_id = imported["campaign_id"].as_str().unwrap();
     assert_ne!(new_id, campaign_id);
+    let owner: Uuid = sqlx::query_scalar("SELECT gm_user_id FROM campaigns WHERE id = $1")
+        .bind(Uuid::parse_str(new_id).unwrap())
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(owner, gm_id, "the importer owns the imported campaign");
 
     let (status, body) = call_json(
         &app,
@@ -573,4 +584,219 @@ async fn pg_archive_round_trip_restores_actors() {
         .map(|a| a["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, vec!["Sildar"]);
+}
+
+// ---------------------------------------------------------------------------
+// Party journal: author, idempotent reveal, storage errors
+// ---------------------------------------------------------------------------
+
+fn journal_entry(campaign_id: Uuid, handout_id: &str, title: &str, by: Uuid) -> PartyJournalEntry {
+    PartyJournalEntry {
+        handout_id: handout_id.to_string(),
+        campaign_id: campaign_id.to_string(),
+        title: title.to_string(),
+        content: "A faded map.".to_string(),
+        revealed_at: 0,
+        revealed_by: by.to_string(),
+    }
+}
+
+/// Shared scenario: a repeat reveal replaces the campaign's entry (latest title and revealer)
+/// and the same handout id in another campaign stays a separate entry.
+fn assert_repeat_reveal_keeps_one_entry(
+    journal: &dyn PartyJournalStorage,
+    (campaign_a, campaign_b): (Uuid, Uuid),
+    (gm_1, gm_2): (Uuid, Uuid),
+    handout_id: &str,
+) {
+    journal
+        .insert_entry(journal_entry(campaign_a, handout_id, "Map v1", gm_1))
+        .unwrap();
+    journal
+        .insert_entry(journal_entry(campaign_a, handout_id, "Map v2", gm_2))
+        .unwrap();
+    journal
+        .insert_entry(journal_entry(campaign_b, handout_id, "Other map", gm_1))
+        .unwrap();
+    let a = journal.list_entries(&campaign_a.to_string()).unwrap();
+    assert_eq!(a.len(), 1, "{handout_id}: one entry per campaign handout");
+    assert_eq!(a[0].title, "Map v2", "{handout_id}");
+    assert_eq!(a[0].revealed_by, gm_2.to_string(), "{handout_id}");
+    let b = journal.list_entries(&campaign_b.to_string()).unwrap();
+    assert_eq!(b.len(), 1, "{handout_id}: other campaign untouched");
+    assert_eq!(b[0].title, "Other map", "{handout_id}");
+}
+
+const HANDOUT_ID_CASES: [&str; 2] = ["ancient-map", "7d3c9a52-3f0e-4c1b-9a8e-2b6f4d1e5a90"];
+
+#[test]
+fn in_memory_repeat_reveal_keeps_one_entry() {
+    for handout_id in HANDOUT_ID_CASES {
+        let journal = InMemoryPartyJournalStorage::new();
+        assert_repeat_reveal_keeps_one_entry(
+            &journal,
+            (Uuid::new_v4(), Uuid::new_v4()),
+            (Uuid::new_v4(), Uuid::new_v4()),
+            handout_id,
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_repeat_reveal_keeps_one_row_with_latest_author() {
+    let Some((_, store)) = harness().await else {
+        return;
+    };
+    for handout_id in HANDOUT_ID_CASES {
+        let (gm_1, _) = account_with_id(&store).await;
+        let (gm_2, _) = account_with_id(&store).await;
+        let campaigns = (Uuid::new_v4(), Uuid::new_v4());
+        assert_repeat_reveal_keeps_one_entry(store.as_ref(), campaigns, (gm_1, gm_2), handout_id);
+        let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT id, author_user_id FROM party_journal_entries WHERE campaign_id = $1",
+        )
+        .bind(campaigns.0)
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![(journal_row_id(campaigns.0, handout_id), gm_2)],
+            "{handout_id}: one deterministic row authored by the latest revealer"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_handout_reveal_route_records_gm_as_author_once() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    // (case_id, handout id written in the note)
+    let cases = [
+        ("slug_handout_id", "ancient-map"),
+        ("uuid_handout_id", "1b4e28ba-2fa1-41d2-883f-0016d3cca427"),
+    ];
+    for (case, handout_id) in cases {
+        let (gm_id, gm) = account_with_id(&store).await;
+        let (status, body) = call_json(
+            &app,
+            "POST",
+            "/api/v1/campaigns",
+            &gm,
+            json!({ "name": "PG Handouts" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "case {case}: {body}");
+        let campaign_id = Uuid::parse_str(body["campaign"]["id"].as_str().unwrap()).unwrap();
+        let note = format!(
+            ":::handout{{id=\"{handout_id}\" title=\"Ancient Map\"}}\nA hidden stair.\n:::\n"
+        );
+        let (status, body) = call_json(
+            &app,
+            "PUT",
+            &format!("/api/v1/campaigns/{campaign_id}/notes/crypt"),
+            &gm,
+            json!({ "title": "Crypt Lore", "content_markdown": note }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {body}");
+
+        for attempt in ["first_reveal", "repeat_reveal"] {
+            let (status, body) = call_json(
+                &app,
+                "POST",
+                &format!("/api/v1/campaigns/{campaign_id}/handouts/{handout_id}/reveal"),
+                &gm,
+                json!({}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "case {case} {attempt}: {body}");
+            assert_eq!(
+                body["handout"]["title"],
+                json!("Ancient Map"),
+                "case {case}"
+            );
+        }
+        let authors: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT author_user_id FROM party_journal_entries WHERE campaign_id = $1",
+        )
+        .bind(campaign_id)
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            authors,
+            vec![gm_id],
+            "case {case}: one row authored by the GM"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_journal_and_timeline_failures_are_storage_errors() {
+    let Some((_, store)) = harness().await else {
+        return;
+    };
+    let campaign = Uuid::new_v4();
+    let unknown_user = Uuid::new_v4();
+    // (case_id, entry, expected text in the logged cause)
+    let journal_cases = [
+        (
+            "author_not_in_users_violates_fk",
+            journal_entry(campaign, "ancient-map", "Map", unknown_user),
+            "foreign key",
+        ),
+        (
+            "non_uuid_author",
+            PartyJournalEntry {
+                revealed_by: "gm".to_string(),
+                ..journal_entry(campaign, "ancient-map", "Map", unknown_user)
+            },
+            "invalid",
+        ),
+        (
+            "non_uuid_campaign",
+            PartyJournalEntry {
+                campaign_id: "camp-alpha".to_string(),
+                ..journal_entry(campaign, "ancient-map", "Map", unknown_user)
+            },
+            "invalid",
+        ),
+    ];
+    for (case, entry, cause_needle) in journal_cases {
+        match store.insert_entry(entry) {
+            Err(err @ NotesError::Storage(_)) => {
+                assert_eq!(err.to_string(), "storage backend error", "case {case}");
+                let NotesError::Storage(cause) = err else {
+                    unreachable!()
+                };
+                assert!(cause.contains(cause_needle), "case {case}: {cause}");
+            }
+            other => panic!("case {case}: expected NotesError::Storage, got {other:?}"),
+        }
+    }
+
+    let input = AppendEventInput {
+        event_type: "handout_revealed".to_string(),
+        actor_id: None,
+        payload: json!({}),
+        timestamp: None,
+    };
+    let timeline_cases = [
+        (
+            "append_non_uuid_campaign",
+            store.append_event("camp-alpha", 1, input).err(),
+        ),
+        (
+            "read_non_uuid_campaign",
+            store.get_timeline("camp-alpha", 1, 0, 10).err(),
+        ),
+    ];
+    for (case, err) in timeline_cases {
+        assert!(
+            matches!(err, Some(TimelineError::Storage(_))),
+            "case {case}: expected TimelineError::Storage, got {err:?}"
+        );
+    }
 }
