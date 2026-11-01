@@ -54,7 +54,7 @@ export function TableTab({ campaignId, client, isGm }: TableTabProps) {
         <p class="ds-field-error" role="alert" data-testid="table-rejection">
           {rejection ? t('table.rejected', { reason: rejection }) : ''}
         </p>
-        <TableCanvas campaignId={campaignId} client={client} />
+        <TableCanvas campaignId={campaignId} client={client} isGm={isGm} />
       </div>
       <aside class="ds-stack-sm ds-table-side" aria-label={t('table.sidebar')}>
         <TokenVitalsPanel client={client} />
