@@ -30,4 +30,4 @@ The `@trame/game-system-dnd5e` package initially contained a minimal `applyLevel
 - Unified player and GM experience across asynchronous campaign preparation (`CampaignWorkspace`) and live table sessions (`HudDrawers.tsx`).
 
 ### Negative
-- Maintaining dual persistence channels (REST and CQRS) requires sharing a single pure state transition model and delegating persistence to an injected environment adapter.
+- Maintaining dual persistence channels (REST and CQRS) is mitigated by sharing a single pure state transition model and delegating persistence to an injected environment adapter.
