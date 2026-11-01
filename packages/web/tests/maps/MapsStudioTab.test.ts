@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  MAX_CONCURRENT_RAYCASTS,
   SpatialAudioManager,
-  compute3DDistance,
   computeOcclusionLowPassCutoff,
   countSoundOccludingWalls,
 } from "../../src/audio/spatialAudio.ts";
 import { DualBufferFogOfWar } from "../../src/canvas/LightingShader.ts";
 import {
-  type Point2D,
   type WallSegmentDto,
   convertDrawingToWallSegments,
 } from "../../src/engine/wasmBridge.ts";
@@ -17,8 +14,6 @@ import {
 import {
   type ActiveTableRoomState,
   type CampaignMapScene,
-  type StagedToken,
-  type StudioLightSource,
   type StudioWallSegment,
   type WallType,
   activateSceneTransition,

@@ -3,6 +3,8 @@
  * adhering to docs/specs/e5-collaborative-wiki-notes-ui-hando.md.
  */
 
+import { t, type MessageKey } from "../i18n/index.ts";
+
 export const MOBILE_BREAKPOINT_PX = 768;
 
 export type CompanionTabId = "sheet" | "dice" | "inventory" | "journal";
@@ -345,11 +347,11 @@ export class MobileCompanionLayout {
     const nav = new LightweightElement("nav");
     nav.setAttribute("class", "companion-bottom-nav");
 
-    const tabs: Array<{ id: CompanionTabId; buttonId: string; label: string }> = [
-      { id: "sheet", buttonId: "tab-button-sheet", label: "Character Sheet" },
-      { id: "dice", buttonId: "tab-button-dice", label: "Dice Roller" },
-      { id: "inventory", buttonId: "tab-button-inventory", label: "Inventory" },
-      { id: "journal", buttonId: "tab-button-journal", label: "Party Journal" },
+    const tabs: Array<{ id: CompanionTabId; buttonId: string; labelKey: MessageKey }> = [
+      { id: "sheet", buttonId: "tab-button-sheet", labelKey: "nav.sheet" },
+      { id: "dice", buttonId: "tab-button-dice", labelKey: "nav.dice" },
+      { id: "inventory", buttonId: "tab-button-inventory", labelKey: "nav.inventory" },
+      { id: "journal", buttonId: "tab-button-journal", labelKey: "nav.journal" },
     ];
 
     for (const tab of tabs) {
@@ -363,7 +365,7 @@ export class MobileCompanionLayout {
       if (isMobileCompanionMode(this.viewportWidth)) {
         btn.setAttribute("style", "min-width: 44px; min-height: 44px;");
       }
-      btn.textContent = tab.label;
+      btn.textContent = t(tab.labelKey);
       btn.addEventListener("click", () => {
         this.setActiveTab(tab.id);
       });
@@ -382,7 +384,7 @@ export class MobileCompanionLayout {
     this.renderActiveTab();
   }
 
-  public getTabButtonDimensions(tabButtonId: string): { minWidth: number; minHeight: number } {
+  public getTabButtonDimensions(_tabButtonId: string): { minWidth: number; minHeight: number } {
     const isMobile = isMobileCompanionMode(this.viewportWidth);
     const minDim = isMobile ? 44 : 40;
     return { minWidth: minDim, minHeight: minDim };

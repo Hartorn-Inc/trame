@@ -6,7 +6,6 @@ import {
   compute3DDistance,
   computeDistanceAttenuation,
   computeOcclusionLowPassCutoff,
-  countSoundOccludingWalls,
 } from "../src/audio/spatialAudio.ts";
 import { DualBufferFogOfWar } from "../src/canvas/LightingShader.ts";
 import { measureRulerWaypointsFt } from "../src/canvas/SceneGraph.ts";

@@ -2,6 +2,7 @@ import { h, type VNode } from 'preact';
 import { useSafeState } from '../sheet/safeHooks.ts';
 import type { CommandDispatcher } from '../sheet/types.ts';
 import { CompendiumDragDropManager } from './CompendiumDragDropManager.ts';
+import { t, type MessageKey } from '../i18n/index.ts';
 
 export interface CompendiumEntry {
   id: string;
@@ -24,6 +25,14 @@ export interface CompendiumDrawerProps {
 }
 
 const CATEGORIES = ['all', 'item', 'spell', 'feat', 'monster'] as const;
+
+const CATEGORY_LABEL_KEYS: Record<(typeof CATEGORIES)[number], MessageKey> = {
+  all: 'compendium.category.all',
+  item: 'compendium.category.item',
+  spell: 'compendium.category.spell',
+  feat: 'compendium.category.feat',
+  monster: 'compendium.category.monster',
+};
 
 export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | null {
   if (!props.isOpen) return null;
@@ -86,14 +95,14 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
     {
       class: 'ds-compendium-drawer',
       'data-testid': 'compendium-drawer',
-      'aria-label': 'Compendium Drawer',
+      'aria-label': t('compendium.drawer'),
       onKeyDown: handleKeyDown,
     },
     h(
       'header',
       { class: 'ds-drawer-header' },
-      h('h3', null, 'Compendium'),
-      h('button', { type: 'button', class: 'ds-btn-close', 'data-testid': 'btn-close-compendium', 'aria-label': 'Close compendium', onClick: props.onClose }, 'Close'),
+      h('h3', null, t('compendium.title')),
+      h('button', { type: 'button', class: 'ds-btn-close', 'data-testid': 'btn-close-compendium', 'aria-label': t('compendium.close'), onClick: props.onClose }, t('action.close')),
     ),
     h(
       'div',
@@ -102,15 +111,15 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
         type: 'text',
         class: 'ds-input-search',
         'data-testid': 'compendium-search-input',
-        'aria-label': 'Search compendium entries',
-        placeholder: 'Search items, spells, feats...',
+        'aria-label': t('compendium.searchLabel'),
+        placeholder: t('compendium.searchPlaceholder'),
         value: query,
         onInput: (e: Event) => setQuery((e.target as HTMLInputElement).value),
       }),
     ),
     h(
       'div',
-      { class: 'ds-compendium-tabs', role: 'tablist', 'aria-label': 'Compendium categories' },
+      { class: 'ds-compendium-tabs', role: 'tablist', 'aria-label': t('compendium.categories') },
       CATEGORIES.map((cat) =>
         h(
           'button',
@@ -125,7 +134,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
             'aria-controls': 'compendium-tabpanel',
             onClick: () => setCategory(cat),
           },
-          cat.toUpperCase(),
+          t(CATEGORY_LABEL_KEYS[cat]),
         ),
       ),
     ),
@@ -138,7 +147,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
         class: 'ds-compendium-tabpanel',
       },
       filtered.length === 0
-        ? h('p', { class: 'ds-empty-state', 'data-testid': 'compendium-empty-state' }, 'No compendium entries found matching your query.')
+        ? h('p', { class: 'ds-empty-state', 'data-testid': 'compendium-empty-state' }, t('compendium.empty'))
         : h(
             'ul',
             { class: 'ds-compendium-entry-list', 'data-testid': 'compendium-entry-list' },
@@ -161,7 +170,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
                     type: 'button',
                     class: 'ds-btn-add-entry',
                     'data-testid': `btn-add-entry-${entry.slug}`,
-                    'aria-label': `Add ${entry.name} to character sheet`,
+                    'aria-label': t('compendium.addAria', { name: entry.name }),
                     onClick: (e: Event) => {
                       if (typeof e?.stopPropagation === 'function') {
                         e.stopPropagation();
@@ -169,7 +178,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
                       handleAddEntry(entry);
                     },
                   },
-                  '[ Add ]',
+                  t('compendium.add'),
                 ),
               ),
             ),

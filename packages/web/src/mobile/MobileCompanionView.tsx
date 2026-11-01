@@ -4,6 +4,7 @@ import {
   mobileCompanionOverrideSignal,
   t,
   unitSystemSignal,
+  type MessageKey,
 } from "../i18n/index.ts";
 import { DocumentsWorkspaceTab } from "../workspace/DocumentsWorkspaceTab.tsx";
 
@@ -11,7 +12,7 @@ export type MobileCompanionTab = "sheet" | "dice" | "inventory" | "tracker" | "j
 
 export const activeCompanionTabSignal = signal<MobileCompanionTab>("sheet");
 
-export const MOBILE_COMPANION_TABS: Array<{ id: MobileCompanionTab; key: string }> = [
+export const MOBILE_COMPANION_TABS: Array<{ id: MobileCompanionTab; key: MessageKey }> = [
   { id: "sheet", key: "nav.sheet" },
   { id: "dice", key: "nav.dice" },
   { id: "inventory", key: "nav.inventory" },
@@ -39,12 +40,12 @@ export function MobileCompanionView() {
           gap: "0.5rem",
         }}
       >
-        <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>Companion Mode</span>
+        <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>{t("shell.companionMode")}</span>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <button
             type="button"
             data-testid="header-locale-toggle"
-            aria-label={`Toggle language: ${localeSignal.value === "fr" ? "FR" : "EN"}`}
+            aria-label={t("shell.toggleLanguage", { locale: localeSignal.value === "fr" ? "FR" : "EN" })}
             class="ds-btn ds-btn-secondary"
             onClick={() => {
               localeSignal.value = localeSignal.value === "en" ? "fr" : "en";
@@ -56,7 +57,7 @@ export function MobileCompanionView() {
           <button
             type="button"
             data-testid="header-units-toggle"
-            aria-label={`Toggle grid units: ${unitSystemSignal.value === "imperial_ft" ? "5 ft" : "1.5 m"}`}
+            aria-label={t("shell.toggleUnits", { unit: unitSystemSignal.value === "imperial_ft" ? "5 ft" : "1.5 m" })}
             class="ds-btn ds-btn-secondary"
             onClick={() => {
               unitSystemSignal.value =
@@ -70,14 +71,14 @@ export function MobileCompanionView() {
             <button
               type="button"
               data-testid="companion-exit-button"
-              aria-label="Exit companion mode"
+              aria-label={t("shell.exitCompanion")}
               class="ds-btn ds-btn-secondary"
               onClick={() => {
                 mobileCompanionOverrideSignal.value = false;
               }}
               style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" }}
             >
-              Exit
+              {t("shell.exit")}
             </button>
           )}
         </div>
@@ -97,7 +98,7 @@ export function MobileCompanionView() {
 
       <nav
         data-testid="mobile-bottom-nav"
-        aria-label="Mobile companion navigation"
+        aria-label={t("shell.mobileNav")}
         style={{
           display: "flex",
           borderTop: "1px solid var(--atlas-border)",

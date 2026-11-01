@@ -1,14 +1,15 @@
 import { h, type VNode } from 'preact';
+import { t } from '../../i18n/index.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 import { CompendiumDragDropManager, calculateTotalInventoryWeight } from '../../compendium/CompendiumDragDropManager.ts';
 
 const CURRENCY_DENOMINATIONS = [
-  { key: 'pp', label: 'PP' },
-  { key: 'gp', label: 'GP' },
-  { key: 'ep', label: 'EP' },
-  { key: 'sp', label: 'SP' },
-  { key: 'cp', label: 'CP' },
+  { key: 'pp', labelKey: 'sheet.currency.pp' },
+  { key: 'gp', labelKey: 'sheet.currency.gp' },
+  { key: 'ep', labelKey: 'sheet.currency.ep' },
+  { key: 'sp', labelKey: 'sheet.currency.sp' },
+  { key: 'cp', labelKey: 'sheet.currency.cp' },
 ] as const;
 
 export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
@@ -86,7 +87,7 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
       props.dispatchCommand?.({
         cmd: 'NOTIFICATION',
         type: 'warning',
-        message: 'Cannot attune more than 3 items.',
+        message: t('sheet.inventory.attuneLimit'),
       });
       return;
     }
@@ -126,7 +127,7 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
         props.dispatchCommand?.({
           cmd: 'NOTIFICATION',
           type: 'error',
-          message: 'Cannot move container into itself or its descendant.',
+          message: t('sheet.inventory.invalidMove'),
         });
         return;
       }
@@ -160,7 +161,12 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
       h(
         'span',
         { class: 'ds-item-name atlas-tabular-nums' },
-        `${depth > 0 ? '↳ ' : ''}${item.name} (x${item.quantity}) - ${item.unitWeight} lb`,
+        t('sheet.inventory.itemLabel', {
+          prefix: depth > 0 ? '↳ ' : '',
+          name: item.name,
+          quantity: item.quantity,
+          weight: item.unitWeight,
+        }),
       ),
       item.containerId
         ? h(
@@ -169,10 +175,10 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
               type: 'button',
               class: 'ds-btn-unpack-item',
               'data-testid': `btn-unpack-${item.id}`,
-              'aria-label': `Move ${item.name} to top-level inventory`,
+              'aria-label': t('sheet.inventory.unpackAria', { name: item.name }),
               onClick: () => handleMoveItem(item.id, null),
             },
-            'Unpack',
+            t('sheet.inventory.unpack'),
           )
         : null,
       (item.requiresAttunement || item.isAttuned)
@@ -182,11 +188,11 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
               type: 'button',
               class: `ds-btn-attune ${item.isAttuned ? 'is-attuned' : ''}`,
               'data-testid': `btn-attune-${item.id}`,
-              'aria-label': `Toggle attunement for ${item.name}`,
+              'aria-label': t('sheet.inventory.attuneAria', { name: item.name }),
               'aria-pressed': item.isAttuned ? 'true' : 'false',
               onClick: () => handleToggleAttunement(item),
             },
-            item.isAttuned ? 'Attuned' : 'Attune',
+            t(item.isAttuned ? 'sheet.inventory.attuned' : 'sheet.inventory.attune'),
           )
         : null,
       h(
@@ -195,10 +201,10 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
           type: 'button',
           class: 'ds-btn-del-item',
           'data-testid': `btn-del-item-${item.id}`,
-          'aria-label': `Delete ${item.name}`,
+          'aria-label': t('sheet.inventory.deleteAria', { name: item.name }),
           onClick: () => handleDeleteItem(item.id),
         },
-        'Del',
+        t('sheet.inventory.delete'),
       ),
       isContainer && childItems.length > 0
         ? h(
@@ -216,12 +222,13 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
   return h(
     'div',
     { class: 'ds-inventory-widget', 'data-testid': 'inventory-container-tree-widget' },
-    h('h4', { class: 'ds-widget-title' }, 'Inventory & Containers'),
+    h('h4', { class: 'ds-widget-title' }, t('sheet.inventory.title')),
     h(
       'div',
       { class: 'ds-currency-strip atlas-tabular-nums', 'data-testid': 'currency-strip' },
-      CURRENCY_DENOMINATIONS.map(({ key, label }) =>
-        h(
+      CURRENCY_DENOMINATIONS.map(({ key, labelKey }) => {
+        const label = t(labelKey);
+        return h(
           'label',
           { key, class: 'ds-currency-item atlas-tabular-nums' },
           h('span', { class: 'ds-currency-label' }, `${label}: `),
@@ -230,13 +237,13 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
             min: 0,
             class: 'ds-currency-input atlas-tabular-nums',
             'data-testid': `currency-input-${key}`,
-            'aria-label': `${label} currency amount`,
+            'aria-label': t('sheet.inventory.currencyAria', { label }),
             value: Number(rawCurrency[key] ?? 0),
             onChange: (e: Event) =>
               handleCurrencyChange(key, Number((e.target as HTMLInputElement).value)),
           }),
-        ),
-      ),
+        );
+      }),
     ),
     h(
       'div',
@@ -244,9 +251,17 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
       h(
         'div',
         { class: 'ds-encumbrance-labels atlas-tabular-nums' },
-        h('span', { class: 'atlas-tabular-nums' }, `Weight: ${totalCarriedWeight.toFixed(1)} / ${maxCapacity} lb `),
-        h('span', { class: 'atlas-tabular-nums' }, `(Enc: ${regularEncumbrance} lb, Heavy: ${heavyEncumbrance} lb${hasResolvedStr ? '' : ', default STR 10'})`),
-        h('span', { class: 'ds-attunement-label atlas-tabular-nums' }, ` | Attuned: ${attunedCount}/3`),
+        h('span', { class: 'atlas-tabular-nums' }, t('sheet.inventory.weight', { carried: totalCarriedWeight.toFixed(1), max: maxCapacity })),
+        h(
+          'span',
+          { class: 'atlas-tabular-nums' },
+          t('sheet.inventory.encumbrance', {
+            regular: regularEncumbrance,
+            heavy: heavyEncumbrance,
+            suffix: hasResolvedStr ? '' : t('sheet.inventory.defaultStr'),
+          }),
+        ),
+        h('span', { class: 'ds-attunement-label atlas-tabular-nums' }, t('sheet.inventory.attunedCount', { count: attunedCount })),
       ),
       h(
         'div',

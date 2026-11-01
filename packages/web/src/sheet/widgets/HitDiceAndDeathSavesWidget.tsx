@@ -1,4 +1,5 @@
 import { h, type VNode } from 'preact';
+import { t } from '../../i18n/index.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
@@ -155,7 +156,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
     h(
       'div',
       { class: 'ds-hitdice-pane', 'data-testid': 'hitdice-pane' },
-      h('span', { class: 'ds-pane-label' }, 'Hit Dice'),
+      h('span', { class: 'ds-pane-label' }, t('sheet.hitDice.title')),
       h('span', { class: 'ds-hitdice-val atlas-tabular-nums', 'data-testid': 'hitdice-count' }, `${hitDiceCurrent} / ${hitDiceMax} (d${hitDieSides})`),
       h(
         'button',
@@ -166,22 +167,22 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
           disabled: hitDiceCurrent <= 0,
           onClick: handleSpendHitDie,
         },
-        'Spend Die',
+        t('sheet.hitDice.spend'),
       ),
     ),
     hpCurrent === 0
       ? h(
           'div',
           { class: 'ds-deathsaves-pane', 'data-testid': 'deathsaves-pane' },
-          h('span', { class: 'ds-pane-label' }, 'Death Saves'),
+          h('span', { class: 'ds-pane-label' }, t('sheet.deathSaves.title')),
           h(
             'div',
             {
               class: 'ds-deathsave-row',
               role: 'group',
-              'aria-label': `Death save successes: ${deathSuccesses} of 3`,
+              'aria-label': t('sheet.deathSaves.successesAria', { count: deathSuccesses }),
             },
-            h('span', { class: 'ds-label-success' }, 'Successes: '),
+            h('span', { class: 'ds-label-success' }, t('sheet.deathSaves.successes')),
             [0, 1, 2].map((idx) => {
               const isFilled = idx < deathSuccesses;
               return h(
@@ -191,7 +192,10 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
                   type: 'button',
                   class: `ds-pip ds-pip-btn atlas-tabular-nums ${isFilled ? 'is-filled' : ''}`,
                   'data-testid': `death-success-pip-${idx}`,
-                  'aria-label': `Death save success ${idx + 1}, currently ${isFilled ? 'marked' : 'empty'}`,
+                  'aria-label': t('sheet.deathSaves.successPipAria', {
+                    index: idx + 1,
+                    state: t(isFilled ? 'sheet.pip.marked' : 'sheet.pip.empty'),
+                  }),
                   'aria-pressed': isFilled ? 'true' : 'false',
                   onClick: () => handleToggleDeathSuccess(idx),
                 },
@@ -204,9 +208,9 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
             {
               class: 'ds-deathsave-row',
               role: 'group',
-              'aria-label': `Death save failures: ${deathFailures} of 3`,
+              'aria-label': t('sheet.deathSaves.failuresAria', { count: deathFailures }),
             },
-            h('span', { class: 'ds-label-failure' }, 'Failures: '),
+            h('span', { class: 'ds-label-failure' }, t('sheet.deathSaves.failures')),
             [0, 1, 2].map((idx) => {
               const isFilled = idx < deathFailures;
               return h(
@@ -216,7 +220,10 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
                   type: 'button',
                   class: `ds-pip ds-pip-btn atlas-tabular-nums ${isFilled ? 'is-filled' : ''}`,
                   'data-testid': `death-failure-pip-${idx}`,
-                  'aria-label': `Death save failure ${idx + 1}, currently ${isFilled ? 'marked' : 'empty'}`,
+                  'aria-label': t('sheet.deathSaves.failurePipAria', {
+                    index: idx + 1,
+                    state: t(isFilled ? 'sheet.pip.marked' : 'sheet.pip.empty'),
+                  }),
                   'aria-pressed': isFilled ? 'true' : 'false',
                   onClick: () => handleToggleDeathFailure(idx),
                 },
@@ -232,7 +239,7 @@ export function HitDiceAndDeathSavesWidget(props: WidgetProps): VNode<any> {
               'data-testid': 'btn-death-save',
               onClick: () => handleRollDeathSave(),
             },
-            'Roll DeathSavingThrow',
+            t('sheet.deathSaves.roll'),
           ),
         )
       : null,

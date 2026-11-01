@@ -20,8 +20,8 @@ import {
   t,
   formatDistanceFt,
   resolveCompendiumSearchQuery,
-  getInitialLocale,
   STORAGE_KEY_LOCALE,
+  type MessageKey,
 } from "../src/i18n/index.ts";
 import {
   groupNotesByFolder,
@@ -36,7 +36,6 @@ import {
   dispatchHandoutRevealedFrame,
   attachHandoutRevealedSocket,
 } from "../src/workspace/DocumentsWorkspaceTab.tsx";
-import { render } from "preact";
 import {
   activeCompanionTabSignal,
   MOBILE_COMPANION_TABS,
@@ -387,21 +386,24 @@ describe("[Ticket #89 - Acceptance Criterion 4] Reactive Bilingual FR/EN i18n & 
     assert.equal(t("nav.dice"), "Lanceur de dés");
     assert.equal(t("action.reveal"), "Révéler aux joueurs");
 
-    assert.equal(t("unknown.key"), "unknown.key");
+    assert.equal(t("unknown.key" as MessageKey), "unknown.key");
   });
 
   const distanceTestCases = [
-    { feet: 5, unit: "imperial_ft" as const, expected: "5 ft" },
-    { feet: 30, unit: "imperial_ft" as const, expected: "30 ft" },
-    { feet: 60, unit: "imperial_ft" as const, expected: "60 ft" },
-    { feet: 5, unit: "metric_m" as const, expected: "1.5 m (1 case)" },
-    { feet: 10, unit: "metric_m" as const, expected: "3 m (2 cases)" },
-    { feet: 30, unit: "metric_m" as const, expected: "9 m (6 cases)" },
-    { feet: 60, unit: "metric_m" as const, expected: "18 m (12 cases)" },
+    { feet: 5, unit: "imperial_ft" as const, locale: "en" as const, expected: "5 ft" },
+    { feet: 30, unit: "imperial_ft" as const, locale: "en" as const, expected: "30 ft" },
+    { feet: 60, unit: "imperial_ft" as const, locale: "en" as const, expected: "60 ft" },
+    { feet: 5, unit: "metric_m" as const, locale: "en" as const, expected: "1.5 m (1 square)" },
+    { feet: 10, unit: "metric_m" as const, locale: "en" as const, expected: "3 m (2 squares)" },
+    { feet: 30, unit: "metric_m" as const, locale: "en" as const, expected: "9 m (6 squares)" },
+    { feet: 60, unit: "metric_m" as const, locale: "en" as const, expected: "18 m (12 squares)" },
+    { feet: 5, unit: "metric_m" as const, locale: "fr" as const, expected: "1,5 m (1 case)" },
+    { feet: 10, unit: "metric_m" as const, locale: "fr" as const, expected: "3 m (2 cases)" },
   ];
 
   for (const tc of distanceTestCases) {
-    it(`formats distance ${tc.feet} ft with unitSystem '${tc.unit}' -> '${tc.expected}'`, () => {
+    it(`formats distance ${tc.feet} ft with unitSystem '${tc.unit}' in '${tc.locale}' -> '${tc.expected}'`, () => {
+      localeSignal.value = tc.locale;
       unitSystemSignal.value = tc.unit;
       const actual = formatDistanceFt(tc.feet);
       assert.equal(actual, tc.expected);

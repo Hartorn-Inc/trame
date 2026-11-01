@@ -1,4 +1,5 @@
 import { h, type VNode } from 'preact';
+import { t, translateLayoutText } from '../../i18n/index.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
@@ -13,7 +14,7 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
   const current = Number(props.boundValues?.current ?? props.boundValues?.hpCurrent ?? 0);
   const max = Number(props.boundValues?.max ?? props.boundValues?.hpMax ?? 0);
   const temp = Number(props.boundValues?.temp ?? props.boundValues?.hpTemp ?? 0);
-  const label = (props.options?.label as string) ?? 'Hit Points';
+  const label = translateLayoutText((props.options?.label as string) ?? 'sheet.resource.hitPoints');
   const color = (props.options?.color as string) ?? 'var(--atlas-action)';
   const isLocked = props.isLocked !== false;
 
@@ -55,7 +56,7 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
           type: 'number',
           class: 'ds-resource-input-current atlas-tabular-nums',
           'data-testid': 'resource-input-current',
-          'aria-label': `Current ${label}`,
+          'aria-label': t('sheet.resource.currentAria', { label }),
           value: current,
           onChange: (e: Event) => handleHpChange(currentPath, Number((e.target as HTMLInputElement).value)),
         }),
@@ -66,7 +67,7 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
               type: 'number',
               class: 'ds-resource-input-max atlas-tabular-nums',
               'data-testid': 'resource-input-max',
-              'aria-label': `Maximum ${label}`,
+              'aria-label': t('sheet.resource.maxAria', { label }),
               value: max,
               onChange: (e: Event) => handleHpChange(maxPath, Number((e.target as HTMLInputElement).value)),
             }),
@@ -75,12 +76,12 @@ export function ResourceBarWidget(props: WidgetProps): VNode<any> {
           type: 'number',
           class: 'ds-resource-input-temp atlas-tabular-nums',
           'data-testid': 'resource-input-temp',
-          'aria-label': `Temporary ${label}`,
+          'aria-label': t('sheet.resource.tempAria', { label }),
           value: temp,
           onChange: (e: Event) => handleHpChange(tempPath, Number((e.target as HTMLInputElement).value)),
         }),
         temp > 0
-          ? h('span', { class: 'ds-resource-temp atlas-tabular-nums', 'data-testid': 'resource-temp-val' }, ` (${temp} Temp)`)
+          ? h('span', { class: 'ds-resource-temp atlas-tabular-nums', 'data-testid': 'resource-temp-val' }, t('sheet.resource.tempSuffix', { value: temp }))
           : null,
       ),
     ),

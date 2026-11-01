@@ -63,12 +63,12 @@ describe("Ticket #105 — CanvasThemePalette & Geometric Discriminators", () => 
   });
 
   describe("Acceptance Criterion 4: Token Dispositions Non-Color Geometric Discriminators", () => {
-    const testPalettes: ReadonlyArray<{ name: string; palette: CanvasThemePaletteSpec }> = [
-      { name: "DARK_CANVAS_PALETTE", palette: DARK_CANVAS_PALETTE },
-      { name: "LIGHT_CANVAS_PALETTE", palette: LIGHT_CANVAS_PALETTE },
+    const testPalettes: ReadonlyArray<{ name: string; palette: CanvasThemePaletteSpec; activeTurnHex: number }> = [
+      { name: "DARK_CANVAS_PALETTE", palette: DARK_CANVAS_PALETTE, activeTurnHex: 0xf59e0b },
+      { name: "LIGHT_CANVAS_PALETTE", palette: LIGHT_CANVAS_PALETTE, activeTurnHex: 0xb45309 },
     ];
 
-    for (const { name, palette } of testPalettes) {
+    for (const { name, palette, activeTurnHex } of testPalettes) {
       it(`WHEN a test inspects tokenDispositions in ${name}, ally returns ringStrokeStyle 'solid' with badgeShape 'shield'`, () => {
         const ally = palette.tokenDispositions.ally;
         assert.equal(ally.ringStrokeStyle, "solid");
@@ -88,9 +88,9 @@ describe("Ticket #105 — CanvasThemePalette & Geometric Discriminators", () => 
         assert.equal(selected.badgeShape, "corner-chevrons");
       });
 
-      it(`WHEN a test inspects tokenDispositions in ${name}, activeTurn returns ringColorHex 0xf59e0b with badgeShape 'chevron-beacon' and badgeGlyph '›'`, () => {
+      it(`WHEN a test inspects tokenDispositions in ${name}, activeTurn returns ringColorHex 0x${activeTurnHex.toString(16)} with badgeShape 'chevron-beacon' and badgeGlyph '›'`, () => {
         const activeTurn = palette.tokenDispositions.activeTurn;
-        assert.equal(activeTurn.ringColorHex, 0xf59e0b);
+        assert.equal(activeTurn.ringColorHex, activeTurnHex);
         assert.equal(activeTurn.badgeShape, "chevron-beacon");
         assert.equal(activeTurn.badgeGlyph, "›");
       });
@@ -146,6 +146,41 @@ describe("Ticket #105 — CanvasThemePalette & Geometric Discriminators", () => 
         assert.equal(tuples.size, 7);
       });
     }
+  });
+
+  describe("WCAG 2.2 SC 1.4.11 non-text contrast on the light canvas void", () => {
+    const channel = (c: number) => {
+      const s = c / 255;
+      return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    };
+    const luminance = (hex: number) =>
+      0.2126 * channel((hex >> 16) & 0xff) + 0.7152 * channel((hex >> 8) & 0xff) + 0.0722 * channel(hex & 0xff);
+    const contrast = (a: number, b: number) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+
+    const strokes: ReadonlyArray<{ id: string; hex: number }> = [
+      ...(Object.keys(LIGHT_CANVAS_PALETTE.wallKinds) as CanonicalWallKind[]).map((kind) => ({
+        id: `wall-${kind}`,
+        hex: LIGHT_CANVAS_PALETTE.wallKinds[kind].strokeColorHex,
+      })),
+      ...(Object.keys(LIGHT_CANVAS_PALETTE.tokenDispositions) as TokenDispositionKind[]).map((kind) => ({
+        id: `disposition-${kind}`,
+        hex: LIGHT_CANVAS_PALETTE.tokenDispositions[kind].ringColorHex,
+      })),
+    ];
+
+    for (const { id, hex } of strokes) {
+      it(`[light-${id}] stroke 0x${hex.toString(16)} reaches >= 3:1 against canvasVoid 0xf4f7f9`, () => {
+        const ratio = contrast(hex, LIGHT_CANVAS_PALETTE.canvasVoidHex);
+        assert.ok(ratio >= 3, `contrast ${ratio.toFixed(2)}:1 is below 3:1`);
+      });
+    }
+
+    it("[light-wall-normal-slate] Normal walls use slate #475569 in the light theme", () => {
+      assert.equal(LIGHT_CANVAS_PALETTE.wallKinds.Normal.strokeColorCss, "#475569");
+    });
   });
 
   describe("Acceptance Criterion 6: MCP Staging Ghost Visual Specification", () => {

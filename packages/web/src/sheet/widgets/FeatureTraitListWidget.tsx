@@ -1,4 +1,5 @@
 import { h, type VNode } from 'preact';
+import { t } from '../../i18n/index.ts';
 import { useSafeState } from '../safeHooks.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 import { CompendiumDragDropManager } from '../../compendium/CompendiumDragDropManager.ts';
@@ -47,13 +48,14 @@ export function FeatureTraitListWidget(props: WidgetProps): VNode<any> {
       onDragLeave: handleDragLeave,
       onDrop: handleDrop,
     },
-    h('h4', { class: 'ds-widget-title' }, 'Features & Traits'),
+    h('h4', { class: 'ds-widget-title' }, t('sheet.features.title')),
     h(
       'ul',
       { class: 'ds-features-list' },
       rawFeatures.map((feat: any) => {
         const id = String(feat.id ?? '');
         const isExpanded = expandedIds.includes(id);
+        const name = feat.name ?? t('sheet.features.defaultName');
         return h(
           'li',
           { key: id, class: 'ds-feature-item', 'data-testid': `feature-item-${id}` },
@@ -65,12 +67,12 @@ export function FeatureTraitListWidget(props: WidgetProps): VNode<any> {
               role: 'button',
               tabIndex: 0,
               'aria-expanded': isExpanded,
-              'aria-label': `Toggle details for ${feat.name ?? 'Feature'}`,
+              'aria-label': t('sheet.features.toggleAria', { name }),
               onClick: () => toggle(id),
               onKeyDown: (e: KeyboardEvent) => handleKeyDown(e, id),
             },
-            h('strong', null, feat.name ?? 'Feature'),
-            h('span', { class: 'ds-feature-source' }, ` (${feat.source ?? 'General'})`),
+            h('strong', null, name),
+            h('span', { class: 'ds-feature-source' }, ` (${feat.source ?? t('sheet.features.defaultSource')})`),
           ),
           isExpanded
             ? h(

@@ -3,6 +3,7 @@ import type { CampaignMapScene, UserRole } from '../maps/types.ts';
 import { mapBackendSceneToFrontend } from '../maps/domain.ts';
 import { MapsStudioTab } from '../maps/MapsStudioTab.tsx';
 import { SceneAtlas } from '../maps/SceneAtlas.tsx';
+import { t } from '../i18n/index.ts';
 
 export interface CampaignWorkspaceProps {
   campaignId: string;
@@ -33,9 +34,9 @@ export function CampaignWorkspace({
   );
 
   const tabs = [
-    { id: 0, label: 'Table' },
-    { id: 1, label: 'Journal' },
-    { id: 2, label: userRole === 'GM' ? 'Maps Studio' : 'Scene Atlas' },
+    { id: 0, label: t('workspace.tab.table') },
+    { id: 1, label: t('workspace.tab.journal') },
+    { id: 2, label: userRole === 'GM' ? t('workspace.tab.mapsStudio') : t('workspace.tab.sceneAtlas') },
   ];
 
   return (
@@ -43,7 +44,7 @@ export function CampaignWorkspace({
       <nav
         class="workspace-tab-bar"
         role="tablist"
-        aria-label="Campaign workspace tabs"
+        aria-label={t('workspace.tabsLabel')}
         style={{ display: 'flex', borderBottom: '1px solid var(--atlas-border)', gap: 'var(--atlas-space-sm)', padding: '0 var(--atlas-space-md)' }}
       >
         {tabs.map((tab) => (
@@ -75,10 +76,10 @@ export function CampaignWorkspace({
       </nav>
       <div class="workspace-tab-content" style={{ flex: 1, padding: 'var(--atlas-space-md)', minHeight: 0 }}>
         {activeTabSignal.value === 0 && (
-          <div id="tab-content-0" role="tabpanel" aria-labelledby="tab-0" data-testid="tab-content-0">Table View</div>
+          <div id="tab-content-0" role="tabpanel" aria-labelledby="tab-0" data-testid="tab-content-0">{t('workspace.tableView')}</div>
         )}
         {activeTabSignal.value === 1 && (
-          <div id="tab-content-1" role="tabpanel" aria-labelledby="tab-1" data-testid="tab-content-1">Journal View</div>
+          <div id="tab-content-1" role="tabpanel" aria-labelledby="tab-1" data-testid="tab-content-1">{t('workspace.journalView')}</div>
         )}
         {activeTabSignal.value === 2 && (
           <div id="tab-content-2" role="tabpanel" aria-labelledby="tab-2" style={{ height: '100%' }}>

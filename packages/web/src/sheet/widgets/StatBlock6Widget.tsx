@@ -1,4 +1,5 @@
 import { h, type VNode } from 'preact';
+import { t } from '../../i18n/index.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
@@ -65,7 +66,7 @@ export function StatBlock6Widget(props: WidgetProps): VNode<any> {
             'data-testid': `ability-card-${key}`,
             role: isLocked ? 'button' : undefined,
             tabIndex: isLocked ? 0 : undefined,
-            'aria-label': isLocked ? `Roll ${key.toUpperCase()} check (${modDisplay}, score ${score})` : undefined,
+            'aria-label': isLocked ? t('sheet.abilities.rollAria', { ability: key.toUpperCase(), modifier: modDisplay, score }) : undefined,
             onClick: () => isLocked && handleAbilityClick(key, mod),
             onKeyDown: isLocked
               ? (e: KeyboardEvent) => {
@@ -89,7 +90,7 @@ export function StatBlock6Widget(props: WidgetProps): VNode<any> {
                     type: 'button',
                     class: 'ds-stepper-btn ds-stepper-dec',
                     'data-testid': `ability-dec-${key}`,
-                    'aria-label': `Decrease ${key.toUpperCase()} score`,
+                    'aria-label': t('sheet.abilities.decreaseAria', { ability: key.toUpperCase() }),
                     onClick: (e: Event) => {
                       e.stopPropagation();
                       handleScoreChange(key, score, -1);
@@ -104,7 +105,7 @@ export function StatBlock6Widget(props: WidgetProps): VNode<any> {
                     type: 'button',
                     class: 'ds-stepper-btn ds-stepper-inc',
                     'data-testid': `ability-inc-${key}`,
-                    'aria-label': `Increase ${key.toUpperCase()} score`,
+                    'aria-label': t('sheet.abilities.increaseAria', { ability: key.toUpperCase() }),
                     onClick: (e: Event) => {
                       e.stopPropagation();
                       handleScoreChange(key, score, 1);

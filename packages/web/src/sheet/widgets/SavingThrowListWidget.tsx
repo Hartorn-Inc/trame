@@ -1,4 +1,5 @@
 import { h, type VNode } from 'preact';
+import { t } from '../../i18n/index.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
@@ -37,7 +38,7 @@ export function SavingThrowListWidget(props: WidgetProps): VNode<any> {
   return h(
     'div',
     { class: 'ds-saves-widget', 'data-testid': 'saving-throw-list-widget', 'data-locked': String(isLocked) },
-    h('h4', { class: 'ds-widget-title' }, 'Saving Throws'),
+    h('h4', { class: 'ds-widget-title' }, t('sheet.saves.title')),
     h(
       'ul',
       { class: 'ds-saves-list' },
@@ -51,48 +52,48 @@ export function SavingThrowListWidget(props: WidgetProps): VNode<any> {
           proficient = Boolean(val.proficient);
         }
         const modDisplay = mod >= 0 ? `+${mod}` : `${mod}`;
-        const profText = proficient ? 'proficient' : 'unproficient';
+        const ability = key.toUpperCase();
+        const pipGlyph = proficient ? '[P]' : '[ ]';
+        const name = h('span', { class: 'ds-save-name' }, ability);
+        const modifier = h('span', { class: 'ds-save-mod atlas-tabular-nums', 'data-testid': `save-mod-${key}` }, modDisplay);
 
         return h(
           'li',
-          {
-            key,
-            class: `ds-save-row ${isLocked ? 'is-rollable' : 'is-editable'}`,
-            'data-testid': `save-row-${key}`,
-            role: isLocked ? 'button' : undefined,
-            tabIndex: isLocked ? 0 : undefined,
-            'aria-label': isLocked
-              ? `Roll ${key.toUpperCase()} saving throw (${modDisplay}, ${profText})`
-              : undefined,
-            onClick: () => isLocked && handleSaveClick(key, mod),
-            onKeyDown: isLocked
-              ? (e: KeyboardEvent) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    handleSaveClick(key, mod);
-                  }
-                }
-              : undefined,
-          },
+          { key, class: `ds-save-row ${isLocked ? 'is-rollable' : 'is-editable'}`, 'data-testid': `save-row-${key}` },
           isLocked
-            ? h('span', { class: `ds-prof-pip ${proficient ? 'is-proficient' : ''}`, 'aria-hidden': 'true' }, proficient ? '[P]' : '[ ]')
-            : h(
+            ? h(
                 'button',
                 {
                   type: 'button',
-                  class: `ds-prof-pip ${proficient ? 'is-proficient' : ''}`,
-                  'data-testid': `save-prof-toggle-${key}`,
-                  'aria-label': `Toggle ${key.toUpperCase()} saving throw proficiency`,
-                  'aria-pressed': proficient ? 'true' : 'false',
-                  onClick: (e: Event) => {
-                    e.stopPropagation();
-                    handleToggleProficiency(key, proficient);
-                  },
+                  class: 'ds-save-roll',
+                  'data-testid': `save-roll-${key}`,
+                  'aria-label': t('sheet.saves.rollAria', {
+                    ability,
+                    modifier: modDisplay,
+                    proficiency: t(proficient ? 'sheet.proficiency.proficient' : 'sheet.proficiency.none'),
+                  }),
+                  onClick: () => handleSaveClick(key, mod),
                 },
-                proficient ? '[P]' : '[ ]',
-              ),
-          h('span', { class: 'ds-save-name' }, key.toUpperCase()),
-          h('span', { class: 'ds-save-mod atlas-tabular-nums', 'data-testid': `save-mod-${key}` }, modDisplay),
+                h('span', { class: `ds-prof-pip ${proficient ? 'is-proficient' : ''}`, 'aria-hidden': 'true' }, pipGlyph),
+                name,
+                modifier,
+              )
+            : [
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    class: `ds-prof-pip ${proficient ? 'is-proficient' : ''}`,
+                    'data-testid': `save-prof-toggle-${key}`,
+                    'aria-label': t('sheet.saves.toggleAria', { ability }),
+                    'aria-pressed': proficient ? 'true' : 'false',
+                    onClick: () => handleToggleProficiency(key, proficient),
+                  },
+                  pipGlyph,
+                ),
+                name,
+                modifier,
+              ],
         );
       }),
     ),

@@ -1,4 +1,5 @@
 import { h, type VNode } from 'preact';
+import { formatDistanceFt, t } from '../../i18n/index.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
@@ -28,7 +29,7 @@ export function ArmorInitiativeSpeedWidget(props: WidgetProps): VNode<any> {
     h(
       'div',
       { class: 'ds-ais-tile', 'data-testid': 'armor-class-tile' },
-      h('span', { class: 'ds-tile-title' }, 'Armor Class'),
+      h('span', { class: 'ds-tile-title' }, t('sheet.ais.armorClass')),
       h('span', { class: 'ds-tile-val atlas-tabular-nums', 'data-testid': 'armor-class-val' }, armorClass),
     ),
     h(
@@ -38,7 +39,7 @@ export function ArmorInitiativeSpeedWidget(props: WidgetProps): VNode<any> {
         'data-testid': 'initiative-tile',
         role: 'button',
         tabIndex: 0,
-        'aria-label': `Roll Initiative check (${initiative >= 0 ? '+' : ''}${initiative})`,
+        'aria-label': t('sheet.ais.initiativeAria', { modifier: `${initiative >= 0 ? '+' : ''}${initiative}` }),
         onClick: handleInitiativeClick,
         onKeyDown: (e: KeyboardEvent) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -47,7 +48,7 @@ export function ArmorInitiativeSpeedWidget(props: WidgetProps): VNode<any> {
           }
         },
       },
-      h('span', { class: 'ds-tile-title' }, 'Initiative'),
+      h('span', { class: 'ds-tile-title' }, t('sheet.ais.initiative')),
       h(
         'span',
         { class: 'ds-tile-val atlas-tabular-nums', 'data-testid': 'initiative-val' },
@@ -57,8 +58,8 @@ export function ArmorInitiativeSpeedWidget(props: WidgetProps): VNode<any> {
     h(
       'div',
       { class: 'ds-ais-tile', 'data-testid': 'speed-tile' },
-      h('span', { class: 'ds-tile-title' }, 'Speed'),
-      h('span', { class: 'ds-tile-val atlas-tabular-nums', 'data-testid': 'speed-val' }, `${speed} ft`),
+      h('span', { class: 'ds-tile-title' }, t('sheet.ais.speed')),
+      h('span', { class: 'ds-tile-val atlas-tabular-nums', 'data-testid': 'speed-val' }, Number.isFinite(Number(speed)) ? formatDistanceFt(Number(speed)) : String(speed)),
     ),
   );
 }

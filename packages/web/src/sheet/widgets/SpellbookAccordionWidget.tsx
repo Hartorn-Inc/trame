@@ -1,4 +1,5 @@
 import { h, type VNode } from 'preact';
+import { t } from '../../i18n/index.ts';
 import { useSafeState } from '../safeHooks.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
@@ -34,7 +35,7 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
         props.dispatchCommand?.({
           cmd: 'NOTIFICATION',
           type: 'warning',
-          message: 'TableCanvas is not mounted; unable to project AoE template.',
+          message: t('sheet.spells.canvasNotMounted'),
         });
         return;
       }
@@ -151,19 +152,19 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
       onDragOver: (e: DragEvent) => e.preventDefault(),
       onDrop: handleDrop,
     },
-    h('h4', { class: 'ds-widget-title' }, 'Spellbook & Spell Slots'),
+    h('h4', { class: 'ds-widget-title' }, t('sheet.spells.title')),
     h(
       'div',
       { class: 'ds-spellcasting-metrics atlas-tabular-nums', 'data-testid': 'spellcasting-metrics' },
       h(
         'span',
         { class: 'ds-spell-save-dc atlas-tabular-nums', 'data-testid': 'spell-save-dc-badge' },
-        `Spell Save DC: ${spellSaveDc}`,
+        t('sheet.spells.saveDc', { value: spellSaveDc }),
       ),
       h(
         'span',
         { class: 'ds-spell-attack-bonus atlas-tabular-nums', 'data-testid': 'spell-attack-bonus-badge' },
-        ` | Spell Attack Bonus: ${formattedSpellAttack}`,
+        t('sheet.spells.attackBonus', { value: formattedSpellAttack }),
       ),
     ),
     h(
@@ -172,7 +173,7 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
       h(
         'span',
         { class: 'ds-pact-magic-label atlas-tabular-nums' },
-        `Pact Magic (Slot Lvl ${pactLevel}): ${pactCurrent}/${pactMax}`,
+        t('sheet.spells.pactMagic', { level: pactLevel, current: pactCurrent, max: pactMax }),
       ),
       pactMax > 0
         ? h(
@@ -187,7 +188,10 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
                   type: 'button',
                   class: `ds-slot-pip atlas-tabular-nums ${isFilled ? 'is-filled' : 'is-expended'}`,
                   'data-testid': `slot-pip-pact-${idx}`,
-                  'aria-label': `Toggle Pact Magic spell slot ${idx + 1}, currently ${isFilled ? 'available' : 'expended'}`,
+                  'aria-label': t('sheet.spells.pactPipAria', {
+                    index: idx + 1,
+                    state: t(isFilled ? 'sheet.slot.available' : 'sheet.slot.expended'),
+                  }),
                   'aria-pressed': isFilled ? 'true' : 'false',
                   onClick: (e: Event) => {
                     e.stopPropagation();
@@ -227,7 +231,7 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
                 'aria-controls': `spell-level-body-${lvl}`,
                 onClick: () => toggleLevel(lvl),
               },
-              h('span', { class: 'ds-level-title' }, lvl === 0 ? 'Cantrips' : `Level ${lvl}`),
+              h('span', { class: 'ds-level-title' }, lvl === 0 ? t('sheet.spells.cantrips') : t('sheet.spells.level', { level: lvl })),
             ),
             lvl > 0 && maxSlots > 0
               ? h(
@@ -242,7 +246,11 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
                         type: 'button',
                         class: `ds-slot-pip atlas-tabular-nums ${isFilled ? 'is-filled' : 'is-expended'}`,
                         'data-testid': `slot-pip-${lvl}-${idx}`,
-                        'aria-label': `Toggle level ${lvl} spell slot ${idx + 1}, currently ${isFilled ? 'available' : 'expended'}`,
+                        'aria-label': t('sheet.spells.slotPipAria', {
+                          level: lvl,
+                          index: idx + 1,
+                          state: t(isFilled ? 'sheet.slot.available' : 'sheet.slot.expended'),
+                        }),
                         'aria-pressed': isFilled ? 'true' : 'false',
                         onClick: (e: Event) => {
                           e.stopPropagation();
@@ -260,22 +268,22 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
                 'div',
                 { id: `spell-level-body-${lvl}`, class: 'ds-spell-level-body' },
                 levelSpells.length === 0
-                  ? h('span', { class: 'ds-no-spells' }, 'No spells learned')
+                  ? h('span', { class: 'ds-no-spells' }, t('sheet.spells.none'))
                   : levelSpells.map((spell) =>
                       h(
                         'div',
                         { key: spell.id, class: 'ds-spell-item', 'data-testid': `spell-item-${spell.id}` },
-                        h('span', { class: 'ds-spell-title atlas-tabular-nums' }, `${spell.name} (Lvl ${spell.level})`),
+                        h('span', { class: 'ds-spell-title atlas-tabular-nums' }, t('sheet.spells.itemTitle', { name: spell.name, level: spell.level })),
                         h(
                           'button',
                           {
                             type: 'button',
                             class: 'ds-btn-cast-spell',
                             'data-testid': `btn-cast-spell-${spell.id}`,
-                            'aria-label': spell.isAoE ? `Cast ${spell.name} and project AoE` : `Cast ${spell.name}`,
+                            'aria-label': t(spell.isAoE ? 'sheet.spells.castAoeAria' : 'sheet.spells.castAria', { name: spell.name }),
                             onClick: () => handleCast(spell),
                           },
-                          spell.isAoE ? 'Cast / Project AoE' : 'Cast',
+                          t(spell.isAoE ? 'sheet.spells.castAoe' : 'sheet.spells.cast'),
                         ),
                       ),
                     ),

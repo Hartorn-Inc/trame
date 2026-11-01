@@ -1,6 +1,13 @@
 import { h, type VNode } from 'preact';
+import { t, type MessageKey } from '../../i18n/index.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
+
+const RANK_LABEL_KEYS: readonly MessageKey[] = [
+  'sheet.proficiency.none',
+  'sheet.proficiency.proficient',
+  'sheet.proficiency.expertise',
+];
 
 export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
   const rawSkills = (props.boundValues?.skills as Record<string, any>) ?? {};
@@ -42,7 +49,7 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
   return h(
     'div',
     { class: 'ds-skills-widget', 'data-testid': 'skill-check-list-widget', 'data-locked': String(isLocked) },
-    h('h4', { class: 'ds-widget-title' }, 'Skills'),
+    h('h4', { class: 'ds-widget-title' }, t('sheet.skills.title')),
     h(
       'ul',
       { class: 'ds-skills-list' },
@@ -61,50 +68,45 @@ export function SkillCheckListWidget(props: WidgetProps): VNode<any> {
           passive = typeof val.passive === 'number' ? val.passive : 10 + mod;
         }
         const modDisplay = mod >= 0 ? `+${mod}` : `${mod}`;
-        const rankText = rank === 2 ? 'expertise' : rank === 1 ? 'proficient' : 'unproficient';
+        const rankText = t(RANK_LABEL_KEYS[rank] ?? 'sheet.proficiency.none');
         const rankGlyph = rank === 2 ? '[E]' : rank === 1 ? '[P]' : '[ ]';
-
-        return h(
-          'li',
-          {
-            key,
-            class: `ds-skill-row ${isLocked ? 'is-rollable' : 'is-editable'}`,
-            'data-testid': `skill-row-${key}`,
-            role: isLocked ? 'button' : undefined,
-            tabIndex: isLocked ? 0 : undefined,
-            'aria-label': isLocked
-              ? `Roll ${key} skill check (${modDisplay}, ${rankText}, passive ${passive})`
-              : undefined,
-            onClick: () => isLocked && handleSkillClick(key, mod),
-            onKeyDown: isLocked
-              ? (e: KeyboardEvent) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    handleSkillClick(key, mod);
-                  }
-                }
-              : undefined,
-          },
-          isLocked
-            ? h('span', { class: `ds-prof-pip rank-${rank}`, 'aria-hidden': 'true' }, rankGlyph)
-            : h(
-                'button',
-                {
-                  type: 'button',
-                  class: `ds-prof-pip rank-${rank}`,
-                  'data-testid': `skill-prof-cycle-${key}`,
-                  'data-rank': rank,
-                  'aria-label': `Cycle proficiency rank for ${key}, current rank: ${rankText}`,
-                  onClick: (e: Event) => {
-                    e.stopPropagation();
-                    handleCycleRank(key, rank);
-                  },
-                },
-                rankGlyph,
-              ),
+        const details = [
           h('span', { class: 'ds-skill-name' }, key),
           h('span', { class: 'ds-skill-passive atlas-tabular-nums', 'data-testid': `skill-passive-${key}` }, `(${passive})`),
           h('span', { class: 'ds-skill-mod atlas-tabular-nums', 'data-testid': `skill-mod-${key}` }, modDisplay),
+        ];
+
+        return h(
+          'li',
+          { key, class: `ds-skill-row ${isLocked ? 'is-rollable' : 'is-editable'}`, 'data-testid': `skill-row-${key}` },
+          isLocked
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  class: 'ds-skill-roll',
+                  'data-testid': `skill-roll-${key}`,
+                  'aria-label': t('sheet.skills.rollAria', { skill: key, modifier: modDisplay, rank: rankText, passive }),
+                  onClick: () => handleSkillClick(key, mod),
+                },
+                h('span', { class: `ds-prof-pip rank-${rank}`, 'aria-hidden': 'true' }, rankGlyph),
+                ...details,
+              )
+            : [
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    class: `ds-prof-pip rank-${rank}`,
+                    'data-testid': `skill-prof-cycle-${key}`,
+                    'data-rank': rank,
+                    'aria-label': t('sheet.skills.cycleAria', { skill: key, rank: rankText }),
+                    onClick: () => handleCycleRank(key, rank),
+                  },
+                  rankGlyph,
+                ),
+                ...details,
+              ],
         );
       }),
     ),

@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { LevelUpModal, type LevelUpModalProps } from "../../src/components/modals/LevelUpModal.tsx";
 import { createDefaultActorData, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
+import { localeSignal } from "../../src/i18n/index.ts";
+
+localeSignal.value = "en";
 
 // Minimal DOM mock to allow Preact render and event dispatch in Node.js
 function setupMockDom() {
@@ -318,17 +321,17 @@ async function renderModal(props: LevelUpModalProps) {
 
   const getNextButton = (): any => {
     const buttons = getButtons();
-    return buttons.find((b: any) => b.textContent.includes("Suivant")) || null;
+    return buttons.find((b: any) => b.textContent.includes("Next")) || null;
   };
 
   const getConfirmButton = (): any => {
     const buttons = getButtons();
-    return buttons.find((b: any) => b.textContent.includes("Confirmer et Appliquer")) || null;
+    return buttons.find((b: any) => b.textContent.includes("Confirm and Apply")) || null;
   };
 
   const getPrevButton = (): any => {
     const buttons = getButtons();
-    return buttons.find((b: any) => b.textContent.includes("Précédent")) || null;
+    return buttons.find((b: any) => b.textContent.includes("Previous")) || null;
   };
 
   return {
@@ -398,7 +401,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     unmount();
   });
 
-  it("WHEN LevelUpModal Step 2 is set to 'Moyenne fixe', LevelUpModal displays deterministic HP gain floor(hitDieSize / 2) + 1 + conMod (AC2)", async () => {
+  it("WHEN LevelUpModal Step 2 is set to 'Fixed average', LevelUpModal displays deterministic HP gain floor(hitDieSize / 2) + 1 + conMod (AC2)", async () => {
     const actor = createDefaultActorData("actor-fighter", "Valeros");
     actor.classId = "fighter";
     actor.attributes.level = 1;
@@ -415,13 +418,13 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     const nextBtn = getNextButton();
     nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
 
-    assert.ok(container.textContent.includes("+8 PV"), "Must display deterministic fixed HP gain (+8 PV for d10 with CON 14)");
+    assert.ok(container.textContent.includes("+8 HP"), "Must display deterministic fixed HP gain (+8 HP for d10 with CON 14)");
     assert.equal(nextBtn.disabled, false, "Next button must be enabled in fixed mode");
 
     unmount();
   });
 
-  it("WHEN LevelUpModal Step 2 is set to 'Tirer le dé de vie', LevelUpModal requests an authoritative roll from diceRollService, renders verified result, and disables Next until roll succeeds (AC3)", async () => {
+  it("WHEN LevelUpModal Step 2 is set to 'Roll the hit die', LevelUpModal requests an authoritative roll from diceRollService, renders verified result, and disables Next until roll succeeds (AC3)", async () => {
     const actor = createDefaultActorData("actor-cleric", "Kyra");
     actor.classId = "cleric";
     actor.attributes.level = 1;
@@ -462,7 +465,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     assert.equal(nextBtn.disabled, true, "Next must be disabled before dice roll is performed");
 
     const buttons = container.querySelectorAll("button");
-    const rollBtn = buttons.find((b: any) => b.textContent.includes("Lancer 1d8"));
+    const rollBtn = buttons.find((b: any) => b.textContent.includes("Roll 1d8"));
     assert.ok(rollBtn, "Roll dice button must be displayed in rolled mode");
 
     await rollBtn.dispatchEvent(new (globalThis as any).Event("click"));
@@ -470,7 +473,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
 
     assert.equal(rollRequested, true, "diceRollService.roll must be invoked");
     assert.equal(requestedFormula, "1d8", "diceRollService must be queried with 1d8");
-    assert.ok(container.textContent.includes("+7 PV"), "Must display rolled result + CON mod (+7 PV)");
+    assert.ok(container.textContent.includes("+7 HP"), "Must display rolled result + CON mod (+7 HP)");
     assert.equal(nextBtn.disabled, false, "Next must become enabled after server roll succeeds");
 
     unmount();
@@ -503,7 +506,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     assert.equal(alertMsg.getAttribute("aria-live"), "polite");
 
     // Switch to Feat mode
-    const featTabBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Choisir un Don"));
+    const featTabBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Choose a Feat"));
     assert.ok(featTabBtn, "Feat tab button must exist");
     featTabBtn.dispatchEvent(new (globalThis as any).Event("click"));
 
@@ -538,13 +541,13 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
 
     // Check Spell Slots grid rendered with 'LVL X'
-    assert.ok(container.textContent.includes("Nouveaux emplacements de sorts"), "Spell slots section must be displayed");
+    assert.ok(container.textContent.includes("New spell slots"), "Spell slots section must be displayed");
     assert.ok(container.textContent.includes("LVL 1"), "Level 1 spell slots must be listed with LVL 1");
     assert.ok(container.textContent.includes("LVL 2"), "Level 2 spell slots must be listed with LVL 2");
 
     // Check Confirm button is available at Step 4 but disabled until 2 wizard spells are picked
     const confirmBtn = getConfirmButton();
-    assert.ok(confirmBtn, "Confirmer et Appliquer button must be present at Step 4");
+    assert.ok(confirmBtn, "Confirm and Apply button must be present at Step 4");
     assert.equal(confirmBtn.disabled, true, "Confirm button must be disabled for Wizard with 0 spells chosen");
 
     const checkboxes = container.querySelectorAll("input[type='checkbox']");
@@ -579,7 +582,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
     nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
 
-    assert.ok(container.textContent.includes("Préparation divine des sorts"), "Divine preparation banner must be displayed");
+    assert.ok(container.textContent.includes("Divine spell preparation"), "Divine preparation banner must be displayed");
     const checkboxes = container.querySelectorAll("input[type='checkbox']");
     assert.equal(checkboxes.length, 0, "Divine casters must not have spell learning checkboxes");
 
@@ -590,7 +593,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     unmount();
   });
 
-  it("WHEN user clicks 'Confirmer et Appliquer', LevelUpModal invokes applyLevelUp with compiled LevelUpOptions, calls onSave with mutated actor, and triggers onClose (AC6)", async () => {
+  it("WHEN user clicks 'Confirm and Apply', LevelUpModal invokes applyLevelUp with compiled LevelUpOptions, calls onSave with mutated actor, and triggers onClose (AC6)", async () => {
     const actor = createDefaultActorData("actor-fighter", "Valeros");
     actor.classId = "fighter";
     actor.attributes.level = 1;
@@ -599,10 +602,10 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     actor.attributes.hitDieSize = 10;
     actor.abilities.con.score = 14;
 
-    let savedActor: Dnd5eActorData | null = null;
+    let savedActor = null as Dnd5eActorData | null;
     let closeTriggered = false;
 
-    const { container, getNextButton, getConfirmButton, unmount } = await renderModal({
+    const { getNextButton, getConfirmButton, unmount } = await renderModal({
       isOpen: true,
       actor,
       onClose: () => {
@@ -654,7 +657,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     dialog.dispatchEvent({ type: "keydown", key: "Escape", stopPropagation: () => {} });
     assert.equal(closedCount, 1, "Escape key must trigger onClose");
 
-    const closeBtn = container.querySelector("button[aria-label='Fermer la fenêtre de montée de niveau']");
+    const closeBtn = container.querySelector("button[aria-label='Close level up dialog']");
     assert.ok(closeBtn, "Close button with proper aria-label must exist");
     closeBtn.dispatchEvent(new (globalThis as any).Event("click"));
     assert.equal(closedCount, 2, "Close button click must trigger onClose");
@@ -671,9 +674,9 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
       onSave: () => {},
     });
 
-    const closeBtn = container.querySelector("button[aria-label='Fermer la fenêtre de montée de niveau']");
+    const closeBtn = container.querySelector("button[aria-label='Close level up dialog']");
     assert.ok(closeBtn, "Close button must exist");
-    assert.equal((globalThis as any).document.activeElement, closeBtn, "Initial focus must be placed on the close button");
+    assert.ok((globalThis as any).document.activeElement === closeBtn, "Initial focus must be placed on the close button");
 
     unmount();
   });
@@ -693,8 +696,8 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     const dialog = container.querySelector("[role='dialog']");
     assert.ok(dialog, "Dialog element must exist");
 
-    const closeBtn = container.querySelector("button[aria-label='Fermer la fenêtre de montée de niveau']");
-    const cancelBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Annuler"));
+    const closeBtn = container.querySelector("button[aria-label='Close level up dialog']");
+    const cancelBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Cancel"));
     assert.ok(closeBtn, "Close button must exist");
     assert.ok(cancelBtn, "Cancel button must exist");
 
@@ -708,7 +711,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
       stopPropagation: () => {},
     });
     assert.equal(shiftPrevented, true, "Shift+Tab on first element must prevent default");
-    assert.equal((globalThis as any).document.activeElement, cancelBtn, "Shift+Tab on first element must wrap to last element");
+    assert.ok((globalThis as any).document.activeElement === cancelBtn, "Shift+Tab on first element must wrap to last element");
 
     cancelBtn.focus();
     let tabPrevented = false;
@@ -720,7 +723,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
       stopPropagation: () => {},
     });
     assert.equal(tabPrevented, true, "Tab on last element must prevent default");
-    assert.equal((globalThis as any).document.activeElement, closeBtn, "Tab on last element must wrap to first element");
+    assert.ok((globalThis as any).document.activeElement === closeBtn, "Tab on last element must wrap to first element");
 
     unmount();
   });
@@ -737,7 +740,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
       onSave: () => {},
     });
 
-    const nav = container.querySelector("nav[aria-label='Étapes de progression']");
+    const nav = container.querySelector("nav[aria-label='Progression steps']");
     assert.ok(nav, "Stepper nav element must exist");
 
     const stepNodes = nav.childNodes.filter((c: any) => c.nodeType === 1);
@@ -781,7 +784,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     assert.equal(tabs.length, 2, "Must have 2 tab buttons");
 
     const asiTab = tabs.find((t: any) => t.textContent.includes("ASI"));
-    const featTab = tabs.find((t: any) => t.textContent.includes("Choisir un Don"));
+    const featTab = tabs.find((t: any) => t.textContent.includes("Choose a Feat"));
     assert.ok(asiTab, "ASI tab must exist");
     assert.ok(featTab, "Feat tab must exist");
 
@@ -813,7 +816,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
       onSave: () => {},
     });
 
-    const closeBtn = container.querySelector("button[aria-label='Fermer la fenêtre de montée de niveau']");
+    const closeBtn = container.querySelector("button[aria-label='Close level up dialog']");
     assert.ok(closeBtn.getAttribute("class")?.includes("min-h-[40px]"), "Close button must have min-h-[40px]");
 
     const subclassSelect = container.querySelector("#subclass-select");
@@ -851,7 +854,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     const rolledRadio = container.querySelectorAll("input[name='hpMode']").find((r: any) => r.value === "rolled");
     rolledRadio.dispatchEvent(new (globalThis as any).Event("change"));
 
-    const rollBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Lancer 1d"));
+    const rollBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Roll 1d"));
     assert.ok(rollBtn, "Roll button must exist");
     const rollCls = rollBtn.getAttribute("class") || "";
     assert.ok(rollCls.includes("bg-[var(--atlas-action)]"), "Roll button must use var(--atlas-action)");
@@ -862,7 +865,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
     nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
 
-    const confirmBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Confirmer et Appliquer"));
+    const confirmBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Confirm and Apply"));
     assert.ok(confirmBtn, "Confirm button must exist");
     const confirmCls = confirmBtn.getAttribute("class") || "";
     assert.ok(confirmCls.includes("bg-[var(--atlas-action)]"), "Confirm button must use var(--atlas-action)");

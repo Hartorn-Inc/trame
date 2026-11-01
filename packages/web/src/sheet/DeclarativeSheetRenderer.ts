@@ -549,7 +549,7 @@ export class DeclarativeSheetRenderer {
       "render" in widgetImpl &&
       typeof (widgetImpl as { render: unknown }).render === "function"
     ) {
-      renderedOutput = (widgetImpl as { render: Function }).render({
+      renderedOutput = (widgetImpl as { render: (props: Record<string, unknown>) => unknown }).render({
         id: widgetNode.id,
         boundValues,
         options,

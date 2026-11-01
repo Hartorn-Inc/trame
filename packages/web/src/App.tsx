@@ -4,38 +4,55 @@
  * ============================================================================
  *
  * PURPOSE:
- * --------
- * Provides the root Preact shell for the TRAME browser client (`CampaignLobby`
- * and live tabletop workspace).
+ * -----
+ * Root Preact shell: boots the session, guards every screen behind
+ * authentication, and routes between the sign-in screen, the campaign lobby,
+ * and the live campaign workspace.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
- * -------------------------------
- *   1. `PreactSignalState`:
- *      - Top-level reactive signals drive view transitions without full-tree
- *        re-renders.
- *   2. `ImpeccableDesignTokens`:
- *      - All colors and styling strictly use ATLAS v1.1 CSS custom properties.
+ * -----
+ * 1. `GuestSessionUpgrade Before The Guard`:
+ *    - `bootstrapSession` redeems `?invite=` before the guard decides, so an
+ *      invited player lands in the workspace instead of the sign-in form.
+ * 2. `Server-Owned Identity`:
+ *    - Screens render from `session.status` / `session.user`, which only
+ *      `ApiClient` writes after the server answers.
+ * 3. `One Room Socket`:
+ *    - The room socket follows `session.activeCampaignId`: it is opened when a
+ *      campaign is selected and closed when leaving it or unmounting.
+ * 4. `PreactSignalState`:
+ *    - Signals drive view transitions without full-tree re-renders.
  *
  * EXECUTION LIFECYCLE:
- * --------------------
- *   1. Initialize reactive application state.
- *   2. Render active view (`CampaignLobby` or active campaign table).
+ * -----
+ * `App` mount
+ * ├── 1. `bootstrapSession` -> status `authenticated` | `anonymous`.
+ * ├── 2. `restoring` -> busy message; `anonymous` -> `AuthScreen`.
+ * ├── 3. `authenticated`, no campaign -> `CampaignLobby`.
+ * └── 4. campaign selected -> `client.connect(id)` + `CampaignWorkspace`.
  * ============================================================================
  */
 
 import { computed, signal } from '@preact/signals';
+import { useEffect } from 'preact/hooks';
+import { bootstrapSession, type BootLocation } from './api/bootstrap.ts';
+import { apiClient, type ApiClient } from './api/client.ts';
+import { AuthScreen } from './auth/AuthScreen.tsx';
 import {
   localeSignal,
   mobileCompanionOverrideSignal,
+  t,
   unitSystemSignal,
 } from './i18n/index.ts';
+import { CampaignLobby } from './lobby/CampaignLobby.tsx';
+import type { UserRole } from './maps/types.ts';
 import { MobileCompanionView } from './mobile/MobileCompanionView.tsx';
+import { CampaignWorkspace } from './workspace/CampaignWorkspace.tsx';
 import {
-  DocumentsWorkspaceTab,
   HandoutRevealModal,
+  dispatchHandoutRevealedFrame,
 } from './workspace/DocumentsWorkspaceTab.tsx';
 
-export const appStatusSignal = signal<'ready' | 'connecting' | 'connected'>('ready');
 export const windowWidthSignal = signal<number>(
   typeof window !== 'undefined' ? window.innerWidth : 1024,
 );
@@ -43,82 +60,175 @@ export const shouldMountCanvas = computed(
   () => !mobileCompanionOverrideSignal.value && windowWidthSignal.value >= 768,
 );
 
-if (typeof window !== 'undefined') {
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   window.addEventListener('resize', () => {
     windowWidthSignal.value = window.innerWidth;
   });
 }
 
-export function App() {
-  const isMobile = !shouldMountCanvas.value;
+apiClient.onHandoutRevealed = (handout) => {
+  dispatchHandoutRevealedFrame({
+    handout_id: handout.handout_id,
+    title: handout.title,
+    content: handout.content,
+    revealed_by: handout.revealed_by,
+    timestamp: handout.timestamp,
+  });
+};
+
+/** Props for `App`; defaults bind to the browser. Tests inject a mocked client. */
+export interface AppProps {
+  client?: ApiClient;
+  /** Location read by the bootstrap (`?invite=`). */
+  location?: BootLocation;
+  /** Rewrites the address bar without navigation (strips a consumed invite). */
+  replaceUrl?: (url: string) => void;
+}
+
+function browserReplaceUrl(url: string): void {
+  if (typeof history !== 'undefined') history.replaceState(history.state, '', url);
+}
+
+function toUserRole(role: string | undefined): UserRole {
+  return role === 'GM' || role === 'SPECTATOR' ? role : 'PLAYER';
+}
+
+function ShellHeader({ client, inCampaign }: { client: ApiClient; inCampaign: boolean }) {
+  const connection = client.state.connection.value;
+  return (
+    <header class="ds-topbar" style={{ flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--atlas-space-sm)' }}>
+        <strong class="ds-brand-title">{t('shell.brand')}</strong>
+        {inCampaign && (
+          <span data-testid="trame-status-badge" role="status">
+            {t(`shell.connection.${connection}`)}
+          </span>
+        )}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--atlas-space-sm)', flexWrap: 'wrap' }}>
+        {inCampaign && (
+          <button
+            type="button"
+            class="ds-btn ds-btn-secondary"
+            data-testid="header-back-to-lobby"
+            onClick={() => {
+              client.state.activeCampaignId.value = null;
+            }}
+          >
+            {t('shell.backToLobby')}
+          </button>
+        )}
+        <button
+          type="button"
+          data-testid="header-locale-toggle"
+          aria-label={t('shell.toggleLanguage', { locale: localeSignal.value === 'fr' ? 'FR' : 'EN' })}
+          class="ds-btn ds-btn-secondary"
+          onClick={() => {
+            localeSignal.value = localeSignal.value === 'en' ? 'fr' : 'en';
+          }}
+        >
+          {localeSignal.value === 'fr' ? 'FR' : 'EN'}
+        </button>
+        {inCampaign && (
+          <>
+            <button
+              type="button"
+              data-testid="header-units-toggle"
+              aria-label={t('shell.toggleUnits', { unit: unitSystemSignal.value === 'imperial_ft' ? '5 ft' : '1.5 m' })}
+              class="ds-btn ds-btn-secondary"
+              onClick={() => {
+                unitSystemSignal.value = unitSystemSignal.value === 'imperial_ft' ? 'metric_m' : 'imperial_ft';
+              }}
+            >
+              {unitSystemSignal.value === 'imperial_ft' ? '5 ft' : '1.5 m'}
+            </button>
+            <button
+              type="button"
+              data-testid="header-companion-toggle"
+              aria-label={t('shell.toggleCompanion')}
+              aria-pressed={mobileCompanionOverrideSignal.value}
+              class={`ds-btn ${mobileCompanionOverrideSignal.value ? 'ds-btn-primary' : 'ds-btn-secondary'}`}
+              onClick={() => {
+                mobileCompanionOverrideSignal.value = !mobileCompanionOverrideSignal.value;
+              }}
+            >
+              {t('shell.companionMode')}
+            </button>
+          </>
+        )}
+        <button
+          type="button"
+          class="ds-btn ds-btn-secondary"
+          data-testid="header-sign-out"
+          onClick={() => {
+            void client.logout();
+          }}
+        >
+          {t('shell.signOut')}
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function CampaignView({ client, campaignId }: { client: ApiClient; campaignId: string }) {
+  const campaign = client.state.campaigns.value.find((c) => c.id === campaignId);
+
+  useEffect(() => {
+    client.connect(campaignId);
+    return () => client.disconnect();
+  }, [client, campaignId]);
+
+  useEffect(() => {
+    if (!campaign) {
+      client.listCampaigns().catch(() => undefined);
+    }
+  }, [client, campaignId]);
+
+  if (!shouldMountCanvas.value) {
+    return <MobileCompanionView />;
+  }
+
+  return (
+    <div class="ds-app-shell" data-testid="trame-app-root">
+      <ShellHeader client={client} inCampaign />
+      <main style={{ flex: 1, overflowY: 'auto' }}>
+        <CampaignWorkspace campaignId={campaignId} userRole={toUserRole(campaign?.role)} />
+      </main>
+    </div>
+  );
+}
+
+/** Root shell: session bootstrap, auth guard, lobby, and campaign workspace. */
+export function App({ client = apiClient, location, replaceUrl = browserReplaceUrl }: AppProps = {}) {
+  useEffect(() => {
+    const loc = location ?? (typeof window !== 'undefined' ? window.location : { pathname: '/', search: '', hash: '' });
+    void bootstrapSession(client, loc, replaceUrl);
+  }, [client]);
+
+  const status = client.state.status.value;
+  const campaignId = client.state.activeCampaignId.value;
+
+  if (status === 'restoring') {
+    return (
+      <main class="ds-app-shell" data-testid="app-restoring" aria-busy="true" style={{ alignItems: 'center', justifyContent: 'center' }}>
+        <p>{t('shell.loading')}</p>
+      </main>
+    );
+  }
+
+  if (status === 'anonymous') {
+    return <AuthScreen client={client} />;
+  }
 
   return (
     <>
-      {isMobile ? (
-        <MobileCompanionView />
+      {campaignId ? (
+        <CampaignView client={client} campaignId={campaignId} />
       ) : (
-        <div
-          data-testid="trame-app-root"
-          style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}
-        >
-          <header
-            style={{
-              padding: '0.75rem 1.25rem',
-              borderBottom: '1px solid var(--atlas-border)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              background: 'var(--atlas-surface)',
-              gap: '1rem',
-              flexWrap: 'wrap',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <strong>TRAME VTT</strong>
-              <span data-testid="trame-status-badge">{appStatusSignal.value}</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <button
-                type="button"
-                data-testid="header-locale-toggle"
-                aria-label={`Toggle language: ${localeSignal.value === 'fr' ? 'FR' : 'EN'}`}
-                class="ds-btn ds-btn-secondary"
-                onClick={() => {
-                  localeSignal.value = localeSignal.value === 'en' ? 'fr' : 'en';
-                }}
-              >
-                {localeSignal.value === 'fr' ? 'FR' : 'EN'}
-              </button>
-              <button
-                type="button"
-                data-testid="header-units-toggle"
-                aria-label={`Toggle grid units: ${unitSystemSignal.value === 'imperial_ft' ? '5 ft' : '1.5 m'}`}
-                class="ds-btn ds-btn-secondary"
-                onClick={() => {
-                  unitSystemSignal.value =
-                    unitSystemSignal.value === 'imperial_ft' ? 'metric_m' : 'imperial_ft';
-                }}
-              >
-                {unitSystemSignal.value === 'imperial_ft' ? '5 ft' : '1.5 m'}
-              </button>
-              <button
-                type="button"
-                data-testid="header-companion-toggle"
-                aria-label="Toggle companion mode"
-                aria-pressed={mobileCompanionOverrideSignal.value}
-                class={`ds-btn ${mobileCompanionOverrideSignal.value ? 'ds-btn-primary' : 'ds-btn-secondary'}`}
-                onClick={() => {
-                  mobileCompanionOverrideSignal.value = !mobileCompanionOverrideSignal.value;
-                }}
-              >
-                Companion Mode
-              </button>
-            </div>
-          </header>
-
-          <main style={{ flex: 1, overflowY: 'auto' }}>
-            <DocumentsWorkspaceTab />
-          </main>
+        <div class="ds-app-shell">
+          <ShellHeader client={client} inCampaign={false} />
+          <CampaignLobby client={client} />
         </div>
       )}
       <HandoutRevealModal />
