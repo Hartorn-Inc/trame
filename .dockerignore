@@ -3,6 +3,7 @@ target
 **/node_modules
 **/dist
 packages/web/src/wasm
+packages/trame-engine-node
 .trame-dev
 uploads-dev
 backups-dev
