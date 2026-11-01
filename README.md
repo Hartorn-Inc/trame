@@ -26,14 +26,14 @@ All local development, compilation, testing, and linting run inside isolated Doc
 cp .env.example .env
 # Optionally edit .env, then chmod 600 .env
 make help
-make up          # Start isolated dev stack (PostgreSQL 18, MinIO, Rust server, Vite HMR)
+make up          # Start isolated dev stack (PostgreSQL 18, Silo S3, Rust server, Vite HMR)
 make test        # Run Rust, WASM parity, game-system, and Web tests in Docker
 make lint        # Run glossary/ADR and design checks, cargo fmt, cargo clippy, ESLint, and tsc in Docker
 make wasm        # Compile trame-engine to WebAssembly (browser + Node targets) via wasm-pack in Docker
 make down        # Stop the local development stack
 ```
 
-The dev stack sets `TRAME_ENV=dev`, so the server boots with public development keys for any missing secret. MinIO is started for future S3-compatible asset storage; the server currently stores assets in PostgreSQL (or in memory without a database).
+The dev stack sets `TRAME_ENV=dev`, so the server boots with public development keys for any missing secret. Silo (`pgsty/silo`, an S3-compatible MinIO fork, in the `minio` service) is started for future S3-compatible asset storage, but the server does not read `S3_*` yet; the server currently stores assets in PostgreSQL (or in memory without a database).
 
 ### PostgreSQL integration tests
 

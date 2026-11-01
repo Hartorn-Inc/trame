@@ -1,7 +1,7 @@
 # ADR-0010: Hybrid Authentication, Preact + @preact/signals UI, and SqlxPostgresStore Runtime Wiring
 
 ## Status
-Accepted
+Accepted. Amendment (2026-11-01): the dev stack's S3 service is Silo (`pgsty/silo`), an S3-compatible MinIO fork, replacing the `minio/minio` image that left Docker Hub. `S3Store` is not wired yet: the server does not read `S3_*` and stores assets in PostgreSQL (or in memory without a database).
 
 ## Context
 To make TRAME playable end-to-end across local Docker, single-VPS (`e2-micro`), and Cloud Run + Neon + R2 deployments, three architectural seams must be unified:
