@@ -98,6 +98,9 @@ export function RestModal(props: RestModalProps): VNode<any> | null {
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
+      if (typeof e.stopPropagation === "function") {
+        e.stopPropagation();
+      }
       if (!isSubmitting) {
         onClose();
       }

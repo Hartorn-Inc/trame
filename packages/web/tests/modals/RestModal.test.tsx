@@ -147,7 +147,6 @@ function setupMockDom() {
 
     removeAttribute(name: string) {
       delete this.attributes[name];
-      if (name === "disabled") this.disabled = false;
     }
 
     addEventListener(type: string, listener: Function) {
@@ -162,12 +161,26 @@ function setupMockDom() {
 
     dispatchEvent(event: { type: string; [k: string]: any }): boolean {
       const target = event.target ?? this;
+      let stopped = false;
+      const originalStopPropagation = event.stopPropagation;
+      const eventObj = {
+        preventDefault: () => {},
+        ...event,
+        target,
+        currentTarget: this,
+        stopPropagation: () => {
+          stopped = true;
+          if (typeof originalStopPropagation === "function") {
+            originalStopPropagation();
+          }
+        },
+      };
       const list = this.listeners[event.type] || [];
       for (const handler of list) {
-        handler.call(this, { ...event, target, currentTarget: this });
+        handler.call(this, eventObj);
       }
-      if (this.parentNode && (event as any).bubbles !== false) {
-        this.parentNode.dispatchEvent({ ...event, target });
+      if (this.parentNode && (event as any).bubbles !== false && !stopped) {
+        this.parentNode.dispatchEvent(eventObj);
       }
       return true;
     }
@@ -180,11 +193,12 @@ function setupMockDom() {
       if (selector.startsWith(".")) {
         return this.classList.contains(selector.slice(1));
       }
-      const notMatch = selector.match(/^([^:]*):not\((.+)\)$/);
-      if (notMatch) {
-        const [, base, negated] = notMatch;
-        const matchesBase = base ? this.matches(base) : true;
-        return matchesBase && !this.matches(negated);
+      if (selector.includes(":not(")) {
+        const notIdx = selector.indexOf(":not(");
+        const base = selector.slice(0, notIdx).trim();
+        const inner = selector.slice(notIdx + 5, selector.lastIndexOf(")")).trim();
+        if (base && !this.matches(base)) return false;
+        return !this.matches(inner);
       }
       const bracketIdx = selector.indexOf("[");
       if (bracketIdx !== -1 && selector.endsWith("]")) {
@@ -203,9 +217,6 @@ function setupMockDom() {
           return Boolean(this.disabled || this.hasAttribute("disabled"));
         }
         return this.hasAttribute(inner);
-      }
-      if (selector === ":disabled") {
-        return Boolean(this.disabled || this.hasAttribute("disabled"));
       }
       return this.nodeName.toLowerCase() === selector.toLowerCase();
     }
@@ -392,6 +403,128 @@ describe("RestModal Component", () => {
       assert.ok(backdrop);
       backdrop.dispatchEvent({ type: "keydown", key: "Escape" });
       assert.equal(closed, true);
+      unmount();
+    });
+
+    it("stops propagation on Escape key to prevent closing parent containers", async () => {
+      let closed = false;
+      let stopPropagationCalled = false;
+      const actor = createTestActor();
+      const { container, unmount } = await renderModal({
+        actor,
+        restType: "short",
+        isOpen: true,
+        onClose: () => { closed = true; },
+        onSave: () => {},
+      });
+      const backdrop = container.querySelector("[role='dialog']");
+      assert.ok(backdrop);
+      backdrop.dispatchEvent({
+        type: "keydown",
+        key: "Escape",
+        stopPropagation: () => { stopPropagationCalled = true; },
+      });
+      assert.equal(closed, true);
+      assert.equal(stopPropagationCalled, true);
+      unmount();
+    });
+
+    it("stops propagation on Escape even when isSubmitting is true without closing modal", async () => {
+      let closed = false;
+      let stopPropagationCalled = false;
+      let resolveSave: () => void = () => {};
+      const slowSavePromise = new Promise<void>((resolve) => {
+        resolveSave = resolve;
+      });
+
+      const actor = createTestActor();
+      const { container, findByText, unmount } = await renderModal({
+        actor,
+        restType: "short",
+        isOpen: true,
+        onClose: () => { closed = true; },
+        onSave: () => slowSavePromise,
+      });
+
+      const confirmBtn = findByText("Confirmer le Repos Court");
+      assert.ok(confirmBtn);
+      confirmBtn.dispatchEvent({ type: "click" });
+      await new Promise((r) => setTimeout(r, 10));
+
+      const backdrop = container.querySelector("[role='dialog']");
+      assert.ok(backdrop);
+      backdrop.dispatchEvent({
+        type: "keydown",
+        key: "Escape",
+        stopPropagation: () => { stopPropagationCalled = true; },
+      });
+
+      assert.equal(closed, false);
+      assert.equal(stopPropagationCalled, true);
+
+      resolveSave();
+      await new Promise((r) => setTimeout(r, 20));
+      unmount();
+    });
+
+    it("stops propagation on Escape key to prevent closing parent containers", async () => {
+      let closed = false;
+      let stopPropagationCalled = false;
+      const actor = createTestActor();
+      const { container, unmount } = await renderModal({
+        actor,
+        restType: "short",
+        isOpen: true,
+        onClose: () => { closed = true; },
+        onSave: () => {},
+      });
+      const backdrop = container.querySelector("[role='dialog']");
+      assert.ok(backdrop);
+      backdrop.dispatchEvent({
+        type: "keydown",
+        key: "Escape",
+        stopPropagation: () => { stopPropagationCalled = true; },
+      });
+      assert.equal(closed, true);
+      assert.equal(stopPropagationCalled, true);
+      unmount();
+    });
+
+    it("stops propagation on Escape even when isSubmitting is true without closing modal", async () => {
+      let closed = false;
+      let stopPropagationCalled = false;
+      let resolveSave: () => void = () => {};
+      const slowSavePromise = new Promise<void>((resolve) => {
+        resolveSave = resolve;
+      });
+
+      const actor = createTestActor();
+      const { container, findByText, unmount } = await renderModal({
+        actor,
+        restType: "short",
+        isOpen: true,
+        onClose: () => { closed = true; },
+        onSave: () => slowSavePromise,
+      });
+
+      const confirmBtn = findByText("Confirmer le Repos Court");
+      assert.ok(confirmBtn);
+      confirmBtn.dispatchEvent({ type: "click" });
+      await new Promise((r) => setTimeout(r, 10));
+
+      const backdrop = container.querySelector("[role='dialog']");
+      assert.ok(backdrop);
+      backdrop.dispatchEvent({
+        type: "keydown",
+        key: "Escape",
+        stopPropagation: () => { stopPropagationCalled = true; },
+      });
+
+      assert.equal(closed, false);
+      assert.equal(stopPropagationCalled, true);
+
+      resolveSave();
+      await new Promise((r) => setTimeout(r, 20));
       unmount();
     });
   });
