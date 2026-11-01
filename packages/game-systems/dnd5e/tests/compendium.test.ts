@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import "../src/node.ts";
 import {
   CompendiumResolver,
-  SRD_51_ATTRIBUTION,
+  SRD_521_ATTRIBUTION,
   SYSTEM_SRD,
   SystemSRD,
   getFeats,
@@ -28,15 +29,15 @@ describe("[Ticket #84] D&D 5e SystemSRD Compendium Specification Suite", () => {
       assert.equal(backpack?.tier, "SYSTEM_SRD");
     });
 
-    it("WHEN CompendiumResolver.get receives 'srd:item:bag_of_holding', CompendiumResolver returns a container entry with weight 15, capacity 500, and contentWeightMultiplier 0.", () => {
+    it("WHEN CompendiumResolver.get receives 'srd:item:bag_of_holding', CompendiumResolver returns a container entry with weight 5, capacity 500, and contentWeightMultiplier 0.", () => {
       const bag = CompendiumResolver.get("srd:item:bag_of_holding");
 
       assert.ok(bag, "Bag of Holding entry must exist in compendium");
       assert.equal(bag?.name, "Bag of Holding");
-      assert.equal(bag?.weight, 15);
+      assert.equal(bag?.weight, 5);
       assert.equal(bag?.capacity, 500);
       assert.equal(bag?.contentWeightMultiplier, 0);
-      assert.equal(bag?.data.weight, 15);
+      assert.equal(bag?.data.weight, 5);
       assert.equal(bag?.data.capacity, 500);
       assert.equal(bag?.data.contentWeightMultiplier, 0);
       assert.equal(bag?.data.isContainer, true);
@@ -49,17 +50,18 @@ describe("[Ticket #84] D&D 5e SystemSRD Compendium Specification Suite", () => {
       const resolver = new CompendiumResolver();
       const weapons = resolver.list({ entityType: "weapon" });
 
-      const requiredWeaponNames = [
-        "Dagger",
-        "Longsword",
-        "Greatsword",
-        "Shortbow",
-        "Longbow",
-        "Light Crossbow",
+      const requiredWeapons: [string, string][] = [
+        ["Dagger", "nick"],
+        ["Longsword", "sap"],
+        ["Greatsword", "graze"],
+        ["Shortbow", "vex"],
+        ["Longbow", "slow"],
+        ["Light Crossbow", "slow"],
       ];
 
-      for (const weaponName of requiredWeaponNames) {
+      for (const [weaponName, mastery] of requiredWeapons) {
         const entry = weapons.find((w) => w.name === weaponName);
+        assert.equal(entry?.data.mastery, mastery, `Weapon '${weaponName}' must carry its SRD 5.2.1 mastery`);
         assert.ok(entry, `Weapon '${weaponName}' must be present in query results`);
         assert.ok(entry?.i18n, `Weapon '${weaponName}' must contain bilingual i18n object`);
         assert.ok(entry?.i18n?.en?.name, `Weapon '${weaponName}' must have en.name`);
@@ -120,40 +122,46 @@ describe("[Ticket #84] D&D 5e SystemSRD Compendium Specification Suite", () => {
   });
 
   describe("AC6: Feats with Bilingual Metadata (en & fr)", () => {
-    it("WHEN CompendiumResolver.list is queried for entityType 'feat', CompendiumResolver returns Sharpshooter, Great Weapon Master, Tough, Sentinel, and Dual Wielder with bilingual metadata in en and fr.", () => {
-      const resolver = new CompendiumResolver();
-      const feats = resolver.list({ entityType: "feat" });
+    const srdFeats = [
+      "Alert", "Magic Initiate", "Savage Attacker", "Skilled",
+      "Ability Score Improvement", "Grappler",
+      "Archery", "Defense", "Great Weapon Fighting", "Two-Weapon Fighting",
+      "Boon of Combat Prowess", "Boon of Dimensional Travel", "Boon of Fate",
+      "Boon of Irresistible Offense", "Boon of Spell Recall", "Boon of the Night Spirit", "Boon of Truesight",
+    ];
+    const feats = new CompendiumResolver().list({ entityType: "feat" });
 
-      const requiredFeats = [
-        "Sharpshooter",
-        "Great Weapon Master",
-        "Tough",
-        "Sentinel",
-        "Dual Wielder",
-      ];
+    it("srd-521-feat-catalog-has-exactly-17-feats", () => {
+      assert.deepEqual(feats.map((f) => f.name).sort(), [...srdFeats].sort());
+    });
 
-      for (const featName of requiredFeats) {
+    for (const featName of srdFeats) {
+      it(`srd-521-feat-${featName}-has-bilingual-metadata`, () => {
         const entry = feats.find((f) => f.name === featName);
-        assert.ok(entry, `Feat '${featName}' must be present in compendium`);
-        assert.ok(entry?.i18n?.en?.name, `Feat '${featName}' must have en.name`);
         assert.ok(entry?.i18n?.en?.description, `Feat '${featName}' must have en.description`);
         assert.ok(entry?.i18n?.fr?.name, `Feat '${featName}' must have fr.name`);
         assert.ok(entry?.i18n?.fr?.description, `Feat '${featName}' must have fr.description`);
-      }
-    });
+      });
+    }
+
+    for (const removed of ["Sharpshooter", "Great Weapon Master", "Tough", "Sentinel", "Dual Wielder", "War Caster"]) {
+      it(`non-srd-521-feat-${removed}-is-absent`, () => {
+        assert.equal(feats.some((f) => f.name === removed), false);
+      });
+    }
   });
 
   describe("AC7: 1-Click GM Monster Templates", () => {
-    it("WHEN CompendiumResolver.list is queried for entityType 'monster', CompendiumResolver returns ready-to-use monster templates for Goblin, Bandit, Guard, Skeleton, Wolf, Ogre, and Adult Red Dragon.", () => {
+    it("WHEN CompendiumResolver.list is queried for entityType 'monster', CompendiumResolver returns ready-to-use monster templates for Goblin Warrior, Bandit, Guard, Skeleton, Wolf, Ogre, and Adult Red Dragon.", () => {
       const resolver = new CompendiumResolver();
       const monsters = resolver.list({ entityType: "monster" });
 
       const requiredMonsters = [
-        { name: "Goblin", minHp: 5, expectedAc: 15 },
+        { name: "Goblin Warrior", minHp: 10, expectedAc: 15 },
         { name: "Bandit", minHp: 8, expectedAc: 12 },
         { name: "Guard", minHp: 8, expectedAc: 16 },
-        { name: "Skeleton", minHp: 10, expectedAc: 13 },
-        { name: "Wolf", minHp: 8, expectedAc: 13 },
+        { name: "Skeleton", minHp: 13, expectedAc: 14 },
+        { name: "Wolf", minHp: 11, expectedAc: 12 },
         { name: "Ogre", minHp: 40, expectedAc: 11 },
         { name: "Adult Red Dragon", minHp: 200, expectedAc: 19 },
       ];
@@ -170,15 +178,16 @@ describe("[Ticket #84] D&D 5e SystemSRD Compendium Specification Suite", () => {
     });
   });
 
-  describe("AC8: Verbatim SRD 5.1 CC-BY-4.0 Notice", () => {
-    it("WHEN getAttribution is invoked on CompendiumResolver, CompendiumResolver returns the canonical SRD 5.1 CC-BY-4.0 notice.", () => {
+  describe("AC8: Verbatim SRD 5.2.1 CC-BY-4.0 Notice", () => {
+    it("WHEN getAttribution is invoked on CompendiumResolver, CompendiumResolver returns the SRD 5.2.1 CC-BY-4.0 notice (with the SRD 5.1 gap-fill credit).", () => {
       const resolver = new CompendiumResolver();
       const instanceNotice = resolver.getAttribution();
       const staticNotice = CompendiumResolver.getAttribution();
 
-      assert.equal(instanceNotice, SRD_51_ATTRIBUTION);
-      assert.equal(staticNotice, SRD_51_ATTRIBUTION);
+      assert.equal(instanceNotice, SRD_521_ATTRIBUTION);
+      assert.equal(staticNotice, SRD_521_ATTRIBUTION);
       assert.ok(staticNotice.includes("Creative Commons Attribution 4.0 International License"));
+      assert.ok(staticNotice.startsWith('This work includes material from the System Reference Document 5.2.1 ("SRD 5.2.1")'));
     });
   });
 
@@ -191,21 +200,22 @@ describe("[Ticket #84] D&D 5e SystemSRD Compendium Specification Suite", () => {
 
       const wizardSubclasses = resolver.getSubclasses("wizard");
       assert.equal(wizardSubclasses.length, 1);
-      assert.equal(wizardSubclasses[0].name, "School of Evocation");
+      assert.equal(wizardSubclasses[0].name, "Evoker");
 
       const clericSubclasses = getSubclasses("srd:class:cleric");
       assert.equal(clericSubclasses.length, 1);
       assert.equal(clericSubclasses[0].name, "Life Domain");
     });
 
-    it("WHEN getFeats is invoked, getFeats returns all standard SRD feats.", () => {
+    it("WHEN getFeats is invoked, getFeats returns the 17 SRD 5.2.1 feats.", () => {
       const resolver = new CompendiumResolver();
       const featsFromInstance = resolver.getFeats();
       const featsFromHelper = getFeats();
 
       assert.equal(featsFromInstance.length, featsFromHelper.length);
-      assert.ok(featsFromHelper.some((f) => f.slug === "srd:feat:sharpshooter"));
-      assert.ok(featsFromHelper.some((f) => f.slug === "srd:feat:tough"));
+      assert.equal(featsFromHelper.length, 17);
+      assert.ok(featsFromHelper.some((f) => f.slug === "srd:feat:alert"));
+      assert.ok(featsFromHelper.some((f) => f.slug === "srd:feat:grappler"));
     });
 
     it("WHEN getSpellsByLevel is invoked, getSpellsByLevel filters spells by circle and optional class identifier.", () => {

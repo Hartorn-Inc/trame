@@ -809,7 +809,8 @@ mod tests {
         base_attributes.insert("int".into(), 18.0);
         base_attributes.insert("wis".into(), 12.0);
         base_attributes.insert("cha".into(), 8.0);
-        base_attributes.insert("exhaustion".into(), 0.0);
+        base_attributes.insert("exhaustion".into(), 1.0);
+        base_attributes.insert("speed_base".into(), 30.0);
         // Studded leather: 12 + full Dexterity modifier.
         base_attributes.insert("armor_worn".into(), 1.0);
         base_attributes.insert("armor_base".into(), 12.0);
@@ -851,12 +852,15 @@ mod tests {
         assert_eq!(evaluated["int_mod"], 4.0);
         assert_eq!(evaluated["wis_mod"], 1.0);
         assert_eq!(evaluated["cha_mod"], -1.0);
-        assert_eq!(evaluated["initiative"], 3.0);
+        // Exhaustion 1 (SRD 5.2.1): -2 on d20 tests and -5 ft speed; passives and spell DC unaffected.
+        assert_eq!(evaluated["initiative"], 1.0);
+        assert_eq!(evaluated["speed"], 25.0);
+        assert_eq!(evaluated["ac_base"], 15.0);
         assert_eq!(evaluated["ac"], 15.0);
         assert_eq!(evaluated["spell_save_dc"], 15.0);
-        assert_eq!(evaluated["spell_attack_bonus"], 7.0);
-        assert_eq!(evaluated["save_int"], 7.0);
-        assert_eq!(evaluated["skill_stealth"], 9.0);
+        assert_eq!(evaluated["spell_attack_bonus"], 5.0);
+        assert_eq!(evaluated["save_int"], 5.0);
+        assert_eq!(evaluated["skill_stealth"], 7.0);
         assert_eq!(evaluated["passive_perception"], 14.0);
     }
 

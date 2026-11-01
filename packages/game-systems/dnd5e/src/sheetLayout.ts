@@ -1,5 +1,5 @@
 /**
- * D&D 5e (SRD 5.1 / SRD 5.2) Declarative Character Sheet Layout Manifest.
+ * D&D 5e (SRD 5.2.1) Declarative Character Sheet Layout Manifest.
  *
  * Conforms to the SheetLayoutTree AST schema and exclusively utilizes
  * canonical container nodes (section, column, row, tabs) and the 12 atomic widgets

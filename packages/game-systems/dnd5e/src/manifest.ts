@@ -5,42 +5,48 @@
  *
  * PURPOSE:
  * --------
- * Declares the D&D 5e (SRD 5.1 CC-BY-4.0) `GameSystemManifest`—including the
+ * Declares the D&D 5e (SRD 5.2.1 CC-BY-4.0) `GameSystemManifest`—including the
  * canonical 18-skill registry and the formula DAG loaded from `system.json`—and
  * exposes the single derived-stat path (`computeDnd5eSheetDerived`) for both
  * `Dnd5eActorData` and `Dnd5eActorSheet` representations.
  *
  * Open Game Content Attribution:
- * This work includes material from the System Reference Document 5.1 ("SRD 5.1")
- * by Wizards of the Coast LLC, available under the Creative Commons Attribution 4.0
- * International License (CC-BY-4.0).
+ * This work includes material from the System Reference Document 5.2.1
+ * ("SRD 5.2.1") by Wizards of the Coast LLC, available at
+ * https://www.dndbeyond.com/srd, licensed under the Creative Commons
+ * Attribution 4.0 International License (CC-BY-4.0).
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -------------------------------
  *   1. `system.json Is The Only Rule Source`:
  *      - Every derived number (modifiers, proficiency bonus, saves, skills,
- *        passives, AC, spell DC/attack, encumbrance) is a `system.json`
- *        `derivedDAG` formula evaluated through `evaluateDerivedDag`. This
- *        module only maps actor fields to formula inputs and maps outputs back.
- *   2. `Best-Wins Armor Class`:
+ *        passives, AC, speed, spell DC/attack, carrying capacity) is a
+ *        `system.json` `derivedDAG` formula evaluated by the `trame-engine`
+ *        WASM through `evaluateDerivedDag`. This module only maps actor fields
+ *        to formula inputs and maps outputs back.
+ *   2. `Best-Wins Armor Class, Shield Outside`:
  *      - Unarmored, armored and Unarmored Defense (CON or WIS) candidates are
- *        evaluated independently and the maximum wins; inapplicable candidates
- *        evaluate to `0`. Dexterity caps (medium `+2`, heavy and natural none)
- *        are formula inputs, not code branches.
+ *        evaluated independently and `ac_base` keeps the maximum; inapplicable
+ *        candidates evaluate to `0`. `ac = ac_base + shield_bonus`, so a
+ *        Base-phase active effect on `ac_base` (Mage Armor, Barkskin) never
+ *        swallows the shield.
  *   3. `Dual-Representation Parity`:
  *      - `Dnd5eActorData` and `Dnd5eActorSheet` go through the same adapter
  *        output shape (`derivedInputsFor*`) and the same formulas, so equal
- *        stats produce equal results. Exhaustion is a `-2 * level` penalty on
- *        d20 tests only; the spell save DC is never reduced.
- *   4. `Complete Inputs`:
+ *        stats produce equal results.
+ *   4. `SRD 5.2.1 Exhaustion`:
+ *      - `-2 * level` on d20 tests (saves, skills, initiative, spell attacks)
+ *        and `-5 ft * level` of speed. Passive scores are not d20 tests and
+ *        the spell save DC is never reduced.
+ *   5. `Complete Inputs`:
  *      - Adapters always supply every `derivedInputs` key because the
  *        evaluator fails closed on unknown variables.
  *
  * EXECUTION LIFECYCLE:
  * --------------------
- *   `computeDnd5eSheetDerived(actor)`
+ *   `computeDnd5eSheetDerived(actor, activeEffects?)`
  *     ├── 1. Map the actor to the `derivedInputs` record (`level`, scores, flags).
- *     ├── 2. `evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS)` (WASM after S4).
+ *     ├── 2. `evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, activeEffects)` (WASM).
  *     └── 3. Project the evaluated attributes onto `Dnd5eDerivedStats`.
  * ============================================================================
  */
@@ -114,7 +120,7 @@ export interface GameSystemManifest {
 }
 
 /**
- * Canonical 18 skills from the D&D 5e SRD 5.1 paired with their governing abilities.
+ * Canonical 18 skills from the D&D 5e SRD 5.2.1 paired with their governing abilities.
  */
 export const DND5E_SKILLS: SkillMetadata[] = [
   { id: "acrobatics", label: "Acrobatics", ability: "dex" },
@@ -138,15 +144,15 @@ export const DND5E_SKILLS: SkillMetadata[] = [
 ];
 
 /**
- * Authoritative D&D 5e (SRD 5.1 CC-BY-4.0) system manifest and derived-attribute DAG.
+ * Authoritative D&D 5e (SRD 5.2.1 CC-BY-4.0, 2024 rules) system manifest and
+ * derived-attribute DAG. Name, version and attribution come from `system.json`.
  */
-export const DND5E_SRD51_MANIFEST: GameSystemManifest = {
+export const DND5E_2024_MANIFEST: GameSystemManifest = {
   id: "dnd5e",
-  name: "Dungeons & Dragons 5th Edition (SRD 5.1)",
-  version: "1.0.0",
-  srdLicense: "CC-BY-4.0 (Wizards of the Coast SRD 5.1)",
-  attribution:
-    'This work includes material taken from the System Reference Document 5.1 ("SRD 5.1") by Wizards of the Coast LLC and available at https://dnd.wizards.com/resources/systems-reference-document. The SRD 5.1 is licensed under the Creative Commons Attribution 4.0 International License available at https://creativecommons.org/licenses/by/4.0/legalcode.',
+  name: systemJson.name,
+  version: systemJson.version,
+  srdLicense: "CC-BY-4.0 (Wizards of the Coast SRD 5.2.1)",
+  attribution: systemJson.attribution,
   abilities: ["str", "dex", "con", "int", "wis", "cha"],
   skills: DND5E_SKILLS,
   derivedDAG: Object.entries(systemJson.derivedDAG).map(([targetAttr, expr]) => ({
@@ -162,10 +168,15 @@ export const DND5E_SRD51_MANIFEST: GameSystemManifest = {
  */
 export const DND5E_DERIVED_FORMULAS: Readonly<Record<string, string>> = systemJson.derivedDAG;
 
-/**
- * Alias of `DND5E_SRD51_MANIFEST` maintained for 2024 ruleset compatibility consumers.
- */
-export const DND5E_2024_MANIFEST = DND5E_SRD51_MANIFEST;
+/** Default walking speed in feet when an actor carries no species speed. */
+export const DEFAULT_SPEED_FT = 30;
+
+/** Feat identifiers that add the proficiency bonus to initiative (SRD 5.2.1 Alert). */
+const ALERT_FEAT_IDS = new Set(["alert", "srd:feat:alert"]);
+
+function hasAlert(features: readonly string[] | undefined): number {
+  return (features ?? []).some((f) => ALERT_FEAT_IDS.has(f)) ? 1 : 0;
+}
 
 const ABILITY_IDS: readonly AbilityId[] = ["str", "dex", "con", "int", "wis", "cha"];
 
@@ -219,6 +230,8 @@ export function derivedInputsForActorData(actor: Dnd5eActorData): Record<string,
   const inputs: Record<string, number> = {
     level: actor.attributes.level,
     exhaustion: actor.attributes.exhaustion ?? 0,
+    speed_base: actor.attributes.speedFt ?? DEFAULT_SPEED_FT,
+    initiative_prof: hasAlert(actor.features),
     shield_bonus: actor.attributes.shieldBonus ?? 0,
     ...armorInputs(actor.attributes.armorType ?? "none", actor.attributes.baseArmorAC ?? 10),
   };
@@ -247,6 +260,8 @@ export function derivedInputsForSheet(sheet: Dnd5eActorSheet): Record<string, nu
   const inputs: Record<string, number> = {
     level: sheet.level,
     exhaustion: sheet.exhaustionLevel ?? 0,
+    speed_base: sheet.speedFt ?? DEFAULT_SPEED_FT,
+    initiative_prof: hasAlert(sheet.features),
     shield_bonus: sheet.hasShield ? 2 : 0,
     unarmored_defense_con: sheet.armorKind === "unarmored_barbarian" ? 1 : 0,
     unarmored_defense_wis: sheet.armorKind === "unarmored_monk" ? 1 : 0,
@@ -276,18 +291,22 @@ export function calculateProficiencyBonus(level: number): number {
 
 /**
  * Computes every derived D&D 5e statistic—proficiency bonus, ability modifiers,
- * saving throws, skills, passive senses, Armor Class, spell save DC, spell
- * attack bonus and carrying capacity (in `lb`)—for either actor representation
- * by evaluating the `system.json` formula DAG through the evaluator seam.
+ * saving throws, skills, passive senses, Armor Class, speed (`ft`), spell save
+ * DC, spell attack bonus and carrying capacity (`lb`)—for either actor
+ * representation by evaluating the `system.json` formula DAG through the
+ * WASM evaluator seam, optionally through engine `activeEffects`
+ * (snake_case `ActiveEffect` objects; e.g. a Base-phase `ac_base` candidate).
  *
- * Exhaustion applies `-2 * level` to saves, skills, passives, initiative and
- * spell attacks, but never to the spell save DC.
+ * Exhaustion (SRD 5.2.1) applies `-2 * level` to saves, skills, initiative and
+ * spell attacks and `-5 ft * level` to speed; passive scores and the spell
+ * save DC are never reduced.
  */
 export function computeDnd5eSheetDerived(
-  actor: Dnd5eActorData | Dnd5eActorSheet
+  actor: Dnd5eActorData | Dnd5eActorSheet,
+  activeEffects?: unknown[]
 ): Dnd5eDerivedStats {
   const inputs = "attributes" in actor ? derivedInputsForActorData(actor) : derivedInputsForSheet(actor);
-  const v = evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS);
+  const v = evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, activeEffects);
 
   const abilityMods = {} as Record<AbilityId, number>;
   const savingThrows = {} as Record<AbilityId, number>;
@@ -310,6 +329,7 @@ export function computeDnd5eSheetDerived(
     passiveInsight: v.passive_insight,
     armorClass: v.ac,
     initiativeBonus: v.initiative,
+    speed: v.speed,
     spellSaveDc: v.spell_save_dc,
     spellSaveDC: v.spell_save_dc,
     spellAttackBonus: v.spell_attack_bonus,
@@ -325,7 +345,7 @@ export function computeDnd5eSheetDerived(
 /**
  * Constructs a clean baseline level-1 `Dnd5eActorData` instance with all ability
  * scores set to `10` (`+0` modifier), `10/10` HP, `1d8` Hit Die, unarmored AC `10`,
- * and `"NONE"` mitigation across all 13 damage types.
+ * `30 ft` speed, and `"NONE"` mitigation across all 13 damage types.
  */
 export function createDefaultActorData(
   id = "actor-1",
@@ -382,6 +402,7 @@ export function createDefaultActorData(
       armorType: "none",
       baseArmorAC: 10,
       shieldBonus: 0,
+      speedFt: DEFAULT_SPEED_FT,
     },
     damageMitigations: {
       acid: "NONE",
