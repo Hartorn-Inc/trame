@@ -21,9 +21,8 @@
  * 3. `Portraits Are Assets`:
  *    - The image goes to `POST .../assets` (server transcodes to WebP); the
  *      sheet stores the returned object key in `portraitAssetKey` with a
- *      versioned PUT, never the short-lived signed URL. `Dnd5eActorData` has
- *      no portrait field yet; the server stores sheet `data` as opaque JSON,
- *      so the key round-trips as a web-owned extension (`PortraitExtension`).
+ *      versioned PUT, never the short-lived signed URL. A missing or empty
+ *      `portraitAssetKey` means the actor has no portrait.
  * ============================================================================
  */
 import { useEffect, useState } from 'preact/hooks';
@@ -37,12 +36,6 @@ import { t } from '../i18n/index.ts';
 import { saveActorSheet } from '../sheet/sheetPersistence.ts';
 import { spawnToken } from '../table/commands.ts';
 import { firstFreeCell } from '../table/tableView.ts';
-
-/** Web-owned sheet extension holding the portrait object key (see invariant 3). */
-export interface PortraitExtension {
-  /** Asset object key (`instances/.../assets/{sha256}.webp`) from `POST .../assets`. */
-  portraitAssetKey?: string;
-}
 
 /** Image types accepted by the asset route. */
 const PORTRAIT_ACCEPT = 'image/png,image/jpeg,image/webp';
@@ -98,7 +91,7 @@ export function ActorsTab({ campaignId, client, isGm }: ActorsTabProps) {
     setError(null);
     try {
       const asset = await client.uploadAsset(campaignId, file, file.type || 'application/octet-stream');
-      const data: Dnd5eActorData & PortraitExtension = { ...(record.data as Dnd5eActorData), portraitAssetKey: asset.key };
+      const data: Dnd5eActorData = { ...(record.data as Dnd5eActorData), portraitAssetKey: asset.key };
       const outcome = await saveActorSheet(client, campaignId, actorId, data, { name: record.name });
       setStatus(outcome.status === 'saved' ? t('actors.portraitSaved', { name: record.name ?? '' }) : null);
       if (outcome.status === 'conflict') setError(t('actors.portraitConflict'));
