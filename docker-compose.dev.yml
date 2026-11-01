@@ -29,7 +29,8 @@ services:
       - trame_dev
 
   minio:
-    image: minio/minio:latest
+    # Silo: maintained MinIO fork (same MINIO_* variables and `server` command); minio/minio left Docker Hub.
+    image: pgsty/silo:RELEASE.2026-10-18T00-00-00Z
     logging: *logging
     restart: unless-stopped
     command: server /data --console-address ":9001"
