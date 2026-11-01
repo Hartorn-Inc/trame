@@ -83,6 +83,10 @@ export class WidgetRegistry {
     this.store.set(widgetType, implementation);
   }
 
+  public getAll(): Map<string, unknown> {
+    return new Map(this.store);
+  }
+
   public get<T = unknown>(widgetType: string): T | undefined {
     return this.store.get(widgetType) as T | undefined;
   }
