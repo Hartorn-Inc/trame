@@ -13,7 +13,7 @@ DEV_COMPOSE := $(DC) --project-name $(DEV_PROJECT) --project-directory "$(REPO_D
 .PHONY: help up down logs ps build wasm test test-rust test-web test-game-systems lint lint-rust lint-web lint-design fmt check shell-rust shell-web db-psql clean
 
 help: ## Display available Docker-based development commands
-	@awk 'BEGIN {FS = ":.*##"; printf "TRAME Docker Development Workflow\nUsage: make <target>\n\nTargets:\n"} /^[a-zA-Z][a-zA-Z0-9_-]*:.*##/ {printf "  %-14s %s\n", $$1, $$2}' "$(MAKEFILE_PATH)"
+	@awk 'BEGIN {FS = ":.*##"; printf "TRAME Docker Development Workflow\nUsage: make <target>\n\nTargets:\n"} /^[a-zA-Z][a-zA-Z0-9_-]*:.*##/ {printf "  %-20s %s\n", $$1, $$2}' "$(MAKEFILE_PATH)"
 
 up: ## Start the isolated local development stack (Postgres 18, MinIO S3, Rust server, Web HMR)
 	$(DEV_COMPOSE) up -d --build

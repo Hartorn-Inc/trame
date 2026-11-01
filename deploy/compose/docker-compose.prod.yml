@@ -13,7 +13,7 @@ services:
     environment:
       # Any value other than `dev` requires every secret below.
       TRAME_ENV: production
-      DATABASE_URL: ${DATABASE_URL:-postgresql://trame:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-trame}}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-trame}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-trame}}
       # 64 hex chars (32 bytes): AES-256-GCM key encrypting stored TOTP secrets.
       MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?set a 64-hex-char MASTER_ENCRYPTION_KEY}
       # HMAC-SHA256 key signing presigned asset download URLs (>= 32 chars).
