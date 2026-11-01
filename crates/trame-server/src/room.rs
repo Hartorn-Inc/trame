@@ -667,22 +667,26 @@ impl TableRoomActor {
         match cmd {
             TrameCommand::StartTurnByTurn {
                 ref initiative_order,
+                ..
             } if initiative_order.is_empty() => {
                 let rolled_order = self.roll_table_initiative(actor.user_id);
                 TrameCommand::StartTurnByTurn {
                     initiative_order: rolled_order,
+                    initiative_totals: Default::default(),
                 }
             }
             TrameCommand::SetTableMode {
                 mode: TableMode::TurnByTurn,
                 exploration_paused,
                 ref initiative_order,
+                ..
             } if initiative_order.is_empty() => {
                 let rolled_order = self.roll_table_initiative(actor.user_id);
                 TrameCommand::SetTableMode {
                     mode: TableMode::TurnByTurn,
                     exploration_paused,
                     initiative_order: rolled_order,
+                    initiative_totals: Default::default(),
                 }
             }
             other => other,

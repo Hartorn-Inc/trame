@@ -53,13 +53,15 @@ pub mod rules;
 use crate::aoe::AoeTemplate;
 pub use crate::commands::{
     AmbientLightingPreset, CampaignRole, CommandActor, CommandError, FogOverrideCell,
-    FogOverrideMode, LightSource, McpStagingProposal, ReactionDecision, ReactionPrompt, TableMode,
-    TableSnapshotData, TableState, TokenState, TrameCommand, TrameEvent, UndoEntry,
+    FogOverrideMode, LightSource, McpStagingProposal, ReactionDecision, ReactionPrompt,
+    RefundableResource, SceneActivation, TableMode, TableSnapshotData, TableState, TokenState,
+    TrameCommand, TrameEvent, UndoEntry,
 };
 pub use crate::geometry::{Bvh2D, Point2D, SenseProfile, WallKind, WallSegment};
 pub use crate::rules::{
-    ActiveEffect, AttributeModifier, DamageAffinity, DamageResolution, ModifierPhase,
-    RulesEngineError, evaluate_actor_attributes, evaluate_derived_dag, resolve_damage_application,
+    ActiveEffect, AttributeModifier, DEATH_SAVE_FAILURES_TO_DIE, DamageAffinity, DamageResolution,
+    FormulaError, ModifierPhase, RulesEngineError, evaluate_actor_attributes, evaluate_derived_dag,
+    resolve_damage_application,
 };
 use wasm_bindgen::prelude::*;
 
@@ -304,6 +306,7 @@ mod tests {
                 target: "ac.base".to_string(),
                 phase: ModifierPhase::Add,
                 value: 2.0,
+                formula: None,
             }],
         };
         let eff2_duplicate = ActiveEffect {
@@ -316,6 +319,7 @@ mod tests {
                 target: "ac.base".to_string(),
                 phase: ModifierPhase::Add,
                 value: 2.0,
+                formula: None,
             }],
         };
 
@@ -380,6 +384,7 @@ mod tests {
                     token_id,
                     raw_damage: 28,
                     affinity: DamageAffinity::Resistant,
+                    is_critical: false,
                 },
             )
             .unwrap();
@@ -579,6 +584,8 @@ mod tests {
                 trigger_token_id: Uuid::new_v4(),
                 pending_destination: Some(Point2D::new(300.0, 100.0)),
                 pending_elevation_ft: Some(0.0),
+                reactor_owner_user_id: Some(player_id),
+                resolved_reactor_ids: Vec::new(),
             },
         );
         state
