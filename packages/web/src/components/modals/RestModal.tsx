@@ -261,6 +261,7 @@ export function RestModal(props: RestModalProps): VNode<any> | null {
     "div",
     {
       ref: dialogRef,
+      "data-testid": "rest-modal",
       class: "ds-rest-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4",
       role: "dialog",
       "aria-modal": "true",

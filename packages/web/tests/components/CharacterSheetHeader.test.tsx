@@ -281,6 +281,7 @@ function setupMockDom() {
     bubbles = true;
     constructor(type: string, opts?: any) {
       this.type = type;
+      if (opts) Object.assign(this, opts);
       if (opts?.bubbles !== undefined) this.bubbles = opts.bubbles;
     }
   };
