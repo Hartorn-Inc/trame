@@ -93,7 +93,7 @@ export interface ResourcePool {
   resetOn: RestType;
 }
 
-export interface DeathSavesState {
+export interface DeathSaveCounters {
   successes: number;
   failures: number;
 }
@@ -141,7 +141,7 @@ export interface Dnd5eActorData {
     hitDiceCurrent: number;
     hitDieSize: number;
     exhaustion: number;
-    deathSaves: DeathSavesState;
+    deathSaves: DeathSaveCounters;
     spellcastingAbility?: AbilityId;
     baseArmorAC?: number;
     shieldBonus?: number;

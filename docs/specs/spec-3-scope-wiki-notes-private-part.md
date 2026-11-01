@@ -1,43 +1,43 @@
-# Spécification Technique & Fonctionnelle : 3-Scope Wiki Notes, Live Handout Modal, MobileCompanionView & i18n
+# Technical & Functional Specification: 3-Scope Wiki Notes, Live Handout Modal, MobileCompanionView & i18n
 
-- **Identifiant** : `spec-3-scope-wiki-notes-private-part`
-- **Date** : 2025-05-18
-- **Statut** : Prêt pour implémentation
-- **Références** : Issue #80, ADR-0004, ADR-0009, ADR-0031, ADR-0034, ADR-0035, GLOSSARY.md
-
----
-
-## 1. Objectifs & Périmètre
-
-La présente spécification définit la mise en œuvre complète des fonctionnalités suivantes dans TRAME :
-1. **Système de Wiki Notes à 3 niveaux de visibilité (`NoteVisibility`)** :
-   - `PRIVATE` (notes personnelles hermétiques aux tiers et au MJ),
-   - `PARTY` (wiki collaboratif partagé entre joueurs et MJ),
-   - `DM_ONLY` (secrets réservés au Maître de Jeu),
-   organisés par dossiers hiérarchiques dans l'onglet `DocumentsWorkspaceTab` et le tiroir latéral du plateau.
-2. **Filtrage Zero-Trust côté serveur (`FilteredNoteDocument`)** :
-   - Purge des blocs secrets `:::dm` et `:::handout{revealed="false"}` pour les utilisateurs non-MJ.
-   - Algorithme de préservation et fusion AST pour préserver les blocs confidentiels du MJ lors des éditions `PUT` par des joueurs sur les notes `PARTY`.
-3. **Cycle de vie transactionnel et révélation de Handout en direct** :
-   - Commande d'émission `TrameCommand::RevealHandout` via WebSocket et endpoint REST `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout`.
-   - Persistance découplée dans la table SQL `party_journal_entries` et timeline `session_events`.
-   - Broadcast WebSocket `ServerEnvelope::HandoutRevealed` déclenchant l'ouverture automatique du composant Preact `[data-testid="handout-reveal-modal"]`.
-4. **Vue Mobile Compagnon Preact (`MobileCompanionView`)** :
-   - Montage conditionnel réactif pour viewports `< 768px` ou activation explicite via `mobileCompanionOverrideSignal`.
-   - Destruction propre de l'instance WebGL/PixiJS (`app.destroy(true, { children: true, texture: false })`).
-   - Interface tactile à 5 onglets (`Sheet`, `Dice`, `Inventory`, `Tracker`, `Journal`).
-5. **Couche de Présentation Réactive Bilingue et Unités Métriques (`i18n`)** :
-   - Signaux réactifs globaux `localeSignal` (`'en' | 'fr'`) et `unitSystemSignal` (`'imperial_ft' | 'metric_m'`).
-   - Fonction de formatage unifiée `formatDistanceFt(feet)` gérant le singulier/pluriel des cases.
-   - Dictionnaire bilingue bidirectionnel pour la recherche dans le Compendium sans altération des slugs canoniques en anglais.
+- **Identifier**: `spec-3-scope-wiki-notes-private-part`
+- **Date**: 2025-05-18
+- **Status**: Ready for implementation
+- **References**: Issue #80, ADR-0004, ADR-0009, ADR-0034, ADR-0035, GLOSSARY.md; ASD-STE100 controlled technical writing (EPURE governance ADR-0031, upstream; not an ADR of this repository)
 
 ---
 
-## 2. Modèle de Données & Schéma SQL
+## 1. Goals & Scope
 
-### 2.1 Table `campaign_notes`
+This specification defines the complete implementation of the following TRAME features:
+1. **Wiki notes with 3 visibility levels (`NoteVisibility`)**:
+   - `PRIVATE` (personal notes sealed from other players and from the GM),
+   - `PARTY` (collaborative wiki shared between players and the GM),
+   - `DM_ONLY` (secrets reserved for the Game Master),
+   organized in hierarchical folders in the `DocumentsWorkspaceTab` tab and in the table side drawer.
+2. **Server-side zero-trust filtering (`FilteredNoteDocument`)**:
+   - Removal of the secret `:::dm` and `:::handout{revealed="false"}` blocks for non-GM users.
+   - AST preservation and merge algorithm (`LineAnchorNoteMerge`) that keeps the GM's confidential blocks when players edit `PARTY` notes with `PUT`.
+3. **Transactional lifecycle and live handout reveal**:
+   - The `TrameCommand::RevealHandout` command over WebSocket and the REST endpoint `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout`.
+   - Decoupled persistence in the SQL table `party_journal_entries` and the `session_events` timeline.
+   - WebSocket broadcast `ServerEnvelope::HandoutRevealed` that automatically opens the Preact component `[data-testid="handout-reveal-modal"]`.
+4. **Preact mobile companion view (`MobileCompanionView`)**:
+   - Reactive conditional mounting for viewports `< 768px` or explicit activation through `mobileCompanionOverrideSignal`.
+   - Clean destruction of the WebGL/PixiJS instance (`app.destroy(true, { children: true, texture: false })`).
+   - Touch interface with 5 tabs (`Sheet`, `Dice`, `Inventory`, `Tracker`, `Journal`).
+5. **Reactive bilingual presentation layer and metric units (`i18n`)**:
+   - Global reactive signals `localeSignal` (`'en' | 'fr'`, `LocaleSignal`) and `unitSystemSignal` (`'imperial_ft' | 'metric_m'`, `UnitSystemSignal`).
+   - A unified formatting function `formatDistanceFt(feet)` that handles the singular/plural of grid squares through `t()`.
+   - A bidirectional bilingual dictionary for compendium search that never changes the canonical English slugs.
 
-Chaque note de campagne est stockée dans la table existante `campaign_notes` avec le schéma d'autorisation enrichi :
+---
+
+## 2. Data Model & SQL Schema
+
+### 2.1 `campaign_notes` Table
+
+Every campaign note is stored in the existing `campaign_notes` table with the extended authorization schema:
 
 ```sql
 ALTER TABLE campaign_notes ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'PARTY';
@@ -48,13 +48,13 @@ CREATE INDEX IF NOT EXISTS idx_campaign_notes_visibility ON campaign_notes(campa
 CREATE INDEX IF NOT EXISTS idx_campaign_notes_folder ON campaign_notes(campaign_id, folder);
 ```
 
-- `visibility` prend l'une des trois valeurs : `'PRIVATE'`, `'PARTY'`, `'DM_ONLY'`.
-- `owner_user_id` référence l'identifiant du créateur de la note (obligatoire pour `PRIVATE`).
-- `folder` représente le chemin logique du dossier (ex. `""`, `"Quêtes"`, `"PNJ/Alliés"`).
+- `visibility` takes one of three values: `'PRIVATE'`, `'PARTY'`, `'DM_ONLY'`.
+- `owner_user_id` references the note creator's identifier (required for `PRIVATE`).
+- `folder` is the logical folder path (for example `""`, `"Quests"`, `"NPCs/Allies"`).
 
-### 2.2 Table `party_journal_entries`
+### 2.2 `party_journal_entries` Table
 
-Table autonome et découplée pour stocker les handouts révélés au groupe de jeu :
+A standalone, decoupled table that stores the handouts revealed to the party:
 
 ```sql
 CREATE TABLE IF NOT EXISTS party_journal_entries (
@@ -70,9 +70,9 @@ CREATE TABLE IF NOT EXISTS party_journal_entries (
 CREATE INDEX IF NOT EXISTS idx_party_journal_campaign ON party_journal_entries(campaign_id, revealed_at DESC);
 ```
 
-### 2.3 Table `session_events`
+### 2.3 `session_events` Table
 
-Table append-only pour la chronologie des événements de session de jeu :
+An append-only table for the session event timeline:
 
 ```sql
 CREATE TABLE IF NOT EXISTS session_events (
@@ -91,54 +91,56 @@ CREATE INDEX IF NOT EXISTS idx_session_events_campaign_seq ON session_events(cam
 
 ---
 
-## 3. Spécification Backend (`trame-server`)
+## 3. Backend Specification (`trame-server`)
 
-### 3.1 Règles d'Autorisation RBAC par Scope
+### 3.1 RBAC Authorization Rules per Scope
 
-| Scope | Rôle Client | Lecture (`GET`) | Création (`POST`) | Modification (`PUT`) | Suppression (`DELETE`) |
+The role is always the caller's campaign role (`UserRole`), taken from campaign membership.
+
+| Scope | Client role | Read (`GET`) | Create (`POST`) | Update (`PUT`) | Delete (`DELETE`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `PRIVATE` | Propriétaire (`owner_user_id == user.id`) | Autorisé | Autorisé | Autorisé | Autorisé |
-| `PRIVATE` | Autre Joueur ou GM (`owner_user_id != user.id`) | **HTTP 404** | Refusé | Refusé | Refusé |
-| `PARTY` | `GameMaster` ou `Player` | Autorisé | Autorisé | Autorisé (avec fusion AST) | Autorisé |
-| `PARTY` | `Spectator` | Autorisé | **HTTP 403** | **HTTP 403** | **HTTP 403** |
-| `DM_ONLY` | `GameMaster` | Autorisé | Autorisé | Autorisé | Autorisé |
-| `DM_ONLY` | `Player` ou `Spectator` | **HTTP 403** | **HTTP 403** | **HTTP 403** | **HTTP 403** |
+| `PRIVATE` | Owner (`owner_user_id == user.id`) | Allowed | Allowed | Allowed | Allowed |
+| `PRIVATE` | Other player or GM (`owner_user_id != user.id`) | **HTTP 404** | Denied | Denied | Denied |
+| `PARTY` | `GameMaster` or `Player` | Allowed | Allowed | Allowed (with AST merge) | Allowed |
+| `PARTY` | `Spectator` | Allowed | **HTTP 403** | **HTTP 403** | **HTTP 403** |
+| `DM_ONLY` | `GameMaster` | Allowed | Allowed | Allowed | Allowed |
+| `DM_ONLY` | `Player` or `Spectator` | **HTTP 403** | **HTTP 403** | **HTTP 403** | **HTTP 403** |
 
-### 3.2 Filtrage Zero-Trust (`FilteredNoteDocument`)
+### 3.2 Zero-Trust Filtering (`FilteredNoteDocument`)
 
-1. `FilteredNoteDocument::filter_for_user(markdown: &str, role: UserRole) -> String` :
-   - IF `role == UserRole::GameMaster`, THEN `FilteredNoteDocument` retourne le texte intégral sans altération.
-   - IF `role != UserRole::GameMaster` :
-     1. Le parseur supprime l'intégralité de chaque bloc `:::dm ... :::`.
-     2. Le parseur inspecte chaque bloc `:::handout{...} ... :::` :
-        - IF `revealed="true"`, THEN le bloc est conservé.
-        - IF `revealed="false"` ou attribut `revealed` absent, THEN le bloc est totalement supprimé.
+1. `FilteredNoteDocument::filter_for_user(markdown: &str, role: UserRole) -> String`:
+   - IF `role == UserRole::GameMaster`, THEN `FilteredNoteDocument` returns the full text unchanged.
+   - IF `role != UserRole::GameMaster`:
+     1. The parser removes every `:::dm ... :::` block entirely.
+     2. The parser inspects every `:::handout{...} ... :::` block:
+        - IF `revealed="true"`, THEN the block is kept.
+        - IF `revealed="false"` or the `revealed` attribute is missing, THEN the block is removed entirely.
 
-### 3.3 Préservation des Directives Confidentielles lors du PUT par un Joueur
+### 3.3 Preserving Confidential Directives on a Player `PUT` (`LineAnchorNoteMerge`)
 
-WHEN un utilisateur avec `user.role != UserRole::GameMaster` transmet une requête `PUT /api/v1/campaigns/{id}/notes/{note_id}` sur une note de portée `PARTY` :
-1. `trame-server` extrait le document actuellement persisté en base de données.
-2. `trame-server` extrait la liste ordonnée des directives confidentielles masquées au joueur (`:::dm` et `:::handout{revealed="false"}`) avec leurs positions relatives dans l'AST Markdown d'origine.
-3. Si des blocs confidentiels existent dans la note stockée mais sont absents du contenu soumis, `trame-server` fusionne le nouveau texte soumis avec les directives confidentielles d'origine en réinsérant les blocs masqués intacts à leurs emplacements correspondants avant la mise à jour SQL.
+WHEN a user with `user.role != UserRole::GameMaster` sends `PUT /api/v1/campaigns/{id}/notes/{note_id}` on a `PARTY` note:
+1. `trame-server` loads the document currently stored in the database.
+2. `trame-server` extracts the ordered list of confidential directives hidden from the player (`:::dm` and `:::handout{revealed="false"}`) with their relative positions in the original Markdown AST.
+3. If confidential blocks exist in the stored note but are missing from the submitted content, `trame-server` merges the submitted text with the original confidential directives by reinserting the hidden blocks intact at their matching positions before the SQL update.
 
-### 3.4 Contrats d'API REST des Notes
+### 3.4 Notes REST API Contracts
 
 #### `GET /api/v1/campaigns/{id}/notes`
-- Retourne la liste des notes visibles pour l'utilisateur appelant :
-  - Inclut toutes les notes `PARTY`.
-  - Inclut les notes `PRIVATE` dont `owner_user_id == current_user.id`.
-  - Si `current_user.role == GameMaster`, inclut toutes les notes `DM_ONLY`.
-- Chaque note retournée contient son contenu filtré via `FilteredNoteDocument`.
-- Code de retour : `200 OK`.
+- Returns the notes visible to the caller:
+  - Includes every `PARTY` note.
+  - Includes the `PRIVATE` notes where `owner_user_id == current_user.id`.
+  - If `current_user.role == GameMaster`, includes every `DM_ONLY` note.
+- Every returned note contains its content filtered by `FilteredNoteDocument`.
+- Status code: `200 OK`.
 
 #### `GET /api/v1/campaigns/{id}/notes/{note_id}`
-- IF la note n'existe pas, retourne `404 Not Found`.
-- IF la note a la visibilité `PRIVATE` et `owner_user_id != current_user.id`, retourne `404 Not Found` (zero-trust : aucune fuite de métadonnées ou d'existence).
-- IF la note a la visibilité `DM_ONLY` et `current_user.role != GameMaster`, retourne `403 Forbidden`.
-- IF l'accès est autorisé, retourne le document filtré avec `200 OK`.
+- IF the note does not exist, returns `404 Not Found`.
+- IF the note is `PRIVATE` and `owner_user_id != current_user.id`, returns `404 Not Found` (zero-trust: no leak of metadata or existence).
+- IF the note is `DM_ONLY` and `current_user.role != GameMaster`, returns `403 Forbidden`.
+- IF access is allowed, returns the filtered document with `200 OK`.
 
 #### `POST /api/v1/campaigns/{id}/notes`
-- Payload JSON :
+- JSON payload:
   ```json
   {
     "title": "string",
@@ -147,12 +149,12 @@ WHEN un utilisateur avec `user.role != UserRole::GameMaster` transmet une requê
     "folder": "string"
   }
   ```
-- IF `visibility == 'DM_ONLY'` et `current_user.role != GameMaster`, retourne `403 Forbidden`.
-- IF `visibility == 'PRIVATE'`, `owner_user_id` est assigné automatiquement à `current_user.id`.
-- Code de retour : `201 Created` avec le JSON de la note créée.
+- IF `visibility == 'DM_ONLY'` and `current_user.role != GameMaster`, returns `403 Forbidden`.
+- IF `visibility == 'PRIVATE'`, `owner_user_id` is set automatically to `current_user.id`.
+- Status code: `201 Created` with the created note's JSON.
 
 #### `PUT /api/v1/campaigns/{id}/notes/{note_id}`
-- Payload JSON :
+- JSON payload:
   ```json
   {
     "title": "string",
@@ -160,42 +162,42 @@ WHEN un utilisateur avec `user.role != UserRole::GameMaster` transmet une requê
     "folder": "string"
   }
   ```
-- IF la note est `PRIVATE` et `owner_user_id != current_user.id`, retourne `404 Not Found`.
-- IF la note est `DM_ONLY` et `current_user.role != GameMaster`, retourne `403 Forbidden`.
-- IF la note est `PARTY` et `current_user.role == Spectator`, retourne `403 Forbidden`.
-- IF la note est `PARTY` et `current_user.role == Player`, exécute la fusion structurelle spécifiée en section 3.3.
-- Code de retour : `200 OK`.
+- IF the note is `PRIVATE` and `owner_user_id != current_user.id`, returns `404 Not Found`.
+- IF the note is `DM_ONLY` and `current_user.role != GameMaster`, returns `403 Forbidden`.
+- IF the note is `PARTY` and `current_user.role == Spectator`, returns `403 Forbidden`.
+- IF the note is `PARTY` and `current_user.role == Player`, runs the structural merge specified in section 3.3.
+- Status code: `200 OK`.
 
 #### `DELETE /api/v1/campaigns/{id}/notes/{note_id}`
-- IF la note est `PRIVATE` et `owner_user_id != current_user.id`, retourne `404 Not Found`.
-- IF la note est `DM_ONLY` et `current_user.role != GameMaster`, retourne `403 Forbidden`.
-- IF la note est `PARTY` et `current_user.role == Spectator`, retourne `403 Forbidden`.
-- IF la note est `PARTY` et `current_user.role` est `GameMaster` ou `Player`, supprime la note et retourne `204 No Content`.
+- IF the note is `PRIVATE` and `owner_user_id != current_user.id`, returns `404 Not Found`.
+- IF the note is `DM_ONLY` and `current_user.role != GameMaster`, returns `403 Forbidden`.
+- IF the note is `PARTY` and `current_user.role == Spectator`, returns `403 Forbidden`.
+- IF the note is `PARTY` and `current_user.role` is `GameMaster` or `Player`, deletes the note and returns `204 No Content`.
 
 ---
 
-## 4. Spécification du Cycle de Vie des Handouts
+## 4. Handout Lifecycle Specification
 
-### 4.1 Commande de Révélation
+### 4.1 Reveal Command
 
-La révélation d'un handout est déclenchée soit par l'action WebSocket `TrameCommand::RevealHandout`, soit par l'endpoint REST dédié :
+A handout reveal is triggered either by the WebSocket action `TrameCommand::RevealHandout` or by the dedicated REST endpoint:
 
-- **Route REST** : `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout`
-- **Payload JSON** :
+- **REST route**: `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout`
+- **JSON payload**:
   ```json
   {
     "handout_id": "string"
   }
   ```
-- **Contrôle d'accès** : Seul le rôle `GameMaster` est autorisé. Tout autre rôle reçoit `403 Forbidden`.
+- **Access control**: only the `GameMaster` role is allowed. Any other role receives `403 Forbidden`.
 
-### 4.2 Traitement Transactionnel Atomique
+### 4.2 Atomic Transactional Processing
 
-Lors de l'exécution de la révélation, `trame-server` exécute les étapes suivantes dans une transaction SQL unique :
-1. Recherche du bloc `:::handout{id="<handout_id>"...}` dans le document Markdown de la note `note_id`.
-   - IF le bloc n'existe pas, retourne `404 Not Found`.
-2. Remplacement de l'attribut `revealed="false"` par `revealed="true"` dans le Markdown source de la note.
-3. Insertion dans `party_journal_entries` :
+When running the reveal, `trame-server` performs the following steps in a single SQL transaction:
+1. Finds the `:::handout{id="<handout_id>"...}` block in the Markdown document of note `note_id`.
+   - IF the block does not exist, returns `404 Not Found`.
+2. Replaces the `revealed="false"` attribute with `revealed="true"` in the note's Markdown source.
+3. Inserts into `party_journal_entries`:
    ```sql
    INSERT INTO party_journal_entries (handout_id, campaign_id, title, content, revealed_at, revealed_by)
    VALUES ($1, $2, $3, $4, $5, $6)
@@ -204,16 +206,16 @@ Lors de l'exécution de la révélation, `trame-server` exécute les étapes sui
        content = EXCLUDED.content,
        revealed_at = EXCLUDED.revealed_at;
    ```
-4. Résolution de `session_num` :
-   - `trame-server` interroge l'état actif dans `TableRoomActor` pour la campagne `campaign_id`.
-   - IF une session est active, THEN `session_num` prend la valeur de la session courante.
-   - ELSE `session_num` prend la valeur `0`.
-5. Incrémentation atomique du `seq_id` de la campagne et insertion de l'événement dans `session_events` :
+4. Resolves `session_num`:
+   - `trame-server` queries the active state of the `TableRoomActor` for campaign `campaign_id`.
+   - IF a session is active, THEN `session_num` is the current session's number.
+   - ELSE `session_num` is `0`.
+5. Atomically increments the campaign's `seq_id` and inserts the event into `session_events`:
    ```sql
    INSERT INTO session_events (id, campaign_id, session_num, seq_id, event_type, payload, created_at)
    VALUES ($1, $2, $3, $4, 'handout_revealed', $5, $6);
    ```
-6. Diffusion du message WebSocket `ServerEnvelope::HandoutRevealed` à tous les clients connectés de la salle de table de jeu :
+6. Broadcasts the WebSocket message `ServerEnvelope::HandoutRevealed` to every client connected to the table room:
    ```json
    {
      "type": "HandoutRevealed",
@@ -227,124 +229,119 @@ Lors de l'exécution de la révélation, `trame-server` exécute les étapes sui
    }
    ```
 
-### 4.3 Endpoint de Consultation du Journal de Groupe
+### 4.3 Party Journal Endpoint
 
-- **Route REST** : `GET /api/v1/campaigns/{id}/journal`
-- **Autorisation** : Tout participant authentifié (`GameMaster`, `Player`, `Spectator`).
-- **Retour** : Tableau des entrées `PartyJournalEntry` ordonnées par `revealed_at DESC`.
-- Code de retour : `200 OK`.
+- **REST route**: `GET /api/v1/campaigns/{id}/journal`
+- **Authorization**: any authenticated campaign member (`GameMaster`, `Player`, `Spectator`).
+- **Returns**: the array of `PartyJournalEntry` entries ordered by `revealed_at DESC`.
+- Status code: `200 OK`.
 
-### 4.4 Endpoint de Consultation de la Chronologie des Événements
+### 4.4 Event Timeline Endpoint
 
-- **Route REST** : `GET /api/v1/campaigns/{id}/timeline`
-- **Paramètres Query optionnels** : `since_seq_id=0`, `limit=50`.
-- **Autorisation** : Tout participant authentifié.
-- **Retour** : Tableau des `SessionTimelineEvent` triés par `seq_id ASC`.
-- Code de retour : `200 OK`.
+- **REST route**: `GET /api/v1/campaigns/{id}/timeline` (the session-scoped route is `GET /api/campaigns/{campaign_id}/sessions/{session_num}/timeline`, see the E5 spec)
+- **Optional query parameters**: `since_seq_id=0`, `limit=50` (capped at `200`).
+- **Authorization**: any authenticated campaign member; events are filtered by role.
+- **Returns**: the array of `SessionTimelineEvent` entries sorted by `seq_id ASC`.
+- Status code: `200 OK`.
 
 ---
 
-## 5. Spécification Frontend Preact & Mobile Companion
+## 5. Preact Frontend & Mobile Companion Specification
 
-### 5.1 Architecture des Signaux et Modale de Handout
+### 5.1 Signal Architecture and Handout Modal
 
-- Fichier : `packages/web/src/state/handoutSignals.ts`
-- Exporte les signaux Preact réactifs :
-  - `activeRevealedHandoutSignal = signal<PartyJournalEntry | null>(null)` : Handout actuellement affiché dans la modale plein écran.
-  - `revealedHandoutsSignal = signal<PartyJournalEntry[]>([])` : Liste complète des handouts archivés dans la campagne.
-- Intégration WebSocket (`packages/web/src/network/wsClient.ts`) :
-  - Dès réception d'un frame `HandoutRevealed` :
-    1. L'objet handout est prependé dans `revealedHandoutsSignal.value`.
-    2. `activeRevealedHandoutSignal.value` est assigné avec ce handout.
-- Composant `HandoutRevealModal` (`packages/web/src/components/handouts/HandoutRevealModal.tsx`) :
-  - Sélecteur de test : `[data-testid="handout-reveal-modal"]`.
-  - IF `activeRevealedHandoutSignal.value !== null`, affiche la modale par-dessus l'interface avec le titre, le corps formaté Markdown et un bouton de fermeture `[data-testid="close-handout-modal"]`.
-  - Le clic sur la fermeture remet `activeRevealedHandoutSignal.value = null`.
+- File: `packages/web/src/state/handoutSignals.ts`
+- Exports the reactive Preact signals:
+  - `activeRevealedHandoutSignal = signal<PartyJournalEntry | null>(null)`: the handout currently shown in the full-screen modal.
+  - `revealedHandoutsSignal = signal<PartyJournalEntry[]>([])`: the full list of handouts archived in the campaign.
+- WebSocket integration (`packages/web/src/network/wsClient.ts`):
+  - On receiving a `HandoutRevealed` frame:
+    1. The handout object is prepended to `revealedHandoutsSignal.value`.
+    2. `activeRevealedHandoutSignal.value` is set to this handout.
+- `HandoutRevealModal` component (`packages/web/src/components/handouts/HandoutRevealModal.tsx`):
+  - Test selector: `[data-testid="handout-reveal-modal"]`.
+  - IF `activeRevealedHandoutSignal.value !== null`, shows the modal over the interface with the title, the Markdown-formatted body and a close button `[data-testid="close-handout-modal"]`.
+  - Clicking close sets `activeRevealedHandoutSignal.value = null`.
 
 ### 5.2 DocumentsWorkspaceTab (`Tab 3`)
 
-- Composant monté dans `CampaignWorkspace` pour le sélecteur `[data-testid="tab-documents"]`.
-- Divisé en 3 sous-sections :
-  1. **Explorateur de Notes & Arborescence Dossiers** :
-     - Sélecteurs de filtrage par visibilité : `[data-testid="filter-private"]`, `[data-testid="filter-party"]`, `[data-testid="filter-dm-only"]` (visible uniquement pour le GM).
-     - Arborescence groupée par dossier logique (`folder`).
-     - Bouton de création de note : `[data-testid="create-note-btn"]` avec sélection du scope `PRIVATE` ou `PARTY` (ou `DM_ONLY` pour le GM).
-     - Éditeur Markdown bidirectionnel supportant les directives `:::handout` et `:::dm`.
-     - Pour chaque directive `:::handout` présente dans l'éditeur du GM : bouton d'action `[data-testid="btn-reveal-handout"]` déclenchant `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout`.
-  2. **Galerie des Handouts Révélés** (`[data-testid="past-handouts-gallery"]`) :
-     - Liste en grille des cartes de handouts archivés issus de `GET /api/v1/campaigns/{id}/journal`.
-     - Clic sur une carte ouvre le contenu dans `HandoutRevealModal`.
-  3. **Chronologie des Événements (`SessionTimelineViewer`)** (`[data-testid="session-timeline-viewer"]`) :
-     - Flux chronologique défilant des événements (`combat_started`, `attack_rolled`, `creature_defeated`, `door_opened`, `handout_revealed`).
+- Component mounted in `CampaignWorkspace` for the selector `[data-testid="tab-documents"]`.
+- Split into 3 sub-sections:
+  1. **Notes explorer & folder tree**:
+     - Visibility filter selectors: `[data-testid="filter-private"]`, `[data-testid="filter-party"]`, `[data-testid="filter-dm-only"]` (visible to the GM only).
+     - Tree grouped by logical folder (`folder`).
+     - Note creation button `[data-testid="create-note-btn"]` with a `PRIVATE` or `PARTY` scope choice (or `DM_ONLY` for the GM).
+     - Bidirectional Markdown editor supporting the `:::handout` and `:::dm` directives.
+     - For every `:::handout` directive in the GM's editor: an action button `[data-testid="btn-reveal-handout"]` that calls `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout`.
+  2. **Revealed handouts gallery** (`[data-testid="past-handouts-gallery"]`):
+     - Grid of archived handout cards from `GET /api/v1/campaigns/{id}/journal`.
+     - Clicking a card opens its content in `HandoutRevealModal`.
+  3. **Event timeline (`SessionTimelineViewer`)** (`[data-testid="session-timeline-viewer"]`):
+     - Scrolling chronological feed of events (`combat_started`, `attack_rolled`, `creature_defeated`, `door_opened`, `handout_revealed`).
 
 ### 5.3 MobileCompanionView (`< 768px`)
 
-- Fichier : `packages/web/src/components/mobile/MobileCompanionView.tsx`.
-- Sélecteur de test : `[data-testid="mobile-companion-view"]`.
-- Règle de basculement dans `App.tsx` :
+- File: `packages/web/src/mobile/MobileCompanionView.tsx`.
+- Test selector: `[data-testid="mobile-companion-view"]`.
+- Switching rule in `App.tsx`:
   ```typescript
   const shouldMountCanvas = computed(() => !mobileCompanionOverrideSignal.value && windowWidthSignal.value >= 768);
   ```
-- Cycle de destruction PixiJS :
-  - WHEN `shouldMountCanvas.value === false`, THEN le hook de nettoyage appelle `pixiApp.destroy(true, { children: true, texture: false })` et supprime l'élément canvas WebGL du DOM.
-  - Le composant `MobileCompanionView` est alors rendu en plein écran.
-- Onglets de la barre de navigation tactile inférieure (`[data-testid="mobile-bottom-nav"]`) :
-  1. `[data-testid="nav-sheet"]` : Fiche de personnage condensée et tactile.
-  2. `[data-testid="nav-dice"]` : Lanceur de dés rapide 3D / standard.
-  3. `[data-testid="nav-inventory"]` : Gestion d'équipement et consommables.
-  4. `[data-testid="nav-tracker"]` : Suivi d'initiative et d'état du tour.
-  5. `[data-testid="nav-journal"]` : Consultation des notes `PRIVATE`/`PARTY` et galerie des Handouts.
+- PixiJS destruction lifecycle:
+  - WHEN `shouldMountCanvas.value === false`, THEN the cleanup hook calls `pixiApp.destroy(true, { children: true, texture: false })` and removes the WebGL canvas element from the DOM.
+  - The `MobileCompanionView` component is then rendered full-screen.
+- Bottom touch navigation bar tabs (`[data-testid="mobile-bottom-nav"]`), each with a touch target of at least 44x44 px:
+  1. `[data-testid="nav-sheet"]`: condensed, touch-friendly character sheet.
+  2. `[data-testid="nav-dice"]`: quick 3D / standard dice roller.
+  3. `[data-testid="nav-inventory"]`: equipment and consumables management.
+  4. `[data-testid="nav-tracker"]`: initiative and turn state tracking.
+  5. `[data-testid="nav-journal"]`: `PRIVATE`/`PARTY` notes and the handouts gallery.
 
 ---
 
-## 6. Spécification i18n & Unités Métriques
+## 6. i18n & Metric Units Specification
 
-### 6.1 Architecture du Module `packages/web/src/i18n/`
+### 6.1 Architecture of the `packages/web/src/i18n/` Module
 
-- Signaux globaux :
+- Global signals:
   - `localeSignal = signal<'en' | 'fr'>('en')`.
   - `unitSystemSignal = signal<'imperial_ft' | 'metric_m'>('imperial_ft')`.
-- Fonction de traduction `t(key: string, vars?: Record<string, string | number>): string` :
-  - Résout la clé dans le dictionnaire de `localeSignal.value`.
-  - Remplace les interpolations `{{var}}`.
-  - Si la clé est introuvable, retourne la clé anglaise de repli.
+- Translation function `t(key: string, vars?: Record<string, string | number>): string`:
+  - Resolves the key in the dictionary for `localeSignal.value`.
+  - Replaces `{{var}}` interpolations.
+  - If the key is missing, returns the English fallback.
+- Every UI string goes through `t()`. English is the canonical dictionary and the French dictionary is complete; a test checks that both dictionaries have the same keys.
 
-### 6.2 Formatage des Mesures Tactiques
+### 6.2 Tactical Measurement Formatting
 
-- Fonction unifiée : `formatDistanceFt(feet: number): string`.
-- Règles de calcul et grammaire ASD-STE100 :
-  - IF `unitSystemSignal.value === 'imperial_ft'` :
-    - Retourne `${feet} ft`.
-  - IF `unitSystemSignal.value === 'metric_m'` :
-    - Calcule `meters = feet * 0.3`.
-    - Calcule `squares = Math.round(feet / 5)`.
-    - Règle de singulier/pluriel : `unit_label = squares <= 1 ? 'case' : 'cases'`.
-    - Retourne `${meters} m (${squares} ${unit_label})`.
-- Exemples normatifs :
-  - `formatDistanceFt(5)` en métrique $\to$ `"1.5 m (1 case)"`.
-  - `formatDistanceFt(30)` en métrique $\to$ `"9 m (6 cases)"`.
+- Unified function: `formatDistanceFt(feet: number): string`.
+- Computation rules and ASD-STE100 grammar:
+  - IF `unitSystemSignal.value === 'imperial_ft'`:
+    - Returns `${feet} ft`.
+  - IF `unitSystemSignal.value === 'metric_m'`:
+    - Computes `meters = feet * 0.3`.
+    - Computes `squares = Math.round(feet / 5)`.
+    - Gets the singular/plural grid-square label from `t()` (`squares <= 1` uses the singular key, otherwise the plural key). The English dictionary values are `square` / `squares`; the French dictionary holds the French equivalents.
+    - Returns `${meters} m (${squares} ${unit_label})`.
+- Normative examples (English locale):
+  - `formatDistanceFt(5)` in metric → `"1.5 m (1 square)"`.
+  - `formatDistanceFt(30)` in metric → `"9 m (6 squares)"`.
 
-### 6.3 Recherche Bilingue Compendium
+### 6.3 Bilingual Compendium Search
 
-- Le dictionnaire bilingue bidirectionnel (`compendiumLexicon.ts`) mappe les termes français vers les slugs canoniques anglais :
-  - *Furtivité* $\leftrightarrow$ `stealth`
-  - *Force* $\leftrightarrow$ `strength`
-  - *Boule de feu* $\leftrightarrow$ `fireball`
-  - *Repos court* $\leftrightarrow$ `short_rest`
-- Lors d'une saisie utilisateur dans la barre de recherche du Compendium, la requête est normalisée : si une correspondance est trouvée dans le lexique pour `localeSignal.value === 'fr'`, le slug canonique correspondant est également inclus dans l'interrogation du moteur d'indexation sans dupliquer les packs de données SRD.
+- The bidirectional bilingual dictionary (`compendiumLexicon.ts`) maps French terms to the canonical English slugs, for example the French words for *stealth* → `stealth`, *strength* → `strength`, *fireball* → `fireball` and *short rest* → `short_rest`.
+- When the user types in the compendium search bar, the query is normalized: if a lexicon match is found for `localeSignal.value === 'fr'`, the matching canonical slug is also included in the index query, without duplicating the SRD data packs.
 
 ---
 
-## 7. Fichiers Cibles Impactés
+## 7. Target Files
 
-- Backend (`trame-server`) :
-  - `packages/server/src/db/schema.sql` (ou migrations Diesel/SQLx)
-  - `packages/server/src/api/notes.rs`
-  - `packages/server/src/api/journal.rs`
-  - `packages/server/src/markdown/filtered_document.rs`
-  - `packages/server/src/markdown/ast_merge.rs`
-  - `packages/server/src/ws/table_room.rs`
-- Frontend (`packages/web`) :
+- Backend (`crates/trame-server`):
+  - `crates/trame-server/src/storage/postgres.rs` (SQLx migrations and queries)
+  - `crates/trame-server/src/notes.rs` (notes routes, `FilteredNoteDocument`, `LineAnchorNoteMerge`)
+  - `crates/trame-server/src/timeline.rs` (journal and timeline)
+  - `crates/trame-server/src/room.rs` (`TableRoomActor`, `HandoutRevealed` broadcast)
+- Frontend (`packages/web`):
   - `packages/web/src/state/handoutSignals.ts`
   - `packages/web/src/i18n/index.ts`
   - `packages/web/src/i18n/locales/en.ts`
@@ -353,46 +350,47 @@ Lors de l'exécution de la révélation, `trame-server` exécute les étapes sui
   - `packages/web/src/components/handouts/HandoutRevealModal.tsx`
   - `packages/web/src/components/workspace/DocumentsWorkspaceTab.tsx`
   - `packages/web/src/components/workspace/SessionTimelineViewer.tsx`
-  - `packages/web/src/components/mobile/MobileCompanionView.tsx`
+  - `packages/web/src/mobile/MobileCompanionView.tsx`
   - `packages/web/src/network/wsClient.ts`
   - `packages/web/src/App.tsx`
 
 ---
 
-## 8. Critères d'Acceptation & Plan de Tests
+## 8. Acceptance Criteria & Test Plan
 
-### 8.1 Tests d'Intégration Backend (Rust)
+### 8.1 Backend Integration Tests (Rust)
 
-1. `test_notes_rbac_isolation` :
-   - Créer une note `PRIVATE` pour le Joueur A.
-   - Requête `GET /api/v1/campaigns/{id}/notes/{note_id}` par le Joueur B $\to$ Reçoit `HTTP 404 Not Found`.
-   - Requête `GET /api/v1/campaigns/{id}/notes/{note_id}` par le GameMaster $\to$ Reçoit `HTTP 404 Not Found`.
-   - Créer une note `DM_ONLY` par le GameMaster.
-   - Requête `GET /api/v1/campaigns/{id}/notes/{note_id}` par le Joueur A $\to$ Reçoit `HTTP 403 Forbidden`.
-2. `test_party_note_ast_merge_preserves_gm_secrets` :
-   - Le GameMaster crée une note `PARTY` avec un secret : `"Texte public\n\n:::dm\nSecret MJ\n:::\n\nFin public"`.
-   - Le Joueur A lit la note : il reçoit `"Texte public\n\nFin public"`.
-   - Le Joueur A soumet un `PUT` avec `"Texte public modifié\n\nFin public"`.
-   - Le GameMaster lit la note : le bloc `:::dm\nSecret MJ\n:::` est toujours présent dans la note stockée.
-3. `test_reveal_handout_atomicity` :
-   - Le GameMaster appelle `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout` avec `handout_id = "clue-1"`.
-   - Vérifier que `party_journal_entries` contient une ligne pour `clue-1`.
-   - Vérifier que `session_events` contient une ligne `handout_revealed`.
-   - Vérifier que le Joueur A peut désormais lire le handout via `GET /api/v1/campaigns/{id}/journal`.
+1. `test_notes_rbac_isolation`:
+   - Create a `PRIVATE` note for player A.
+   - `GET /api/v1/campaigns/{id}/notes/{note_id}` by player B → receives `HTTP 404 Not Found`.
+   - `GET /api/v1/campaigns/{id}/notes/{note_id}` by the GameMaster → receives `HTTP 404 Not Found`.
+   - Create a `DM_ONLY` note as the GameMaster.
+   - `GET /api/v1/campaigns/{id}/notes/{note_id}` by player A → receives `HTTP 403 Forbidden`.
+2. `test_party_note_ast_merge_preserves_gm_secrets`:
+   - The GameMaster creates a `PARTY` note with a secret: `"Public text\n\n:::dm\nGM secret\n:::\n\nPublic end"`.
+   - Player A reads the note and receives `"Public text\n\nPublic end"`.
+   - Player A sends a `PUT` with `"Edited public text\n\nPublic end"`.
+   - The GameMaster reads the note: the `:::dm\nGM secret\n:::` block is still present in the stored note.
+3. `test_reveal_handout_atomicity`:
+   - The GameMaster calls `POST /api/v1/campaigns/{id}/notes/{note_id}/reveal-handout` with `handout_id = "clue-1"`.
+   - Check that `party_journal_entries` contains a row for `clue-1`.
+   - Check that `session_events` contains a `handout_revealed` row.
+   - Check that player A can now read the handout through `GET /api/v1/campaigns/{id}/journal`.
 
-### 8.2 Tests Fonctionnels Frontend (Vitest / Playwright)
+### 8.2 Frontend Functional Tests (`node:test` component tests)
 
-1. `test_handout_modal_opens_on_websocket_envelope` :
-   - Simuler la réception de `ServerEnvelope::HandoutRevealed` sur `wsClient`.
-   - Vérifier que l'élément `[data-testid="handout-reveal-modal"]` devient visible.
-   - Cliquer sur `[data-testid="close-handout-modal"]` et vérifier que la modale disparaît.
-2. `test_mobile_companion_view_lifecycle` :
-   - Redimensionner le viewport à `390px` de large.
-   - Vérifier que `[data-testid="mobile-companion-view"]` est rendu dans le DOM.
-   - Vérifier que l'instance `TableCanvas` PixiJS est détruite et absente du DOM.
-   - Basculer sur l'onglet `[data-testid="nav-journal"]` et vérifier l'affichage des notes.
-3. `test_i18n_formatting_and_units` :
-   - Initialiser `localeSignal.value = 'fr'` et `unitSystemSignal.value = 'metric_m'`.
-   - Vérifier que `formatDistanceFt(5)` produit exactement `"1.5 m (1 case)"`.
-   - Vérifier que `formatDistanceFt(30)` produit exactement `"9 m (6 cases)"`.
-   - Vérifier que la bascule sur `unitSystemSignal.value = 'imperial_ft'` produit `"30 ft"`.
+1. `test_handout_modal_opens_on_websocket_envelope`:
+   - Simulate receiving `ServerEnvelope::HandoutRevealed` on `wsClient`.
+   - Check that the `[data-testid="handout-reveal-modal"]` element becomes visible.
+   - Click `[data-testid="close-handout-modal"]` and check that the modal disappears.
+2. `test_mobile_companion_view_lifecycle`:
+   - Resize the viewport to `390px` wide.
+   - Check that `[data-testid="mobile-companion-view"]` is rendered in the DOM.
+   - Check that the PixiJS `TableCanvas` instance is destroyed and absent from the DOM.
+   - Switch to the `[data-testid="nav-journal"]` tab and check that the notes are shown.
+3. `test_i18n_formatting_and_units`:
+   - Set `localeSignal.value = 'en'` and `unitSystemSignal.value = 'metric_m'`.
+   - Check that `formatDistanceFt(5)` returns exactly `"1.5 m (1 square)"`.
+   - Check that `formatDistanceFt(30)` returns exactly `"9 m (6 squares)"`.
+   - Check that switching to `localeSignal.value = 'fr'` returns the French dictionary's square label.
+   - Check that switching to `unitSystemSignal.value = 'imperial_ft'` returns `"30 ft"`.

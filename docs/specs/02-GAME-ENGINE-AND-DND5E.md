@@ -1,18 +1,18 @@
-# TRAME — Phase 2 : Moteur de Système de Jeu Générique & Pack Built-in D&D 5e
+# TRAME — Phase 2: Generic Game System Engine & Built-in D&D 5e Pack
 
-Ce document spécifie l'architecture du moteur générique de systèmes de jeu de **TRAME** (`trame-engine`, compilé en Rust côté serveur et en WebAssembly côté navigateur) ainsi que son implémentation de référence : **D&D 5e (`dnd5e`)**.
+This document specifies the architecture of the **TRAME** generic game system engine (`trame-engine`, compiled natively in Rust on the server and to WebAssembly in the browser) and its reference implementation: **D&D 5e (`dnd5e`)**.
 
 ---
 
-## 1. Principe Fondamental : "Data-Driven Rules, Widget-Driven Sheets"
+## 1. Core Principle: "Data-Driven Rules, Widget-Driven Sheets"
 
-Dans TRAME, le code source de l'application ne connaît aucune règle spécifique à un jeu de rôle. Tout repose sur un **Game System Pack** (manifeste déclaratif YAML/JSON + compendium d'entités) associé à chaque campagne.
+In TRAME, the application source code knows no rule specific to any roleplaying game. Everything relies on a **`GameSystemPack`** (a declarative YAML/JSON manifest + an entity compendium) attached to each campaign.
 
 ```mermaid
 graph LR
-    Pack["GameSystemPack (YAML/JSON)\n1. Schéma d'Acteurs\n2. Graphe de Formules (DAG)\n3. Moteur d'Effets & Dons\n4. Grammaire de Dés\n5. Layout de Widgets UI"]
-    Engine["trame-engine (Rust + WASM)\n• Calcule les stats dérivées\n• Applique Objets / Dons / Conditions\n• Valide les feuilles & actions\n• Résout les jets & AoE"]
-    UI["Moteur de Feuille React\nAssemble les ~15 Widgets JDR\nselon le Layout du Pack"]
+    Pack["GameSystemPack (YAML/JSON)\n1. Actor schema\n2. Formula graph (derivedDAG)\n3. Effects & feats engine\n4. Dice grammar\n5. UI widget layout (sheetLayout)"]
+    Engine["trame-engine (Rust + WASM)\n• Computes derived stats\n• Applies items / feats / conditions\n• Validates sheets & actions\n• Resolves rolls & AoE"]
+    UI["Preact sheet renderer\nAssembles the ~15 RPG widgets\nfrom the pack layout"]
 
     Pack --> Engine
     Pack --> UI
@@ -21,22 +21,22 @@ graph LR
 
 ---
 
-## 2. Anatomie d'un `GameSystemPack` Générique
+## 2. Anatomy of a Generic `GameSystemPack`
 
-### 2.1 Schéma de Données des Acteurs (`actorSchema`) & Compagnons / Invocations (Q16, Q23)
+### 2.1 Actor Data Schema (`actorSchema`) & Companions / Summons (Q16, Q23)
 
-Définit la structure des données stockées dans `actor.sheet_data` pour chaque type d'entité du jeu :
-* **`character` (Personnage Joueur)** : Attributs complets, progression multi-classes, inventaire, grimoire, dons et historique.
-* **`npc` / `monster` (PNJ & Créatures)** : Stat-block compact (FP/CR, actions, réactions, actions légendaires, actions de repaire / *Lair Actions*).
-* **`summon` / `companion` (Familiers, Montures, Invocations, Forme Animale)** :
-  * Un joueur peut se voir accorder par le MJ (ou par un sort comme *Appel de familier* ou la capacité *Forme Sauvage / Wild Shape*) le contrôle direct d'acteurs secondaires liés à son personnage principal (`parent_actor_id`).
-  * **Gestion de la *Forme Sauvage (Wild Shape)* / *Polymorphie*** : Applique une **Enveloppe de Transformation Temporaire (`Shapechange Overlay`)** sur l'acteur : remplace temporairement les statistiques physiques (`STR`, `DEX`, `CON`, `CA`, `PV`, vitesse, sens, attaques) par celles de la bête choisie dans le bestiaire tout en conservant les statistiques mentales (`INT`, `WIS`, `CHA`), les compétences et la personnalité du Druide. Lorsque les PV de la forme tombent à 0 (ou que le joueur annule la transformation), la fiche et le token reviennent automatiquement à leur état normal avec report des dégâts excédentaires !
-* **`container` / `group_stash` (Coffre de Groupe, Butin de Salle, Cadavre Fouillable, Boutique)** :
-  * Acteur d'inventaire partageable sur la carte : le MJ peut déposer un *Coffre* sur la Table ; lorsqu'il le déverrouille, les joueurs à proximité peuvent glisser-déposer directement les objets et pièces d'or vers leur propre inventaire (avec journalisation automatique dans le chat).
+Defines the structure of the data stored in `actor.sheet_data` for each entity type of the game:
+* **`character` (player character)**: full abilities, multiclass progression, inventory, spellbook, feats and history.
+* **`npc` / `monster` (NPCs & creatures)**: compact stat block (CR, actions, reactions, legendary actions, *Lair Actions*).
+* **`summon` / `companion` (familiars, mounts, summons, beast form)**:
+  * The GM (or a spell such as *Find Familiar*, or the *Wild Shape* feature) can give a player direct control of secondary actors linked to their main character (`parent_actor_id`).
+  * **Handling *Wild Shape* / *Polymorph***: applies a **temporary transformation overlay (`Shapechange Overlay`)** to the actor. It temporarily replaces the physical statistics (`STR`, `DEX`, `CON`, AC, HP, speed, senses, attacks) with those of the beast chosen from the bestiary while keeping the Druid's mental statistics (`INT`, `WIS`, `CHA`), skills and personality. When the form's HP drops to 0 (or the player ends the transformation), the sheet and the token automatically return to their normal state and the excess damage carries over.
+* **`container` / `group_stash` (party chest, room loot, searchable corpse, shop)**:
+  * A shareable inventory actor on the map: the GM can drop a *Chest* on the table; once it is unlocked, nearby players can drag and drop items and gold directly into their own inventory (with an automatic log entry in the chat).
 
-### 2.2 Graphe de Calculs Dérivés (`derivedDAG`)
+### 2.2 Derived Computation Graph (`derivedDAG`)
 
-Un graphe acyclique orienté (DAG) de formules évaluées en moins de $0.1\text{ ms}$ par `trame-engine` (Rust/WASM) dans un ordre topologique strict :
+A directed acyclic graph (DAG) of formulas evaluated in less than $0.1\text{ ms}$ by `trame-engine` (Rust/WASM) in strict topological order. Per the ADR-0001 amendment, the WASM build of `evaluate_derived_dag` is the only evaluator of these formulas, in the browser and on the server. An unknown formula variable is an error, never a silent `0`.
 
 ```yaml
 derived:
@@ -48,84 +48,85 @@ derived:
   spellcasting.attackBonus: "proficiencyBonus + abilities[spellcasting.ability].mod + spellcasting.attackBonus"
 ```
 
-> **Escape Hatch** : Chaque valeur calculée possède toujours un champ `manualBonus` et un champ optionnel `overrideValue` pour permettre les règles maison sans friction.
+> **Escape hatch**: every computed value always has a `manualBonus` field and an optional `overrideValue` field so house rules need no workaround.
 
 ---
 
-## 3. Le Moteur Unifié : Inventaire, Équipement, Dons (*Feats*), Capacités & États
+## 3. The Unified Engine: Inventory, Equipment, Feats, Features & Conditions
 
-### 3.1 Les 4 Capacités d'un Élément (`PassiveModifier`, `ToggleModifier`, `Grant`, `RollHook`)
+### 3.1 The 4 Capabilities of an Element (`PassiveModifier`, `ToggleModifier`, `Grant`, `RollHook`)
 
-| Type d'Effet | Fonctionnement dans `trame-engine` | Exemples Concrets (D&D 5e) |
+| Effect type | Behavior in `trame-engine` | Concrete examples (D&D 5e) |
 | :--- | :--- | :--- |
-| **1. Modificateur Passif (`PassiveModifier`)** | Modifie automatiquement une statistique, une vitesse ou un capteur de vision tant que sa condition d'activation est vraie (`when: "equipped && attuned"`). | • **Don *Vigilant (Alert)*** : `ADD +5` à `initiative.bonus`.<br>• **Armure de plates** : `SET_BASE 18` sur `ac.value`.<br>• **Objet *Lunettes de la nuit*** : `ADD 60` à `senses.darkvision` (met immédiatement à jour la vision du token sur la Table). |
-| **2. Option d'Action / Bascule (`ToggleModifier`)** | Ajoute une case à cocher activable à la volée dans le panneau d'attaque ou sur le HUD du token. | • **Don *Tireur d'élite (Sharpshooter)* / *GWM*** : Case à cocher `[-5 Attaque / +10 Dégâts]`.<br>• **Capacité *Rage*** : Bascule `+2 dégâts de mêlée STR` et `Résistance aux dégâts contondants/perforants/tranchants`. |
-| **3. Octroi de Ressource ou d'Action (`Grant`)** | Ajoute une jauge de ressource rechargeable, un sort inné ou une action utilisable en combat. | • **Capacité *Second Souffle*** : Octroie 1 ressource `1/Repos Court` + 1 Action Bonus (`1d10 + @level`).<br>• **Don *Initié à la magie*** : Octroie 2 sorts mineurs et 1 sort de niveau 1 (`1/Repos Long`). |
-| **4. Modificateur de Jet Dynamique (`RollHook`)** | Modifie la formule de dé ou le mode d'avantage au moment où un jet est résolu. | • **État *Empoisonné*** : Force `DISADVANTAGE` sur les jets d'attaque et tests de caractéristique.<br>• **Sort *Bénédiction (Bless)*** : Ajoute `+ 1d4` aux jets d'attaque et de sauvegarde. |
+| **1. Passive modifier (`PassiveModifier`)** | Automatically changes a statistic, a speed or a vision sense while its activation condition is true (`when: "equipped && attuned"`). | • **Feat *Alert***: `ADD +5` to `initiative.bonus`.<br>• **Plate armor**: base formula `18` on `ac.value`.<br>• **Item *Goggles of Night***: `ADD 60` to `senses.darkvision` (immediately updates the token's vision on the table). |
+| **2. Action option / toggle (`ToggleModifier`)** | Adds a checkbox that can be toggled on the fly in the attack panel or on the token HUD. | • **Feat *Sharpshooter* / *Great Weapon Master***: checkbox `[-5 attack / +10 damage]`.<br>• **Feature *Rage***: toggles `+2 STR melee damage` and resistance to bludgeoning/piercing/slashing damage. |
+| **3. Resource or action grant (`Grant`)** | Adds a rechargeable `ResourcePool`, an innate spell or an action usable in combat. | • **Feature *Second Wind***: grants 1 resource `1/short rest` + 1 Bonus Action (`1d10 + @level`).<br>• **Feat *Magic Initiate***: grants 2 cantrips and 1 level-1 spell (`1/long rest`). |
+| **4. Dynamic roll modifier (`RollHook`)** | Changes the dice formula or the advantage mode when a roll is resolved. | • **Condition *Poisoned***: forces `DISADVANTAGE` on attack rolls and ability checks.<br>• **Spell *Bless***: adds `+ 1d4` to attack rolls and saving throws. |
 
-### 3.2 Pipeline Déterministe d'Empilement des Effets & Règles d'Empilement (Q5, Q12)
+### 3.2 Deterministic `ActiveEffect` Pipeline & Stacking Rules (Q5, Q12)
 
-Pour éviter tout conflit lorsque plusieurs objets, dons et sorts modifient la même statistique (ex: *Armure de Mage* vs *Défense sans armure de Moine* vs *Écorce / Barkskin* vs *Bouclier +2*), `trame-engine` exécute un pipeline strict en **5 phases ordonnées par priorité** :
+To avoid conflicts when several items, feats and spells change the same statistic (for example *Mage Armor* vs Monk *Unarmored Defense* vs *Barkskin* vs a *+2 Shield*), `trame-engine` evaluates every `ActiveEffect` through a strict pipeline of ordered phases (`ModifierPhase`): **`Base` -> `Add` -> `Multiply` -> `Override` -> `ClampMin` / `ClampMax`**.
 
-1. **`BASE_FORMULA` (Exclusif — Le meilleur gagne)** :
-   * Calcule toutes les formules de base candidates (ex: `10 + DEX` par défaut, `13 + DEX` pour *Armure de Mage*, `10 + DEX + WIS` pour *Moine*, `14 + min(DEX, 2)` pour *Chemise de mailles*) et **retient uniquement la plus élevée** (deux calculs d'armure de base ne s'additionnent jamais).
-2. **`ADD` (Cumulatif — Non-cumul des sorts de même nom)** :
-   * Additionne les bonus plats (`+2` d'un Bouclier équipé, `+1` d'un *Anneau de protection*, `+2` de *Bouclier de la foi*).
-   * **Règle d'unicité de source nommée (`stacking_group`)** : Deux effets actifs portant le même `source_spell_id` (ex: deux clercs lançant *Bénédiction* sur le même guerrier) ne se cumulent pas ; seul celui ayant la durée ou le bonus le plus fort s'applique.
-3. **`MULTIPLY` (Facteurs)** :
-   * Applique les multiplicateurs (ex: `vitesse * 2` pour *Hâte / Dash*, `vitesse * 0.5` pour *Ralentissement*, `0` pour *Agrippé / Grappled*).
-4. **`MIN_FLOOR` / `MAX_CEILING` (Bornes)** :
-   * Applique les planchers (ex: *Écorce / Barkskin* : `CA >= 16`, ou *Talent fiable / Reliable Talent* du Roublard : `d20 >= 10`) et les plafonds (ex: caractéristique max `20`).
-5. **`OVERRIDE` (Forçage manuel MJ / Joueur)** :
-   * Si l'utilisateur a défini une valeur forcée explicite, elle écrase le résultat final.
+1. **`Base` (exclusive — best wins)**:
+   * Evaluates every candidate base formula (for example `10 + DEX` by default, `13 + DEX` for *Mage Armor*, `10 + DEX + WIS` for a Monk, `14 + min(DEX, 2)` for a *Chain Shirt*) and **keeps only the highest result** (two base armor computations never add up).
+2. **`Add` (cumulative — same-named effects do not stack)**:
+   * Adds flat bonuses (`+2` from an equipped shield, `+1` from a *Ring of Protection*, `+2` from *Shield of Faith*).
+   * **Named-source uniqueness rule (`source_name`)**: two active effects with the same `source_name` (for example two clerics casting *Bless* on the same fighter) do not stack; only the one with the largest magnitude applies.
+3. **`Multiply` (factors)**:
+   * Applies multipliers (for example `speed * 2` for *Haste* / *Dash*, `speed * 0.5` for *Slow*, `0` for *Grappled*).
+4. **`Override` (forced value)**:
+   * Replaces the computed value outright (for example *Gauntlets of Ogre Power* `STR = 19`, or an explicit GM/player forced value). When several overrides collide, the highest one is kept.
+5. **`ClampMin` then `ClampMax` (bounds)**:
+   * Applies floors first (for example *Barkskin*: `AC >= 16`, or the Rogue's *Reliable Talent*: `d20 >= 10`), then ceilings (for example ability score maximum `20`).
 
-### 3.3 Durée des Effets Temporaires, Expiration par Tour & Concentration Automatique (Q12)
+### 3.3 Temporary Effect Duration, Per-Turn Expiry & Automatic Concentration (Q12)
 
-* Chaque effet actif ou condition appliqué à un token peut avoir une durée exprimée en **Rounds / Tours de combat** :
-  * `until_start_of_source_next_turn` (ex: sort *Bouclier / Shield*, *Coup étourdissant*),
+* Every active effect or `Condition` applied to a token can have a duration expressed in **combat rounds / turns** (`TurnTrigger`):
+  * `until_start_of_source_next_turn` (for example the *Shield* spell, *Stunning Strike*),
   * `until_end_of_target_next_turn`,
-  * `rounds_remaining: N` (ex: 10 rounds = 1 minute).
-* Lorsque `combat.next_turn` avance l'initiative, `trame-engine` décrémente automatiquement les compteurs et retire les conditions expirées (avec notification dans le chat).
-* **Automatisation de la Concentration (D&D 5e)** :
-  1. **Exclusivité** : Si un personnage déjà concentré sur *Bénédiction* lance *Hâte*, le moteur retire automatiquement *Bénédiction* (et ses bonus sur les alliés ou son gabarit AoE persistant sur la carte) avant d'activer *Hâte*.
-  2. **Test de Concentration sur Dégâts** : Dès qu'un token portant l'état `Concentrating` subit des dégâts $\Delta PV > 0$, `trame-engine` calcule $\text{DD} = \max(10, \lfloor \Delta PV / 2 \rfloor)$ et affiche immédiatement une carte interactive dans le chat / HUD : **"Jet de Sauvegarde de CON (DD X) pour maintenir la concentration sur [Sort]"**. En cas d'échec, le sort et son AoE sur la Table s'éteignent automatiquement.
+  * `rounds_remaining: N` (for example 10 rounds = 1 minute).
+* When `AdvanceTurn` moves the initiative forward, `trame-engine` automatically decrements the counters and removes expired conditions (with a notification in the chat).
+* **Concentration automation (D&D 5e)**:
+  1. **Exclusivity**: if a character already concentrating on *Bless* casts *Haste*, the engine automatically removes *Bless* (and its bonuses on allies, or its persistent AoE template on the map) before activating *Haste*.
+  2. **Concentration check on damage (`ConcentrationCheckPrompt`)**: as soon as a token with the `Concentrating` state takes damage $\Delta HP > 0$, `trame-engine` computes $\text{DC} = \max(10, \lfloor \Delta HP / 2 \rfloor)$ and immediately shows an interactive card in the chat / HUD: **"CON saving throw (DC X) to maintain concentration on [Spell]"**. On a failure, the spell and its AoE on the table end automatically (`BreakConcentration`).
 
 ---
 
-## 4. Pipeline de Dégâts, Résistances & Modes de Transparence de Combat (Q6)
+## 4. Damage Pipeline, Resistances & Combat Transparency Modes (Q6)
 
-### 4.1 Types de Dégâts, Résistances, Immunités & PV Temporaires (D&D 5e)
+### 4.1 Damage Types, Resistances, Immunities & Temporary HP (D&D 5e)
 
-Chaque jet de dégâts est structuré par type (`slashing`, `piercing`, `bludgeoning`, `fire`, `cold`, `lightning`, `poison`, `acid`, `necrotic`, `radiant`, `force`, `psychic`, `thunder` + tag `magical` / `silvered` / `adamantine`) :
-1. Pour chaque composant de dégâts, `trame-engine` vérifie le profil de la cible :
-   * **Immunité** $\rightarrow 0$ dégât.
-   * **Résistance** $\rightarrow \lfloor \text{dégâts} / 2 \rfloor$ (non cumulable).
-   * **Vulnérabilité** $\rightarrow \text{dégâts} \times 2$.
-2. L'application aux Points de Vie absorbe d'abord les **PV Temporaires (`hp.temp`)**, puis réduit `hp.current` (et déclenche la règle de *Mort instantanée par dégâts massifs* ou les *Jets contre la mort* si `hp.current` tombe à $0$).
+Every damage roll is structured by `DamageType` (`slashing`, `piercing`, `bludgeoning`, `fire`, `cold`, `lightning`, `poison`, `acid`, `necrotic`, `radiant`, `force`, `psychic`, `thunder` + a `magical` / `silvered` / `adamantine` tag):
+1. For each damage component, `trame-engine` checks the target's profile (`DamageMitigation`, from the target's server-side data, never from the client):
+   * **Immune** → 0 damage.
+   * **Resistant** → $\lfloor \text{damage} / 2 \rfloor$ (does not stack).
+   * **Vulnerable** → $\text{damage} \times 2$ (saturating arithmetic).
+2. Applying damage to hit points first absorbs **temporary HP (`TempHP`, `hp.temp`)**, then reduces `hp.current`. At 0 HP this triggers `InstantDeath` (massive damage) or `DeathSavingThrow` failures (damage at 0 HP adds one failure, two on a critical hit).
 
-### 4.2 Réglage de Campagne : Transparence & Automatisation des Attaques (Q6)
+### 4.2 Campaign Setting: Attack Transparency & Automation (Q6)
 
-Chaque MJ ayant son propre style de maîtrise, la campagne propose un réglage à 3 niveaux (modifiable à tout moment) :
+Every GM has their own style, so the campaign offers a 3-level setting (changeable at any time):
 
-| Réglage de Campagne | Ce que voit le Joueur | Comment sont appliqués les Dégâts |
+| Campaign setting | What the player sees | How damage is applied |
 | :--- | :--- | :--- |
-| **1. `ASSISTED_DM_CONFIRM` (Par défaut)** | Le joueur voit son jet d'attaque (`18 pour toucher`), mais **ne voit pas la CA exacte ni les résistances secrètes du monstre**. Le serveur indique au MJ si ça touche et le montant exact après résistances. | Le MJ clique sur **`[Appliquer 14 dégâts (7 après résistance feu)]`** (ou modifie la valeur à la volée). |
-| **2. `FULL_AUTOMATION` (Jeu rapide)** | Le chat affiche directement `Touché !` ou `Manqué !`. | Les PV et résistances sont appliqués automatiquement dès que les dégâts sont roulés (avec bouton **`[Annuler / Undo]`** immédiat pour le MJ). |
-| **3. `MANUAL_CLASSIC` (Table papier pure)** | Affiche uniquement les résultats des dés dans le chat. | Le MJ ou le joueur clique sur le bouton `- PV` de la cible. |
+| **1. `ASSISTED_DM_CONFIRM` (default)** | The player sees their attack roll (`18 to hit`) but **not the monster's exact AC or secret resistances**. The server tells the GM whether it hits and the exact amount after resistances. | The GM clicks **`[Apply 14 damage (7 after fire resistance)]`** (or edits the value on the fly). |
+| **2. `FULL_AUTOMATION` (fast play)** | The chat shows `Hit!` or `Miss!` directly. | HP and resistances are applied automatically as soon as damage is rolled (with an immediate **`[Undo]`** button for the GM). |
+| **3. `MANUAL_CLASSIC` (pure paper table)** | Only the dice results are shown in the chat. | The GM or the player clicks the target's `- HP` button. |
 
 ---
 
-## 5. Édition du Compendium, Homebrew & Surcharge des Systèmes (Q13)
+## 5. Compendium Editing, Homebrew & System Overrides (Q13)
 
-* Le pack built-in `dnd5e` (SRD 5.1 CC-BY-4.0) est fourni en **lecture seule de base (`immutable base layer`)**, mais chaque Instance et chaque Campagne possède une **Couche de Compendium Homebrew (`Custom Overlay`)** :
-  * **Cloner & Modifier en 1 clic** : Le MJ peut dupliquer n'importe quel monstre, sort, don ou objet magique du SRD pour créer une variante maison, ou en créer de zéro (dans l'UI ou via l'outil MCP `compendium.upsert_entry`).
-  * **Partage Inter-Campagnes** : Un MJ peut enregistrer ses créations Homebrew dans la bibliothèque globale de son instance dédiée pour les réutiliser dans toutes ses campagnes, ou les exporter en fichier `.trame-pack.json`.
+* The built-in `dnd5e` pack (`SystemSRD`, SRD 5.1 CC-BY-4.0) is provided as a **read-only base layer**, but each instance and each campaign has a **homebrew compendium layer** (`InstanceLibrary`, `CampaignHomebrew`), resolved by the `CompendiumResolver` in the order `CAMPAIGN_HOMEBREW` > `INSTANCE_LIBRARY` > `SYSTEM_SRD`:
+  * **Clone & edit in 1 click**: the GM can duplicate any SRD monster, spell, feat or magic item to create a house variant, or create one from scratch (in the UI or via the MCP tool `compendium.upsert_entry`).
+  * **Cross-campaign sharing**: a GM can save their homebrew creations in their dedicated instance's library to reuse them in all their campaigns, or export them as a `.trame-pack.json` file.
 
 ---
 
-## 6. Architecture de la Feuille de Personnage & Assistant de Création / Level-Up
+## 6. Character Sheet Architecture & Creation / Level-Up Wizard
 
-* **Catalogue de ~15 Widgets JDR Déclaratifs** assemblés par le fichier `sheetLayout` du système (`HeroBannerWidget`, `AbilityScoreGridWidget`, `SavingThrowsWidget`, `SkillListWidget`, `HealthAndHitDiceWidget`, `DeathSavesWidget`, `ActionListWidget`, `SpellbookWidget`, `FeatAndFeatureTreeWidget`, `InventoryManagerWidget`, `DmSecretNotesWidget`).
-* **Double Mode d'Édition** :
-  1. **Édition Directe ("Freeform")** + Glisser-déposer depuis le Compendium.
-  2. **Assistant Guidé ("Character Builder & Level-Up Wizard")** : Choix Espèce, Classe/Sous-classe (multiclassage supporté), méthode de caractéristiques (*Standard Array*, *Point Buy 27*, *Jet 4d6kh3*), équipement de départ, et lors de la montée de niveau : calcul des PV, nouveaux sorts et choix **ASI (+2 / +1+1) ou Don (*Feat*)**.
+* **Catalog of ~15 declarative RPG widgets** assembled by the system's `sheetLayout` file (`HeroBannerWidget`, `AbilityScoreGridWidget`, `SavingThrowsWidget`, `SkillListWidget`, `HealthAndHitDiceWidget`, `DeathSavesWidget`, `ActionListWidget`, `SpellbookWidget`, `FeatAndFeatureTreeWidget`, `InventoryManagerWidget`, `DmSecretNotesWidget`).
+* **Two editing modes**:
+  1. **Direct editing ("Freeform")** + drag and drop from the compendium.
+  2. **Guided wizard ("Character Builder & Level-Up Wizard")**: species, class/subclass (multiclassing supported), ability score method (*Standard Array*, *Point Buy 27*, *Roll 4d6kh3*), starting equipment, and on level-up: HP computation, new spells and an **ASI (+2 / +1+1) or Feat** choice.
+* Sheet changes are persisted through REST `PUT /api/v1/campaigns/{id}/actors/{actor_id}` with `expected_version` (ADR-0037), never through a tactical `TrameCommand`.
