@@ -43,12 +43,13 @@ use trame_server::auth::session::{
     AuthState, InMemorySessionStore, SessionStore, UserRecord, hash_session_token,
 };
 use trame_server::auth::totp::TotpService;
-use trame_server::campaigns::tactical_sync_from_sheet;
+use trame_server::campaigns::{LIVE_SESSION_NUM, tactical_sync_from_sheet};
 use trame_server::http::{
     AppState, InMemoryBlobStore, InMemoryMembershipValidator, build_router_with_state,
 };
 use trame_server::maps::{CampaignMapScene, InMemoryMapStorage};
 use trame_server::mcp::TimelineCursor;
+use trame_server::notes::MAX_HANDOUT_TITLE_CHARS;
 use trame_server::room::{ConnectedClient, OutboundClientFrame, RoomLeaseManager, TableRoomHandle};
 use trame_server::security::SecurityPolicy;
 use trame_server::sync::{ClientEnvelope, ServerEnvelope};
@@ -603,6 +604,103 @@ async fn a03_handout_reveal_matches_block_id_and_reaches_player() {
                 assert!(!b.content.is_empty(), "case {case}");
             }
             None => assert!(broadcast.is_none(), "case {case}: unexpected broadcast"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a03_handout_reveal_records_session_and_bounds_title() {
+    let at_limit = "é".repeat(MAX_HANDOUT_TITLE_CHARS);
+    let over_limit = "é".repeat(MAX_HANDOUT_TITLE_CHARS + 1);
+    // (case_id, handout title, reveal body, expected status, expected journal session)
+    let cases = [
+        (
+            "explicit_session_num_is_recorded",
+            "Ancient Map",
+            json!({ "session_num": 7 }),
+            StatusCode::OK,
+            Some(7),
+        ),
+        (
+            "no_session_num_falls_back_to_live_session",
+            "Ancient Map",
+            Value::Null,
+            StatusCode::OK,
+            Some(LIVE_SESSION_NUM),
+        ),
+        (
+            "title_at_200_chars_is_accepted",
+            at_limit.as_str(),
+            Value::Null,
+            StatusCode::OK,
+            Some(LIVE_SESSION_NUM),
+        ),
+        (
+            "title_at_201_chars_is_rejected",
+            over_limit.as_str(),
+            Value::Null,
+            StatusCode::BAD_REQUEST,
+            None,
+        ),
+    ];
+    for (case, title, reveal_body, expected, session) in cases {
+        let h = Harness::new();
+        let app = h.app();
+        let (campaign_id, _, gm) = h.campaign(&app).await;
+        let note = format!(":::handout{{id=\"ancient-map\" title=\"{title}\"}}\nA stair.\n:::\n");
+        let (status, _) = call(
+            &app,
+            "PUT",
+            &format!("/api/v1/campaigns/{campaign_id}/notes/crypt"),
+            Some(&gm),
+            json!({ "title": "Crypt Lore", "content_markdown": note }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "case {case}");
+
+        let (status, body) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/campaigns/{campaign_id}/handouts/ancient-map/reveal"),
+            Some(&gm),
+            reveal_body,
+        )
+        .await;
+        assert_eq!(status, expected, "case {case}: {body}");
+        let (_, journal) = call(
+            &app,
+            "GET",
+            &format!("/api/v1/campaigns/{campaign_id}/journal"),
+            Some(&gm),
+            Value::Null,
+        )
+        .await;
+        let entries = journal["entries"].as_array().unwrap();
+        let revealed_in = |session_num| {
+            h.timeline
+                .get_timeline(&campaign_id.to_string(), session_num, 0, 50)
+                .unwrap()
+                .events
+                .iter()
+                .any(|e| e.event_type == "handout_revealed")
+        };
+        match session {
+            Some(session_num) => {
+                assert_eq!(entries.len(), 1, "case {case}");
+                assert_eq!(entries[0]["session_num"], json!(session_num), "case {case}");
+                assert!(
+                    revealed_in(session_num),
+                    "case {case}: timeline session differs"
+                );
+            }
+            None => {
+                assert_eq!(body["code"], json!("HANDOUT_TITLE_TOO_LONG"), "case {case}");
+                assert!(entries.is_empty(), "case {case}: journal must stay empty");
+                assert!(
+                    !revealed_in(LIVE_SESSION_NUM),
+                    "case {case}: no timeline event"
+                );
+            }
         }
     }
 }

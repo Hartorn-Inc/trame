@@ -23,10 +23,12 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use trame_server::assets::store::AssetStore;
 use trame_server::auth::session::{IdentityStore, SessionStore, UserRecord, hash_session_token};
+use trame_server::campaigns::LIVE_SESSION_NUM;
 use trame_server::config::ServerConfig;
 use trame_server::http::build_router_with_postgres_store;
 use trame_server::notes::{
-    InMemoryPartyJournalStorage, NotesError, PartyJournalEntry, PartyJournalStorage,
+    InMemoryPartyJournalStorage, MAX_HANDOUT_TITLE_CHARS, NotesError, PartyJournalEntry,
+    PartyJournalStorage,
 };
 use trame_server::room::RoomLeaseManager;
 use trame_server::storage::SqlxPostgresStore;
@@ -595,6 +597,7 @@ fn journal_entry(campaign_id: Uuid, handout_id: &str, title: &str, by: Uuid) -> 
         handout_id: handout_id.to_string(),
         campaign_id: campaign_id.to_string(),
         title: title.to_string(),
+        session_num: 1,
         content: "A faded map.".to_string(),
         revealed_at: 0,
         revealed_by: by.to_string(),
@@ -729,6 +732,94 @@ async fn pg_handout_reveal_route_records_gm_as_author_once() {
             authors,
             vec![gm_id],
             "case {case}: one row authored by the GM"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_handout_reveal_records_session_and_bounds_title() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    let at_limit = "é".repeat(MAX_HANDOUT_TITLE_CHARS);
+    let over_limit = "é".repeat(MAX_HANDOUT_TITLE_CHARS + 1);
+    // (case_id, handout title, reveal body, expected status, expected row session)
+    let cases = [
+        (
+            "explicit_session_num_is_recorded",
+            "Ancient Map",
+            json!({ "session_num": 7 }),
+            StatusCode::OK,
+            Some(7),
+        ),
+        (
+            "no_session_num_falls_back_to_live_session",
+            "Ancient Map",
+            json!({}),
+            StatusCode::OK,
+            Some(LIVE_SESSION_NUM as i32),
+        ),
+        (
+            "title_at_200_chars_is_accepted",
+            at_limit.as_str(),
+            json!({}),
+            StatusCode::OK,
+            Some(LIVE_SESSION_NUM as i32),
+        ),
+        (
+            "title_at_201_chars_is_rejected",
+            over_limit.as_str(),
+            json!({}),
+            StatusCode::BAD_REQUEST,
+            None,
+        ),
+    ];
+    for (case, title, reveal_body, expected, session) in cases {
+        let gm = account(&store).await;
+        let (status, body) = call_json(
+            &app,
+            "POST",
+            "/api/v1/campaigns",
+            &gm,
+            json!({ "name": "PG Sessions" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "case {case}: {body}");
+        let campaign_id = Uuid::parse_str(body["campaign"]["id"].as_str().unwrap()).unwrap();
+        let note = format!(":::handout{{id=\"ancient-map\" title=\"{title}\"}}\nA stair.\n:::\n");
+        let (status, body) = call_json(
+            &app,
+            "PUT",
+            &format!("/api/v1/campaigns/{campaign_id}/notes/crypt"),
+            &gm,
+            json!({ "title": "Crypt Lore", "content_markdown": note }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {body}");
+
+        let (status, body) = call_json(
+            &app,
+            "POST",
+            &format!("/api/v1/campaigns/{campaign_id}/handouts/ancient-map/reveal"),
+            &gm,
+            reveal_body,
+        )
+        .await;
+        assert_eq!(status, expected, "case {case}: {body}");
+        if session.is_none() {
+            assert_eq!(body["code"], json!("HANDOUT_TITLE_TOO_LONG"), "case {case}");
+        }
+        let sessions: Vec<i32> = sqlx::query_scalar(
+            "SELECT session_num FROM party_journal_entries WHERE campaign_id = $1",
+        )
+        .bind(campaign_id)
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            sessions,
+            session.into_iter().collect::<Vec<_>>(),
+            "case {case}"
         );
     }
 }

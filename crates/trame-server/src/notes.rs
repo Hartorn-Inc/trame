@@ -91,14 +91,28 @@ pub enum NotesError {
     /// `Display` stays generic because handlers echo it to clients.
     #[error("storage backend error")]
     Storage(String),
+    /// The handout title exceeds `MAX_HANDOUT_TITLE_CHARS`; nothing was persisted.
+    #[error("handout title is {0} characters; the maximum is {MAX_HANDOUT_TITLE_CHARS}")]
+    HandoutTitleTooLong(usize),
     #[error("Timeline error: {0}")]
     Timeline(#[from] TimelineError),
 }
+
+/// Maximum handout title length in characters, matching
+/// `party_journal_entries.title VARCHAR(200)`.
+///
+/// Enforced when a handout is revealed rather than when a note is saved: notes also arrive
+/// through archive import, which bypasses the note route, and reveal is the single path
+/// into the journal.
+pub const MAX_HANDOUT_TITLE_CHARS: usize = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartyJournalEntry {
     pub handout_id: String,
     pub campaign_id: String,
+    /// Session number the reveal was recorded under; the same value as its timeline event.
+    #[serde(default)]
+    pub session_num: u32,
     pub title: String,
     pub content: String,
     pub revealed_at: u64,
@@ -510,9 +524,10 @@ fn now_ms() -> u64 {
 
 /// Executes the handout reveal pipeline:
 /// 1. Enforces GM-only RBAC
-/// 2. Persists entry to Party Journal storage
-/// 3. Appends HandoutRevealed event to Session Timeline
-/// 4. Returns HandoutRevealedBroadcast for WebSocket fan-out
+/// 2. Rejects titles over `MAX_HANDOUT_TITLE_CHARS` before any storage call
+/// 3. Persists entry to Party Journal storage under `cmd.session_num`
+/// 4. Appends HandoutRevealed event to Session Timeline under the same session
+/// 5. Returns HandoutRevealedBroadcast for WebSocket fan-out
 pub fn reveal_handout(
     actor_role: UserRole,
     actor_user_id: &str,
@@ -525,11 +540,16 @@ pub fn reveal_handout(
             "Only users with GameMaster role can reveal handouts to the party".to_string(),
         ));
     }
+    let title_chars = cmd.title.chars().count();
+    if title_chars > MAX_HANDOUT_TITLE_CHARS {
+        return Err(NotesError::HandoutTitleTooLong(title_chars));
+    }
 
     let timestamp = now_ms();
     let journal_entry = PartyJournalEntry {
         handout_id: cmd.handout_id.clone(),
         campaign_id: cmd.campaign_id.clone(),
+        session_num: cmd.session_num,
         title: cmd.title.clone(),
         content: cmd.content.clone(),
         revealed_at: timestamp,

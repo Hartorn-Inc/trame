@@ -2039,8 +2039,9 @@ impl PartyJournalStorage for SqlxPostgresStore {
 
             sqlx::query(
                 "INSERT INTO party_journal_entries (id, campaign_id, session_num, author_user_id, title, body_markdown, payload)
-                 VALUES ($1, $2, 1, $3, $4, $5, $6)
+                 VALUES ($1, $2, $7, $3, $4, $5, $6)
                  ON CONFLICT (id) DO UPDATE SET
+                   session_num = EXCLUDED.session_num,
                    author_user_id = EXCLUDED.author_user_id,
                    title = EXCLUDED.title,
                    body_markdown = EXCLUDED.body_markdown,
@@ -2053,6 +2054,7 @@ impl PartyJournalStorage for SqlxPostgresStore {
             .bind(&entry.title)
             .bind(&entry.content)
             .bind(&payload)
+            .bind(entry.session_num as i32)
             .execute(&pool)
             .await
             .map_err(|e| fail(&e))?;
