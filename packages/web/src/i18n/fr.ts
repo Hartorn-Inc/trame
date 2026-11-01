@@ -571,6 +571,8 @@ export const FR: Record<MessageKey, string> = {
   "table.canvas": "Table tactique",
   "table.canvasHelp": "Sélectionnez un pion, puis cliquez sur une case ou utilisez les flèches pour le déplacer. Échap annule la sélection.",
   "table.empty": "Aucun pion sur la table pour l'instant.",
+  "table.render": "Vue de la carte. Chaque pion est un bouton superposé.",
+  "table.previewPlayerView": "Aperçu de la vision des joueurs",
   "table.loading": "Chargement de la table...",
   "table.rejected": "Action refusée : {{reason}}",
   "table.sidebar": "Outils de table",

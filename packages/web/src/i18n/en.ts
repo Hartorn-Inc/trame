@@ -568,6 +568,8 @@ export const EN = {
   "table.canvas": "Tactical table",
   "table.canvasHelp": "Select a token, then click a cell or use the arrow keys to move it. Escape clears the selection.",
   "table.empty": "No tokens on the table yet.",
+  "table.render": "Battlemap view. Each token is a button laid over it.",
+  "table.previewPlayerView": "Preview player vision",
   "table.loading": "Loading the table...",
   "table.rejected": "Action refused: {{reason}}",
   "table.sidebar": "Table tools",

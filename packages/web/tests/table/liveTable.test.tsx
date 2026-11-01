@@ -161,6 +161,38 @@ describe("TableCanvas: token selection and movement", () => {
   });
 });
 
+describe("TableCanvas: renderer shell", () => {
+  const toggles = [
+    { id: "the GM gets the player-vision preview toggle", userId: GM_ID, isGm: true, state: gmView(), toggle: true },
+    { id: "a player never gets the preview toggle", userId: PLAYER_ID, isGm: false, state: playerView(), toggle: false },
+  ];
+  for (const c of toggles) {
+    it(c.id, () => {
+      const live = liveTable(c.userId, c.state);
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: c.isGm }));
+      const toggle = ui.byTestId("table-preview-player-view");
+      assert.equal(toggle !== null, c.toggle);
+      if (toggle) {
+        ui.click("table-preview-player-view");
+        assert.equal(ui.byTestId("table-preview-player-view").getAttribute("aria-pressed"), "true");
+      }
+      ui.unmount();
+    });
+  }
+
+  it("without WebGL the labelled canvas stays hidden and the token buttons remain", () => {
+    const live = liveTable(PLAYER_ID, playerView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+    const canvas = ui.byTestId("table-render");
+    assert.equal(canvas.getAttribute("role"), "img");
+    assert.ok(canvas.getAttribute("aria-label"));
+    assert.ok(canvas.hasAttribute("hidden"));
+    assert.ok(ui.byTestId(`token-${HERO}`));
+    assert.ok(ui.byTestId(`token-${GOBLIN}`));
+    ui.unmount();
+  });
+});
+
 describe("CombatTrackerBar: initiative totals and turn commands", () => {
   it("GM starts combat with an empty order so the server rolls initiative", () => {
     const live = liveTable(GM_ID, gmView());

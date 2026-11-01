@@ -5,8 +5,10 @@
  *
  * PURPOSE:
  * -----
- * Renders the active scene (battlemap image plus grid) and every token the
- * recipient's projection contains, and turns pointer and keyboard input into
+ * Renders the active scene through PixiJS (battlemap, grid, walls, AoEs,
+ * tokens, lighting, fog of war, pings) and keeps every token as a real
+ * `<button>` laid over the canvas, which carries the accessible name, the
+ * keyboard movement and the selection. Pointer and keyboard input become
  * `MOVE_TOKEN` commands. A token click selects the token and its linked actor
  * (`selectedTokenIdSignal`, `selectedActorIdSignal`), which drives the sheet
  * drawer and the damage/heal controls.
@@ -20,32 +22,41 @@
  * 2. `Controlled Tokens Only`:
  *    - Move input is accepted for tokens in `tokens` (controlled); public
  *      tokens can be selected (to read their health tier) but not moved.
- * 3. `Accessible Tokens`:
+ * 3. `Accessible Token Layer`:
  *    - Every token is a real `<button>` with a name + health label and
- *      `aria-pressed`; arrow keys move the focused, controlled token one cell,
- *      Escape clears the selection.
- * 4. `Map-Art Independence`:
- *    - The battlemap `<img>` carries no filter; the grid is a separate layer.
+ *      `aria-pressed`, positioned over its drawing; arrow keys move the
+ *      focused, controlled token one cell, Escape clears the selection. The
+ *      canvas itself is a labelled `role="img"`.
+ * 4. `Progressive Renderer`:
+ *    - PixiJS is imported lazily and only where WebGL2 exists. Until it is up,
+ *      when it fails to start, or after a draw throws, the board draws the
+ *      battlemap `<img>`, a CSS grid and visible token buttons, so the table
+ *      stays usable without WebGL.
+ * 5. `Map-Art Independence`:
+ *    - Neither the battlemap `<img>` nor the canvas carries a filter.
  *
  * EXECUTION LIFECYCLE:
  * -----
  * `TableCanvas`
- * ├── 1. `listTableTokens(table)` -> positioned token buttons.
- * ├── 2. `background_asset_hash` -> `presignAsset` -> battlemap `<img>`.
- * ├── 3. Token click -> select token + linked actor.
- * └── 4. Board click / arrow key -> `snapToCell` -> `MOVE_TOKEN`.
+ * ├── 1. `buildTableScene(projection, viewer, palette)` -> draw list.
+ * ├── 2. `background_asset_hash` -> `presignAsset` -> decoded battlemap image.
+ * ├── 3. `createTableRenderer(canvas)` (lazy) -> `update(scene, image)` per render.
+ * ├── 4. Token button click -> select token + linked actor.
+ * └── 5. Board click / arrow key -> `snapToCell` -> `MOVE_TOKEN`.
  * ============================================================================
  */
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ApiClient } from '../api/client.ts';
 import { selectedActorIdSignal, selectedTokenIdSignal } from '../api/session.ts';
 import type { Uuid, WirePoint2D } from '../api/wire.ts';
+import { getCanvasThemePalette } from '../canvas/CanvasThemePalette.ts';
+import { computeVisibilityPolygon, initEngine, isEngineReady, previewAoeCells } from '../engine/wasmBridge.ts';
 import { t } from '../i18n/index.ts';
+import { resolvedThemeSignal } from '../signals/themeSignal.ts';
 import { moveToken } from './commands.ts';
-import { assetHashFromKey, listTableTokens, snapToCell, type TableToken } from './tableView.ts';
-
-/** Board size, in cells, used before a scene with dimensions is active. */
-const FALLBACK_BOARD_CELLS = 20;
+import type { TableRenderer } from './scene/pixiTableRenderer.ts';
+import { buildTableScene, type SceneGeometry, type TableScene } from './scene/tableScene.ts';
+import { activeTurnTokenId, assetHashFromKey, listTableTokens, snapToCell, type TableToken } from './tableView.ts';
 
 const ARROW_DELTAS: Record<string, [number, number]> = {
   ArrowUp: [0, -1],
@@ -54,9 +65,16 @@ const ARROW_DELTAS: Record<string, [number, number]> = {
   ArrowRight: [1, 0],
 };
 
+const WASM_GEOMETRY: SceneGeometry = {
+  visibilityPolygon: computeVisibilityPolygon,
+  aoeCells: previewAoeCells,
+};
+
 export interface TableCanvasProps {
   campaignId: Uuid;
   client: ApiClient;
+  /** GM view: whole map, plus the player-vision preview toggle. */
+  isGm?: boolean;
 }
 
 function tokenLabel(token: TableToken): string {
@@ -73,22 +91,73 @@ function initials(name: string): string {
   return name.trim().slice(0, 2) || '?';
 }
 
+function prefersReducedMotion(): boolean {
+  return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 /** Selects a token and the actor sheet linked to it (`null` when unlinked). */
 export function selectToken(token: TableToken | null): void {
   selectedTokenIdSignal.value = token?.id ?? null;
   if (token?.actorId) selectedActorIdSignal.value = token.actorId;
 }
 
-export function TableCanvas({ campaignId, client }: TableCanvasProps) {
+export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasProps) {
   const table = client.state.table.value;
   const tokens = listTableTokens(table);
   const selectedId = selectedTokenIdSignal.value;
   const selected = tokens.find((tok) => tok.id === selectedId) ?? null;
-  const cell = table && table.cell_size_px > 0 ? table.cell_size_px : 50;
-  const width = table && table.map_width_px > 0 ? table.map_width_px : cell * FALLBACK_BOARD_CELLS;
-  const height = table && table.map_height_px > 0 ? table.map_height_px : cell * FALLBACK_BOARD_CELLS;
-  const mapHash = table?.background_asset_hash ?? null;
+  const [previewPlayerView, setPreviewPlayerView] = useState(false);
+  const [, setEngineLoads] = useState(0);
+  const scene: TableScene = buildTableScene({
+    state: table,
+    palette: getCanvasThemePalette(resolvedThemeSignal.value),
+    isGm,
+    selectedTokenId: selectedId,
+    activeTurnTokenId: activeTurnTokenId(table),
+    previewPlayerView,
+    reducedMotion: prefersReducedMotion(),
+    pings: client.state.pointerPings.value,
+    nowMs: Date.now(),
+    geometry: isEngineReady() ? WASM_GEOMETRY : null,
+  });
+  const { cellPx: cell, widthPx: width, heightPx: height } = scene;
+  const mapHash = scene.mapHash;
   const [mapUrl, setMapUrl] = useState<string | null>(null);
+  const [mapImage, setMapImage] = useState<HTMLImageElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [renderer, setRenderer] = useState<TableRenderer | null>(null);
+  const sceneRef = useRef(scene);
+  sceneRef.current = scene;
+
+  useEffect(() => {
+    if (isEngineReady()) return;
+    let live = true;
+    initEngine()
+      .then(() => live && setEngineLoads((n) => n + 1))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || typeof WebGL2RenderingContext === 'undefined') return;
+    let live = true;
+    let created: TableRenderer | null = null;
+    import('./scene/pixiTableRenderer.ts')
+      .then(({ createTableRenderer }) => createTableRenderer(canvas, sceneRef.current))
+      .then((r) => {
+        created = r;
+        if (live) setRenderer(r);
+        else r.destroy();
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+      created?.destroy();
+    };
+  }, []);
 
   useEffect(() => {
     setMapUrl(null);
@@ -104,6 +173,31 @@ export function TableCanvas({ campaignId, client }: TableCanvasProps) {
       live = false;
     };
   }, [client, campaignId, mapHash]);
+
+  useEffect(() => {
+    setMapImage(null);
+    if (!renderer || !mapUrl) return;
+    let live = true;
+    const image = new Image();
+    image.src = mapUrl;
+    image
+      .decode()
+      .then(() => live && setMapImage(image))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [renderer, mapUrl]);
+
+  useEffect(() => {
+    if (!renderer) return;
+    try {
+      renderer.update(scene, mapImage);
+    } catch {
+      renderer.destroy();
+      setRenderer(null);
+    }
+  });
 
   const move = (token: TableToken, to: WirePoint2D) => {
     if (!token.controlled) return;
@@ -129,17 +223,37 @@ export function TableCanvas({ campaignId, client }: TableCanvasProps) {
     move(token, { x: token.topLeft.x + delta[0] * cell, y: token.topLeft.y + delta[1] * cell });
   };
 
+  const pixi = renderer !== null;
   return (
     <section class="ds-table-canvas" aria-label={t('table.canvas')} data-testid="table-canvas">
       <p class="ds-visually-hidden">{t('table.canvasHelp')}</p>
+      {isGm ? (
+        <button
+          type="button"
+          class="ds-btn ds-btn-secondary ds-board-preview"
+          aria-pressed={previewPlayerView}
+          data-testid="table-preview-player-view"
+          onClick={() => setPreviewPlayerView(!previewPlayerView)}
+        >
+          {t('table.previewPlayerView')}
+        </button>
+      ) : null}
       <div
-        class="ds-board"
+        class={`ds-board${pixi ? ' is-pixi' : ''}`}
         data-testid="table-board"
         style={{ width: `${width}px`, height: `${height}px`, '--board-cell': `${cell}px` }}
         onClick={onBoardClick}
       >
-        {mapUrl ? <img class="ds-board-map" src={mapUrl} alt="" data-testid="table-map" /> : null}
-        <div class="ds-board-grid" aria-hidden="true" />
+        <canvas
+          ref={canvasRef}
+          class="ds-board-canvas trame-pixijs-canvas"
+          role="img"
+          aria-label={t('table.render')}
+          hidden={!pixi}
+          data-testid={pixi && mapImage ? 'table-map' : 'table-render'}
+        />
+        {!pixi && mapUrl ? <img class="ds-board-map" src={mapUrl} alt="" data-testid="table-map" /> : null}
+        {!pixi ? <div class="ds-board-grid" aria-hidden="true" /> : null}
         {tokens.map((token) => (
           <button
             key={token.id}

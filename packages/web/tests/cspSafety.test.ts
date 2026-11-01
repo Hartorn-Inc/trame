@@ -25,6 +25,9 @@ describe("CSP-safe source", () => {
     { id: "no blob: or data: URLs built at runtime", pattern: /createObjectURL|readAsDataURL|toDataURL/ },
     { id: "no data: or blob: URL literals", pattern: /["'`](?:data|blob):|url\(\s*(?:data|blob):/ },
     { id: "no string-compiled code (script-src without 'unsafe-eval')", pattern: /new Function\s*\(|(?<![\w.])eval\s*\(/ },
+    { id: "no PixiJS Assets loader (its texture workers start from blob: URLs)", pattern: /\bAssets\.\w+\s*\(/ },
+    { id: "no PixiJS HTMLText (rasterised through a data: SVG)", pattern: /new HTMLText\b/ },
+    { id: "no worker creation (worker-src falls back to script-src 'self')", pattern: /new (?:Shared)?Worker\s*\(/ },
   ];
   for (const c of cases) {
     it(c.id, () => {
@@ -32,4 +35,26 @@ describe("CSP-safe source", () => {
       assert.deepEqual(offenders, []);
     });
   }
+});
+
+describe("PixiJS stays CSP-safe and lazy", () => {
+  const PIXI_ADAPTER = join("table", "scene", "pixiTableRenderer.ts");
+  const pixiImport = /from\s+["']pixi\.js["']|import\s+["']pixi\.js/;
+
+  it("only the lazily loaded table adapter imports pixi.js", () => {
+    assert.deepEqual(files.filter((f) => pixiImport.test(f.text)).map((f) => f.path), [PIXI_ADAPTER]);
+  });
+
+  it("the adapter installs the no-eval polyfills before using PixiJS", () => {
+    const adapter = files.find((f) => f.path === PIXI_ADAPTER)!.text;
+    const polyfill = adapter.indexOf('import "pixi.js/unsafe-eval";');
+    assert.ok(polyfill >= 0, "pixi.js/unsafe-eval is imported");
+    assert.ok(polyfill < adapter.search(/from\s+["']pixi\.js["']/), "polyfill import comes first");
+  });
+
+  it("the adapter is reached only through a dynamic import()", () => {
+    const valueImport = (line: string) => /\bfrom\s+["'][^"']*pixiTableRenderer\.ts["']/.test(line) && !/^\s*import type\b/.test(line);
+    const offenders = files.filter((f) => f.text.split("\n").some(valueImport)).map((f) => f.path);
+    assert.deepEqual(offenders, []);
+  });
 });

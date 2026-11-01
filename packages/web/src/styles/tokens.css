@@ -933,6 +933,35 @@ button.ds-prof-pip {
   outline-offset: 2px;
 }
 
+.ds-board-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  filter: none;
+}
+
+.ds-board-canvas[hidden] {
+  display: none;
+}
+
+/* PixiJS draws tokens, rings and selection; the buttons stay as the accessible, focusable layer. */
+.ds-board.is-pixi .ds-token,
+.ds-board.is-pixi .ds-token.is-selected {
+  border-color: transparent;
+  outline: none;
+  background-color: transparent;
+  color: transparent;
+}
+
+.ds-board.is-pixi .ds-token:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+.ds-board-preview {
+  margin-block-end: var(--atlas-space-sm);
+}
+
 .ds-tracker,
 .ds-gm-toolbar {
   display: flex;
