@@ -37,6 +37,7 @@ fn create_test_app_state() -> (AppState, Arc<InMemoryMembershipValidator>) {
         magic_link_service,
         session_store,
         totp_service: Arc::new(TotpService::default()),
+        security: Default::default(),
     };
     let state = AppState {
         lease_manager,

@@ -18,6 +18,10 @@
 //!        (`DiceError::InvalidSides`) *before* allocating `Vec::with_capacity`,
 //!        preventing denial-of-service via astronomical dice strings like
 //!        `"999999999d20"`.
+//!      - `roll` rejects expressions longer than `MAX_EXPRESSION_BYTES` (128),
+//!        more than `MAX_TERMS` (20) signed terms, and reasons longer than
+//!        `MAX_REASON_BYTES` (200) before parsing, and sums modifiers and term
+//!        subtotals with checked `i32` arithmetic (`DiceError::Overflow`).
 //!   2. `Three-Tier Roll Visibility`:
 //!      - `RollVisibility::Public`: full breakdown sent to all connected clients.
 //!      - `RollVisibility::GmOnly`: full breakdown sent only to the GM and the
@@ -65,7 +69,28 @@ pub enum DiceError {
     /// The die face count fell outside the safe range `2..=1000`.
     #[error("Dice sides must be between 2 and 1000, got {0}")]
     InvalidSides(u32),
+    /// The raw expression exceeded `MAX_EXPRESSION_BYTES`.
+    #[error("Dice expression exceeds {MAX_EXPRESSION_BYTES} bytes")]
+    ExpressionTooLong,
+    /// The expression contained more than `MAX_TERMS` signed terms.
+    #[error("Dice expression exceeds {MAX_TERMS} terms")]
+    TooManyTerms,
+    /// The roll reason label exceeded `MAX_REASON_BYTES`.
+    #[error("Roll reason exceeds {MAX_REASON_BYTES} bytes")]
+    ReasonTooLong,
+    /// A modifier or running total left the `i32` range.
+    #[error("Dice expression arithmetic overflow")]
+    Overflow,
 }
+
+/// Maximum raw dice expression length in bytes, checked before any parsing or allocation.
+pub const MAX_EXPRESSION_BYTES: usize = 128;
+
+/// Maximum number of signed terms (dice terms plus flat modifiers) per expression.
+pub const MAX_TERMS: usize = 20;
+
+/// Maximum roll reason label length in bytes (the label is broadcast to every recipient).
+pub const MAX_REASON_BYTES: usize = 200;
 
 /// Privacy scope governing who can see the outcome of a dice roll (`01-TABLE-SPEC.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,15 +219,27 @@ impl SeededDiceRoller {
         visibility: RollVisibility,
         reason: impl Into<String>,
     ) -> Result<DiceRollOutcome, DiceError> {
+        if expression.len() > MAX_EXPRESSION_BYTES {
+            return Err(DiceError::ExpressionTooLong);
+        }
+        let reason = reason.into();
+        if reason.len() > MAX_REASON_BYTES {
+            return Err(DiceError::ReasonTooLong);
+        }
         let cleaned: String = expression.chars().filter(|c| !c.is_whitespace()).collect();
         if cleaned.is_empty() {
             return Err(DiceError::EmptyExpression);
         }
 
+        let tokens = split_signed_tokens(&cleaned)?;
+        if tokens.len() > MAX_TERMS {
+            return Err(DiceError::TooManyTerms);
+        }
+
         let mut terms = Vec::new();
         let mut flat_modifier: i32 = 0;
 
-        for (sign, token) in split_signed_tokens(&cleaned)? {
+        for (sign, token) in tokens {
             if token.contains('d') || token.contains('D') {
                 let term = self.roll_dice_token(sign, &token)?;
                 terms.push(term);
@@ -210,12 +247,17 @@ impl SeededDiceRoller {
                 let val = token
                     .parse::<i32>()
                     .map_err(|_| DiceError::InvalidTerm(token.clone()))?;
-                flat_modifier += sign * val;
+                flat_modifier = sign
+                    .checked_mul(val)
+                    .and_then(|v| flat_modifier.checked_add(v))
+                    .ok_or(DiceError::Overflow)?;
             }
         }
 
-        let dice_sum: i32 = terms.iter().map(|t| t.subtotal).sum();
-        let total = dice_sum + flat_modifier;
+        let total = terms
+            .iter()
+            .try_fold(flat_modifier, |acc, t| acc.checked_add(t.subtotal))
+            .ok_or(DiceError::Overflow)?;
 
         let primary_d20 = terms
             .first()
@@ -227,7 +269,7 @@ impl SeededDiceRoller {
             roller_user_id,
             expression: cleaned,
             visibility,
-            reason: reason.into(),
+            reason,
             terms,
             flat_modifier,
             total,

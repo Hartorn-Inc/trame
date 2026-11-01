@@ -216,6 +216,12 @@ impl SqlxPostgresStore {
         Ok(store)
     }
 
+    /// Replaces the presigned-URL HMAC key with the validated `ServerSecrets::asset_signing_secret`.
+    pub fn with_signing_secret(mut self, signing_secret: Vec<u8>) -> Self {
+        self.signing_secret = signing_secret;
+        self
+    }
+
     /// Verifies PostgreSQL connectivity with `SELECT 1`.
     pub async fn check_health(&self) -> bool {
         sqlx::query("SELECT 1").execute(&self.pool).await.is_ok()
@@ -1719,7 +1725,14 @@ impl CampaignImportTarget for SqlxPostgresStore {
         Ok(())
     }
 
-    async fn save_entities(&self, entities: &[ExportEntity]) -> Result<(), ArchiveError> {
+    async fn save_entities(
+        &self,
+        campaign_id: Uuid,
+        entities: &[ExportEntity],
+    ) -> Result<(), ArchiveError> {
+        self.ensure_campaign_row(campaign_id)
+            .await
+            .map_err(|e| ArchiveError::Io(std::io::Error::other(e)))?;
         for entity in entities {
             let entity_id = entity
                 .data
@@ -1727,15 +1740,6 @@ impl CampaignImportTarget for SqlxPostgresStore {
                 .and_then(|v| v.as_str())
                 .and_then(|s| Uuid::parse_str(s).ok())
                 .unwrap_or_else(Uuid::new_v4);
-            let campaign_id = entity
-                .data
-                .get("campaign_id")
-                .and_then(|v| v.as_str())
-                .and_then(|s| Uuid::parse_str(s).ok())
-                .unwrap_or_else(|| Uuid::from_u128(1));
-            self.ensure_campaign_row(campaign_id)
-                .await
-                .map_err(|e| ArchiveError::Io(std::io::Error::other(e)))?;
 
             let valid_type = match entity.entity_type.as_str() {
                 "actor" | "scene" | "item" => entity.entity_type.as_str(),
@@ -1760,9 +1764,12 @@ impl CampaignImportTarget for SqlxPostgresStore {
         Ok(())
     }
 
-    async fn save_notes(&self, notes: &[NoteRecord]) -> Result<(), ArchiveError> {
-        let default_campaign_id = Uuid::from_u128(1);
-        self.ensure_campaign_row(default_campaign_id)
+    async fn save_notes(
+        &self,
+        campaign_id: Uuid,
+        notes: &[NoteRecord],
+    ) -> Result<(), ArchiveError> {
+        self.ensure_campaign_row(campaign_id)
             .await
             .map_err(|e| ArchiveError::Io(std::io::Error::other(e)))?;
         for note in notes {
@@ -1778,7 +1785,7 @@ impl CampaignImportTarget for SqlxPostgresStore {
                    content_markdown = EXCLUDED.content_markdown,
                    updated_at = NOW()",
             )
-            .bind(default_campaign_id)
+            .bind(campaign_id)
             .bind(slug)
             .bind(note.id)
             .bind(&note.title)

@@ -23,9 +23,15 @@
 //!    - Invokes `RoomLeaseManager::hibernate_all` within a 10-second timeout so
 //!      every active room flushes its WAL before the process exits.
 //!
+//! 4. `Fail-Closed Secrets (G7)`:
+//!    - `ServerConfig::from_env` must succeed before anything binds; outside
+//!      `TRAME_ENV=dev` a missing or weak secret prints the offending variable
+//!      names and exits with status 1.
+//!
 //! EXECUTION LIFECYCLE:
 //! --------------------
 //!   `main()`
+//!     ├── 0. Resolve `ServerConfig` (exit 1 on `ConfigError`).
 //!     ├── 1. Resolve port, instance id, and optional `DATABASE_URL`.
 //!     ├── 2. Build `RoomLeaseManager` over the PostgreSQL or in-memory WAL.
 //!     ├── 3. Construct the Axum `Router` and bind `0.0.0.0:{port}`.
@@ -37,11 +43,14 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use trame_server::assets::store::InMemoryAssetStore;
+use trame_server::config::{RuntimeEnv, ServerConfig};
 use trame_server::http::{
-    InMemoryMembershipValidator, build_router, build_router_with_postgres_store,
+    InMemoryMembershipValidator, build_in_memory_router_with_config,
+    build_router_with_postgres_store,
 };
 use trame_server::room::{IS_SHUTTING_DOWN, RoomLeaseManager};
 use trame_server::storage::SqlxPostgresStore;
+use trame_server::timeline::InMemoryTimelineStorage;
 use trame_server::wal::InMemoryWalStorage;
 use uuid::Uuid;
 
@@ -101,6 +110,17 @@ async fn wait_for_signal() {
 
 #[tokio::main]
 async fn main() {
+    let config = match ServerConfig::from_env() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+    if config.env == RuntimeEnv::Dev {
+        eprintln!("TRAME_ENV=dev: missing secrets use public development defaults");
+    }
+
     let port: u16 = std::env::var("TRAME_PORT")
         .or_else(|_| std::env::var("PORT"))
         .ok()
@@ -121,7 +141,8 @@ async fn main() {
         let store = Arc::new(
             SqlxPostgresStore::connect_and_migrate(&db_url, "/assets/download")
                 .await
-                .expect("Failed to connect and migrate PostgreSQL store"),
+                .expect("Failed to connect and migrate PostgreSQL store")
+                .with_signing_secret(config.secrets.asset_signing_secret.clone()),
         );
         eprintln!("TRAME Server connected to PostgreSQL and applied migrations");
         let lease_manager = Arc::new(RoomLeaseManager::new(
@@ -129,7 +150,8 @@ async fn main() {
             SNAPSHOT_INTERVAL_COMMANDS,
             IDLE_LEASE_MS,
         ));
-        let app = build_router_with_postgres_store(store, lease_manager.clone(), instance_id);
+        let app =
+            build_router_with_postgres_store(store, lease_manager.clone(), instance_id, &config);
         (app, lease_manager)
     } else {
         eprintln!(
@@ -141,9 +163,19 @@ async fn main() {
             SNAPSHOT_INTERVAL_COMMANDS,
             IDLE_LEASE_MS,
         ));
-        let asset_store = Arc::new(InMemoryAssetStore::with_base_url("/assets/download"));
+        let asset_store = Arc::new(InMemoryAssetStore::with_base_url_and_secret(
+            "/assets/download",
+            config.secrets.asset_signing_secret.clone(),
+        ));
         let membership = Arc::new(InMemoryMembershipValidator::new());
-        let app = build_router(lease_manager.clone(), asset_store, membership, instance_id);
+        let app = build_in_memory_router_with_config(
+            lease_manager.clone(),
+            asset_store,
+            membership,
+            instance_id,
+            Arc::new(InMemoryTimelineStorage::new()),
+            &config,
+        );
         (app, lease_manager)
     };
 
@@ -153,9 +185,12 @@ async fn main() {
         .expect("Failed to bind TCP listener");
 
     eprintln!("TRAME Server listening on http://{addr}");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_handler(lease_manager))
-        .await
-        .expect("Axum server error");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_handler(lease_manager))
+    .await
+    .expect("Axum server error");
     eprintln!("TRAME Server cleanly terminated");
 }

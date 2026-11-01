@@ -7,9 +7,10 @@
 //! Exposes the authoritative HTTP and WebSocket routing surface for `trame-server`:
 //! - Unauthenticated liveness and database connectivity probe (`GET /healthz`, < 5 ms).
 //! - Portable `.trame` campaign archive streaming export (`GET /api/v1/campaigns/{campaign_id}/export`).
-//! - Portable `.trame` campaign archive streaming import (`POST /api/v1/campaigns/import`) with
-//!   `FAIL_IF_EXISTS` (`409 Conflict` / `CAMPAIGN_ALREADY_EXISTS`) and `remap_ids=true` support.
-//! - GM-authorized campaign Magic Link invite minting (`POST /api/v1/campaigns/{campaign_id}/invites`).
+//! - Portable `.trame` campaign archive streaming import (`POST /api/v1/campaigns/import`), which
+//!   always creates a new campaign with remapped IDs owned by the caller (G8).
+//! - GM-authorized campaign Magic Link invite minting (`POST /api/v1/campaigns/{campaign_id}/invites`),
+//!   the only invite minting route.
 //! - Hybrid authentication routes (`/api/v1/auth/magic-link`, `/api/v1/auth/bind-account`,
 //!   `/api/v1/auth/pat`, `/api/v1/auth/totp/{setup,enable,verify}`).
 //! - Campaign-scoped asset presigned URL endpoint (`GET /api/v1/campaigns/{campaign_id}/assets/{hash}/presign`).
@@ -18,20 +19,27 @@
 //!
 //! INVARIANTS & SAFETY BOUNDARIES:
 //! -------------------------------
-//!   1. `Least-Privilege Role Default & GM Invite Guard`:
-//!      - `ws_campaign_handler` defaults unrecognized or omitted roles to `CampaignRole::Player`.
-//!      - `create_campaign_invite_handler` enforces that the caller holds a `"GM"` role for the
-//!        target campaign (`403 Forbidden` for non-GM members, `401 Unauthorized` when unauthenticated).
+//!   1. `Credential-Only Identity`:
+//!      - Identity comes only from a session cookie, a Bearer session token, or a Bearer PAT
+//!        (`resolve_authenticated_user`). No route accepts `?user_id=` or a body `user_id`.
+//!      - Campaign roles come only from the authoritative membership store
+//!        (`resolve_campaign_role`); the global account role grants nothing (A63).
 //!   2. `Campaign Membership & Hash Validation`:
 //!      - `presign_asset_handler` validates hexadecimal asset hashes (`_thumb` optional suffix)
-//!        and enforces `CampaignMembershipValidator::is_member` before minting presigned GET URLs.
-//!      - `export_campaign_handler` verifies caller authentication and campaign membership before
-//!        streaming `application/zip` with `Content-Disposition: attachment; filename="campaign-<id>.trame"`.
-//!   3. `Archive Import Collision Policy`:
-//!      - `import_campaign_handler` delegates to `ArchiveImporter` and maps
-//!        `ArchiveError::CampaignAlreadyExists` to `409 Conflict` with error code `CAMPAIGN_ALREADY_EXISTS`
-//!        when `remap_ids` is `false`.
-//!   4. `Deterministic Session Cleanup & Sub-5ms Healthz`:
+//!        and checks membership in the authoritative store before minting presigned GET URLs.
+//!      - `export_campaign_handler` verifies membership and exports only entities, notes, and
+//!        assets registered to the requested campaign.
+//!      - `timeline_handler` requires membership, hides GM-only events from non-GMs, and clamps
+//!        `limit` to `1..=MAX_TIMELINE_LIMIT`.
+//!   3. `Import Creates, Never Overwrites`:
+//!      - `import_campaign_handler` requires a non-guest account, always remaps IDs, and makes
+//!        the caller the GM of the new campaign.
+//!   4. `WebSocket Hardening`:
+//!      - Upgrades require credentials, campaign membership, and an allow-listed `Origin`;
+//!        messages and frames are capped at `SecurityPolicy::ws_max_message_bytes`.
+//!   5. `Hardening Headers`:
+//!      - `security_headers_middleware` wraps the whole router (CSP, `nosniff`, frame denial).
+//!   6. `Deterministic Session Cleanup & Sub-5ms Healthz`:
 //!      - When a WebSocket disconnects, `disconnect_client(session_id)` and `send_task.abort()` execute
 //!        unconditionally so `RoomLeaseManager` tracks active connections accurately.
 //!      - `healthz_handler` verifies database/storage connectivity in memory in under 5 ms without
@@ -42,9 +50,9 @@
 //!   `HTTP / WebSocket Request`
 //!     ├── 1. `GET /healthz` -> verify database connectivity & return `200 OK` `{"status":"ok"}` (< 5 ms).
 //!     ├── 2. `GET /api/v1/campaigns/{id}/export` -> verify member auth -> stream `.trame` ZIP archive.
-//!     ├── 3. `POST /api/v1/campaigns/import` -> stream archive via `ArchiveImporter` -> `201 Created` or `409 Conflict`.
+//!     ├── 3. `POST /api/v1/campaigns/import` -> non-guest auth -> remapped import -> `201 Created`.
 //!     ├── 4. `POST /api/v1/campaigns/{id}/invites` -> verify GM role -> mint JWT & return `201 Created`.
-//!     └── 5. `GET /ws/campaigns/{id}` -> upgrade WebSocket & attach `ConnectedClient` to `TableRoomActor`.
+//!     └── 5. `GET /ws/campaigns/{id}` -> auth + Origin + membership -> capped upgrade -> `TableRoomActor`.
 //! ============================================================================
 
 use crate::archive::{
@@ -58,24 +66,28 @@ use crate::auth::magic_link::MagicLinkService;
 use crate::auth::password::extract_session_token;
 use crate::auth::pat::PatMiddleware;
 use crate::auth::session::{
-    AuthState, DEFAULT_SESSION_TTL_SECONDS, InMemorySessionStore, SessionStore, build_auth_router,
-    hash_session_token,
+    AuthState, DEFAULT_SESSION_TTL_SECONDS, FullAuthStore, IdentityStore, InMemorySessionStore,
+    SessionStore, build_auth_router, hash_session_token,
 };
 use crate::auth::totp::TotpService;
+use crate::config::ServerConfig;
 pub use crate::maps::{InMemoryMapStorage, get_campaign_maps_handler, put_campaign_maps_handler};
 use crate::room::{ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomLeaseManager};
+use crate::security::security_headers_middleware;
 use crate::storage::SqlxPostgresStore;
 use crate::storage::blob::{
     AssetDescriptor, BlobStore, BlobStoreError, BlobStream, Sha256Hasher, slice_to_stream,
     stream_to_bytes,
 };
 use crate::sync::decode_client_envelope;
-use crate::timeline::{InMemoryTimelineStorage, SessionTimelineResponse, TimelineStorage};
+use crate::timeline::{
+    InMemoryTimelineStorage, SessionTimelineEvent, SessionTimelineResponse, TimelineStorage,
+};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
-use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, HeaderMap, HeaderValue, ORIGIN};
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -92,44 +104,8 @@ use uuid::Uuid;
 /// Maximum archive upload size accepted by `POST /api/v1/campaigns/import` (64 MiB).
 pub const MAX_ARCHIVE_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 
-/// Query parameters extracted during the WebSocket handshake on `/ws/campaigns/{campaign_id}`.
-#[derive(Debug, Deserialize)]
-pub struct WsAuthQuery {
-    /// Authenticated user UUID connecting to the campaign room.
-    pub user_id: Uuid,
-    /// Optional role string (`"gm"`, `"spectator"`, or `"player"`); defaults to `CampaignRole::Player`.
-    pub role: Option<String>,
-}
-
-/// Query parameters extracted when requesting a presigned GET URL for a campaign asset.
-#[derive(Debug, Deserialize)]
-pub struct PresignQuery {
-    /// Authenticated user UUID requesting the asset download URL.
-    pub user_id: Uuid,
-}
-
-/// Optional query parameters for `GET /api/v1/campaigns/{campaign_id}/export`.
-#[derive(Debug, Default, Deserialize)]
-pub struct ExportQuery {
-    /// Optional authenticated user UUID when not using session cookie or Bearer token.
-    pub user_id: Option<Uuid>,
-}
-
-/// Optional query parameters for `POST /api/v1/campaigns/import`.
-#[derive(Debug, Default, Deserialize)]
-pub struct ImportQuery {
-    /// Whether to remap all campaign, entity, note, and asset UUIDs on import (`default: false`).
-    pub remap_ids: Option<bool>,
-    /// Optional user UUID importing the archive.
-    pub user_id: Option<Uuid>,
-}
-
-/// Optional query parameters for `POST /api/v1/campaigns/{campaign_id}/invites`.
-#[derive(Debug, Default, Deserialize)]
-pub struct CampaignInviteQuery {
-    /// Optional GM user UUID when not using session cookie or Bearer token.
-    pub user_id: Option<Uuid>,
-}
+/// Upper bound for `TimelineQuery::limit` (entries per page).
+pub const MAX_TIMELINE_LIMIT: usize = 200;
 
 /// Request payload submitted to `POST /api/v1/campaigns/{campaign_id}/invites`.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -140,8 +116,6 @@ pub struct CreateCampaignInviteRequest {
     pub role: Option<String>,
     /// Invite token time-to-live in seconds; defaults to 7 days (`DEFAULT_SESSION_TTL_SECONDS`).
     pub ttl_seconds: Option<u64>,
-    /// Optional caller user UUID when not authenticating via session cookie.
-    pub user_id: Option<Uuid>,
 }
 
 /// Response payload returned by `POST /api/v1/campaigns/{campaign_id}/invites`.
@@ -467,7 +441,26 @@ pub fn build_app_router(
     )
 }
 
-/// Constructs the full Axum `Router` with default archive and authentication stores.
+/// Builds the auth state (invite JWT key, TOTP master key, security policy) from `config`.
+fn auth_state_from_config(
+    session_store: Arc<dyn FullAuthStore>,
+    config: &ServerConfig,
+) -> AuthState {
+    AuthState::with_security(
+        Arc::new(MagicLinkService::new(
+            config.secrets.invite_jwt_secret.clone(),
+            "trame-server",
+        )),
+        session_store,
+        Arc::new(TotpService::new(
+            config.secrets.master_encryption_key,
+            "TRAME",
+        )),
+        config.security.clone(),
+    )
+}
+
+/// Constructs the full Axum `Router` with default in-memory stores and development config.
 pub fn build_full_router(
     lease_manager: Arc<RoomLeaseManager>,
     asset_store: Arc<dyn AssetStore>,
@@ -475,16 +468,26 @@ pub fn build_full_router(
     instance_id: Uuid,
     timeline_storage: Arc<dyn TimelineStorage>,
 ) -> Router {
-    let session_store = Arc::new(InMemorySessionStore::new());
-    let magic_link_service = Arc::new(MagicLinkService::new(
-        b"trame-default-hmac-sha256-signing-secret-key",
-        "trame-server",
-    ));
-    let auth_state = AuthState {
-        magic_link_service,
-        session_store,
-        totp_service: Arc::new(TotpService::default()),
-    };
+    build_in_memory_router_with_config(
+        lease_manager,
+        asset_store,
+        membership,
+        instance_id,
+        timeline_storage,
+        &ServerConfig::dev(),
+    )
+}
+
+/// Constructs the full in-memory Axum `Router` with secrets and policy from `config`.
+pub fn build_in_memory_router_with_config(
+    lease_manager: Arc<RoomLeaseManager>,
+    asset_store: Arc<dyn AssetStore>,
+    membership: Arc<dyn CampaignMembershipValidator>,
+    instance_id: Uuid,
+    timeline_storage: Arc<dyn TimelineStorage>,
+    config: &ServerConfig,
+) -> Router {
+    let auth_state = auth_state_from_config(Arc::new(InMemorySessionStore::new()), config);
     let state = AppState {
         lease_manager,
         asset_store,
@@ -507,16 +510,9 @@ pub fn build_router_with_postgres_store(
     store: Arc<SqlxPostgresStore>,
     lease_manager: Arc<RoomLeaseManager>,
     instance_id: Uuid,
+    config: &ServerConfig,
 ) -> Router {
-    let magic_link_service = Arc::new(MagicLinkService::new(
-        b"trame-default-hmac-sha256-signing-secret-key",
-        "trame-server",
-    ));
-    let auth_state = AuthState {
-        magic_link_service,
-        session_store: store.clone(),
-        totp_service: Arc::new(TotpService::default()),
-    };
+    let auth_state = auth_state_from_config(store.clone(), config);
     let state = AppState {
         lease_manager,
         asset_store: store.clone(),
@@ -545,7 +541,8 @@ pub async fn list_campaign_notes_internal(state: &AppState, campaign_id: Uuid) -
     state.campaign_store.all_notes()
 }
 
-/// Constructs the authoritative Axum `Router` from a pre-configured `AppState`.
+/// Constructs the authoritative Axum `Router` from a pre-configured `AppState`, wrapped in
+/// `security_headers_middleware`.
 pub fn build_router_with_state(state: AppState) -> Router {
     let auth_router = build_auth_router(state.auth_state.clone());
 
@@ -579,13 +576,14 @@ pub fn build_router_with_state(state: AppState) -> Router {
         )
         .with_state(state)
         .merge(auth_router)
+        .layer(axum::middleware::from_fn(security_headers_middleware))
 }
 
-/// Resolves an authenticated user ID from session cookie, Bearer session token, Bearer PAT, or explicit `fallback_user_id`.
+/// Resolves an authenticated user ID from a session cookie, Bearer session token, or Bearer PAT.
+/// Returns `401` when no valid credential is present.
 pub async fn resolve_authenticated_user(
     state: &AppState,
     headers: &HeaderMap,
-    fallback_user_id: Option<Uuid>,
 ) -> Result<Uuid, StatusCode> {
     if let Some(auth_hdr) = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -621,7 +619,46 @@ pub async fn resolve_authenticated_user(
         return Ok(session.user_id);
     }
 
-    fallback_user_id.ok_or(StatusCode::UNAUTHORIZED)
+    Err(StatusCode::UNAUTHORIZED)
+}
+
+/// Resolves the caller's campaign role from the authoritative membership stores, or `None`
+/// for non-members. `GM` maps to `Gm`, `SPECTATOR` to `Spectator`, anything else to `Player`.
+pub async fn resolve_campaign_role(
+    state: &AppState,
+    campaign_id: Uuid,
+    user_id: Uuid,
+) -> Option<CampaignRole> {
+    if let Ok(Some(member)) = state
+        .auth_state
+        .session_store
+        .get_campaign_member(campaign_id, user_id)
+        .await
+    {
+        return Some(match member.role.to_ascii_uppercase().as_str() {
+            "GM" => CampaignRole::Gm,
+            "SPECTATOR" => CampaignRole::Spectator,
+            _ => CampaignRole::Player,
+        });
+    }
+    if state.membership.is_gm(campaign_id, user_id) {
+        Some(CampaignRole::Gm)
+    } else if state.membership.is_member(campaign_id, user_id) {
+        Some(CampaignRole::Player)
+    } else {
+        None
+    }
+}
+
+fn error_response(status: StatusCode, code: &str, error: &str) -> Response {
+    (
+        status,
+        Json(ErrorResponse {
+            code: Some(code.to_string()),
+            error: error.to_string(),
+        }),
+    )
+        .into_response()
 }
 
 /// Checks whether `user_id` is an authorized member of `campaign_id` via `membership` or `session_store`.
@@ -697,11 +734,10 @@ pub async fn healthz_handler(State(state): State<AppState>) -> Response {
 /// Streams a portable `.trame` ZIP archive for `GET /api/v1/campaigns/{campaign_id}/export`.
 pub async fn export_campaign_handler(
     Path(campaign_id): Path<Uuid>,
-    Query(query): Query<ExportQuery>,
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
-    let user_id = match resolve_authenticated_user(&state, &headers, query.user_id).await {
+    let user_id = match resolve_authenticated_user(&state, &headers).await {
         Ok(uid) => uid,
         Err(status) => {
             return (
@@ -737,43 +773,11 @@ pub async fn export_campaign_handler(
             created_at: "2026-01-01T00:00:00Z".to_string(),
         });
 
-    let cid_str = campaign_id.to_string();
-    let entities: Vec<ExportEntity> = state
-        .campaign_store
-        .all_entities()
-        .into_iter()
-        .filter(|e| {
-            let matches_campaign_id = e
-                .data
-                .get("campaign_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s == cid_str)
-                .unwrap_or(false);
-            let matches_self = e.entity_type == "campaign"
-                && e.data
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s == cid_str)
-                    .unwrap_or(false);
-            matches_campaign_id || matches_self
-        })
-        .collect();
-
-    let notes = state.campaign_store.all_notes();
-    let asset_ids: Vec<Uuid> = state
-        .blob_store
-        .list_descriptors()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|d| Uuid::parse_str(&d.id).ok())
-        .collect();
-
     let source = ScopedCampaignExportSource {
         metadata,
-        entities,
-        notes,
-        asset_ids,
+        entities: state.campaign_store.entities_for_campaign(campaign_id),
+        notes: state.campaign_store.notes_for_campaign(campaign_id),
+        asset_ids: state.campaign_store.asset_ids_for_campaign(campaign_id),
     };
 
     let exporter = ArchiveExporter::new(source, state.blob_store.clone());
@@ -810,22 +814,42 @@ fn is_client_archive_error(err: &ArchiveError) -> bool {
         ArchiveError::InvalidManifest(_)
             | ArchiveError::ChecksumMismatch { .. }
             | ArchiveError::UnlistedEntry(_)
+            | ArchiveError::LimitExceeded(_)
             | ArchiveError::Zip(_)
             | ArchiveError::Json(_)
     )
 }
 
-/// Imports a `.trame` archive stream at `POST /api/v1/campaigns/import`, returning `201 Created`
-/// with restoration counters or `409 Conflict` (`CAMPAIGN_ALREADY_EXISTS`) on collision.
+/// Imports a `.trame` archive stream at `POST /api/v1/campaigns/import` as a brand-new campaign
+/// (IDs always remapped, G8) whose GM is the caller. Requires a non-guest account (`401` when
+/// unauthenticated, `403` for guests); returns `201 Created` with restoration counters.
 pub async fn import_campaign_handler(
-    Query(query): Query<ImportQuery>,
     headers: HeaderMap,
     State(state): State<AppState>,
     request: Request<Body>,
 ) -> Response {
-    let caller_user_id = resolve_authenticated_user(&state, &headers, query.user_id)
+    let Ok(caller_user_id) = resolve_authenticated_user(&state, &headers).await else {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "valid authentication credentials required",
+        );
+    };
+    match state
+        .auth_state
+        .session_store
+        .get_user_by_id(caller_user_id)
         .await
-        .ok();
+    {
+        Ok(Some(user)) if !user.is_guest => {}
+        _ => {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "GUEST_FORBIDDEN",
+                "only registered (non-guest) accounts can create campaigns",
+            );
+        }
+    }
 
     let body = request.into_body();
     let body_bytes = match axum::body::to_bytes(body, MAX_ARCHIVE_UPLOAD_BYTES).await {
@@ -842,11 +866,10 @@ pub async fn import_campaign_handler(
         }
     };
 
-    let remap_ids = query.remap_ids.unwrap_or(false);
     let importer = ArchiveImporter::new(state.campaign_store.clone(), state.blob_store.clone());
 
     match importer
-        .import_stream(Cursor::new(body_bytes.to_vec()), remap_ids)
+        .import_stream(Cursor::new(body_bytes.to_vec()), true)
         .await
     {
         Ok(ImportResult {
@@ -857,13 +880,18 @@ pub async fn import_campaign_handler(
             notes_restored,
             assets_restored,
         }) => {
-            if let Some(uid) = caller_user_id {
-                state.membership.add_member(campaign_id, uid);
-                let _ = state
-                    .auth_state
-                    .session_store
-                    .assign_campaign_member(campaign_id, uid, None, "GM")
-                    .await;
+            state.membership.add_member(campaign_id, caller_user_id);
+            if let Err(err) = state
+                .auth_state
+                .session_store
+                .assign_campaign_member(campaign_id, caller_user_id, None, "GM")
+                .await
+            {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "IMPORT_ERROR",
+                    &err.to_string(),
+                );
             }
             (
                 StatusCode::CREATED,
@@ -909,11 +937,18 @@ pub async fn import_campaign_handler(
 /// when called by an authorized Game Master (`201 Created`).
 pub async fn create_campaign_invite_handler(
     Path(campaign_id): Path<Uuid>,
-    Query(query): Query<CampaignInviteQuery>,
     headers: HeaderMap,
     State(state): State<AppState>,
     body: Bytes,
 ) -> Response {
+    if let Err(err) = state.auth_state.magic_link_service.validate_secret() {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "WEAK_JWT_SECRET",
+            &err.to_string(),
+        );
+    }
+
     let payload: CreateCampaignInviteRequest = if body.is_empty() {
         CreateCampaignInviteRequest::default()
     } else {
@@ -932,8 +967,7 @@ pub async fn create_campaign_invite_handler(
         }
     };
 
-    let fallback_uid = query.user_id.or(payload.user_id);
-    let caller_id = match resolve_authenticated_user(&state, &headers, fallback_uid).await {
+    let caller_id = match resolve_authenticated_user(&state, &headers).await {
         Ok(uid) => uid,
         Err(status) => {
             return (
@@ -958,7 +992,10 @@ pub async fn create_campaign_invite_handler(
             .into_response();
     }
 
-    let role = payload.role.unwrap_or_else(|| "PLAYER".to_string());
+    let role = payload
+        .role
+        .map(|r| r.trim().to_ascii_uppercase())
+        .unwrap_or_else(|| "PLAYER".to_string());
     let ttl = payload.ttl_seconds.unwrap_or(DEFAULT_SESSION_TTL_SECONDS);
 
     match state.auth_state.magic_link_service.create_invite_token(
@@ -994,59 +1031,121 @@ pub async fn create_campaign_invite_handler(
     }
 }
 
+/// Returns `true` for timeline events only the GM may read: `payload.visibility` of `gm`,
+/// `gm_only`, or `gmonly` (case-insensitive), or `payload.gm_only == true`.
+pub fn is_gm_only_timeline_event(event: &SessionTimelineEvent) -> bool {
+    let visibility_gm = event
+        .payload
+        .get("visibility")
+        .and_then(|v| v.as_str())
+        .map(|v| {
+            matches!(
+                v.to_ascii_lowercase().replace(['_', '-'], "").as_str(),
+                "gm" | "gmonly"
+            )
+        })
+        .unwrap_or(false);
+    let flag_gm = event
+        .payload
+        .get("gm_only")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    visibility_gm || flag_gm
+}
+
+/// Cursor-paginated session timeline. Requires campaign membership; non-GM members never see
+/// GM-only events; `limit` defaults to 50 and is clamped to `1..=MAX_TIMELINE_LIMIT`.
 async fn timeline_handler(
-    Path((campaign_id, session_num)): Path<(String, u32)>,
+    Path((campaign_id, session_num)): Path<(Uuid, u32)>,
     Query(query): Query<TimelineQuery>,
+    headers: HeaderMap,
     State(state): State<AppState>,
-) -> Json<SessionTimelineResponse> {
+) -> Response {
+    let Ok(user_id) = resolve_authenticated_user(&state, &headers).await else {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "valid authentication credentials required",
+        );
+    };
+    let Some(role) = resolve_campaign_role(&state, campaign_id, user_id).await else {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "FORBIDDEN",
+            "user is not an active member of this campaign",
+        );
+    };
+
+    let campaign_key = campaign_id.to_string();
     let after_seq = query.after.unwrap_or(0);
-    let limit = query.limit.unwrap_or(50);
-    let resp = state
+    let limit = query.limit.unwrap_or(50).clamp(1, MAX_TIMELINE_LIMIT);
+    let mut resp = state
         .timeline_storage
-        .get_timeline(&campaign_id, session_num, after_seq, limit)
+        .get_timeline(&campaign_key, session_num, after_seq, limit)
         .unwrap_or_else(|_| SessionTimelineResponse {
-            campaign_id: campaign_id.clone(),
+            campaign_id: campaign_key.clone(),
             session_num,
-            session_id: format!("{campaign_id}:{session_num}"),
+            session_id: format!("{campaign_key}:{session_num}"),
             events: Vec::new(),
             has_more: false,
         });
-    Json(resp)
+    resp.events.truncate(limit);
+    if role != CampaignRole::Gm {
+        resp.events.retain(|e| !is_gm_only_timeline_event(e));
+    }
+    Json(resp).into_response()
 }
 
-/// WebSocket endpoint upgrading client connection and attaching to campaign `TableRoomActor`.
+/// WebSocket endpoint attaching an authenticated campaign member to the `TableRoomActor`.
+///
+/// Check order (each fails before the upgrade): shutdown (`503`), `Origin` allow-list (`403`),
+/// credentials (`401`), membership (`403`). The role comes from the membership store, never
+/// from the client. Messages and frames are capped at `SecurityPolicy::ws_max_message_bytes`.
 pub async fn ws_campaign_handler(
     ws: WebSocketUpgrade,
     Path(campaign_id): Path<Uuid>,
-    Query(query): Query<WsAuthQuery>,
+    headers: HeaderMap,
     State(state): State<AppState>,
-) -> impl IntoResponse {
+) -> Response {
     if IS_SHUTTING_DOWN.load(Ordering::Acquire) {
-        return (
+        return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                code: Some("SHUTTING_DOWN".to_string()),
-                error: "server is shutting down".to_string(),
-            }),
-        )
-            .into_response();
+            "SHUTTING_DOWN",
+            "server is shutting down",
+        );
     }
 
-    let role = match query.role.as_deref() {
-        Some("gm") | Some("GM") => CampaignRole::Gm,
-        Some("spectator") | Some("Spectator") => CampaignRole::Spectator,
-        _ => CampaignRole::Player,
+    let policy = state.auth_state.security.clone();
+    let origin = headers.get(ORIGIN).map(|v| v.to_str().unwrap_or("\u{0}"));
+    if !policy.is_origin_allowed(origin) {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "ORIGIN_FORBIDDEN",
+            "WebSocket origin is not allowed",
+        );
+    }
+
+    let Ok(user_id) = resolve_authenticated_user(&state, &headers).await else {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "valid authentication credentials required",
+        );
     };
-    ws.on_upgrade(move |socket| {
-        handle_ws_connection(
-            socket,
-            state.lease_manager,
-            campaign_id,
-            query.user_id,
-            role,
-        )
-    })
-    .into_response()
+    let Some(role) = resolve_campaign_role(&state, campaign_id, user_id).await else {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "FORBIDDEN",
+            "user is not an active member of this campaign",
+        );
+    };
+
+    ws.max_message_size(policy.ws_max_message_bytes)
+        .max_frame_size(policy.ws_max_message_bytes)
+        .on_upgrade(move |socket| {
+            handle_ws_connection(socket, state.lease_manager, campaign_id, user_id, role)
+        })
+        .into_response()
 }
 
 fn is_valid_asset_hash(hash: &str) -> bool {
@@ -1054,12 +1153,21 @@ fn is_valid_asset_hash(hash: &str) -> bool {
     !base.is_empty() && base.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// Presigns a campaign asset URL with 15-minute TTL enforcing campaign membership.
+/// Presigns a campaign asset URL with 15-minute TTL. The caller must be authenticated and a
+/// member of `campaign_id` in the authoritative membership store.
 pub async fn presign_asset_handler(
     Path((campaign_id, hash)): Path<(Uuid, String)>,
-    Query(query): Query<PresignQuery>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
+    let Ok(user_id) = resolve_authenticated_user(&state, &headers).await else {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "valid authentication credentials required",
+        );
+    };
+
     if !is_valid_asset_hash(&hash) {
         return (
             StatusCode::BAD_REQUEST,
@@ -1071,7 +1179,7 @@ pub async fn presign_asset_handler(
             .into_response();
     }
 
-    if !state.membership.is_member(campaign_id, query.user_id) {
+    if !is_authorized_campaign_member(&state, campaign_id, user_id).await {
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
@@ -1186,13 +1294,21 @@ pub async fn seed_campaign_for_export(
     assets: Vec<(Uuid, &[u8])>,
 ) -> Result<(), ArchiveError> {
     state.campaign_store.save_campaign(&campaign).await?;
-    state.campaign_store.save_entities(&entities).await?;
-    state.campaign_store.save_notes(&notes).await?;
+    state
+        .campaign_store
+        .save_entities(campaign.id, &entities)
+        .await?;
+    state.campaign_store.save_notes(campaign.id, &notes).await?;
+    let mut asset_ids = Vec::with_capacity(assets.len());
     for (asset_id, data) in assets {
         state
             .blob_store
             .put_stream(&asset_id.to_string(), slice_to_stream(data))
             .await?;
+        asset_ids.push(asset_id);
     }
-    Ok(())
+    state
+        .campaign_store
+        .save_asset_ids(campaign.id, &asset_ids)
+        .await
 }

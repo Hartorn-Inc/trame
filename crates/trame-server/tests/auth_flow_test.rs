@@ -53,6 +53,7 @@ impl AuthTestHarness {
             magic_link_service: magic_service.clone(),
             session_store: session_store.clone(),
             totp_service: Arc::new(TotpService::default()),
+            security: Default::default(),
         };
         let router = build_auth_router(auth_state);
         Self {
