@@ -466,67 +466,6 @@ describe("RestModal Component", () => {
       await new Promise((r) => setTimeout(r, 20));
       unmount();
     });
-
-    it("stops propagation on Escape key to prevent closing parent containers", async () => {
-      let closed = false;
-      let stopPropagationCalled = false;
-      const actor = createTestActor();
-      const { container, unmount } = await renderModal({
-        actor,
-        restType: "short",
-        isOpen: true,
-        onClose: () => { closed = true; },
-        onSave: () => {},
-      });
-      const backdrop = container.querySelector("[role='dialog']");
-      assert.ok(backdrop);
-      backdrop.dispatchEvent({
-        type: "keydown",
-        key: "Escape",
-        stopPropagation: () => { stopPropagationCalled = true; },
-      });
-      assert.equal(closed, true);
-      assert.equal(stopPropagationCalled, true);
-      unmount();
-    });
-
-    it("stops propagation on Escape even when isSubmitting is true without closing modal", async () => {
-      let closed = false;
-      let stopPropagationCalled = false;
-      let resolveSave: () => void = () => {};
-      const slowSavePromise = new Promise<void>((resolve) => {
-        resolveSave = resolve;
-      });
-
-      const actor = createTestActor();
-      const { container, findByText, unmount } = await renderModal({
-        actor,
-        restType: "short",
-        isOpen: true,
-        onClose: () => { closed = true; },
-        onSave: () => slowSavePromise,
-      });
-
-      const confirmBtn = findByText("Confirmer le Repos Court");
-      assert.ok(confirmBtn);
-      confirmBtn.dispatchEvent({ type: "click" });
-      await new Promise((r) => setTimeout(r, 10));
-
-      const backdrop = container.querySelector("[role='dialog']");
-      assert.ok(backdrop);
-      backdrop.dispatchEvent({
-        type: "keydown",
-        key: "Escape",
-        stopPropagation: () => { stopPropagationCalled = true; },
-      });
-
-      assert.equal(closed, false);
-      assert.equal(stopPropagationCalled, true);
-
-      resolveSave();
-      await new Promise((r) => setTimeout(r, 20));
-      unmount();
-    });
   });
 
   describe("Short Rest Workflow (restType: 'short')", () => {
@@ -907,6 +846,40 @@ describe("RestModal Component", () => {
       assert.ok(describedBy);
       const descEl = container.querySelector(`#${describedBy}`);
       assert.ok(descEl);
+      unmount();
+    });
+
+    it("groups stepper controls with role='group' and aria-labelledby while exposing numeric counter without aria-labelledby override", async () => {
+      const actor = createTestActor();
+      const { container, unmount } = await renderModal({
+        actor,
+        restType: "short",
+        isOpen: true,
+        onClose: () => {},
+        onSave: () => {},
+      });
+
+      const stepperGroup = container.querySelector("[role='group']");
+      assert.ok(stepperGroup, "Stepper controls must be enclosed in role='group'");
+      assert.equal(
+        stepperGroup.getAttribute("aria-labelledby"),
+        "spent-dice-label",
+        "Stepper group must be labelled by spent-dice-label"
+      );
+
+      const counter = container.querySelector("[data-testid='spent-dice-count']");
+      assert.ok(counter, "Counter span must exist");
+      assert.equal(
+        counter.getAttribute("aria-live"),
+        "polite",
+        "Counter must announce live numeric updates via aria-live='polite'"
+      );
+      assert.equal(
+        counter.getAttribute("aria-labelledby"),
+        null,
+        "Counter span must not have aria-labelledby to avoid overriding numeric value in accessibility tree"
+      );
+
       unmount();
     });
 

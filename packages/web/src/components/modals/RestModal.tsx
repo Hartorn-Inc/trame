@@ -366,7 +366,11 @@ export function RestModal(props: RestModalProps): VNode<any> | null {
                   ),
                   h(
                     "div",
-                    { class: "flex items-center space-x-2" },
+                    {
+                      class: "flex items-center space-x-2",
+                      role: "group",
+                      "aria-labelledby": "spent-dice-label",
+                    },
                     h(
                       "button",
                       {
@@ -382,7 +386,6 @@ export function RestModal(props: RestModalProps): VNode<any> | null {
                       "span",
                       {
                         class: "w-10 text-center font-bold text-base text-[var(--atlas-action)]",
-                        "aria-labelledby": "spent-dice-label",
                         "aria-live": "polite",
                         "data-testid": "spent-dice-count",
                       },
