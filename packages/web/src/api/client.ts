@@ -33,6 +33,8 @@
  *    - Actor sheets are read and written over REST with `expected_version`
  *      (`updateActor`); a stale write surfaces as `ApiError` code
  *      `VERSION_CONFLICT` instead of silently overwriting another edit.
+ *    - The scene list is versioned the same way: `getMaps` returns `version`,
+ *      `saveMaps` sends it as `expected_version` and returns the new one.
  *    - Sheet rolls use `rollDiceRest`; table-tray rolls use the `RollDice`
  *      socket frame. Both end up in `diceLog` through `DiceRolled`.
  * 6. `Injectable Transport`:
@@ -167,6 +169,46 @@ export interface UploadedAsset {
   expiresInSecs: number;
 }
 
+/** Campaign scenes with their list version (`GET /api/v1/campaigns/{id}/maps`). */
+export interface CampaignMaps {
+  /** Scenes in backend (snake_case) shape. */
+  scenes: Record<string, unknown>[];
+  /** Optimistic-concurrency version of the whole scene list; send it back as `expected_version`. */
+  version: number;
+}
+
+/** Note as returned by the note routes (`NoteDto`), content filtered for the caller's role. */
+export interface CampaignNote {
+  /** URL-safe key (`[A-Za-z0-9_-]{1,128}`), unique within the campaign. */
+  slug: string;
+  id: Uuid;
+  title: string;
+  contentMarkdown: string;
+  /** Lowest role able to read the note. */
+  minRole: "PLAYER" | "GM";
+  folder: string | null;
+}
+
+/** Body of `PUT /api/v1/campaigns/{id}/notes/{slug}`. */
+export interface PutNoteInput {
+  title: string;
+  contentMarkdown: string;
+  folder?: string | null;
+  /** Honored for GMs only; players always write `PLAYER` notes. */
+  minRole?: "PLAYER" | "GM";
+}
+
+/** Revealed handout in the party journal (`GET /api/v1/campaigns/{id}/journal`). */
+export interface JournalEntry {
+  handoutId: string;
+  title: string;
+  content: string;
+  /** User id of the GM who revealed it. */
+  revealedBy: string;
+  /** UNIX epoch milliseconds. */
+  revealedAt: number;
+}
+
 /** Credentials for `POST /api/v1/auth/register`. */
 export interface RegisterInput {
   email: string;
@@ -252,6 +294,17 @@ function toCampaignMember(raw: Json): CampaignMember {
     userId,
     displayName: String(raw.display_name ?? raw.username ?? userId),
     role: String(raw.role ?? "PLAYER"),
+  };
+}
+
+function toCampaignNote(raw: Json): CampaignNote {
+  return {
+    slug: String(raw.slug),
+    id: String(raw.id),
+    title: String(raw.title),
+    contentMarkdown: String(raw.content_markdown ?? ""),
+    minRole: String(raw.min_role).toUpperCase() === "GM" ? "GM" : "PLAYER",
+    folder: typeof raw.folder === "string" ? raw.folder : null,
   };
 }
 
@@ -565,15 +618,62 @@ export class ApiClient {
     return String(res.url);
   }
 
-  /** Reads the campaign scenes in backend shape (`GET .../maps`, role-filtered). */
-  async getMaps(campaignId: Uuid): Promise<Record<string, unknown>[]> {
-    const res = await this.execute(campaignPath(campaignId, "/maps"), { method: "GET", credentials: "include" });
-    return Array.isArray(res) ? (res as Record<string, unknown>[]) : [];
+  /** Reads the campaign scenes in backend shape and their list version (`GET .../maps`, role-filtered). */
+  async getMaps(campaignId: Uuid): Promise<CampaignMaps> {
+    const res = await this.request("GET", campaignPath(campaignId, "/maps"));
+    return { scenes: (res.scenes as Json[]) ?? [], version: Number(res.version) };
   }
 
-  /** Replaces every campaign scene (`PUT .../maps`, GM only). */
-  async saveMaps(campaignId: Uuid, scenes: Record<string, unknown>[]): Promise<void> {
-    await this.request("PUT", campaignPath(campaignId, "/maps"), { scenes });
+  /**
+   * Replaces every campaign scene (`PUT .../maps`, GM only) and returns the new
+   * list version. A stale `expectedVersion` rejects with `ApiError` code
+   * `VERSION_CONFLICT` and `body.current_version`.
+   */
+  async saveMaps(campaignId: Uuid, scenes: Record<string, unknown>[], expectedVersion: number): Promise<number> {
+    const res = await this.request("PUT", campaignPath(campaignId, "/maps"), { expected_version: expectedVersion, scenes });
+    return Number(res.version);
+  }
+
+  /** Lists the notes the caller may read, content already role-filtered (`GET .../notes`). */
+  async listNotes(campaignId: Uuid): Promise<CampaignNote[]> {
+    const res = await this.request("GET", campaignPath(campaignId, "/notes"));
+    return ((res.notes as Json[]) ?? []).map(toCampaignNote);
+  }
+
+  /**
+   * Creates or replaces a note (`PUT .../notes/{slug}`). Players may only edit
+   * party notes; the server merges their text so GM-only blocks survive.
+   */
+  async putNote(campaignId: Uuid, slug: string, input: PutNoteInput): Promise<CampaignNote> {
+    const res = await this.request("PUT", campaignPath(campaignId, `/notes/${encodeURIComponent(slug)}`), {
+      title: input.title,
+      content_markdown: input.contentMarkdown,
+      folder: input.folder,
+      min_role: input.minRole,
+    });
+    return toCampaignNote(res.note as Json);
+  }
+
+  /** Lists revealed handouts, newest first (`GET .../journal`). */
+  async listJournal(campaignId: Uuid): Promise<JournalEntry[]> {
+    const res = await this.request("GET", campaignPath(campaignId, "/journal"));
+    return ((res.entries as Json[]) ?? []).map((e) => ({
+      handoutId: String(e.handout_id),
+      title: String(e.title),
+      content: String(e.content),
+      revealedBy: String(e.revealed_by),
+      revealedAt: Number(e.revealed_at),
+    }));
+  }
+
+  /**
+   * Reveals a `:::handout{id=...}` block from the campaign notes to the party
+   * (`POST .../handouts/{id}/reveal`, GM only). Connected players receive the
+   * same payload as a `HandoutRevealed` frame.
+   */
+  async revealHandout(campaignId: Uuid, handoutId: string): Promise<HandoutRevealedBroadcast> {
+    const res = await this.request("POST", campaignPath(campaignId, `/handouts/${encodeURIComponent(handoutId)}/reveal`));
+    return res.handout as HandoutRevealedBroadcast;
   }
 
   /** Imports a `.uvtt` / `.dd2vtt` file as a new scene (`POST .../maps/import`, GM only). */

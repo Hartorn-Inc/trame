@@ -14,7 +14,7 @@
  * -----
  * 1. `Same Seams As Desktop`:
  *    - Every tab reuses the desktop component (`ActorSheetPanel`, `DiceTray`,
- *      `CombatTrackerBar`, `ReactionBanner`, `DocumentsWorkspaceTab`), so
+ *      `CombatTrackerBar`, `ReactionBanner`, `CampaignDocumentsTab`), so
  *      sheet saves stay versioned REST PUTs and table actions stay commands.
  * 2. `Sheet Resolution`:
  *    - The sheet shown is the selected actor, else the first sheet owned by
@@ -32,7 +32,7 @@ import { ActorSheetPanel, INVENTORY_SHEET_LAYOUT } from "../sheet/ActorSheetPane
 import { CombatTrackerBar } from "../table/CombatTrackerBar.tsx";
 import { DiceTray } from "../table/DiceTray.tsx";
 import { ReactionBanner } from "../table/ReactionBanner.tsx";
-import { DocumentsWorkspaceTab } from "../workspace/DocumentsWorkspaceTab.tsx";
+import { CampaignDocumentsTab } from "../workspace/CampaignDocumentsTab.tsx";
 
 const COMPACT_TOGGLE_STYLE = { padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" };
 
@@ -143,7 +143,7 @@ export function MobileCompanionView({ campaignId: campaignIdProp, client = apiCl
         )}
         {activeTab === "journal" && (
           <div data-testid="tab-journal">
-            <DocumentsWorkspaceTab isGm={isGm} currentUserId={client.state.user.value?.id ?? ""} />
+            <CampaignDocumentsTab campaignId={campaignId} client={client} isGm={isGm} />
           </div>
         )}
       </main>

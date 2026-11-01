@@ -651,4 +651,12 @@ export const FR: Record<MessageKey, string> = {
   "workspace.tab.documents": "Documents",
   "workspace.tab.compendium": "Compendium",
   "compendium.attributionTitle": "Mention de licence du SRD",
+  "docs.loading": "Chargement des notes et des documents…",
+  "docs.loadFailed": "Impossible de charger les notes de la campagne.",
+  "docs.retry": "Réessayer",
+  "docs.notes.save": "Enregistrer la note",
+  "docs.notes.saved": "{{title}} enregistrée.",
+  "docs.handouts.revealed": "{{title}} révélé au groupe.",
+  "mapsTab.conflict": "Les scènes ont été modifiées ailleurs (version {{version}}). Votre modification n'a pas été enregistrée.",
+  "mapsTab.reloaded": "Dernières scènes chargées.",
 };

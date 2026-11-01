@@ -202,6 +202,17 @@ export const currentUserIdSignal = signal<string>("");
 export interface DocumentsWorkspaceTabProps {
   isGm?: boolean;
   currentUserId?: string;
+  /**
+   * Notes come from the campaign server, which has no per-user `PRIVATE` scope:
+   * that filter and option are hidden.
+   */
+  serverBacked?: boolean;
+  /** Persists the note; when set, the editor shows a Save button. */
+  onSaveNote?: (note: NoteHierarchyNode) => void;
+  /** Reveals a handout through the server instead of the local journal. */
+  onRevealHandout?: (handout: { id: string; title: string; content: string }) => void;
+  /** Disables Save and Reveal while a request is in flight. */
+  busy?: boolean;
 }
 
 export function updateHandoutDirectiveRevealed(
@@ -276,6 +287,10 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
 
   const handleRevealHandout = (handout: { id: string; title: string; content: string }) => {
     if (!isGm) return;
+    if (props.onRevealHandout) {
+      props.onRevealHandout(handout);
+      return;
+    }
     const activeGm = currentUserId || "gm";
     const entry: PartyJournalEntry = {
       handoutId: handout.id,
@@ -328,15 +343,17 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" }}>
           <h3>{t("docs.notes")}</h3>
           <div style={{ display: "flex", gap: "0.5rem" }}>
-            <button
-              type="button"
-              data-testid="filter-private"
-              aria-pressed={effectiveFilter === "PRIVATE"}
-              class={`ds-btn ${effectiveFilter === "PRIVATE" ? "ds-btn-primary" : "ds-btn-secondary"}`}
-              onClick={() => toggleFilter("PRIVATE")}
-            >
-              {t("note.scope.private")}
-            </button>
+            {!props.serverBacked && (
+              <button
+                type="button"
+                data-testid="filter-private"
+                aria-pressed={effectiveFilter === "PRIVATE"}
+                class={`ds-btn ${effectiveFilter === "PRIVATE" ? "ds-btn-primary" : "ds-btn-secondary"}`}
+                onClick={() => toggleFilter("PRIVATE")}
+              >
+                {t("note.scope.private")}
+              </button>
+            )}
             <button
               type="button"
               data-testid="filter-party"
@@ -526,7 +543,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                   );
                 }}
               >
-                <option value="PRIVATE">{t("note.scope.private")}</option>
+                {!props.serverBacked && <option value="PRIVATE">{t("note.scope.private")}</option>}
                 <option value="PARTY">{t("note.scope.party")}</option>
                 {isGm && <option value="DM_ONLY">{t("note.scope.dm_only")}</option>}
               </select>
@@ -553,6 +570,20 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
             />
           </label>
 
+          {props.onSaveNote && (
+            <div class="ds-cluster">
+              <button
+                type="button"
+                data-testid="save-note-btn"
+                class="ds-btn ds-btn-primary"
+                disabled={props.busy}
+                onClick={() => props.onSaveNote?.(selectedNote)}
+              >
+                {t("docs.notes.save")}
+              </button>
+            </div>
+          )}
+
           {isGm && parsedActiveNote && parsedActiveNote.handouts.length > 0 && (
             <div data-testid="note-handout-directives" style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
               {parsedActiveNote.handouts.map((handout) => (
@@ -561,6 +592,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                   type="button"
                   data-testid="btn-reveal-handout"
                   class="ds-btn ds-btn-primary"
+                  disabled={props.busy}
                   onClick={() => handleRevealHandout(handout)}
                 >
                   {t("action.reveal")}: {handout.title}

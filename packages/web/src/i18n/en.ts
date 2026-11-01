@@ -648,6 +648,14 @@ export const EN = {
   "workspace.tab.documents": "Documents",
   "workspace.tab.compendium": "Compendium",
   "compendium.attributionTitle": "SRD license notice",
+  "docs.loading": "Loading notes and handouts…",
+  "docs.loadFailed": "Could not load the campaign notes.",
+  "docs.retry": "Try again",
+  "docs.notes.save": "Save note",
+  "docs.notes.saved": "{{title}} saved.",
+  "docs.handouts.revealed": "{{title}} revealed to the party.",
+  "mapsTab.conflict": "The scenes were changed elsewhere (now version {{version}}). Your change was not saved.",
+  "mapsTab.reloaded": "Latest scenes loaded.",
 } as const;
 
 /** Every translatable UI message identifier. */
