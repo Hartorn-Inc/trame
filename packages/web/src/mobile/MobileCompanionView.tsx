@@ -1,12 +1,9 @@
 import { signal } from "@preact/signals";
-import {
-  localeSignal,
-  mobileCompanionOverrideSignal,
-  t,
-  unitSystemSignal,
-  type MessageKey,
-} from "../i18n/index.ts";
+import { LocaleToggle, UnitsToggle } from "../components/ShellToggles.tsx";
+import { mobileCompanionOverrideSignal, t, type MessageKey } from "../i18n/index.ts";
 import { DocumentsWorkspaceTab } from "../workspace/DocumentsWorkspaceTab.tsx";
+
+const COMPACT_TOGGLE_STYLE = { padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" };
 
 export type MobileCompanionTab = "sheet" | "dice" | "inventory" | "tracker" | "journal";
 
@@ -42,31 +39,8 @@ export function MobileCompanionView() {
       >
         <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>{t("shell.companionMode")}</span>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-          <button
-            type="button"
-            data-testid="header-locale-toggle"
-            aria-label={t("shell.toggleLanguage", { locale: localeSignal.value === "fr" ? "FR" : "EN" })}
-            class="ds-btn ds-btn-secondary"
-            onClick={() => {
-              localeSignal.value = localeSignal.value === "en" ? "fr" : "en";
-            }}
-            style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" }}
-          >
-            {localeSignal.value === "fr" ? "FR" : "EN"}
-          </button>
-          <button
-            type="button"
-            data-testid="header-units-toggle"
-            aria-label={t("shell.toggleUnits", { unit: unitSystemSignal.value === "imperial_ft" ? "5 ft" : "1.5 m" })}
-            class="ds-btn ds-btn-secondary"
-            onClick={() => {
-              unitSystemSignal.value =
-                unitSystemSignal.value === "imperial_ft" ? "metric_m" : "imperial_ft";
-            }}
-            style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" }}
-          >
-            {unitSystemSignal.value === "imperial_ft" ? "5 ft" : "1.5 m"}
-          </button>
+          <LocaleToggle style={COMPACT_TOGGLE_STYLE} />
+          <UnitsToggle style={COMPACT_TOGGLE_STYLE} />
           {mobileCompanionOverrideSignal.value && (
             <button
               type="button"

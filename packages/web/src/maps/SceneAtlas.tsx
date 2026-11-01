@@ -26,8 +26,8 @@ export function SceneAtlas({ campaignId, scenes, onSelectScene }: SceneAtlasProp
     <div class="scene-atlas" data-testid="scene-atlas" style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 'var(--atlas-space-md)' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 'var(--atlas-text-lg)' }}>{t('maps.atlas.title')}</h2>
-          <span class="atlas-tabular-nums" style={{ fontSize: 'var(--atlas-text-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.campaignLabel', { id: campaignId })}</span>
+          <h2 style={{ margin: 0, fontSize: 'var(--atlas-font-size-lg)' }}>{t('maps.atlas.title')}</h2>
+          <span class="atlas-tabular-nums" style={{ fontSize: 'var(--atlas-font-size-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.campaignLabel', { id: campaignId })}</span>
         </div>
       </header>
 
@@ -62,7 +62,7 @@ export function SceneAtlas({ campaignId, scenes, onSelectScene }: SceneAtlasProp
             <div data-testid="empty-atlas" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 'var(--atlas-space-lg)', color: 'var(--atlas-text-muted)', gridColumn: '1 / -1' }}>
               <EmptyMapAtlasSvg width={160} height={100} />
               <h3 style={{ margin: 'var(--atlas-space-sm) 0 0 0', color: 'var(--atlas-text)' }}>{t('maps.atlas.emptyTitle')}</h3>
-              <p style={{ margin: 'var(--atlas-space-xs) 0 0 0', color: 'var(--atlas-text-muted)', fontSize: 'var(--atlas-text-xs)' }}>
+              <p style={{ margin: 'var(--atlas-space-xs) 0 0 0', color: 'var(--atlas-text-muted)', fontSize: 'var(--atlas-font-size-xs)' }}>
                 {t('maps.atlas.emptyBody')}
               </p>
             </div>
@@ -96,10 +96,10 @@ export function SceneAtlas({ campaignId, scenes, onSelectScene }: SceneAtlasProp
                 }}
               >
                 <div style={{ height: '120px', background: 'var(--atlas-bg)', marginBottom: 'var(--atlas-space-xs)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <span style={{ fontSize: 'var(--atlas-text-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.atlas.thumbnail')}</span>
+                  <span style={{ fontSize: 'var(--atlas-font-size-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.atlas.thumbnail')}</span>
                 </div>
-                <h4 style={{ margin: 0, fontSize: 'var(--atlas-text-sm)' }}>{scene.title}</h4>
-                <p style={{ margin: 0, fontSize: 'var(--atlas-text-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.atlas.dimensions', { width: scene.widthPx, height: scene.heightPx })}</p>
+                <h4 style={{ margin: 0, fontSize: 'var(--atlas-font-size-sm)' }}>{scene.title}</h4>
+                <p style={{ margin: 0, fontSize: 'var(--atlas-font-size-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.atlas.dimensions', { width: scene.widthPx, height: scene.heightPx })}</p>
               </button>
             ))
           )}

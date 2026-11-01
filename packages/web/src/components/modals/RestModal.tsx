@@ -38,6 +38,11 @@ function formatRefill(current: number, max: number): string {
   return t("rest.refill", { current, max });
 }
 
+/** `aria-disabled` keeps a refusing button focusable; handlers must still guard. */
+function ariaDisabled(disabled: boolean): "true" | undefined {
+  return disabled ? "true" : undefined;
+}
+
 export function RestModal(props: RestModalProps): VNode<any> | null {
   return props.isOpen ? h(RestDialog, props) : null;
 }
@@ -47,7 +52,6 @@ function RestDialog(props: RestModalProps): VNode<any> {
   const titleId = useId();
   const descId = useId();
   const dialogRef = useRef<HTMLDivElement | null>(null);
-  const trapFocus = useModalFocusTrap(dialogRef);
 
   const currentHp = actor.attributes.hp.current;
   const maxHp = actor.attributes.hp.max;
@@ -72,18 +76,20 @@ function RestDialog(props: RestModalProps): VNode<any> {
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      if (!isSubmitting) {
-        onClose();
-      }
-      return;
-    }
-    trapFocus(e);
+  const busy = isRolling || isSubmitting;
+
+  useModalFocusTrap(dialogRef, {
+    onEscape: () => {
+      if (!isSubmitting) onClose();
+    },
+  });
+
+  const handleClose = () => {
+    if (!isSubmitting) onClose();
   };
 
   const handleSpentDiceChange = (newCount: number) => {
+    if (busy) return;
     const clamped = Math.max(0, Math.min(currentHitDice, newCount));
     setSpentDice(clamped);
     if (clamped !== diceRolls.length) {
@@ -93,7 +99,7 @@ function RestDialog(props: RestModalProps): VNode<any> {
   };
 
   const handleRollDice = async () => {
-    if (spentDice <= 0) return;
+    if (spentDice <= 0 || busy) return;
     if (!diceRollService) {
       setRollError(t("dice.serviceUnavailable"));
       return;
@@ -120,6 +126,7 @@ function RestDialog(props: RestModalProps): VNode<any> {
   };
 
   const handleConfirmShortRest = async () => {
+    if (busy) return;
     if (spentDice > 0 && diceRolls.length !== spentDice) {
       setRollError(t("rest.rollFirst"));
       return;
@@ -145,6 +152,7 @@ function RestDialog(props: RestModalProps): VNode<any> {
   };
 
   const handleConfirmLongRest = async () => {
+    if (isSubmitting) return;
     try {
       setIsSubmitting(true);
       setSaveError(null);
@@ -208,53 +216,44 @@ function RestDialog(props: RestModalProps): VNode<any> {
     );
 
   const isShort = restType === "short";
+  const rollsMissing = spentDice > 0 && diceRolls.length !== spentDice;
+
+  const resourceRow = (key: string, label: string, value: string) =>
+    h("div", { key, class: "ds-row" }, h("span", null, label), h("strong", null, value));
 
   return h(
     "div",
     {
       ref: dialogRef,
       "data-testid": "rest-modal",
-      class: "ds-rest-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4",
+      class: "ds-modal-backdrop",
       role: "dialog",
       "aria-modal": "true",
       "aria-labelledby": titleId,
       "aria-describedby": descId,
       tabIndex: -1,
-      onKeyDown: handleKeyDown,
     },
     h(
       "div",
-      {
-        class: "ds-rest-modal w-full max-w-xl bg-[var(--atlas-surface)] border border-[var(--atlas-border)] rounded-xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden text-[var(--atlas-text)]",
-      },
+      { class: "ds-modal ds-modal-narrow" },
       // Modal Header
       h(
         "header",
-        { class: "px-6 py-4 border-b border-[var(--atlas-border)] flex items-center justify-between bg-[var(--atlas-surface-raised)]" },
+        { class: "ds-modal-header" },
         h(
           "div",
           null,
-          h(
-            "h2",
-            { id: titleId, class: "text-xl font-bold tracking-tight text-[var(--atlas-action)]" },
-            isShort ? t("rest.short.title") : t("rest.long.title")
-          ),
-          h(
-            "p",
-            { id: descId, class: "text-xs text-[var(--atlas-text-muted)] mt-0.5" },
-            isShort
-              ? t("rest.short.description")
-              : t("rest.long.description")
-          )
+          h("h2", { id: titleId, class: "ds-modal-title" }, isShort ? t("rest.short.title") : t("rest.long.title")),
+          h("p", { id: descId, class: "ds-modal-subtitle" }, isShort ? t("rest.short.description") : t("rest.long.description"))
         ),
         h(
           "button",
           {
             type: "button",
-            class: "inline-flex items-center justify-center min-w-[40px] min-h-[40px] p-2 text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)] text-lg rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
-            onClick: onClose,
+            class: "ds-btn-reset ds-icon-btn",
+            onClick: handleClose,
             "aria-label": isShort ? t("rest.short.close") : t("rest.long.close"),
-            disabled: isSubmitting,
+            "aria-disabled": ariaDisabled(isSubmitting),
           },
           "✕"
         )
@@ -263,116 +262,96 @@ function RestDialog(props: RestModalProps): VNode<any> {
       // Modal Body
       h(
         "div",
-        { class: "p-6 overflow-y-auto flex-1 space-y-5 text-sm" },
+        { class: "ds-modal-body" },
         isShort
           ? [
               // Current Actor Vitality Overview
               h(
                 "div",
-                { class: "grid grid-cols-3 gap-3 p-3 bg-[var(--atlas-surface-raised)] rounded-lg border border-[var(--atlas-border)] text-xs" },
+                { key: "vitals", class: "ds-inset" },
+                h(
+                "div",
+                { class: "ds-grid-3" },
                 h(
                   "div",
                   null,
-                  h("span", { class: "text-[var(--atlas-text-muted)] block uppercase" }, t("rest.hitPoints")),
-                  h("strong", { class: "text-sm text-[var(--atlas-text)]" }, `${currentHp} / ${maxHp}`),
-                  tempHp > 0 && h("span", { class: "text-[var(--atlas-text-muted)] block" }, t("rest.tempHp", { value: tempHp }))
+                  h("span", { class: "ds-meta" }, t("rest.hitPoints")),
+                  h("strong", { class: "ds-value atlas-tabular-nums" }, `${currentHp} / ${maxHp}`),
+                  tempHp > 0 && h("span", { class: "ds-meta" }, t("rest.tempHp", { value: tempHp }))
                 ),
                 h(
                   "div",
                   null,
-                  h("span", { class: "text-[var(--atlas-text-muted)] block uppercase" }, t("rest.hitDiceAvailable")),
-                  h("strong", { class: "text-sm text-[var(--atlas-action)]" }, `${currentHitDice} / ${maxHitDice} (d${hitDieSize})`)
+                  h("span", { class: "ds-meta" }, t("rest.hitDiceAvailable")),
+                  h("strong", { class: "ds-value atlas-tabular-nums" }, `${currentHitDice} / ${maxHitDice} (d${hitDieSize})`)
                 ),
                 h(
                   "div",
                   null,
-                  h("span", { class: "text-[var(--atlas-text-muted)] block uppercase" }, t("rest.conModifier")),
-                  h("strong", { class: "text-sm text-[var(--atlas-text)]" }, formatModifier(conMod))
+                  h("span", { class: "ds-meta" }, t("rest.conModifier")),
+                  h("strong", { class: "ds-value atlas-tabular-nums" }, formatModifier(conMod))
+                )
                 )
               ),
 
               // Guardrails
-              currentHitDice === 0 &&
-                h(
-                  "div",
-                  { role: "status", class: "p-3 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-xs text-[var(--atlas-text-muted)]" },
-                  t("rest.noHitDice")
-                ),
+              currentHitDice === 0 && h("div", { key: "no-dice", role: "status", class: "ds-inset ds-hint" }, t("rest.noHitDice")),
               currentHp >= maxHp && currentHitDice > 0 &&
-                h(
-                  "div",
-                  { role: "status", class: "p-3 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-xs text-[var(--atlas-text-muted)]" },
-                  t("rest.hpAlreadyMax")
-                ),
+                h("div", { key: "hp-max", role: "status", class: "ds-inset ds-hint" }, t("rest.hpAlreadyMax")),
 
               // Hit Dice Spending Selector
               h(
                 "div",
-                { class: "space-y-3 p-4 bg-[var(--atlas-surface-raised)] rounded-lg border border-[var(--atlas-border)]" },
+                { key: "spend", class: "ds-inset" },
                 h(
                   "div",
-                  { class: "flex items-center justify-between" },
-                  h(
-                    "label",
-                    { id: "spent-dice-label", class: "font-semibold text-xs text-[var(--atlas-text)] uppercase tracking-wider" },
-                    t("rest.spendLabel")
-                  ),
+                  { class: "ds-row" },
+                  h("label", { id: "spent-dice-label", class: "ds-field-label" }, t("rest.spendLabel")),
                   h(
                     "div",
-                    {
-                      class: "flex items-center space-x-2",
-                      role: "group",
-                      "aria-labelledby": "spent-dice-label",
-                    },
+                    { class: "ds-cluster", role: "group", "aria-labelledby": "spent-dice-label" },
                     h(
                       "button",
                       {
                         type: "button",
-                        class: "min-w-[40px] min-h-[40px] px-3 py-1 bg-[var(--atlas-surface)] border border-[var(--atlas-border)] rounded text-sm font-bold text-[var(--atlas-text)] hover:opacity-80 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
+                        class: "ds-btn ds-btn-secondary",
                         onClick: () => handleSpentDiceChange(spentDice - 1),
-                        disabled: spentDice <= 0 || isRolling || isSubmitting,
+                        "aria-disabled": ariaDisabled(spentDice <= 0 || busy),
                         "aria-label": t("rest.decrease"),
                       },
                       "-"
                     ),
                     h(
                       "span",
-                      {
-                        class: "w-10 text-center font-bold text-base text-[var(--atlas-action)]",
-                        "aria-live": "polite",
-                        "data-testid": "spent-dice-count",
-                      },
+                      { class: "ds-counter atlas-tabular-nums", "aria-live": "polite", "data-testid": "spent-dice-count" },
                       spentDice
                     ),
                     h(
                       "button",
                       {
                         type: "button",
-                        class: "min-w-[40px] min-h-[40px] px-3 py-1 bg-[var(--atlas-surface)] border border-[var(--atlas-border)] rounded text-sm font-bold text-[var(--atlas-text)] hover:opacity-80 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
+                        class: "ds-btn ds-btn-secondary",
                         onClick: () => handleSpentDiceChange(spentDice + 1),
-                        disabled: spentDice >= currentHitDice || isRolling || isSubmitting,
+                        "aria-disabled": ariaDisabled(spentDice >= currentHitDice || busy),
                         "aria-label": t("rest.increase"),
                       },
                       "+"
                     )
                   )
                 ),
-                h(
-                  "p",
-                  { class: "text-[11px] text-[var(--atlas-text-muted)]" },
-                  t("rest.diceHint", { current: currentHitDice, max: maxHitDice, die: hitDieSize, mod: formatModifier(conMod) })
-                ),
+                h("p", { class: "ds-hint" }, t("rest.diceHint", { current: currentHitDice, max: maxHitDice, die: hitDieSize, mod: formatModifier(conMod) })),
                 spentDice > 0 &&
                   h(
                     "div",
-                    { class: "pt-2 flex items-center justify-between border-t border-[var(--atlas-border)]" },
+                    { class: "ds-row" },
                     h(
                       "button",
                       {
                         type: "button",
-                        class: "min-h-[40px] px-4 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded font-semibold text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
+                        class: "ds-btn ds-btn-secondary",
                         onClick: handleRollDice,
-                        disabled: isRolling || isSubmitting,
+                        "aria-disabled": ariaDisabled(busy),
+                        "aria-busy": isRolling ? "true" : undefined,
                       },
                       isRolling
                         ? t("dice.rolling")
@@ -381,11 +360,7 @@ function RestDialog(props: RestModalProps): VNode<any> {
                         : t("rest.roll", { count: spentDice, die: hitDieSize })
                     ),
                     diceRolls.length === spentDice &&
-                      h(
-                        "span",
-                        { class: "text-xs font-semibold text-[var(--atlas-action)]" },
-                        t("rest.hpGenerated", { value: totalShortRestHpGained })
-                      )
+                      h("span", { class: "ds-value atlas-tabular-nums" }, t("rest.hpGenerated", { value: totalShortRestHpGained }))
                   )
               ),
 
@@ -393,112 +368,79 @@ function RestDialog(props: RestModalProps): VNode<any> {
               diceRolls.length > 0 &&
                 h(
                   "div",
-                  { class: "space-y-2 p-3 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-xs" },
-                  h("div", { class: "font-semibold text-[var(--atlas-action)]" }, t("rest.rollBreakdown")),
+                  { key: "breakdown", class: "ds-inset" },
+                  h("h3", { class: "ds-subheading" }, t("rest.rollBreakdown")),
                   h(
                     "ul",
-                    { class: "space-y-1" },
+                    { class: "ds-list-plain ds-stack-sm", role: "list" },
                     diceRolls.map((roll, idx) => {
                       const gain = Math.max(1, roll + conMod);
                       const isFloored = roll + conMod < 1;
                       return h(
                         "li",
-                        { key: idx, class: "flex items-center justify-between text-[var(--atlas-text)]" },
+                        { key: idx, class: "ds-row" },
                         h("span", null, t("rest.rollLine", { index: idx + 1, die: hitDieSize, roll, mod: formatModifier(conMod) })),
-                        h(
-                          "strong",
-                          { class: "text-[var(--atlas-action)]" },
-                          isFloored ? t("rest.rollGainFloored", { value: gain }) : t("hp.gain", { value: gain })
-                        )
+                        h("strong", { class: "atlas-tabular-nums" }, isFloored ? t("rest.rollGainFloored", { value: gain }) : t("hp.gain", { value: gain }))
                       );
                     })
                   ),
                   h(
                     "div",
-                    { class: "pt-2 border-t border-[var(--atlas-border)] flex items-center justify-between font-semibold" },
+                    { class: "ds-row ds-value" },
                     h("span", null, t("rest.hpPreview")),
-                    h(
-                      "span",
-                      { class: "text-[var(--atlas-action)]" },
-                      t("rest.hpTransition", { from: currentHp, to: projectedShortRestHp, max: maxHp, gain: actualShortRestGain })
-                    )
+                    h("span", { class: "atlas-tabular-nums" }, t("rest.hpTransition", { from: currentHp, to: projectedShortRestHp, max: maxHp, gain: actualShortRestGain }))
                   ),
                   h(
                     "div",
-                    { class: "flex items-center justify-between text-[var(--atlas-text-muted)]" },
+                    { class: "ds-row ds-meta" },
                     h("span", null, t("rest.hitDiceRemaining")),
-                    h("span", null, `${currentHitDice - spentDice} / ${maxHitDice}`)
+                    h("span", { class: "atlas-tabular-nums" }, `${currentHitDice - spentDice} / ${maxHitDice}`)
                   )
                 ),
 
               // Error Displays
-              rollError &&
-                h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, rollError),
-              saveError &&
-                h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, saveError),
+              rollError && h("p", { key: "roll-error", role: "alert", class: "ds-field-error" }, rollError),
+              saveError && h("p", { key: "save-error", role: "alert", class: "ds-field-error" }, saveError),
 
               // SHORT_REST Resources Preview
               h(
                 "div",
-                { class: "space-y-2 p-3 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-xs" },
-                h("div", { class: "font-semibold text-[var(--atlas-action)]" }, t("rest.short.resourcesTitle")),
-                shortRestResourceList.length === 0 && !pactSlots &&
-                  h("p", { class: "text-[var(--atlas-text-muted)]" }, t("rest.short.noResources")),
-                shortRestResourceList.map(([key, res]) =>
-                  h(
-                    "div",
-                    { key, class: "flex items-center justify-between text-[var(--atlas-text)]" },
-                    h("span", { class: "capitalize" }, key.replace(/_/g, " ")),
-                    h("strong", null, formatRefill(res.current, res.max))
-                  )
-                ),
-                pactSlots &&
-                  h(
-                    "div",
-                    { class: "flex items-center justify-between text-[var(--atlas-text)]" },
-                    h("span", null, t("rest.pactMagic")),
-                    h("strong", null, formatRefill(pactSlots.current, pactSlots.max))
-                  )
+                { key: "resources", class: "ds-inset" },
+                h("h3", { class: "ds-subheading" }, t("rest.short.resourcesTitle")),
+                shortRestResourceList.length === 0 && !pactSlots && h("p", { class: "ds-hint" }, t("rest.short.noResources")),
+                shortRestResourceList.map(([key, res]) => resourceRow(key, key.replace(/_/g, " "), formatRefill(res.current, res.max))),
+                pactSlots && resourceRow("pact", t("rest.pactMagic"), formatRefill(pactSlots.current, pactSlots.max))
               ),
             ]
           : [
               // Long Rest Recovery Read-Only Summary
               h(
                 "div",
-                { class: "space-y-3 p-4 bg-[var(--atlas-surface-raised)] rounded-lg border border-[var(--atlas-border)] text-xs" },
-                h("h3", { class: "text-sm font-semibold text-[var(--atlas-action)] uppercase tracking-wider" }, t("rest.long.effectsTitle")),
+                { key: "effects", class: "ds-inset" },
+                h("h3", { class: "ds-subheading" }, t("rest.long.effectsTitle")),
                 h(
                   "ul",
-                  { class: "space-y-2 text-[var(--atlas-text)]" },
-                  // 1. Full HP restoration
+                  { class: "ds-list-plain ds-stack-sm", role: "list" },
                   h(
                     "li",
-                    { class: "flex items-center justify-between" },
+                    { class: "ds-row" },
                     h("span", null, t("rest.long.hpRestore")),
-                    h("strong", { class: "text-[var(--atlas-action)]" }, t("rest.hpTransition", { from: currentHp, to: maxHp, max: maxHp, gain: maxHp - currentHp }))
+                    h("strong", { class: "atlas-tabular-nums" }, t("rest.hpTransition", { from: currentHp, to: maxHp, max: maxHp, gain: maxHp - currentHp }))
                   ),
-                  // 2. Temp HP wipe
+                  h("li", { class: "ds-row" }, h("span", null, t("rest.long.tempReset")), h("strong", { class: "atlas-tabular-nums" }, `${tempHp} → 0`)),
                   h(
                     "li",
-                    { class: "flex items-center justify-between" },
-                    h("span", null, t("rest.long.tempReset")),
-                    h("strong", null, `${tempHp} → 0`)
-                  ),
-                  // 3. Hit Dice recovery
-                  h(
-                    "li",
-                    { class: "flex items-center justify-between" },
+                    { class: "ds-row" },
                     h("span", null, t("rest.long.hitDiceRecovery", { max: maxHitDice })),
                     h(
                       "strong",
-                      { class: "text-[var(--atlas-action)]" },
+                      { class: "atlas-tabular-nums" },
                       t("rest.long.hitDiceRecoveryValue", { count: longRestRecoveredDice, from: currentHitDice, to: projectedLongRestHitDice, max: maxHitDice })
                     )
                   ),
-                  // 4. Exhaustion reduction
                   h(
                     "li",
-                    { class: "flex items-center justify-between" },
+                    { class: "ds-row" },
                     h("span", null, t("rest.long.exhaustion")),
                     h(
                       "strong",
@@ -508,97 +450,77 @@ function RestDialog(props: RestModalProps): VNode<any> {
                         : t("rest.long.noExhaustion")
                     )
                   ),
-                  // 5. Death saves reset
                   (actor.attributes.deathSaves?.successes > 0 || actor.attributes.deathSaves?.failures > 0) &&
-                    h(
-                      "li",
-                      { class: "flex items-center justify-between" },
-                      h("span", null, t("rest.long.deathSaves")),
-                      h("strong", null, t("rest.long.deathSavesReset"))
-                    )
+                    h("li", { class: "ds-row" }, h("span", null, t("rest.long.deathSaves")), h("strong", null, t("rest.long.deathSavesReset")))
                 )
               ),
 
               // Long Rest Spell Slots Breakdown
               h(
                 "div",
-                { class: "space-y-2 p-3 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-xs" },
-                h("div", { class: "font-semibold text-[var(--atlas-action)]" }, t("rest.long.slotsTitle")),
+                { key: "slots", class: "ds-inset" },
+                h("h3", { class: "ds-subheading" }, t("rest.long.slotsTitle")),
                 activeSpellSlots.length === 0
-                  ? h("p", { class: "text-[var(--atlas-text-muted)]" }, t("rest.long.noSlots"))
+                  ? h("p", { class: "ds-hint" }, t("rest.long.noSlots"))
                   : h(
                       "div",
-                      { class: "grid grid-cols-2 gap-2" },
-                      activeSpellSlots.map(({ tier, slot }) => {
-                        const tierLabel =
-                          tier === "pact"
-                            ? t("rest.slot.pact")
-                            : t("rest.slot.level", { level: tier.replace("level", "") });
-                        return h(
-                          "div",
-                          { key: tier, class: "p-2 bg-[var(--atlas-surface)] rounded border border-[var(--atlas-border)] flex items-center justify-between" },
-                          h("span", { class: "text-[var(--atlas-text-muted)]" }, tierLabel),
-                          h("strong", null, formatRefill(slot.current, slot.max))
-                        );
-                      })
+                      { class: "ds-grid-2" },
+                      activeSpellSlots.map(({ tier, slot }) =>
+                        resourceRow(
+                          tier,
+                          tier === "pact" ? t("rest.slot.pact") : t("rest.slot.level", { level: tier.replace("level", "") }),
+                          formatRefill(slot.current, slot.max)
+                        )
+                      )
                     )
               ),
 
               // Long Rest Resources Breakdown
               h(
                 "div",
-                { class: "space-y-2 p-3 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-xs" },
-                h("div", { class: "font-semibold text-[var(--atlas-action)]" }, t("rest.long.resourcesTitle")),
+                { key: "long-resources", class: "ds-inset" },
+                h("h3", { class: "ds-subheading" }, t("rest.long.resourcesTitle")),
                 longRestResourceList.length === 0
-                  ? h("p", { class: "text-[var(--atlas-text-muted)]" }, t("rest.long.noResources"))
-                  : longRestResourceList.map(([key, res]) =>
-                      h(
-                        "div",
-                        { key, class: "flex items-center justify-between text-[var(--atlas-text)]" },
-                        h("span", { class: "capitalize" }, key.replace(/_/g, " ")),
-                        h("strong", null, formatRefill(res.current, res.max))
-                      )
-                    )
+                  ? h("p", { class: "ds-hint" }, t("rest.long.noResources"))
+                  : longRestResourceList.map(([key, res]) => resourceRow(key, key.replace(/_/g, " "), formatRefill(res.current, res.max)))
               ),
 
               // Error Displays
-              saveError &&
-                h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, saveError),
+              saveError && h("p", { key: "save-error", role: "alert", class: "ds-field-error" }, saveError),
             ]
       ),
 
       // Modal Footer
       h(
         "footer",
-        { class: "px-6 py-4 border-t border-[var(--atlas-border)] flex items-center justify-between bg-[var(--atlas-surface-raised)]" },
+        { class: "ds-modal-footer" },
         h(
           "button",
-          {
-            type: "button",
-            class: "min-h-[40px] px-4 py-2 text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)] text-xs font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] disabled:opacity-40 inline-flex items-center justify-center",
-            onClick: onClose,
-            disabled: isSubmitting,
-          },
+          { type: "button", class: "ds-btn ds-btn-ghost", onClick: handleClose, "aria-disabled": ariaDisabled(isSubmitting) },
           t("action.cancel")
         ),
         isShort
           ? h(
               "button",
               {
+                key: "confirm-short",
                 type: "button",
-                class: "min-h-[40px] px-5 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
+                class: "ds-btn ds-btn-primary",
                 onClick: handleConfirmShortRest,
-                disabled: isSubmitting || isRolling || (spentDice > 0 && diceRolls.length !== spentDice),
+                "aria-disabled": ariaDisabled(busy || rollsMissing),
+                "aria-busy": isSubmitting ? "true" : undefined,
               },
               isSubmitting ? t("action.applying") : t("rest.short.confirm")
             )
           : h(
               "button",
               {
+                key: "confirm-long",
                 type: "button",
-                class: "min-h-[40px] px-5 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
+                class: "ds-btn ds-btn-primary",
                 onClick: handleConfirmLongRest,
-                disabled: isSubmitting,
+                "aria-disabled": ariaDisabled(isSubmitting),
+                "aria-busy": isSubmitting ? "true" : undefined,
               },
               isSubmitting ? t("action.applying") : t("rest.long.confirm")
             )

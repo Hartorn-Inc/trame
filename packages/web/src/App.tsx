@@ -38,12 +38,8 @@ import { useEffect } from 'preact/hooks';
 import { bootstrapSession, type BootLocation } from './api/bootstrap.ts';
 import { apiClient, type ApiClient } from './api/client.ts';
 import { AuthScreen } from './auth/AuthScreen.tsx';
-import {
-  localeSignal,
-  mobileCompanionOverrideSignal,
-  t,
-  unitSystemSignal,
-} from './i18n/index.ts';
+import { LocaleToggle, UnitsToggle } from './components/ShellToggles.tsx';
+import { mobileCompanionOverrideSignal, t } from './i18n/index.ts';
 import { CampaignLobby } from './lobby/CampaignLobby.tsx';
 import type { UserRole } from './maps/types.ts';
 import { MobileCompanionView } from './mobile/MobileCompanionView.tsx';
@@ -118,30 +114,10 @@ function ShellHeader({ client, inCampaign }: { client: ApiClient; inCampaign: bo
             {t('shell.backToLobby')}
           </button>
         )}
-        <button
-          type="button"
-          data-testid="header-locale-toggle"
-          aria-label={t('shell.toggleLanguage', { locale: localeSignal.value === 'fr' ? 'FR' : 'EN' })}
-          class="ds-btn ds-btn-secondary"
-          onClick={() => {
-            localeSignal.value = localeSignal.value === 'en' ? 'fr' : 'en';
-          }}
-        >
-          {localeSignal.value === 'fr' ? 'FR' : 'EN'}
-        </button>
+        <LocaleToggle />
         {inCampaign && (
           <>
-            <button
-              type="button"
-              data-testid="header-units-toggle"
-              aria-label={t('shell.toggleUnits', { unit: unitSystemSignal.value === 'imperial_ft' ? '5 ft' : '1.5 m' })}
-              class="ds-btn ds-btn-secondary"
-              onClick={() => {
-                unitSystemSignal.value = unitSystemSignal.value === 'imperial_ft' ? 'metric_m' : 'imperial_ft';
-              }}
-            >
-              {unitSystemSignal.value === 'imperial_ft' ? '5 ft' : '1.5 m'}
-            </button>
+            <UnitsToggle />
             <button
               type="button"
               data-testid="header-companion-toggle"

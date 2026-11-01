@@ -3,285 +3,9 @@ import { describe, it } from "node:test";
 import { LevelUpModal, type LevelUpModalProps } from "../../src/components/modals/LevelUpModal.tsx";
 import { createDefaultActorData, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
 import { localeSignal } from "../../src/i18n/index.ts";
+import { setupMockDom } from "../helpers/mockDom.ts";
 
 localeSignal.value = "en";
-
-// Minimal DOM mock to allow Preact render and event dispatch in Node.js
-function setupMockDom() {
-  class MockClassList {
-    private classes = new Set<string>();
-    add(...tokens: string[]) { tokens.forEach((t) => this.classes.add(t)); }
-    remove(...tokens: string[]) { tokens.forEach((t) => this.classes.delete(t)); }
-    contains(token: string) { return this.classes.has(token); }
-    get length() { return this.classes.size; }
-    toString() { return Array.from(this.classes).join(" "); }
-  }
-
-  class MockNode {
-    nodeType = 1;
-    nodeName = "DIV";
-    parentNode: MockNode | null = null;
-    childNodes: MockNode[] = [];
-    attributes: Record<string, string> = {};
-    style: Record<string, string> = {};
-    classList = new MockClassList();
-    data = "";
-    _value = "";
-    checked = false;
-    disabled = false;
-    type = "text";
-    name = "";
-    id = "";
-    listeners: Record<string, Function[]> = {};
-
-    constructor(nodeName: string = "DIV", nodeType: number = 1) {
-      this.nodeName = nodeName.toUpperCase();
-      this.nodeType = nodeType;
-    }
-
-    get textContent(): string {
-      if (this.nodeType === 3) return this.data;
-      return this.childNodes.map((c) => c.textContent).join("");
-    }
-    set textContent(val: string) {
-      this.childNodes = [];
-      if (val) {
-        const textNode = new MockNode("#text", 3);
-        textNode.data = String(val);
-        textNode.parentNode = this;
-        this.childNodes.push(textNode);
-      }
-    }
-
-    get value(): string {
-      return this._value;
-    }
-    set value(v: string) {
-      this._value = String(v);
-    }
-
-    get firstChild(): MockNode | null {
-      return this.childNodes[0] || null;
-    }
-    get lastChild(): MockNode | null {
-      return this.childNodes[this.childNodes.length - 1] || null;
-    }
-    get nextSibling(): MockNode | null {
-      if (!this.parentNode) return null;
-      const idx = this.parentNode.childNodes.indexOf(this);
-      return idx >= 0 && idx + 1 < this.parentNode.childNodes.length ? this.parentNode.childNodes[idx + 1] : null;
-    }
-
-    appendChild<T extends MockNode>(child: T): T {
-      if (child.parentNode) child.parentNode.removeChild(child);
-      child.parentNode = this;
-      this.childNodes.push(child);
-      return child;
-    }
-
-    insertBefore<T extends MockNode>(newChild: T, refChild: MockNode | null): T {
-      if (!refChild) return this.appendChild(newChild);
-      if (newChild.parentNode) newChild.parentNode.removeChild(newChild);
-      const idx = this.childNodes.indexOf(refChild);
-      if (idx === -1) return this.appendChild(newChild);
-      newChild.parentNode = this;
-      this.childNodes.splice(idx, 0, newChild);
-      return newChild;
-    }
-
-    removeChild<T extends MockNode>(child: T): T {
-      const idx = this.childNodes.indexOf(child);
-      if (idx !== -1) {
-        child.parentNode = null;
-        this.childNodes.splice(idx, 1);
-      }
-      return child;
-    }
-
-    remove() {
-      if (this.parentNode) {
-        this.parentNode.removeChild(this);
-      }
-    }
-
-    focus() {
-      if (typeof document !== "undefined") {
-        (document as any).activeElement = this;
-      }
-    }
-
-    blur() {
-      if (typeof document !== "undefined" && (document as any).activeElement === this) {
-        (document as any).activeElement = null;
-      }
-    }
-
-    contains(other: MockNode | null): boolean {
-      let cur = other;
-      while (cur) {
-        if (cur === this) return true;
-        cur = cur.parentNode;
-      }
-      return false;
-    }
-
-    setAttribute(name: string, value: any) {
-      const strVal = String(value);
-      this.attributes[name] = strVal;
-      if (name === "class") {
-        this.classList = new MockClassList();
-        strVal.split(/\s+/).filter(Boolean).forEach((c) => this.classList.add(c));
-      }
-      if (name === "id") this.id = strVal;
-      if (name === "type") this.type = strVal;
-      if (name === "name") this.name = strVal;
-      if (name === "value") this._value = strVal;
-      if (name === "disabled") this.disabled = Boolean(value);
-      if (name === "checked") this.checked = Boolean(value);
-    }
-
-    getAttribute(name: string): string | null {
-      return this.attributes[name] ?? null;
-    }
-
-    hasAttribute(name: string): boolean {
-      return name in this.attributes;
-    }
-
-    removeAttribute(name: string) {
-      delete this.attributes[name];
-    }
-
-    addEventListener(type: string, listener: Function) {
-      if (!this.listeners[type]) this.listeners[type] = [];
-      this.listeners[type].push(listener);
-    }
-
-    removeEventListener(type: string, listener: Function) {
-      if (!this.listeners[type]) return;
-      this.listeners[type] = this.listeners[type].filter((l) => l !== listener);
-    }
-
-    dispatchEvent(event: { type: string; [k: string]: any }): boolean {
-      const target = event.target ?? this;
-      let stopped = false;
-      const originalStopPropagation = event.stopPropagation;
-      const eventObj = {
-        preventDefault: () => {},
-        ...event,
-        target,
-        currentTarget: this,
-        stopPropagation: () => {
-          stopped = true;
-          if (typeof originalStopPropagation === "function") {
-            originalStopPropagation();
-          }
-        },
-      };
-      const list = this.listeners[event.type] || [];
-      for (const handler of list) {
-        handler.call(this, eventObj);
-      }
-      if (this.parentNode && (event as any).bubbles !== false && !stopped) {
-        this.parentNode.dispatchEvent(eventObj);
-      }
-      return true;
-    }
-
-    matches(selector: string): boolean {
-      if (!selector || this.nodeType !== 1) return false;
-      if (selector.startsWith("#")) {
-        return this.id === selector.slice(1) || this.getAttribute("id") === selector.slice(1);
-      }
-      if (selector.startsWith(".")) {
-        return this.classList.contains(selector.slice(1));
-      }
-      const bracketIdx = selector.indexOf("[");
-      if (bracketIdx !== -1 && selector.endsWith("]")) {
-        const tagPart = selector.slice(0, bracketIdx).trim();
-        if (tagPart && this.nodeName.toLowerCase() !== tagPart.toLowerCase()) {
-          return false;
-        }
-        const inner = selector.slice(bracketIdx + 1, -1);
-        if (inner.includes("=")) {
-          const eqIdx = inner.indexOf("=");
-          const attr = inner.slice(0, eqIdx).trim();
-          const val = inner.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, "");
-          return this.getAttribute(attr) === val || (this as any)[attr] === val;
-        }
-        return this.hasAttribute(inner);
-      }
-      return this.nodeName.toLowerCase() === selector.toLowerCase();
-    }
-
-    closest(selector: string): MockNode | null {
-      let cur: MockNode | null = this;
-      while (cur) {
-        if (cur.matches(selector)) {
-          return cur;
-        }
-        cur = cur.parentNode;
-      }
-      return null;
-    }
-
-    querySelector(selector: string): MockNode | null {
-      const all = this.querySelectorAll(selector);
-      return all[0] || null;
-    }
-
-    querySelectorAll(selector: string): MockNode[] {
-      const results: MockNode[] = [];
-      const walk = (current: MockNode) => {
-        for (const child of current.childNodes) {
-          if (child.nodeType === 1) {
-            if (child.matches(selector)) results.push(child);
-            walk(child);
-          }
-        }
-      };
-      walk(this);
-      return results;
-    }
-  }
-
-  const mockDoc = {
-    nodeType: 9,
-    nodeName: "#document",
-    activeElement: null as MockNode | null,
-    createElement(tag: string) {
-      return new MockNode(tag, 1);
-    },
-    createElementNS(_ns: string, tag: string) {
-      return new MockNode(tag, 1);
-    },
-    createTextNode(text: string) {
-      const n = new MockNode("#text", 3);
-      n.data = String(text);
-      return n;
-    },
-    createDocumentFragment() {
-      return new MockNode("#document-fragment", 11);
-    },
-    body: new MockNode("BODY", 1),
-  };
-
-  (globalThis as any).document = mockDoc;
-  (globalThis as any).window = globalThis;
-  (globalThis as any).Event = class {
-    type: string;
-    bubbles = true;
-    stopPropagation = () => {};
-    stopImmediatePropagation = () => {};
-    preventDefault = () => {};
-    constructor(type: string, opts?: any) {
-      this.type = type;
-      if (opts) Object.assign(this, opts);
-      if (opts?.bubbles !== undefined) this.bubbles = opts.bubbles;
-    }
-  };
-  return mockDoc;
-}
 
 // Helper to render Preact component to mock DOM and clean up
 async function renderModal(props: LevelUpModalProps) {
@@ -389,14 +113,14 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     // Next button must be disabled initially
     const nextBtn = getNextButton();
     assert.ok(nextBtn, "Next button should be present");
-    assert.equal(nextBtn.disabled, true, "Next button must be disabled when required subclass is unselected");
+    assert.equal(nextBtn.getAttribute("aria-disabled"), "true", "Next button must be disabled when required subclass is unselected");
 
     // Select a subclass
     select.value = "srd:subclass:evocation";
     select.dispatchEvent(new (globalThis as any).Event("change"));
 
     // Next button should become enabled
-    assert.equal(nextBtn.disabled, false, "Next button must become enabled once subclass is selected");
+    assert.equal(nextBtn.getAttribute("aria-disabled"), null, "Next button must become enabled once subclass is selected");
 
     unmount();
   });
@@ -419,7 +143,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
 
     assert.ok(container.textContent.includes("+8 HP"), "Must display deterministic fixed HP gain (+8 HP for d10 with CON 14)");
-    assert.equal(nextBtn.disabled, false, "Next button must be enabled in fixed mode");
+    assert.equal(nextBtn.getAttribute("aria-disabled"), null, "Next button must be enabled in fixed mode");
 
     unmount();
   });
@@ -430,6 +154,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     actor.attributes.level = 1;
     actor.attributes.hitDieSize = 8; // Cleric d8
     actor.abilities.con.score = 12; // CON mod = +1
+    actor.subclassId = "srd:subclass:life"; // Clerics pick a domain at level 1, so step 1 is already satisfied
 
     let rollRequested = false;
     let requestedFormula = "";
@@ -462,7 +187,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     assert.ok(rolledRadio, "Rolled HP radio option must exist");
 
     rolledRadio.dispatchEvent(new (globalThis as any).Event("change"));
-    assert.equal(nextBtn.disabled, true, "Next must be disabled before dice roll is performed");
+    assert.equal(nextBtn.getAttribute("aria-disabled"), "true", "Next must be disabled before dice roll is performed");
 
     const buttons = container.querySelectorAll("button");
     const rollBtn = buttons.find((b: any) => b.textContent.includes("Roll 1d8"));
@@ -474,7 +199,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     assert.equal(rollRequested, true, "diceRollService.roll must be invoked");
     assert.equal(requestedFormula, "1d8", "diceRollService must be queried with 1d8");
     assert.ok(container.textContent.includes("+7 HP"), "Must display rolled result + CON mod (+7 HP)");
-    assert.equal(nextBtn.disabled, false, "Next must become enabled after server roll succeeds");
+    assert.equal(nextBtn.getAttribute("aria-disabled"), null, "Next must become enabled after server roll succeeds");
 
     unmount();
   });
@@ -483,6 +208,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     const actor = createDefaultActorData("actor-rogue", "Merisiel");
     actor.classId = "rogue";
     actor.attributes.level = 3; // Advancing to lvl 4 (ASI level for all classes)
+    actor.subclassId = "srd:subclass:thief";
     actor.abilities.str.score = 19; // +2 would give 21 (> 20 cap)
     actor.abilities.dex.score = 16;
     actor.abilities.con.score = 14;
@@ -498,26 +224,35 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
     nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
 
-    assert.equal(nextBtn.disabled, true, "Next must be disabled when +2 exceeds maximum score of 20");
+    assert.equal(nextBtn.getAttribute("aria-disabled"), "true", "Next must be disabled when +2 exceeds maximum score of 20");
 
-    // Verify aria-live='polite' alert is present on ASI cap violation
+    // Before a Next attempt the cap violation is a quiet description, not an alert
+    const singleSelect = container.querySelector("#asi-single-ability");
+    assert.equal(container.querySelector("[role='alert']"), null, "No alert before the user tries to proceed");
+    assert.ok(singleSelect.getAttribute("aria-describedby"), "Select must reference the validation hint");
+    assert.equal(singleSelect.getAttribute("aria-invalid"), null);
+
+    // Pressing Next on the invalid step escalates the hint to an alert and marks the field invalid
+    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
     const alertMsg = container.querySelector("[role='alert']");
-    assert.ok(alertMsg, "Validation alert must have role='alert'");
-    assert.equal(alertMsg.getAttribute("aria-live"), "polite");
+    assert.ok(alertMsg, "Validation alert must have role='alert' after a submit attempt");
+    assert.equal(alertMsg.getAttribute("aria-live"), null, "role='alert' must not be paired with aria-live='polite'");
+    assert.equal(singleSelect.getAttribute("aria-describedby"), alertMsg.id);
+    assert.equal(singleSelect.getAttribute("aria-invalid"), "true");
 
     // Switch to Feat mode
     const featTabBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Choose a Feat"));
     assert.ok(featTabBtn, "Feat tab button must exist");
     featTabBtn.dispatchEvent(new (globalThis as any).Event("click"));
 
-    assert.equal(nextBtn.disabled, true, "Next must be disabled when no Feat is selected");
+    assert.equal(nextBtn.getAttribute("aria-disabled"), "true", "Next must be disabled when no Feat is selected");
 
     const featSelect = container.querySelector("#asi-feat-select");
     assert.ok(featSelect, "Feat select must be rendered with id='asi-feat-select'");
     featSelect.value = "srd:feat:tough";
     featSelect.dispatchEvent(new (globalThis as any).Event("change"));
 
-    assert.equal(nextBtn.disabled, false, "Next must be enabled after selecting a valid Feat");
+    assert.equal(nextBtn.getAttribute("aria-disabled"), null, "Next must be enabled after selecting a valid Feat");
 
     unmount();
   });
@@ -526,6 +261,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     const actor = createDefaultActorData("actor-wizard", "Galdor");
     actor.classId = "wizard";
     actor.attributes.level = 2; // Advancing to lvl 3 (Circle 2 spells unlock)
+    actor.subclassId = "srd:subclass:evocation";
     actor.attributes.casterType = "full";
 
     const { container, getNextButton, getConfirmButton, unmount } = await renderModal({
@@ -548,18 +284,18 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     // Check Confirm button is available at Step 4 but disabled until 2 wizard spells are picked
     const confirmBtn = getConfirmButton();
     assert.ok(confirmBtn, "Confirm and Apply button must be present at Step 4");
-    assert.equal(confirmBtn.disabled, true, "Confirm button must be disabled for Wizard with 0 spells chosen");
+    assert.equal(confirmBtn.getAttribute("aria-disabled"), "true", "Confirm button must be disabled for Wizard with 0 spells chosen");
 
     const checkboxes = container.querySelectorAll("input[type='checkbox']");
     assert.ok(checkboxes.length >= 2, "Wizard must have at least 2 spells available");
 
     // Select first spell
     checkboxes[0].dispatchEvent(new (globalThis as any).Event("change"));
-    assert.equal(confirmBtn.disabled, true, "Confirm button must remain disabled with only 1 spell chosen");
+    assert.equal(confirmBtn.getAttribute("aria-disabled"), "true", "Confirm button must remain disabled with only 1 spell chosen");
 
     // Select second spell
     checkboxes[1].dispatchEvent(new (globalThis as any).Event("change"));
-    assert.equal(confirmBtn.disabled, false, "Confirm button must be enabled once 2 spells are chosen");
+    assert.equal(confirmBtn.getAttribute("aria-disabled"), null, "Confirm button must be enabled once 2 spells are chosen");
 
     unmount();
   });
@@ -568,6 +304,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     const actor = createDefaultActorData("actor-cleric", "Kyra");
     actor.classId = "cleric";
     actor.attributes.level = 1; // advancing to lvl 2
+    actor.subclassId = "srd:subclass:life";
     actor.attributes.casterType = "full";
 
     const { container, getNextButton, getConfirmButton, unmount } = await renderModal({
@@ -588,7 +325,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
 
     const confirmBtn = getConfirmButton();
     assert.ok(confirmBtn, "Confirm button must be present");
-    assert.equal(confirmBtn.disabled, false, "Confirm button must be enabled without checkbox requirement for divine caster");
+    assert.equal(confirmBtn.getAttribute("aria-disabled"), null, "Confirm button must be enabled without checkbox requirement for divine caster");
 
     unmount();
   });
@@ -697,9 +434,11 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     assert.ok(dialog, "Dialog element must exist");
 
     const closeBtn = container.querySelector("button[aria-label='Close level up dialog']");
-    const cancelBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Cancel"));
+    // Next is aria-disabled until a subclass is picked but stays focusable, so it is the last trap stop.
+    const lastBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Next"));
     assert.ok(closeBtn, "Close button must exist");
-    assert.ok(cancelBtn, "Cancel button must exist");
+    assert.ok(lastBtn, "Next button must exist");
+    assert.equal(lastBtn.getAttribute("aria-disabled"), "true");
 
     closeBtn.focus();
     let shiftPrevented = false;
@@ -711,9 +450,9 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
       stopPropagation: () => {},
     });
     assert.equal(shiftPrevented, true, "Shift+Tab on first element must prevent default");
-    assert.ok((globalThis as any).document.activeElement === cancelBtn, "Shift+Tab on first element must wrap to last element");
+    assert.ok((globalThis as any).document.activeElement === lastBtn, "Shift+Tab on first element must wrap to last element");
 
-    cancelBtn.focus();
+    lastBtn.focus();
     let tabPrevented = false;
     dialog.dispatchEvent({
       type: "keydown",
@@ -765,6 +504,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     const actor = createDefaultActorData("actor-1", "Test Rogue");
     actor.classId = "rogue";
     actor.attributes.level = 3;
+    actor.subclassId = "srd:subclass:thief";
 
     const { container, getNextButton, unmount } = await renderModal({
       isOpen: true,
@@ -802,205 +542,180 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     unmount();
   });
 
-  it("WHEN interactive buttons and select controls render, they satisfy min-h-[40px] and focus-visible styling (WCAG 2.5.8, 2.4.7, 2.4.11)", async () => {
-    const actor = createDefaultActorData("actor-1", "Test Actor");
-    actor.classId = "wizard";
-    actor.attributes.level = 1;
+  const advance = (getNextButton: () => any, steps: number) => {
+    for (let i = 0; i < steps; i++) getNextButton().dispatchEvent(new (globalThis as any).Event("click"));
+  };
+
+  /** Builds a probe actor; `subclassId` is needed past the class's subclass level or step 1 blocks Next. */
+  const actorFor = (classId: string, level: number, subclassId?: string) => {
+    const actor = createDefaultActorData(`actor-${classId}`, "Probe");
+    actor.classId = classId;
+    actor.attributes.level = level;
+    if (classId === "wizard") actor.attributes.casterType = "full";
     delete (actor as any).subclassId;
     delete (actor.attributes as any).subclassId;
+    if (subclassId) actor.subclassId = subclassId;
+    return actor;
+  };
 
-    const { container, unmount } = await renderModal({
+  const THIEF = "srd:subclass:thief";
+  const EVOCATION = "srd:subclass:evocation";
+
+  const CONTROL_SCENARIOS = [
+    { id: "step1-subclass-select", classId: "wizard", level: 1, steps: 0, subclassId: undefined },
+    { id: "step2-hit-points-choices", classId: "fighter", level: 1, steps: 1, subclassId: undefined },
+    { id: "step3-asi-tabs-and-selects", classId: "rogue", level: 3, steps: 2, subclassId: THIEF },
+    { id: "step4-wizard-spell-checkboxes", classId: "wizard", level: 2, steps: 3, subclassId: EVOCATION },
+  ];
+
+  for (const scenario of CONTROL_SCENARIOS) {
+    it(`[${scenario.id}] every control uses a ds-* primitive (hit target, focus ring, control border)`, async () => {
+      const { container, getNextButton, unmount } = await renderModal({
+        isOpen: true,
+        actor: actorFor(scenario.classId, scenario.level, scenario.subclassId),
+        onClose: () => {},
+        onSave: () => {},
+      });
+      if (scenario.id === "step1-subclass-select") {
+        const select = container.querySelector("#subclass-select");
+        select.value = "srd:subclass:evocation";
+        select.dispatchEvent(new (globalThis as any).Event("change"));
+      }
+      advance(getNextButton, scenario.steps);
+
+      for (const btn of container.querySelectorAll("button")) {
+        const cls = btn.getAttribute("class") || "";
+        assert.ok(/\bds-btn\b|\bds-btn-reset\b/.test(cls), `Button '${btn.textContent.trim()}' must use ds-btn or ds-btn-reset: ${cls}`);
+      }
+      for (const select of container.querySelectorAll("select")) {
+        assert.ok(select.classList.contains("ds-input"), `Select #${select.id} must use ds-input`);
+      }
+      for (const input of container.querySelectorAll("input")) {
+        assert.ok(input.closest("label")?.classList.contains("ds-choice"), "Radio/checkbox must sit inside a ds-choice label");
+      }
+      unmount();
+    });
+  }
+
+  const PRIMARY_SCENARIOS = [
+    { id: "next-on-step1", steps: 0, label: "Next" },
+    { id: "confirm-on-step4", steps: 3, label: "Confirm and Apply" },
+  ];
+
+  for (const scenario of PRIMARY_SCENARIOS) {
+    it(`[${scenario.id}] the single primary action uses ds-btn-primary`, async () => {
+      const { container, getNextButton, unmount } = await renderModal({
+        isOpen: true,
+        actor: actorFor("fighter", 1),
+        onClose: () => {},
+        onSave: () => {},
+      });
+      advance(getNextButton, scenario.steps);
+      const primaries = container.querySelectorAll(".ds-btn-primary");
+      assert.equal(primaries.length, 1, "Exactly one primary action per step");
+      assert.ok(primaries[0].textContent.includes(scenario.label));
+      unmount();
+    });
+  }
+
+  it("WHEN Next on step 3 leads to step 4, the Confirm button is a fresh element so focus cannot carry a second activation", async () => {
+    const { container, getNextButton, getConfirmButton, unmount } = await renderModal({
       isOpen: true,
-      actor,
+      actor: actorFor("fighter", 1),
       onClose: () => {},
       onSave: () => {},
     });
-
-    const closeBtn = container.querySelector("button[aria-label='Close level up dialog']");
-    assert.ok(closeBtn.getAttribute("class")?.includes("min-h-[40px]"), "Close button must have min-h-[40px]");
-
-    const subclassSelect = container.querySelector("#subclass-select");
-    assert.ok(subclassSelect.getAttribute("class")?.includes("min-h-[40px]"), "Subclass select must have min-h-[40px]");
-    assert.ok(subclassSelect.getAttribute("class")?.includes("focus-visible:ring-[var(--atlas-focus)]"), "Subclass select must have atlas-focus ring");
-
-    const buttons = container.querySelectorAll("button");
-    for (const btn of buttons) {
-      const cls = btn.getAttribute("class") || "";
-      assert.ok(cls.includes("min-h-[40px]"), `Button '${btn.textContent.trim()}' must satisfy min-h-[40px]`);
-      assert.ok(cls.includes("focus-visible:ring-[var(--atlas-focus)]"), `Button '${btn.textContent.trim()}' must have atlas-focus ring`);
-    }
-
+    advance(getNextButton, 2);
+    const nextOnStep3 = getNextButton();
+    nextOnStep3.dispatchEvent(new (globalThis as any).Event("click"));
+    const confirm = getConfirmButton();
+    assert.ok(confirm, "Confirm must render on step 4");
+    assert.notEqual(confirm, nextOnStep3, "Next and Confirm must not share a DOM node");
+    assert.equal(container.contains(nextOnStep3), false, "The Next node must be unmounted on step 4");
     unmount();
   });
 
-  it("WHEN primary action and confirmation buttons render, they pair var(--atlas-action) with var(--atlas-on-action) for compliant contrast (WCAG 1.4.3)", async () => {
-    const actor = createDefaultActorData("actor-1", "Test Actor");
-    actor.classId = "fighter";
-    actor.attributes.level = 1;
+  const HEADING_SCENARIOS = [
+    { id: "step2-hit-points", steps: 1, heading: "Hit Point Increase" },
+    { id: "step3-features-without-asi", steps: 2, heading: "Class Features" },
+    { id: "step4-summary", steps: 3, heading: "Summary" },
+  ];
 
-    const { container, getNextButton, unmount } = await renderModal({
-      isOpen: true,
-      actor,
-      onClose: () => {},
-      onSave: () => {},
+  for (const scenario of HEADING_SCENARIOS) {
+    it(`[${scenario.id}] moving to a step focuses that step's heading`, async () => {
+      const { getNextButton, unmount } = await renderModal({
+        isOpen: true,
+        actor: actorFor("fighter", 1),
+        onClose: () => {},
+        onSave: () => {},
+      });
+      advance(getNextButton, scenario.steps);
+      const active = (globalThis as any).document.activeElement;
+      assert.equal(active?.nodeName, "H3", "Focus must land on the step heading");
+      assert.equal(active.getAttribute("tabindex"), "-1");
+      assert.ok(active.textContent.includes(scenario.heading), `Expected heading '${scenario.heading}', got '${active.textContent}'`);
+      unmount();
     });
+  }
 
-    const nextBtn = getNextButton();
-    const nextCls = nextBtn.getAttribute("class") || "";
-    assert.ok(nextCls.includes("bg-[var(--atlas-action)]"), "Next button must use var(--atlas-action)");
-    assert.ok(nextCls.includes("text-[var(--atlas-on-action)]"), "Next button must use var(--atlas-on-action)");
+  const SELECT_SCENARIOS = [
+    { id: "subclass-select", classId: "wizard", level: 1, steps: 0, mode: null, subclassId: undefined },
+    { id: "asi-single-ability", classId: "rogue", level: 3, steps: 2, mode: null, subclassId: THIEF },
+    { id: "asi-first-ability", classId: "rogue", level: 3, steps: 2, mode: "plusOneOne", subclassId: THIEF },
+    { id: "asi-second-ability", classId: "rogue", level: 3, steps: 2, mode: "plusOneOne", subclassId: THIEF },
+    { id: "asi-feat-select", classId: "rogue", level: 3, steps: 2, mode: "feat", subclassId: THIEF },
+  ];
 
-    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
-    const rolledRadio = container.querySelectorAll("input[name='hpMode']").find((r: any) => r.value === "rolled");
-    rolledRadio.dispatchEvent(new (globalThis as any).Event("change"));
-
-    const rollBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Roll 1d"));
-    assert.ok(rollBtn, "Roll button must exist");
-    const rollCls = rollBtn.getAttribute("class") || "";
-    assert.ok(rollCls.includes("bg-[var(--atlas-action)]"), "Roll button must use var(--atlas-action)");
-    assert.ok(rollCls.includes("text-[var(--atlas-on-action)]"), "Roll button must use var(--atlas-on-action)");
-
-    const fixedRadio = container.querySelectorAll("input[name='hpMode']").find((r: any) => r.value === "fixed");
-    fixedRadio.dispatchEvent(new (globalThis as any).Event("change"));
-    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
-    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
-
-    const confirmBtn = container.querySelectorAll("button").find((b: any) => b.textContent.includes("Confirm and Apply"));
-    assert.ok(confirmBtn, "Confirm button must exist");
-    const confirmCls = confirmBtn.getAttribute("class") || "";
-    assert.ok(confirmCls.includes("bg-[var(--atlas-action)]"), "Confirm button must use var(--atlas-action)");
-    assert.ok(confirmCls.includes("text-[var(--atlas-on-action)]"), "Confirm button must use var(--atlas-on-action)");
-
-    unmount();
-  });
-
-  it("WHEN modal renders, it uses semantic ATLAS design tokens without hardcoded zinc palette (WCAG 1.4.11 / 1.4.3)", async () => {
-    const actor = createDefaultActorData("actor-1", "Test Actor");
-    actor.classId = "fighter";
-    actor.attributes.level = 1;
-
-    const { container, unmount } = await renderModal({
-      isOpen: true,
-      actor,
-      onClose: () => {},
-      onSave: () => {},
+  for (const scenario of SELECT_SCENARIOS) {
+    it(`[${scenario.id}] labelled select is named by its <label> alone (no aria-label override)`, async () => {
+      const { container, getNextButton, unmount } = await renderModal({
+        isOpen: true,
+        actor: actorFor(scenario.classId, scenario.level, scenario.subclassId),
+        onClose: () => {},
+        onSave: () => {},
+      });
+      advance(getNextButton, scenario.steps);
+      if (scenario.mode === "plusOneOne") {
+        container.querySelectorAll("input[name='asiSubMode']").find((r: any) => r.value === "plusOneOne").dispatchEvent(new (globalThis as any).Event("change"));
+      } else if (scenario.mode === "feat") {
+        container.querySelector("#tab-feat").dispatchEvent(new (globalThis as any).Event("click"));
+      }
+      const select = container.querySelector(`#${scenario.id}`);
+      assert.ok(select, `Select #${scenario.id} must render`);
+      assert.equal(select.getAttribute("aria-label"), null);
+      assert.ok(container.querySelector(`label[for='${scenario.id}']`), "A visible <label for> must name the select");
+      unmount();
     });
+  }
 
-    const modalRoot = container.querySelector(".ds-levelup-modal");
-    assert.ok(modalRoot, "Modal dialog container must exist");
-    const rootClass = modalRoot.getAttribute("class") || "";
-    assert.ok(rootClass.includes("bg-[var(--atlas-surface)]"), "Modal root must use semantic surface");
-    assert.ok(rootClass.includes("border-[var(--atlas-border)]"), "Modal root must use semantic border");
-    assert.ok(rootClass.includes("text-[var(--atlas-text)]"), "Modal root must use semantic text");
-    assert.ok(!rootClass.includes("bg-zinc-900"), "Hardcoded bg-zinc-900 must be removed");
+  const ROVING_SCENARIOS = [
+    { id: "arrow-right-from-asi", start: "asi", key: "ArrowRight", expected: "feat" },
+    { id: "arrow-left-from-asi-wraps", start: "asi", key: "ArrowLeft", expected: "feat" },
+    { id: "arrow-right-from-feat-wraps", start: "feat", key: "ArrowRight", expected: "asi" },
+    { id: "end-selects-feat", start: "asi", key: "End", expected: "feat" },
+    { id: "home-selects-asi", start: "feat", key: "Home", expected: "asi" },
+  ];
 
-    unmount();
-  });
+  for (const scenario of ROVING_SCENARIOS) {
+    it(`[${scenario.id}] ASI/feat tabs rove with arrow keys and keep a single tab stop`, async () => {
+      const { container, getNextButton, unmount } = await renderModal({
+        isOpen: true,
+        actor: actorFor("rogue", 3, THIEF),
+        onClose: () => {},
+        onSave: () => {},
+      });
+      advance(getNextButton, 2);
+      const startTab = container.querySelector(`#tab-${scenario.start}`);
+      startTab.dispatchEvent(new (globalThis as any).Event("click"));
+      startTab.dispatchEvent({ type: "keydown", key: scenario.key, preventDefault: () => {} });
 
-  it("WHEN Step 3 ASI radio options render, their labels meet >= 40px desktop hit targets with compliant focus rings", async () => {
-    const actor = createDefaultActorData("actor-1", "Test Actor");
-    actor.classId = "fighter";
-    actor.attributes.level = 3;
-
-    const { container, getNextButton, unmount } = await renderModal({
-      isOpen: true,
-      actor,
-      onClose: () => {},
-      onSave: () => {},
+      const expected = container.querySelector(`#tab-${scenario.expected}`);
+      const other = container.querySelector(`#tab-${scenario.expected === "asi" ? "feat" : "asi"}`);
+      assert.equal(expected.getAttribute("aria-selected"), "true");
+      assert.equal(expected.getAttribute("tabindex"), "0");
+      assert.equal(other.getAttribute("tabindex"), "-1");
+      assert.equal((globalThis as any).document.activeElement, expected, "Focus must follow the selected tab");
+      unmount();
     });
-
-    const nextBtn = getNextButton();
-    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
-    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
-
-    const asiRadios = container.querySelectorAll("input[name='asiSubMode']");
-    assert.equal(asiRadios.length, 2, "Two ASI sub-mode radios must be rendered");
-    for (const radio of asiRadios) {
-      const radioCls = radio.getAttribute("class") || "";
-      assert.ok(radioCls.includes("focus-visible:ring-[var(--atlas-focus)]"), "ASI radio must use atlas-focus ring");
-      assert.ok(radioCls.includes("focus-visible:ring-offset-[var(--atlas-surface)]"), "ASI radio offset must match surface");
-
-      const parentLabel = radio.closest("label");
-      assert.ok(parentLabel, "Radio must have a parent label");
-      const labelCls = parentLabel.getAttribute("class") || "";
-      assert.ok(labelCls.includes("min-h-[40px]"), "ASI radio label must have min-h-[40px] for desktop hit target");
-      assert.ok(labelCls.includes("px-3"), "ASI radio label must include horizontal padding");
-      assert.ok(labelCls.includes("py-2"), "ASI radio label must include vertical padding");
-    }
-
-    unmount();
-  });
-
-  it("WHEN Step 4 spell checkboxes render, their labels meet >= 40px desktop hit targets with compliant focus rings (WCAG 2.5.8 & 2.4.7)", async () => {
-    const actor = createDefaultActorData("actor-wizard", "Galdor");
-    actor.classId = "wizard";
-    actor.attributes.level = 2;
-    actor.attributes.casterType = "full";
-
-    const { container, getNextButton, unmount } = await renderModal({
-      isOpen: true,
-      actor,
-      onClose: () => {},
-      onSave: () => {},
-    });
-
-    const nextBtn = getNextButton();
-    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
-    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
-    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
-
-    const checkboxes = container.querySelectorAll("input[type='checkbox']");
-    assert.ok(checkboxes.length > 0, "Spell checkboxes must exist in step 4");
-    for (const cb of checkboxes) {
-      const cbCls = cb.getAttribute("class") || "";
-      assert.ok(cbCls.includes("focus-visible:ring-[var(--atlas-focus)]"), "Spell checkbox must use atlas-focus ring");
-      assert.ok(cbCls.includes("focus-visible:ring-offset-[var(--atlas-surface)]"), "Spell checkbox offset must match surface");
-      assert.ok(cbCls.includes("text-[var(--atlas-action)]"), "Spell checkbox must use atlas-action text token");
-
-      const parentLabel = cb.closest("label");
-      assert.ok(parentLabel, "Checkbox must have a parent label");
-      const labelCls = parentLabel.getAttribute("class") || "";
-      assert.ok(labelCls.includes("min-h-[40px]"), "Spell item label must satisfy min-h-[40px]");
-      assert.ok(labelCls.includes("px-3"), "Spell item label must include horizontal padding px-3");
-      assert.ok(labelCls.includes("py-2"), "Spell item label must include vertical padding py-2");
-    }
-
-    unmount();
-  });
-
-  it("WHEN Steps 3, 4, and footer render, they use semantic ATLAS design tokens without hardcoded zinc or rose classes (WCAG 1.4.3)", async () => {
-    const actor = createDefaultActorData("actor-wizard", "Galdor");
-    actor.classId = "wizard";
-    actor.attributes.level = 3;
-    actor.attributes.casterType = "full";
-
-    const { container, getNextButton, unmount } = await renderModal({
-      isOpen: true,
-      actor,
-      onClose: () => {},
-      onSave: () => {},
-    });
-
-    const nextBtn = getNextButton();
-    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
-    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
-
-    const step3Buttons = container.querySelectorAll("button");
-    for (const btn of step3Buttons) {
-      const cls = btn.getAttribute("class") || "";
-      assert.ok(!cls.includes("zinc-"), `Step 3 button must not use hardcoded zinc: ${cls}`);
-      assert.ok(!cls.includes("rose-"), `Step 3 button must not use hardcoded rose: ${cls}`);
-    }
-
-    nextBtn.dispatchEvent(new (globalThis as any).Event("click"));
-
-    const step4Buttons = container.querySelectorAll("button");
-    for (const btn of step4Buttons) {
-      const cls = btn.getAttribute("class") || "";
-      assert.ok(!cls.includes("zinc-"), `Step 4 button must not use hardcoded zinc: ${cls}`);
-      assert.ok(!cls.includes("rose-"), `Step 4 button must not use hardcoded rose: ${cls}`);
-    }
-
-    unmount();
-  });
+  }
 });

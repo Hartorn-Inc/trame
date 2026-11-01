@@ -287,4 +287,196 @@ describe("App shell rendered against a mocked transport", () => {
     assert.equal(state.activeCampaignId.value, null);
     assert.ok(byTestId("campaign-lobby"));
   });
+
+  /** Holds requests whose URL ends with `suffix` until `release()` is called. */
+  function gateRequests(transport: { fetch: (url: string, init: RequestInit) => Promise<Response> }, suffix: string) {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const original = transport.fetch.bind(transport);
+    transport.fetch = async (url: string, init: RequestInit) => {
+      if (url.endsWith(suffix)) await gate;
+      return original(url, init);
+    };
+    return () => release();
+  }
+
+  const INVITE_ROUTES: Record<string, RouteReply> = {
+    "GET /api/v1/auth/me": ME_OK,
+    "GET /api/v1/campaigns": { status: 200, body: { campaigns: [campaignDto()] } },
+    [`POST /api/v1/campaigns/${CAMPAIGN_ID}/invites`]: {
+      status: 201,
+      body: { invite_url: "https://trame.test/?invite=abc", token: "abc", expires_at: 1, campaign_id: CAMPAIGN_ID, role: "PLAYER" },
+    },
+  };
+
+  const inviteButtonCases = [
+    { id: "idle invite button is named 'Invite players to {name}'", pending: false, text: "Invite players", name: "Invite players to Lost Mine", busy: null },
+    { id: "pending invite button reads 'Creating link…' and is aria-busy", pending: true, text: "Creating link…", name: "Creating link… (Lost Mine)", busy: "true" },
+  ];
+
+  for (const c of inviteButtonCases) {
+    it(c.id, async () => {
+      const { client, transport } = newClient(INVITE_ROUTES);
+      const release = gateRequests(transport, "/invites");
+      await mount(client);
+      const button = byTestId(`lobby-invite-${CAMPAIGN_ID}`);
+      if (c.pending) {
+        button.dispatchEvent({ type: "click" });
+        await flush(2);
+      }
+      assert.equal(button.textContent, c.text);
+      assert.equal(button.getAttribute("aria-label"), c.name);
+      assert.ok(c.name.startsWith(c.text), "accessible name must start with the visible label");
+      assert.equal(button.getAttribute("aria-busy"), c.busy);
+      assert.equal(button.getAttribute("aria-disabled"), c.busy);
+      assert.equal(button.hasAttribute("disabled"), false, "button stays focusable while pending");
+      release();
+      await flush(5);
+    });
+  }
+
+  it("repeated clicks while an invite is pending mint a single link", async () => {
+    const { client, transport } = newClient(INVITE_ROUTES);
+    const release = gateRequests(transport, "/invites");
+    await mount(client);
+    const button = byTestId(`lobby-invite-${CAMPAIGN_ID}`);
+    for (let i = 0; i < 3; i++) {
+      button.dispatchEvent({ type: "click" });
+      await flush(1);
+    }
+    release();
+    await flush(5);
+    assert.equal(transport.calls.filter((call) => call.url.endsWith("/invites")).length, 1);
+  });
+
+  it("a minted invite is announced in the persistent status region and its URL field takes focus", async () => {
+    const { client } = newClient(INVITE_ROUTES);
+    await mount(client);
+    const status = byTestId("lobby-status");
+    assert.equal(status.getAttribute("role"), "status");
+    byTestId(`lobby-invite-${CAMPAIGN_ID}`).dispatchEvent({ type: "click" });
+    await flush(5);
+    assert.equal(byTestId("lobby-status"), status, "status region must persist across updates");
+    assert.equal(status.textContent, "Invite link ready for Lost Mine.");
+    assert.equal(doc.activeElement, byTestId(`lobby-invite-url-${CAMPAIGN_ID}`));
+  });
+
+  it("campaign list exposes role='list' so list semantics survive list-style: none", async () => {
+    const { client } = newClient(INVITE_ROUTES);
+    await mount(client);
+    assert.equal(byTestId(`lobby-campaign-${CAMPAIGN_ID}`).parentNode.getAttribute("role"), "list");
+  });
+
+  it("empty lobby renders the cartographic AtlasEmptyState with a localized heading", async () => {
+    const { client } = newClient({ "GET /api/v1/auth/me": ME_OK, "GET /api/v1/campaigns": { status: 200, body: { campaigns: [] } } });
+    await mount(client);
+    const empty = byTestId("lobby-empty");
+    assert.equal(empty.getAttribute("data-empty-state"), "campaigns");
+    assert.ok(empty.querySelector("svg"), "empty state must include the illustration");
+    assert.ok(empty.textContent.includes("No campaigns yet"));
+  });
+
+  const titleFocusCases: Array<{ id: string; routes: Record<string, RouteReply>; title: string }> = [
+    { id: "sign-in screen focuses its h1 on mount", routes: { "GET /api/v1/auth/me": ME_401 }, title: "auth-title" },
+    {
+      id: "lobby focuses its h1 on mount",
+      routes: { "GET /api/v1/auth/me": ME_OK, "GET /api/v1/campaigns": { status: 200, body: { campaigns: [] } } },
+      title: "lobby-title",
+    },
+  ];
+
+  for (const c of titleFocusCases) {
+    it(c.id, async () => {
+      const { client } = newClient(c.routes);
+      await mount(client);
+      assert.equal(doc.activeElement?.id, c.title);
+    });
+  }
+
+  const authErrorCases: Array<{ id: string; mode: string; route: string; reply: RouteReply; invalid: string[] }> = [
+    { id: "wrong credentials flag email and password", mode: "login", route: "POST /api/v1/auth/login", reply: { status: 401, body: { code: "INVALID_CREDENTIALS", error: "bad" } }, invalid: ["auth-email", "auth-password"] },
+    { id: "taken email flags only the email field", mode: "register", route: "POST /api/v1/auth/register", reply: { status: 409, body: { code: "EMAIL_ALREADY_EXISTS", error: "taken" } }, invalid: ["auth-email"] },
+    { id: "bad display name flags only the display name", mode: "register", route: "POST /api/v1/auth/register", reply: { status: 400, body: { code: "INVALID_DISPLAY_NAME", error: "short" } }, invalid: ["auth-display-name"] },
+    { id: "generic server error flags no field", mode: "login", route: "POST /api/v1/auth/login", reply: { status: 500, body: { error: "boom" } }, invalid: [] },
+  ];
+
+  for (const c of authErrorCases) {
+    it(c.id, async () => {
+      const { client } = newClient({ "GET /api/v1/auth/me": ME_401, [c.route]: c.reply });
+      await mount(client);
+      if (c.mode === "register") {
+        byTestId("auth-mode-register").dispatchEvent({ type: "click" });
+        await flush(1);
+      }
+      byTestId("auth-form").dispatchEvent({ type: "submit" });
+      await flush(5);
+      assert.equal(byTestId("auth-error").id, "auth-error");
+      for (const field of ["auth-email", "auth-display-name", "auth-password"]) {
+        const input = byTestId(field);
+        if (!input) continue;
+        const flagged = c.invalid.includes(field);
+        assert.equal(input.getAttribute("aria-invalid"), flagged ? "true" : null, `${field} aria-invalid`);
+        assert.equal(input.getAttribute("aria-describedby"), flagged ? "auth-error" : null, `${field} aria-describedby`);
+      }
+    });
+  }
+
+  it("submit stays focusable (aria-disabled + aria-busy) and mode buttons lock while signing in", async () => {
+    const { client, transport } = newClient({
+      "GET /api/v1/auth/me": ME_401,
+      "POST /api/v1/auth/login": { status: 401, body: { code: "INVALID_CREDENTIALS", error: "bad" } },
+    });
+    const release = gateRequests(transport, "/auth/login");
+    await mount(client);
+    byTestId("auth-form").dispatchEvent({ type: "submit" });
+    await flush(2);
+    const submit = byTestId("auth-submit");
+    assert.equal(submit.getAttribute("aria-busy"), "true");
+    assert.equal(submit.getAttribute("aria-disabled"), "true");
+    assert.equal(submit.hasAttribute("disabled"), false);
+    assert.equal(byTestId("auth-mode-login").disabled, true);
+    assert.equal(byTestId("auth-mode-register").disabled, true);
+    byTestId("auth-form").dispatchEvent({ type: "submit" });
+    release();
+    await flush(5);
+    assert.equal(transport.calls.filter((call) => call.url === "/api/v1/auth/login").length, 1, "busy submit must not resend");
+  });
+
+  it("selected auth mode carries a non-color check glyph", async () => {
+    const { client } = newClient({ "GET /api/v1/auth/me": ME_401 });
+    await mount(client);
+    assert.ok(byTestId("auth-mode-login").textContent.startsWith("✓"));
+    assert.equal(byTestId("auth-mode-register").textContent.includes("✓"), false);
+  });
+
+  const inviteRegionCases: Array<{ id: string; search: string; routes: Record<string, RouteReply>; filled: boolean }> = [
+    { id: "invite live region exists empty when no invite failed", search: "", routes: { "GET /api/v1/auth/me": ME_401 }, filled: false },
+    {
+      id: "invite live region is filled after mount when the invite failed",
+      search: "?invite=jwt-old",
+      routes: { "POST /api/v1/auth/magic-link/redeem": INVITE_EXPIRED, "GET /api/v1/auth/me": ME_401 },
+      filled: true,
+    },
+  ];
+
+  for (const c of inviteRegionCases) {
+    it(c.id, async () => {
+      const { client } = newClient(c.routes);
+      await mount(client, c.search);
+      const region = byTestId("auth-invite-region");
+      assert.equal(region.getAttribute("role"), "alert");
+      assert.equal(Boolean(region.querySelector("[data-testid='auth-invite-error']")), c.filled);
+    });
+  }
+
+  it("sign-in screen offers the language switch labelled in the target language", async () => {
+    const { client } = newClient({ "GET /api/v1/auth/me": ME_401 });
+    await mount(client);
+    const toggle = byTestId("auth-screen").querySelector("[data-testid='header-locale-toggle']");
+    assert.ok(toggle, "locale switch must render before sign-in");
+    assert.equal(toggle.textContent, "Français");
+    assert.equal(toggle.getAttribute("lang"), "fr");
+  });
 });
