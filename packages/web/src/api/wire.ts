@@ -37,6 +37,7 @@
  * ============================================================================
  */
 import { Decoder, encode } from "@msgpack/msgpack";
+import type { AoeTemplateDto } from "../engine/wasmBridge.ts";
 
 /** Canonical hyphenated UUID string (`8-4-4-4-12` lowercase hex). */
 export type Uuid = string;
@@ -88,6 +89,10 @@ export interface WireTokenState {
   grid_h?: number;
   /** Base elevation in feet (`ft`). */
   elevation_ft?: number;
+  /** Stature in feet (`ft`, full tokens only); eye height for vision. */
+  height_ft?: number;
+  /** Sense ranges (full tokens only); drive the recipient's vision. */
+  senses?: WireSenseProfile;
   /** Current hit points (full tokens only). */
   hp?: number;
   /** Maximum hit points (full tokens only). */
@@ -100,6 +105,69 @@ export interface WireTokenState {
   conditions?: string[];
   [field: string]: unknown;
 }
+
+/** Token sense ranges (`SenseProfile`), all in feet (`ft`). */
+export interface WireSenseProfile {
+  normal_range_ft: number;
+  darkvision_range_ft: number;
+  truesight_range_ft: number;
+  devils_sight: boolean;
+  [field: string]: unknown;
+}
+
+/**
+ * Wall classification (`WallKind`, tagged by `kind`). Non-GM projections never
+ * carry a closed `SECRET_DOOR` or an `ILLUSION`: the server rewrites both to
+ * `NORMAL` (`mask_wall_for_player`).
+ */
+export type WireWallKind =
+  | { kind: "NORMAL" }
+  | { kind: "WINDOW" }
+  | { kind: "TERRAIN" }
+  | { kind: "ONE_WAY"; normal_x: number; normal_y: number }
+  | { kind: "DOOR"; is_open: boolean; is_locked: boolean }
+  | { kind: "SECRET_DOOR"; is_open: boolean }
+  | { kind: "ILLUSION"; pierced_by_truesight: boolean };
+
+/** Wall segment (`WallSegment`); endpoints in canvas pixels (`px`), elevations in feet (`ft`). */
+export interface WireWallSegment {
+  id: Uuid;
+  a: WirePoint2D;
+  b: WirePoint2D;
+  kind: WireWallKind;
+  blocks_movement: boolean;
+  blocks_vision: boolean;
+  blocks_light: boolean;
+  blocks_sound: boolean;
+  bottom_elevation_ft: number;
+  top_elevation_ft: number;
+}
+
+/** Point light (`LightSource`); radii in feet (`ft`), `intensity` in `0..=1`. */
+export interface WireLightSource {
+  id: Uuid;
+  /** Emitter position in canvas pixels (`px`). */
+  position: WirePoint2D;
+  elevation_ft: number;
+  bright_radius_ft: number;
+  dim_radius_ft: number;
+  /** `#RRGGBB`. */
+  color_hex: string;
+  intensity: number;
+}
+
+/** Manual GM fog override on one grid cell (`FogOverrideCell`). */
+export interface WireFogOverrideCell {
+  cell_x: number;
+  cell_y: number;
+  mode: "REVEAL" | "HIDE" | "CLEAR";
+}
+
+/** Persistent AoE template (`AoeTemplate`); same shape the WASM bridge accepts. */
+export type WireAoeTemplate = AoeTemplateDto;
+
+/** Ambient lighting preset (`AmbientLightingPreset`). */
+export type WireAmbientLighting = "DAYLIGHT" | "DUSK" | "NIGHT_MOONLIGHT" | "PITCH_DARKNESS";
 
 /** `ReactionPromptCloseReason` (engine): why a prompt left `active_reaction_prompts`. */
 export type ReactionPromptCloseReason = "RESOLVED" | "STALE" | "UNDONE";
@@ -147,16 +215,16 @@ export interface ProjectedTableState {
   tokens: Record<Uuid, WireTokenState>;
   /** Reduced views of visible tokens the recipient does not control (always empty for GMs). */
   public_tokens?: Record<Uuid, WireTokenState>;
-  walls: unknown[];
-  persistent_aoes: Record<Uuid, unknown>;
+  walls: WireWallSegment[];
+  persistent_aoes: Record<Uuid, WireAoeTemplate>;
   initiative_order: Uuid[];
   /** Totals keyed by token id, limited to `initiative_order` (no hidden combatant's total). */
   initiative_totals?: Record<Uuid, number>;
   /** Index into `initiative_order`; `null` when the active combatant is hidden or the order is empty. */
   active_turn_index: number | null;
   round: number;
-  lights: unknown[];
-  fog_overrides: unknown[];
+  lights: WireLightSource[];
+  fog_overrides: WireFogOverrideCell[];
   background_asset_hash: string | null;
   /** Battlemap width in canvas pixels (`px`). */
   map_width_px: number;
