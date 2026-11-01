@@ -170,7 +170,7 @@ export const CANVAS_AMBIENT_TINTS: Readonly<
   PITCH_DARKNESS: "#0F1A25",
 });
 
-const SHARED_WALL_KINDS: Readonly<Record<CanonicalWallKind, WallKindVisualStyle>> = deepFreeze({
+export const SHARED_WALL_KINDS: Record<CanonicalWallKind, WallKindVisualStyle> = {
   Normal: {
     strokeColorHex: 0xf1f4f3,
     strokeColorCss: "#F1F4F3",
@@ -220,7 +220,7 @@ const SHARED_WALL_KINDS: Readonly<Record<CanonicalWallKind, WallKindVisualStyle>
     dashPatternPx: [2, 4],
     endpointMarker: "none",
   },
-});
+};
 
 export const DARK_CANVAS_PALETTE: CanvasThemePaletteSpec = deepFreeze({
   theme: "dark",
