@@ -188,7 +188,7 @@ export interface SheetLayoutTree {
   - WHEN a user clicks an item delete trigger, THEN `InventoryContainerTree` dispatches a `TrameCommand.UpdateActorSheet` command removing the item.
 
 ### 3.10 `FeatureTraitList`
-- **Description**: Displays passive traits, racial abilities, and class features grouped by source category.
+- **Description**: Displays passive traits, species traits, and class features grouped by source category.
 - **Required Bindings**:
   - `features`: Path resolving to an array of feature objects (`{ id, name, source, description }`).
 - **Interactions**:

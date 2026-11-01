@@ -1,7 +1,7 @@
 # ADR-0008: Portable .trame Campaign Archive Format and Two-Pass Streaming Engine
 
 ## Status
-Accepted
+Accepted. Amended by convergence decision G8: `POST /api/v1/campaigns/import` always creates a new campaign owned by the caller with every ID remapped; `FAIL_IF_EXISTS` and `remap_ids` remain importer options but are not exposed over HTTP. Export is filtered to the exported campaign.
 
 ## Context
 TRAME requires a self-contained campaign archive format (`.trame`) that allows Game Masters to migrate complete campaigns across local Docker engines, minimal virtual machines (`e2-micro`), and serverless container platforms (Cloud Run with Neon Postgres and Cloudflare R2).

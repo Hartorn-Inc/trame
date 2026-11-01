@@ -217,7 +217,7 @@ Campaign Administrators and Game Masters can activate TOTP MFA:
 
 #### 3.4.2 Encryption at Rest
 TOTP secrets MUST NOT be stored in plaintext. The server encrypts the secret using AES-256-GCM prior to database insertion:
-- Key: Sourced from `MASTER_ENCRYPTION_KEY` environment variable (32-byte hex string).
+- Key: Sourced from `MASTER_ENCRYPTION_KEY` environment variable (64 hex characters encoding a 32-byte key).
 - Nonce: 12 bytes randomly generated per encryption.
 - Persisted Value: `<nonce_hex>:<ciphertext_and_tag_hex>` stored in `users.totp_encrypted_secret`.
 
@@ -386,7 +386,9 @@ trame-cli archive inspect --input <PATH>
 - **Response 404**: `{"code":"CAMPAIGN_NOT_FOUND","message":"Campaign does not exist"}`.
 
 ### 7.2 Archive Import
-- **Endpoint**: `POST /api/v1/campaigns/import?remap_ids=<bool>`
+> **Superseded by decision G8:** the HTTP import always creates a brand-new campaign owned by the caller, with every ID remapped. There is no `remap_ids` query parameter and no `409 CAMPAIGN_ALREADY_EXISTS` response on this route; the `FAIL_IF_EXISTS` / `remap_ids` options below remain only inside the importer API (`archive/importer.rs`). Guests receive `403 GUEST_FORBIDDEN`, unauthenticated callers `401`.
+
+- **Endpoint**: `POST /api/v1/campaigns/import`
 - **Headers**: `Content-Type: multipart/form-data` or raw `application/zip` stream.
 - **Response 201 Created**:
 ```json
@@ -399,7 +401,7 @@ trame-cli archive inspect --input <PATH>
   "assets_restored": 25
 }
 ```
-- **Response 409 Conflict** (if default mode and ID exists):
+- **Response 409 Conflict** (importer API only, not the HTTP route; default mode and ID exists):
 ```json
 {
   "code":"CAMPAIGN_ALREADY_EXISTS",
@@ -514,11 +516,13 @@ trame-cli archive inspect --input <PATH>
 
 ### 8.1 Environment Variables Matrix
 
+> **Implementation status:** the authoritative list of variables the server reads is the "Server Configuration" table in `README.md` (`crates/trame-server/src/config.rs`). Outside `TRAME_ENV=dev` the server also requires `TRAME_PUBLIC_ORIGIN` and accepts `TRAME_JWT_SECRET` / `TRAME_INVITE_JWT_SECRET` (with `JWT_SECRET` as a legacy alias for both). `STORAGE_BACKEND`, `S3_*` and `OAUTH_*` below are planned and not read by the server today: assets are stored in PostgreSQL (or in memory without a database).
+
 | Variable Name | Required | Description | Example Value |
 | :--- | :--- | :--- | :--- |
 | `DATABASE_URL` | Yes | Postgres connection string | `postgres://user:pass@ep-cool-db.us-east-2.aws.neon.tech/neondb?sslmode=require` |
-| `JWT_SECRET` | Yes | Secret for signing auth tokens | `64_character_hex_string` |
-| `MASTER_ENCRYPTION_KEY` | Yes | 32-byte hex key for AES-256-GCM TOTP secrets | `32_byte_hex_string` |
+| `JWT_SECRET` | Yes | Legacy alias for `TRAME_JWT_SECRET` and `TRAME_INVITE_JWT_SECRET` (at least 32 bytes) | `64_character_hex_string` |
+| `MASTER_ENCRYPTION_KEY` | Yes | 64 hex characters (32-byte key) for AES-256-GCM TOTP secrets | `64_hex_characters` |
 | `STORAGE_BACKEND` | Yes | Storage engine selector | `s3` or `local` |
 | `S3_ENDPOINT` | For `s3` | S3 / R2 API URL | `https://<account_id>.r2.cloudflarestorage.com` |
 | `S3_BUCKET` | For `s3` | Destination bucket | `trame-campaign-assets` |
