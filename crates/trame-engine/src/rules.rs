@@ -145,7 +145,7 @@ pub struct AttributeModifier {
     pub formula: Option<String>,
 }
 
-/// Buff, debuff, condition, or equipment effect attached to a token or actor.
+/// Bonus, penalty, condition, or equipment effect attached to a token or actor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActiveEffect {
     /// Unique identifier for this active effect instance.

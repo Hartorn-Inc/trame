@@ -54,8 +54,8 @@ use crate::aoe::AoeTemplate;
 pub use crate::commands::{
     AmbientLightingPreset, CampaignRole, CommandActor, CommandError, FogOverrideCell,
     FogOverrideMode, LightSource, McpStagingProposal, ReactionDecision, ReactionPrompt,
-    RefundableResource, SceneActivation, TableMode, TableSnapshotData, TableState, TokenState,
-    TrameCommand, TrameEvent, UndoEntry,
+    ReactionPromptCloseReason, RefundableResource, SceneActivation, TableMode, TableSnapshotData,
+    TableState, TokenState, TrameCommand, TrameEvent, UndoEntry,
 };
 pub use crate::geometry::{Bvh2D, Point2D, SenseProfile, WallKind, WallSegment};
 pub use crate::rules::{
@@ -586,6 +586,7 @@ mod tests {
                 pending_elevation_ft: Some(0.0),
                 reactor_owner_user_id: Some(player_id),
                 resolved_reactor_ids: Vec::new(),
+                awaiting_resolution: false,
             },
         );
         state
@@ -600,8 +601,12 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(state.data.active_reaction_prompts.is_empty());
+        assert!(state.data.active_reaction_prompts[&prompt_id].awaiting_resolution);
         assert!(!state.data.tokens[&token_id].has_reaction);
+        state
+            .apply_command(&player, TrameCommand::ResolveReaction { prompt_id })
+            .unwrap();
+        assert!(state.data.active_reaction_prompts.is_empty());
 
         // 4. CommitMcpStaging & RejectMcpStaging
         let proposal_id = Uuid::new_v4();

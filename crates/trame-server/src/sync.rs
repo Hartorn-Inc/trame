@@ -373,6 +373,7 @@ pub fn filter_events_for_recipient(
             | TrameEvent::FogOverrideChanged { .. }
             | TrameEvent::MapConfigChanged { .. }
             | TrameEvent::ReactionDecided { .. }
+            | TrameEvent::ReactionPromptClosed { .. }
             | TrameEvent::McpStagingCommitted { .. }
             | TrameEvent::McpStagingRejected { .. }
             | TrameEvent::ActionUndone { .. } => true,
