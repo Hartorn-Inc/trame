@@ -19,7 +19,23 @@ jobs:
   quality:
     name: "Quality (Format, Lint, Typecheck, Test & Build)"
     runs-on: ubuntu-26.04
-    timeout-minutes: 25
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: trame
+          POSTGRES_USER: trame
+          POSTGRES_PASSWORD: trame_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trame -d trame"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      WASM_PACK_VERSION: "0.15.1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,6 +43,15 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
+      - name: Install pinned Rust toolchain (rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      - name: Install pinned wasm-pack
+        run: |
+          curl -sSfL "https://github.com/wasm-bindgen/wasm-pack/releases/download/v${WASM_PACK_VERSION}/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz --strip-components=1 -C "$HOME/.cargo/bin" "wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack"
+          wasm-pack --version
       - name: Domain Glossary & ADR Integrity check
         run: python3 scripts/check-glossary-and-adrs.py
       - name: Impeccable Design System & WCAG AA Contrast check
@@ -36,7 +61,14 @@ jobs:
       - name: Rust Lint check (cargo clippy)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Rust Tests (cargo test)
+        env:
+          DATABASE_URL: postgresql://trame:trame_ci_password@localhost:5432/trame
         run: cargo test --workspace --all-targets
+      - name: WASM Build (wasm-pack trame-engine)
+        run: wasm-pack build crates/trame-engine --target web --out-dir ../../packages/web/src/wasm
+      - name: Game System Tests (dnd5e)
+        working-directory: packages/web
+        run: node --test "../game-systems/dnd5e/tests/**/*.test.ts"
       - name: Web Package Quality (install, lint, typecheck, test, build)
         working-directory: packages/web
         run: |

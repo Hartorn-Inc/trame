@@ -18,6 +18,45 @@ spec:
           ports:
             - name: http1
               containerPort: 8080
+          # Secrets come from Secret Manager; the runtime service account needs
+          # `roles/secretmanager.secretAccessor` on each referenced secret.
+          env:
+            # Any value other than `dev` makes trame-server refuse to start without every secret below.
+            - name: TRAME_ENV
+              value: production
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: trame-database-url
+                  key: latest
+            # 64 hex chars (32 bytes): AES-256-GCM key encrypting stored TOTP secrets.
+            - name: MASTER_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: trame-master-encryption-key
+                  key: latest
+            # HMAC-SHA256 key signing presigned asset download URLs (>= 32 chars).
+            - name: TRAME_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: trame-jwt-secret
+                  key: latest
+            # HMAC-SHA256 key for campaign invite (magic link) tokens (>= 32 chars).
+            - name: TRAME_INVITE_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: trame-invite-jwt-secret
+                  key: latest
+            # Public browser origin (CORS / Origin checks, links); replace before deploying.
+            - name: TRAME_PUBLIC_ORIGIN
+              value: https://trame.example.com
+            - name: TRAME_COOKIE_SECURE
+              value: 'true'
+            # Built SPA directory baked into the image by the Dockerfile.
+            - name: TRAME_STATIC_DIR
+              value: /app/static
+            - name: RUST_LOG
+              value: info
           resources:
             limits:
               cpu: '1'

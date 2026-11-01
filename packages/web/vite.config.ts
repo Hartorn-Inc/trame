@@ -8,14 +8,19 @@
  * Configures the Vite build and development server for `@trame/web`, enabling
  * Preact automatic JSX transformation (`jsxImportSource: 'preact'`), top-level
  * WebAssembly loading (`trame-engine`), and local development proxying of
- * `/api` and `/ws` routes to `trame-server` (`http://localhost:3000`).
+ * `/api`, `/ws` and `/assets` routes to `trame-server`.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -------------------------------
  *   1. `Single-Origin Production Parity`:
  *      - Emits production static assets to `packages/web/dist` so `trame-server`
  *        can serve the SPA directly from `TRAME_STATIC_DIR`.
- *   2. `Zero-Config Preact JSX`:
+ *   2. `Single Proxy Variable`:
+ *      - `TRAME_API_ORIGIN` is the only proxy input; `docker-compose.dev.yml`
+ *        sets it to `http://rust-dev:8080`. Outside Docker it falls back to
+ *        `http://localhost:8080`, the `trame-server` default port. It has no
+ *        `VITE_` prefix, so it never leaks into the client bundle.
+ *   3. `Zero-Config Preact JSX`:
  *      - Uses esbuild's native `jsx: 'automatic'` with `jsxImportSource: 'preact'`
  *        so no external Babel/SWC plugins are required.
  *
@@ -28,6 +33,8 @@
 
 import { defineConfig } from 'vite';
 
+const apiOrigin = process.env.TRAME_API_ORIGIN ?? 'http://localhost:8080';
+
 export default defineConfig({
   esbuild: {
     jsx: 'automatic',
@@ -38,15 +45,15 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: process.env.TRAME_API_ORIGIN ?? 'http://localhost:3000',
+        target: apiOrigin,
         changeOrigin: true,
       },
       '/ws': {
-        target: (process.env.TRAME_API_ORIGIN ?? 'http://localhost:3000').replace(/^http/, 'ws'),
+        target: apiOrigin.replace(/^http/, 'ws'),
         ws: true,
       },
       '/assets': {
-        target: process.env.TRAME_API_ORIGIN ?? 'http://localhost:3000',
+        target: apiOrigin,
         changeOrigin: true,
       },
     },

@@ -1,0 +1,8 @@
+# Pinned Rust toolchain for local Docker, CI, and the production image.
+# Keep `channel` in sync with the `rust:<version>-bookworm` tags in
+# `docker/Dockerfile.rust-dev` and `Dockerfile`.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

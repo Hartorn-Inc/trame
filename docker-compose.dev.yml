@@ -56,6 +56,8 @@ services:
       minio:
         condition: service_started
     environment:
+      # Allows trame-server to boot with built-in development keys (G7); never set in production.
+      TRAME_ENV: dev
       DATABASE_URL: ${DATABASE_URL:-postgresql://trame:trame_dev_password@postgres:5432/trame}
       S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
       S3_BUCKET: ${S3_BUCKET:-trame-assets}
@@ -80,7 +82,8 @@ services:
     logging: *logging
     working_dir: /workspace/packages/web
     environment:
-      VITE_API_TARGET: http://rust-dev:8080
+      # Read by packages/web/vite.config.ts to proxy /api, /ws and /assets.
+      TRAME_API_ORIGIN: ${TRAME_API_ORIGIN:-http://rust-dev:8080}
     ports:
       - "127.0.0.1:${TRAME_WEB_PORT:-5173}:5173"
     volumes:
