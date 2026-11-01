@@ -103,7 +103,6 @@ pub struct PartyJournalEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevealHandoutCommand {
-    pub action: String,
     pub campaign_id: String,
     pub session_num: u32,
     pub handout_id: String,

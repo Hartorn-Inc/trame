@@ -906,7 +906,6 @@ Hidden Text
         let timeline = Arc::new(InMemoryTimelineStorage::new());
 
         let cmd = RevealHandoutCommand {
-            action: "notes.reveal_handout".to_string(),
             campaign_id: "camp-alpha".to_string(),
             session_num: 1,
             handout_id: "h-456".to_string(),

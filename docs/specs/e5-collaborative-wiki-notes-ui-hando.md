@@ -95,15 +95,11 @@ Supported event types (`event_type`):
 
 ### 3.1 Real-Time WebSocket Commands and Messages
 
-#### Command Sent by the Game Master (Client -> Server)
+#### Reveal Request Sent by the Game Master (Client -> Server)
+`POST /api/v1/campaigns/{campaign_id}/handouts/{handout_id}/reveal` (GM only). The body is optional; the server reads the handout title and content from the campaign notes and applies the `RevealHandout` command to the live room.
 ```json
 {
-  "action": "notes.reveal_handout",
-  "campaign_id": "camp-123",
-  "session_num": 4,
-  "handout_id": "h-456",
-  "title": "Intercepted letter",
-  "content": "Meet at midnight at the old mill."
+  "session_num": 4
 }
 ```
 
@@ -121,7 +117,7 @@ Supported event types (`event_type`):
 
 ### 3.2 Timeline REST Endpoint
 
-- **Route**: `GET /api/campaigns/{campaign_id}/sessions/{session_num}/timeline`
+- **Route**: `GET /api/v1/campaigns/{campaign_id}/sessions/{session_num}/timeline`
 - **Access**: requires campaign membership; events are filtered by role.
 - **Query parameters**: `after` (optional integer, default `0`), `limit` (optional integer, default `50`, maximum `200`).
 - **HTTP 200 response**:
@@ -179,9 +175,9 @@ Supported event types (`event_type`):
 5. IF a `:::handout` block has the attribute `revealed="true"`, THEN `trame-server` MUST keep the block in the public snapshot.
 
 ### 4.2 Handout Reveal Invariants
-1. Only a user with the `GameMaster` role can send the `notes.reveal_handout` command.
-2. WHEN `trame-server` accepts the `notes.reveal_handout` command, THEN `trame-server` MUST record the matching entry in the `party_journal_entries` table.
-3. WHEN `trame-server` accepts the `notes.reveal_handout` command, THEN `trame-server` MUST insert a `HandoutRevealed` event in the `session_events` table.
+1. Only a user with the `GameMaster` role can send the `RevealHandout` command (`POST .../handouts/{handout_id}/reveal`).
+2. WHEN `trame-server` accepts the `RevealHandout` command, THEN `trame-server` MUST record the matching entry in the `party_journal_entries` table.
+3. WHEN `trame-server` accepts the `RevealHandout` command, THEN `trame-server` MUST insert a `HandoutRevealed` event in the `session_events` table.
 4. WHEN `trame-server` persists a handout reveal, THEN `trame-server` MUST broadcast the `handout.revealed` event to every client connected to the campaign.
 5. WHEN the `packages/web` client receives the `handout.revealed` event, THEN `packages/web` MUST show the `HandoutRevealModal` component with the handout's title and text.
 
@@ -197,7 +193,7 @@ Supported event types (`event_type`):
 ### 4.4 Session Timeline Invariants
 1. `trame-server` MUST assign every event in `session_events` a strictly increasing `seq_id` that is unique for the `(campaign_id, session_num)` pair.
 2. WHEN two commands concurrently create events for the same session, `trame-server` MUST serialize `seq_id` assignment through the database transaction.
-3. The `GET /api/campaigns/{campaign_id}/sessions/{session_num}/timeline` API MUST return events sorted by `seq_id ASC`.
+3. The `GET /api/v1/campaigns/{campaign_id}/sessions/{session_num}/timeline` API MUST return events sorted by `seq_id ASC`.
 
 ---
 
@@ -216,7 +212,7 @@ Per the CI alignment guidelines, the frontend test suite uses only the native No
    - Execution: `FilteredNoteDocument::filter_for_role(input, UserRole::GameMaster)`.
    - Assertion: the output is strictly identical to the source document.
 3. `test_reveal_handout_inserts_journal_and_session_event`:
-   - Execution: send the `notes.reveal_handout` command with a session and handout identifier.
+   - Execution: send the `RevealHandout` command with a session and handout identifier.
    - Assertion: `party_journal_entries` contains the new row; `session_events` contains a `HandoutRevealed` event with `seq_id == 1`.
 4. `test_session_timeline_sequential_ordering_under_concurrency`:
    - Execution: insert 50 session events concurrently from parallel threads.
