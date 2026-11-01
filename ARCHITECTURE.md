@@ -89,7 +89,7 @@ The repository is configured with `/setup-repo`. Its reviewer roster lives in `.
 
 ### Domain & Stack Specialists
 1. **`domain-backend-reviewer`**: domain logic, mathematical formulas, state transitions, and backend API (`TrameCommand` handling, `TableRoomActor`, WAL/write-behind guarantees).
-2. **`game-systems-reviewer`**: `GameSystemPack` schema compliance and D&D 5e rule accuracy (SRD 5.1, CC-BY-4.0), sheet widgets and effect stacking.
+2. **`game-systems-reviewer`**: `GameSystemPack` schema compliance and D&D 5e rule accuracy (SRD 5.2.1, CC-BY-4.0), sheet widgets and effect stacking.
 3. **`realtime-reviewer`**: WebSocket transport, room lifecycle, `Idle-Lease`, and per-recipient state projection.
 4. **`mcp-sync-reviewer`**: MCP tool parity with `TrameCommand`, `McpStagingProposal`, and note synchronization.
 5. **`infra-reviewer`**: CI/CD workflows, build scripts, package dependencies, Docker images, and runtime configuration.

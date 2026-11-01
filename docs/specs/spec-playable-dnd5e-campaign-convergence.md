@@ -62,17 +62,17 @@ Players get a 1-click join, a sheet that persists safely through REST, a live ta
 15. As a player, I want derived stats (AC, saves, skills, spell DC, initiative) computed by the same engine the server uses, so that client and server never disagree.
 16. As a Barbarian or Monk, I want unarmored defense to win when it beats my armor ("best wins"), so that my AC is correct.
 17. As a player, I want same-named effects not to stack, with the strongest applying, so that buffs follow 5e rules.
-18. As a player, I want level-up from 1 to 20 for all 12 SRD classes, with subclass at the right level (Cleric, Sorcerer and Warlock at 1; Druid and Wizard at 2; others at 3), so that progression is correct.
+18. As a player, I want level-up from 1 to 20 for all 12 SRD 5.2.1 classes, with every class choosing its subclass at level 3 and martial classes gaining Weapon Mastery, so that progression is correct (Decision G10, ADR-0038).
 19. As a player raising Constitution with an ASI, I want my max HP to increase for every earlier level, so that HP follows 5e rules.
-20. As a player taking the Tough feat, I want +2 HP per level, retroactively, so that the feat works.
+20. *Dropped by Decision G10:* the Tough feat is not in SRD 5.2.1. Backgrounds grant the ability score increase (+2/+1 or +1/+1/+1) and an Origin feat instead.
 21. As a level-11+ caster, I want spells available to choose at every spell level I can cast, so that level-up is never blocked.
 22. As a player, I want level-up HP rolls and rest hit-dice rolls made by the server (`POST /dice/roll`, `ChaCha20Rng`), even when the table room is asleep, so that rolls are fair and always available.
 23. As a player, I want a short rest to spend hit dice and recover short-rest resources and Pact Magic, so that resources refresh correctly.
-24. As a player, I want a long rest to restore HP, half my hit dice, slots and resources, and reduce exhaustion, but never revive a dead character, so that death stays meaningful.
+24. As a player, I want a long rest to restore HP, half my hit dice, slots and resources, and reduce exhaustion by one level (SRD 5.2.1: -2 per level on d20 Tests, -5 ft Speed per level, death at level 6), but never revive a dead character, so that death stays meaningful.
 25. As a player, I want conditions referenced by stable ids (for example `unconscious`) and shown in my language, so that rules and UI agree.
 
 **Compendium**
-26. As a GM or player, I want a curated SRD (12 classes, 9 species, 6 backgrounds, about 60 spells from cantrips to 9th level, about 40 items, about 35 monsters from CR 0 to 20), so that a campaign can run without homebrew.
+26. As a GM or player, I want a curated SRD 5.2.1 (12 classes, 9 species with no ability score increases, 4 SRD backgrounds plus 2 original ones, the 17 SRD feats, about 60 spells from cantrips to 9th level, about 40 items, about 35 monsters from CR 0 to 20), so that a campaign can run without homebrew.
 27. As a GM, I want campaign homebrew to override instance and SRD entries, so that I can customize content.
 28. As a French-speaking table, I want compendium names and descriptions in French, so that we can play in French.
 
@@ -151,7 +151,7 @@ Players get a 1-click join, a sheet that persists safely through REST, a live ta
 - **MCP:** JSON-RPC 2.0 at `POST /api/v1/mcp` with `trame_pat_` auth. The tool input schemas are generated from `TrameCommand`. Staging mode is a persisted campaign setting. The timeline resource reads session and cursor from the URI.
 - **Frontend:** the API client handles `PointerPing` tagging, full `CommandAccepted.state` reconciliation, `ActorUpdated`, `HandoutRevealed` and `McpStagingProposed`. `App.tsx` runs `GuestSessionUpgrade` before the auth guard. The 5-tab `CampaignWorkspace`, `HudDrawers`, `TableCanvas`, `GmOverrideToolbar` (with MCP commit/reject), `CombatTrackerBar` and `MobileCompanionView` are all wired to real data. Everything is built on ATLAS v1.1 tokens.
 - **Localization (G3):** every UI string goes through `t()`, with English canonical and a complete French dictionary. French appears only in localization dictionaries and bilingual compendium metadata.
-- **Game-system fixes:** Warlock subclass at level 1; long rest never revives the dead; a CON ASI applies retroactively; condition ids instead of localized literals; one proficiency-bonus function; one `sheetLayout`.
+- **Game-system fixes (S5, rebased on SRD 5.2.1 by Decision G10 / ADR-0038):** every class takes its subclass at level 3 and must choose it then; long rest never revives the dead; a CON ASI applies retroactively; condition ids instead of localized literals; one proficiency-bonus function; one `sheetLayout`.
 - **Docs (G9):** translate in place to English and align with code terms. One root architecture doc. ADR-0012 marked superseded by ADR-0036. Glossary-avoided terms removed from code and docs.
 - **Packaging:** the production image builds WASM, the web bundle and the server (with the lockfile copied), and the Axum server serves the SPA with an `index.html` fallback. `tracing-subscriber` handles logs. The Rust toolchain is pinned. CI runs WASM, Postgres and game-systems tests.
 

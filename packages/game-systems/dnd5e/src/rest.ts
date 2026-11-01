@@ -6,7 +6,7 @@
  * PURPOSE:
  * --------
  * Implements authoritative, deterministic D&D 5e rest state machines complying
- * with ADR-0034 and Sections 3.2, 4.3, and 4.4 of the SRD 5.1 specification:
+ * with ADR-0034 and the SRD 5.2.1 Short Rest and Long Rest rules:
  * - Short Rest recovery (`applyShortRest`) with Hit Dice spending, Constitution
  *   modifier floor of 1 HP per spent die, Short Rest resource pool replenishment,
  *   and Warlock Pact Magic slot recovery.

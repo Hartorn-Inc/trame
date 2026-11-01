@@ -5,32 +5,37 @@
  *
  * PURPOSE:
  * --------
- * Governs character level advancement (`applyLevelUp`), canonical SRD 5.1 spell
- * slot progression tables across Full, Half, and Warlock Pact Magic casters,
- * and combat turn/round condition duration ticking (`decrementConditionDurations`).
+ * Governs character level advancement (`applyLevelUp`), canonical SRD 5.2.1
+ * (2024 rules) class progression and spell slot tables across Full, Half, and
+ * Warlock Pact Magic casters, Weapon Mastery counts, and combat turn/round
+ * condition duration ticking (`decrementConditionDurations`).
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -------------------------------
  *   1. `Level 20 Ceiling Guard`:
  *      - `applyLevelUp` rejects advancement when `actor.attributes.level >= 20`
- *        to enforce the SRD 5.1 level cap and guarantee valid table lookups in
+ *        to enforce the level cap and guarantee valid table lookups in
  *        `FULL_CASTER_SPELL_SLOTS`, `HALF_CASTER_SPELL_SLOTS`, and `PACT_MAGIC_SPELL_SLOTS`.
  *   2. `Minimum +1 HP Per Level Floor`:
  *      - Both `"fixed"` (`floor(hitDieSize / 2) + 1 + conMod`) and `"roll"`
  *        (`rolledHp + conMod`) modes clamp HP gained per level to `>= 1` so a
  *        severe negative Constitution modifier can never reduce maximum HP on level-up.
- *      - A Constitution ASI that changes the modifier adds the difference for
- *        every earlier level, and the Tough feat adds `2 * level` when taken
- *        and `+2` on each later level (SRD retroactive HP rules).
+ *      - A Constitution increase (ASI or feat) that changes the modifier adds
+ *        the difference for every earlier level; Dwarven Toughness adds `+1`
+ *        per level. No SRD 5.2.1 feat grants HP per level.
  *   3. `Incremental Spell Slot Preservation`:
  *      - Advancing a caster increases `current` available slots only by the delta
  *        `max(0, newMax - existing.max)` so previously expended spell slots are
  *        not illicitly refunded mid-adventuring day upon leveling up.
  *   4. `Table-Driven Class Rules`:
- *      - Subclass level, ASI levels, caster type and features of the 12 SRD
- *        classes live in `SRD_CLASS_PROGRESSION` (Cleric/Sorcerer/Warlock pick
- *        a subclass at 1, Druid/Wizard at 2, everyone else at 3).
- *   5. `Turn-Scoped Condition Expiry`:
+ *      - ASI levels, caster type, Weapon Mastery counts and features of the 12
+ *        SRD classes live in `SRD_CLASS_PROGRESSION`. Every class picks its
+ *        subclass at level 3 (`SUBCLASS_UNLOCK_LEVEL`), and level-up refuses
+ *        to reach level 3 or more without one.
+ *   5. `SRD-Only Feats`:
+ *      - Feats taken at an ASI level are validated by `validateFeatSelection`
+ *        (prerequisites, repeatability, `+1` increases up to 20 or 30).
+ *   6. `Turn-Scoped Condition Expiry`:
  *      - `decrementConditionDurations` only decrements `"TURNS_START"` and
  *        `"TURNS_END"` conditions when `appliedTurnActorId === currentTurnActorId`,
  *        and automatically prunes conditions whose `durationRounds` drops to `<= 0`.
@@ -38,11 +43,12 @@
  * EXECUTION LIFECYCLE:
  * --------------------
  *   `applyLevelUp(actor, options)`
- *     ├── 1. Verify `actor.attributes.level < 20` and deep-clone `actor`.
- *     ├── 2. Increment `level`, `hitDiceMax`, and `hitDiceCurrent` by `1`.
- *     ├── 3. Compute `hpGain = max(1, baseGain + conMod)` plus retroactive CON and
- *     │      Tough bonuses, and add it to `hp.max` & `hp.current`.
- *     └── 4. Reconcile `spellSlots` against the target level's `casterType` progression row.
+ *     ├── 1. Verify `actor.attributes.level < 20`, the subclass, HP mode and ASI/feat.
+ *     ├── 2. Deep-clone; increment `level`, `hitDiceMax`, and `hitDiceCurrent` by `1`.
+ *     ├── 3. Apply the ASI or feat (and its `+1` increase).
+ *     ├── 4. Compute `hpGain = max(1, baseGain + conMod)` plus retroactive CON and
+ *     │      species bonuses, and add it to `hp.max` & `hp.current`.
+ *     └── 5. Reconcile `spellSlots` against the target level's `casterType` progression row.
  * ============================================================================
  */
 
@@ -61,6 +67,7 @@ import type {
   TurnTrigger,
 } from "./types.ts";
 import { calculateProficiencyBonus, computeDnd5eSheetDerived } from "./manifest.ts";
+import { getSpeciesRules, validateFeatSelection } from "./origins.ts";
 
 export type {
   AsiOrFeatSelection,
@@ -72,7 +79,7 @@ export type {
   PactMagicProgression,
 };
 
-/** Identifiers of the 12 SRD 5.1 classes (without the `srd:class:` prefix). */
+/** Identifiers of the 12 SRD 5.2.1 classes (without the `srd:class:` prefix). */
 export type SrdClassId =
   | "barbarian"
   | "bard"
@@ -87,7 +94,7 @@ export type SrdClassId =
   | "warlock"
   | "wizard";
 
-/** Level 1-20 progression rules of one SRD 5.1 class. */
+/** Level 1-20 progression rules of one SRD 5.2.1 class. */
 export interface ClassProgression {
   /** Hit Die size (`6`, `8`, `10` or `12`). */
   hitDie: number;
@@ -97,39 +104,49 @@ export interface ClassProgression {
   spellcastingAbility?: AbilityId;
   /** Saving throw proficiencies granted at level 1. */
   savingThrows: [AbilityId, AbilityId];
-  /** Level at which the subclass is chosen (`1`, `2` or `3`). */
+  /** Level at which the subclass is chosen (`3` for every SRD 5.2.1 class). */
   subclassLevel: number;
-  /** Levels granting an Ability Score Improvement or feat. */
+  /** Levels granting an Ability Score Improvement or feat (19 is the Epic Boon). */
   asiLevels: readonly number[];
-  /** SRD 5.1 class feature names (English, canonical) gained at each level. */
+  /**
+   * Weapon Mastery: number of weapon kinds mastered, keyed by the level at which
+   * the count starts applying. Absent for classes without Weapon Mastery.
+   */
+  weaponMastery?: Readonly<Record<number, number>>;
+  /** SRD 5.2.1 class feature names (English, canonical) gained at each level. */
   features: Readonly<Record<number, readonly string[]>>;
 }
+
+/** Level at which every SRD 5.2.1 class chooses its subclass. */
+export const SUBCLASS_UNLOCK_LEVEL = 3;
 
 const STANDARD_ASI_LEVELS: readonly number[] = [4, 8, 12, 16, 19];
 
 /**
- * SRD 5.1 class progression for levels 1 through 20. Subclass levels follow
- * the SRD: Cleric, Sorcerer and Warlock at 1; Druid and Wizard at 2; others at 3.
+ * SRD 5.2.1 class progression for levels 1 through 20. Every class takes its
+ * subclass at level 3 and its Epic Boon at level 19.
  */
 export const SRD_CLASS_PROGRESSION: Readonly<Record<SrdClassId, ClassProgression>> = {
   barbarian: {
     hitDie: 12,
     casterType: "none",
     savingThrows: ["str", "con"],
-    subclassLevel: 3,
+    subclassLevel: SUBCLASS_UNLOCK_LEVEL,
     asiLevels: STANDARD_ASI_LEVELS,
+    weaponMastery: { 1: 2, 4: 3, 10: 4 },
     features: {
-      1: ["Rage", "Unarmored Defense"],
-      2: ["Reckless Attack", "Danger Sense"],
-      3: ["Primal Path"],
+      1: ["Rage", "Unarmored Defense", "Weapon Mastery"],
+      2: ["Danger Sense", "Reckless Attack"],
+      3: ["Barbarian Subclass", "Primal Knowledge"],
       5: ["Extra Attack", "Fast Movement"],
-      7: ["Feral Instinct"],
-      9: ["Brutal Critical (1 die)"],
+      7: ["Feral Instinct", "Instinctive Pounce"],
+      9: ["Brutal Strike"],
       11: ["Relentless Rage"],
-      13: ["Brutal Critical (2 dice)"],
+      13: ["Improved Brutal Strike"],
       15: ["Persistent Rage"],
-      17: ["Brutal Critical (3 dice)"],
+      17: ["Improved Brutal Strike"],
       18: ["Indomitable Might"],
+      19: ["Epic Boon"],
       20: ["Primal Champion"],
     },
   },
@@ -138,19 +155,19 @@ export const SRD_CLASS_PROGRESSION: Readonly<Record<SrdClassId, ClassProgression
     casterType: "full",
     spellcastingAbility: "cha",
     savingThrows: ["dex", "cha"],
-    subclassLevel: 3,
+    subclassLevel: SUBCLASS_UNLOCK_LEVEL,
     asiLevels: STANDARD_ASI_LEVELS,
     features: {
-      1: ["Spellcasting", "Bardic Inspiration (d6)"],
-      2: ["Jack of All Trades", "Song of Rest (d6)"],
-      3: ["Bard College", "Expertise"],
-      5: ["Bardic Inspiration (d8)", "Font of Inspiration"],
-      6: ["Countercharm"],
-      10: ["Bardic Inspiration (d10)", "Expertise", "Magical Secrets"],
-      14: ["Magical Secrets"],
-      15: ["Bardic Inspiration (d12)"],
-      18: ["Magical Secrets"],
-      20: ["Superior Inspiration"],
+      1: ["Bardic Inspiration", "Spellcasting"],
+      2: ["Expertise", "Jack of All Trades"],
+      3: ["Bard Subclass"],
+      5: ["Font of Inspiration"],
+      7: ["Countercharm"],
+      9: ["Expertise"],
+      10: ["Magical Secrets"],
+      18: ["Superior Inspiration"],
+      19: ["Epic Boon"],
+      20: ["Words of Creation"],
     },
   },
   cleric: {
@@ -158,20 +175,18 @@ export const SRD_CLASS_PROGRESSION: Readonly<Record<SrdClassId, ClassProgression
     casterType: "full",
     spellcastingAbility: "wis",
     savingThrows: ["wis", "cha"],
-    subclassLevel: 1,
+    subclassLevel: SUBCLASS_UNLOCK_LEVEL,
     asiLevels: STANDARD_ASI_LEVELS,
     features: {
-      1: ["Spellcasting", "Divine Domain"],
-      2: ["Channel Divinity (1/rest)"],
-      5: ["Destroy Undead (CR 1/2)"],
-      6: ["Channel Divinity (2/rest)"],
-      8: ["Destroy Undead (CR 1)"],
+      1: ["Spellcasting", "Divine Order"],
+      2: ["Channel Divinity"],
+      3: ["Cleric Subclass"],
+      5: ["Sear Undead"],
+      7: ["Blessed Strikes"],
       10: ["Divine Intervention"],
-      11: ["Destroy Undead (CR 2)"],
-      14: ["Destroy Undead (CR 3)"],
-      17: ["Destroy Undead (CR 4)"],
-      18: ["Channel Divinity (3/rest)"],
-      20: ["Divine Intervention Improvement"],
+      14: ["Improved Blessed Strikes"],
+      19: ["Epic Boon"],
+      20: ["Greater Divine Intervention"],
     },
   },
   druid: {
@@ -179,14 +194,17 @@ export const SRD_CLASS_PROGRESSION: Readonly<Record<SrdClassId, ClassProgression
     casterType: "full",
     spellcastingAbility: "wis",
     savingThrows: ["int", "wis"],
-    subclassLevel: 2,
+    subclassLevel: SUBCLASS_UNLOCK_LEVEL,
     asiLevels: STANDARD_ASI_LEVELS,
     features: {
-      1: ["Druidic", "Spellcasting"],
-      2: ["Wild Shape", "Druid Circle"],
-      4: ["Wild Shape Improvement"],
-      8: ["Wild Shape Improvement"],
-      18: ["Timeless Body", "Beast Spells"],
+      1: ["Spellcasting", "Druidic", "Primal Order"],
+      2: ["Wild Shape", "Wild Companion"],
+      3: ["Druid Subclass"],
+      5: ["Wild Resurgence"],
+      7: ["Elemental Fury"],
+      15: ["Improved Elemental Fury"],
+      18: ["Beast Spells"],
+      19: ["Epic Boon"],
       20: ["Archdruid"],
     },
   },
@@ -194,40 +212,44 @@ export const SRD_CLASS_PROGRESSION: Readonly<Record<SrdClassId, ClassProgression
     hitDie: 10,
     casterType: "none",
     savingThrows: ["str", "con"],
-    subclassLevel: 3,
+    subclassLevel: SUBCLASS_UNLOCK_LEVEL,
     asiLevels: [4, 6, 8, 12, 14, 16, 19],
+    weaponMastery: { 1: 3, 4: 4, 10: 5, 16: 6 },
     features: {
-      1: ["Fighting Style", "Second Wind"],
-      2: ["Action Surge (one use)"],
-      3: ["Martial Archetype"],
-      5: ["Extra Attack"],
-      9: ["Indomitable (one use)"],
-      11: ["Extra Attack (2)"],
-      13: ["Indomitable (two uses)"],
+      1: ["Fighting Style", "Second Wind", "Weapon Mastery"],
+      2: ["Action Surge", "Tactical Mind"],
+      3: ["Fighter Subclass"],
+      5: ["Extra Attack", "Tactical Shift"],
+      9: ["Indomitable", "Tactical Master"],
+      11: ["Two Extra Attacks"],
+      13: ["Indomitable (two uses)", "Studied Attacks"],
       17: ["Action Surge (two uses)", "Indomitable (three uses)"],
-      20: ["Extra Attack (3)"],
+      19: ["Epic Boon"],
+      20: ["Three Extra Attacks"],
     },
   },
   monk: {
     hitDie: 8,
     casterType: "none",
     savingThrows: ["str", "dex"],
-    subclassLevel: 3,
+    subclassLevel: SUBCLASS_UNLOCK_LEVEL,
     asiLevels: STANDARD_ASI_LEVELS,
     features: {
-      1: ["Unarmored Defense", "Martial Arts"],
-      2: ["Ki", "Unarmored Movement"],
-      3: ["Monastic Tradition", "Deflect Missiles"],
+      1: ["Martial Arts", "Unarmored Defense"],
+      2: ["Monk's Focus", "Unarmored Movement", "Uncanny Metabolism"],
+      3: ["Deflect Attacks", "Monk Subclass"],
       4: ["Slow Fall"],
       5: ["Extra Attack", "Stunning Strike"],
-      6: ["Ki-Empowered Strikes"],
-      7: ["Evasion", "Stillness of Mind"],
-      10: ["Purity of Body"],
-      13: ["Tongue of the Sun and Moon"],
-      14: ["Diamond Soul"],
-      15: ["Timeless Body"],
-      18: ["Empty Body"],
-      20: ["Perfect Self"],
+      6: ["Empowered Strikes"],
+      7: ["Evasion"],
+      9: ["Acrobatic Movement"],
+      10: ["Heightened Focus", "Self-Restoration"],
+      13: ["Deflect Energy"],
+      14: ["Disciplined Survivor"],
+      15: ["Perfect Focus"],
+      18: ["Superior Defense"],
+      19: ["Epic Boon"],
+      20: ["Body and Mind"],
     },
   },
   paladin: {
@@ -235,18 +257,21 @@ export const SRD_CLASS_PROGRESSION: Readonly<Record<SrdClassId, ClassProgression
     casterType: "half",
     spellcastingAbility: "cha",
     savingThrows: ["wis", "cha"],
-    subclassLevel: 3,
+    subclassLevel: SUBCLASS_UNLOCK_LEVEL,
     asiLevels: STANDARD_ASI_LEVELS,
+    weaponMastery: { 1: 2 },
     features: {
-      1: ["Divine Sense", "Lay on Hands"],
-      2: ["Fighting Style", "Spellcasting", "Divine Smite"],
-      3: ["Divine Health", "Sacred Oath"],
-      5: ["Extra Attack"],
+      1: ["Lay On Hands", "Spellcasting", "Weapon Mastery"],
+      2: ["Fighting Style", "Paladin's Smite"],
+      3: ["Channel Divinity", "Paladin Subclass"],
+      5: ["Extra Attack", "Faithful Steed"],
       6: ["Aura of Protection"],
+      9: ["Abjure Foes"],
       10: ["Aura of Courage"],
-      11: ["Improved Divine Smite"],
-      14: ["Cleansing Touch"],
-      18: ["Aura Improvements"],
+      11: ["Radiant Strikes"],
+      14: ["Restoring Touch"],
+      18: ["Aura Expansion"],
+      19: ["Epic Boon"],
     },
   },
   ranger: {
@@ -254,17 +279,22 @@ export const SRD_CLASS_PROGRESSION: Readonly<Record<SrdClassId, ClassProgression
     casterType: "half",
     spellcastingAbility: "wis",
     savingThrows: ["str", "dex"],
-    subclassLevel: 3,
+    subclassLevel: SUBCLASS_UNLOCK_LEVEL,
     asiLevels: STANDARD_ASI_LEVELS,
+    weaponMastery: { 1: 2 },
     features: {
-      1: ["Favored Enemy", "Natural Explorer"],
-      2: ["Fighting Style", "Spellcasting"],
-      3: ["Ranger Archetype", "Primeval Awareness"],
+      1: ["Spellcasting", "Favored Enemy", "Weapon Mastery"],
+      2: ["Deft Explorer", "Fighting Style"],
+      3: ["Ranger Subclass"],
       5: ["Extra Attack"],
-      8: ["Land's Stride"],
-      10: ["Hide in Plain Sight"],
-      14: ["Vanish"],
+      6: ["Roving"],
+      9: ["Expertise"],
+      10: ["Tireless"],
+      13: ["Relentless Hunter"],
+      14: ["Nature's Veil"],
+      17: ["Precise Hunter"],
       18: ["Feral Senses"],
+      19: ["Epic Boon"],
       20: ["Foe Slayer"],
     },
   },
@@ -272,19 +302,21 @@ export const SRD_CLASS_PROGRESSION: Readonly<Record<SrdClassId, ClassProgression
     hitDie: 8,
     casterType: "none",
     savingThrows: ["dex", "int"],
-    subclassLevel: 3,
+    subclassLevel: SUBCLASS_UNLOCK_LEVEL,
     asiLevels: [4, 8, 10, 12, 16, 19],
+    weaponMastery: { 1: 2 },
     features: {
-      1: ["Expertise", "Sneak Attack", "Thieves' Cant"],
+      1: ["Expertise", "Sneak Attack", "Thieves' Cant", "Weapon Mastery"],
       2: ["Cunning Action"],
-      3: ["Roguish Archetype"],
-      5: ["Uncanny Dodge"],
+      3: ["Rogue Subclass", "Steady Aim"],
+      5: ["Cunning Strike", "Uncanny Dodge"],
       6: ["Expertise"],
-      7: ["Evasion"],
-      11: ["Reliable Talent"],
-      14: ["Blindsense"],
+      7: ["Evasion", "Reliable Talent"],
+      11: ["Improved Cunning Strike"],
+      14: ["Devious Strikes"],
       15: ["Slippery Mind"],
       18: ["Elusive"],
+      19: ["Epic Boon"],
       20: ["Stroke of Luck"],
     },
   },
@@ -293,15 +325,18 @@ export const SRD_CLASS_PROGRESSION: Readonly<Record<SrdClassId, ClassProgression
     casterType: "full",
     spellcastingAbility: "cha",
     savingThrows: ["con", "cha"],
-    subclassLevel: 1,
+    subclassLevel: SUBCLASS_UNLOCK_LEVEL,
     asiLevels: STANDARD_ASI_LEVELS,
     features: {
-      1: ["Spellcasting", "Sorcerous Origin"],
-      2: ["Font of Magic"],
-      3: ["Metamagic"],
+      1: ["Spellcasting", "Innate Sorcery"],
+      2: ["Font of Magic", "Metamagic"],
+      3: ["Sorcerer Subclass"],
+      5: ["Sorcerous Restoration"],
+      7: ["Sorcery Incarnate"],
       10: ["Metamagic"],
       17: ["Metamagic"],
-      20: ["Sorcerous Restoration"],
+      19: ["Epic Boon"],
+      20: ["Arcane Apotheosis"],
     },
   },
   warlock: {
@@ -309,16 +344,18 @@ export const SRD_CLASS_PROGRESSION: Readonly<Record<SrdClassId, ClassProgression
     casterType: "pact",
     spellcastingAbility: "cha",
     savingThrows: ["wis", "cha"],
-    subclassLevel: 1,
+    subclassLevel: SUBCLASS_UNLOCK_LEVEL,
     asiLevels: STANDARD_ASI_LEVELS,
     features: {
-      1: ["Otherworldly Patron", "Pact Magic"],
-      2: ["Eldritch Invocations"],
-      3: ["Pact Boon"],
-      11: ["Mystic Arcanum (6th level)"],
-      13: ["Mystic Arcanum (7th level)"],
-      15: ["Mystic Arcanum (8th level)"],
-      17: ["Mystic Arcanum (9th level)"],
+      1: ["Eldritch Invocations", "Pact Magic"],
+      2: ["Magical Cunning"],
+      3: ["Warlock Subclass"],
+      9: ["Contact Patron"],
+      11: ["Mystic Arcanum (level 6 spell)"],
+      13: ["Mystic Arcanum (level 7 spell)"],
+      15: ["Mystic Arcanum (level 8 spell)"],
+      17: ["Mystic Arcanum (level 9 spell)"],
+      19: ["Epic Boon"],
       20: ["Eldritch Master"],
     },
   },
@@ -327,12 +364,15 @@ export const SRD_CLASS_PROGRESSION: Readonly<Record<SrdClassId, ClassProgression
     casterType: "full",
     spellcastingAbility: "int",
     savingThrows: ["int", "wis"],
-    subclassLevel: 2,
+    subclassLevel: SUBCLASS_UNLOCK_LEVEL,
     asiLevels: STANDARD_ASI_LEVELS,
     features: {
-      1: ["Spellcasting", "Arcane Recovery"],
-      2: ["Arcane Tradition"],
+      1: ["Spellcasting", "Ritual Adept", "Arcane Recovery"],
+      2: ["Scholar"],
+      3: ["Wizard Subclass"],
+      5: ["Memorize Spell"],
       18: ["Spell Mastery"],
+      19: ["Epic Boon"],
       20: ["Signature Spells"],
     },
   },
@@ -351,7 +391,7 @@ export function getClassProgression(classId?: string): ClassProgression | undefi
 }
 
 /**
- * SRD 5.1 Full Caster spell slot table indexed by character level (`1..=20`),
+ * SRD 5.2.1 Full Caster spell slot table indexed by character level (`1..=20`),
  * mapping to a 9-element tuple of maximum slots for spell levels 1 through 9.
  */
 export const FULL_CASTER_SPELL_SLOTS: Record<number, number[]> = {
@@ -378,11 +418,12 @@ export const FULL_CASTER_SPELL_SLOTS: Record<number, number[]> = {
 };
 
 /**
- * SRD 5.1 Half Caster spell slot table indexed by character level (`1..=20`),
- * mapping to a 5-element tuple of maximum slots for spell levels 1 through 5.
+ * SRD 5.2.1 Half Caster (Paladin, Ranger) spell slot table indexed by character
+ * level (`1..=20`), mapping to a 5-element tuple of maximum slots for spell
+ * levels 1 through 5. Both classes cast from level 1 under the 2024 rules.
  */
 export const HALF_CASTER_SPELL_SLOTS: Record<number, number[]> = {
-  1: [0, 0, 0, 0, 0],
+  1: [2, 0, 0, 0, 0],
   2: [2, 0, 0, 0, 0],
   3: [3, 0, 0, 0, 0],
   4: [3, 0, 0, 0, 0],
@@ -405,7 +446,8 @@ export const HALF_CASTER_SPELL_SLOTS: Record<number, number[]> = {
 };
 
 /**
- * SRD 5.1 one-third caster spell slot table indexed by character level (`1..=20`),
+ * One-third caster spell slot table (no SRD 5.2.1 class uses it; kept for
+ * homebrew subclasses) indexed by character level (`1..=20`),
  * mapping to a 4-element tuple of maximum slots for spell levels 1 through 4.
  */
 export const THIRD_CASTER_SPELL_SLOTS: Record<number, number[]> = {
@@ -432,11 +474,25 @@ export const THIRD_CASTER_SPELL_SLOTS: Record<number, number[]> = {
 };
 
 /**
- * Returns the subclass unlock level for a given class: 1 for Cleric/Sorcerer/Warlock,
- * 2 for Druid/Wizard, 3 for every other class (and unknown classes).
+ * Returns the subclass unlock level for a given class: `3` for every SRD 5.2.1
+ * class and for unknown classes.
  */
 export function getSubclassUnlockLevel(classId?: string): number {
-  return getClassProgression(classId)?.subclassLevel ?? 3;
+  return getClassProgression(classId)?.subclassLevel ?? SUBCLASS_UNLOCK_LEVEL;
+}
+
+/**
+ * Number of weapon kinds a class masters at `characterLevel` (`0` for classes
+ * without Weapon Mastery).
+ */
+export function getWeaponMasteryCount(classId: string | undefined, characterLevel: number): number {
+  const table = getClassProgression(classId)?.weaponMastery;
+  if (!table) return 0;
+  let count = 0;
+  for (const [level, kinds] of Object.entries(table)) {
+    if (characterLevel >= Number(level)) count = Math.max(count, kinds);
+  }
+  return count;
 }
 
 /**
@@ -515,7 +571,7 @@ export function getCastableSpellLevels(classId: string, characterLevel: number):
 }
 
 /**
- * Reconciles spell slot tiers against the canonical SRD 5.1 progression table for a given target level,
+ * Reconciles spell slot tiers against the canonical SRD 5.2.1 progression table for a given target level,
  * preserving previously expended slots by incrementing available capacity only by the newly unlocked delta.
  */
 export function reconcileSlots(
@@ -565,7 +621,7 @@ export function reconcileSlots(
 }
 
 /**
- * SRD 5.1 Warlock Pact Magic progression table indexed by character level (`1..=20`).
+ * SRD 5.2.1 Warlock Pact Magic progression table indexed by character level (`1..=20`).
  */
 export const PACT_MAGIC_SPELL_SLOTS: Record<number, PactMagicProgression> = {
   1: { slots: 1, slotLevel: 1 },
@@ -589,14 +645,6 @@ export const PACT_MAGIC_SPELL_SLOTS: Record<number, PactMagicProgression> = {
   19: { slots: 4, slotLevel: 5 },
   20: { slots: 4, slotLevel: 5 },
 };
-
-/** Maximum HP granted by the Tough feat per character level. */
-export const TOUGH_HP_PER_LEVEL = 2;
-
-/** Matches `"srd:feat:tough"` and the short `"tough"` feat id. */
-function isToughFeat(featId: string): boolean {
-  return featId === "tough" || featId === "srd:feat:tough";
-}
 
 /**
  * Advances `actor` by one character level (up to level 20), validating level increment,
@@ -633,8 +681,8 @@ export function applyLevelUp(
     actor.attributes.class
   )?.toString();
 
-  const subclassUnlockLevel = getSubclassUnlockLevel(classId);
-  if (targetLevel === subclassUnlockLevel && !options.subclassId) {
+  const hasSubclass = Boolean(actor.subclassId ?? actor.attributes.subclassId);
+  if (targetLevel >= getSubclassUnlockLevel(classId) && !hasSubclass && !options.subclassId) {
     throw new Error("Subclass selection required at this level");
   }
 
@@ -659,6 +707,7 @@ export function applyLevelUp(
 
   // 5. ASI / Feat validation at ASI levels
   const isAsi = isAsiLevel(targetLevel, classId);
+  let featIncrease: AbilityId | undefined;
   if (isAsi && options.asiOrFeat) {
     if (options.asiOrFeat.mode === "asi") {
       const bonuses = options.asiOrFeat.bonuses;
@@ -690,6 +739,15 @@ export function applyLevelUp(
       if (!options.asiOrFeat.featId || typeof options.asiOrFeat.featId !== "string" || !options.asiOrFeat.featId.trim()) {
         throw new Error("Invalid featId value");
       }
+      featIncrease = validateFeatSelection(options.asiOrFeat.featId, {
+        targetLevel,
+        abilities: Object.fromEntries(
+          Object.entries(actor.abilities).map(([ab, { score }]) => [ab, score])
+        ) as Record<AbilityId, number>,
+        heldFeatIds: actor.features ?? [],
+        hasSpellcasting: getCasterTypeForClass(classId) !== "none",
+        abilityIncrease: options.asiOrFeat.abilityIncrease,
+      });
     }
   }
 
@@ -715,10 +773,13 @@ export function applyLevelUp(
         clone.features = [];
       }
       clone.features.push(options.asiOrFeat.featId);
+      if (featIncrease) {
+        clone.abilities[featIncrease].score += 1;
+      }
     }
   }
 
-  // 9. Calculate and apply HP increase (new level, retroactive CON, Tough)
+  // 9. Calculate and apply HP increase (new level, retroactive CON, species bonus)
   const previousConModifier = Math.floor((actor.abilities.con.score - 10) / 2);
   const conModifier = Math.floor((clone.abilities.con.score - 10) / 2);
   let hpGain: number;
@@ -731,11 +792,7 @@ export function applyLevelUp(
     hpGain = Math.max(1, options.rolledHp! + conModifier);
   }
   hpGain += (conModifier - previousConModifier) * actor.attributes.level;
-  if (isAsi && options.asiOrFeat?.mode === "feat" && isToughFeat(options.asiOrFeat.featId)) {
-    hpGain += TOUGH_HP_PER_LEVEL * targetLevel;
-  } else if ((actor.features ?? []).some(isToughFeat)) {
-    hpGain += TOUGH_HP_PER_LEVEL;
-  }
+  hpGain += getSpeciesRules(actor.speciesId)?.hpBonusPerLevel ?? 0;
   clone.attributes.hp.max += hpGain;
   clone.attributes.hp.current += hpGain;
 

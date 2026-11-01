@@ -156,8 +156,16 @@ export interface Dnd5eActorSheet {
   hitDiceMax: number;
   /** Die size for Hit Dice recovery rolls (e.g., `6`, `8`, `10`, `12`). */
   hitDieSides: number;
-  /** Exhaustion level (`0..=6`), applying a `-2 * exhaustionLevel` penalty to d20 tests (never to spell save DC). */
+  /**
+   * Exhaustion level (`0..=6`, SRD 5.2.1): `-2 * exhaustionLevel` on d20 tests and
+   * `-5 ft * exhaustionLevel` of speed, never on passive scores or the spell save DC.
+   * Level `6` is death (see `applyExhaustion`).
+   */
   exhaustionLevel: number;
+  /** Walking speed in feet before exhaustion (defaults to `30`). */
+  speedFt?: number;
+  /** Feat and feature identifiers held by the actor (e.g. `"srd:feat:alert"`). */
+  features?: string[];
   /** List of active condition names or identifiers on the sheet. */
   conditions: string[];
   /** Keyed map of class/monster expendable resource trackers. */
@@ -178,16 +186,18 @@ export interface Dnd5eDerivedStats {
   savingThrows: Record<AbilityId, number>;
   /** Total skill check modifiers for all 18 canonical `SkillId`s. */
   skills: Record<SkillId, number>;
-  /** Passive Perception score (`10 + skills.perception`). */
+  /** Passive Perception (`10 + WIS + Perception proficiency`); exhaustion does not apply. */
   passivePerception: number;
-  /** Passive Investigation score (`10 + skills.investigation`). */
+  /** Passive Investigation (`10 + INT + Investigation proficiency`); exhaustion does not apply. */
   passiveInvestigation: number;
-  /** Passive Insight score (`10 + skills.insight`). */
+  /** Passive Insight (`10 + WIS + Insight proficiency`); exhaustion does not apply. */
   passiveInsight: number;
-  /** Total effective Armor Class including Dexterity caps, unarmored defenses, and shield bonus. */
+  /** Total effective Armor Class (`ac_base` + shield bonus). */
   armorClass: number;
-  /** Initiative roll modifier derived from Dexterity (minus exhaustion penalty on sheets). */
+  /** Initiative modifier: DEX (+ proficiency bonus with Alert) minus the exhaustion penalty. */
   initiativeBonus: number;
+  /** Walking speed in feet after exhaustion (`max(0, speedFt - 5 * exhaustion)`). */
+  speed: number;
   /** Spell Save Difficulty Class (`8 + proficiencyBonus + spellcastingMod`). */
   spellSaveDc: number;
   /** Legacy uppercase-DC alias of `spellSaveDc` for consumer compatibility. */
@@ -196,9 +206,13 @@ export interface Dnd5eDerivedStats {
   spellAttackBonus: number;
   /** Alias of `spellAttackBonus` for sheet consumers. */
   spellAttackModifier?: number;
-  /** Carrying capacity thresholds in pounds (`lb`) computed from Strength score. */
+  /**
+   * Carrying capacity thresholds in pounds (`lb`) computed from Strength score.
+   * `carryingCapacity` is the SRD 5.2.1 rule; the two encumbrance thresholds
+   * are the SRD 5.1 Variant: Encumbrance rule.
+   */
   encumbrance?: {
-    /** Maximum weight in pounds (`STR * 15 lb`) before speed drops to `5 ft`. */
+    /** Maximum carried weight in pounds (`STR * 15 lb`, Small or Medium creature). */
     carryingCapacity: number;
     /** Weight threshold in pounds (`STR * 10 lb`) for heavy encumbrance (`-20 ft` speed). */
     heavilyEncumbered: number;
@@ -212,6 +226,32 @@ export interface Dnd5eDerivedStats {
  */
 export function abilityModifier(score: number): number {
   return Math.floor((score - 10) / 2);
+}
+
+/** Exhaustion level at which a creature dies (SRD 5.2.1). */
+export const EXHAUSTION_DEATH_LEVEL = 6;
+
+/**
+ * Returns a copy of `actor` with its exhaustion level changed by `delta` and
+ * clamped to `0..=6`, for either actor representation. Reaching level `6`
+ * kills the creature (`isDead` on `Dnd5eActorData`, `deathSaves.isDead` on
+ * `Dnd5eActorSheet`); lowering exhaustion never revives it.
+ */
+export function applyExhaustion<T extends Dnd5eActorData | Dnd5eActorSheet>(actor: T, delta: number): T {
+  const clone: Dnd5eActorData | Dnd5eActorSheet = structuredClone(actor);
+  const clamp = (level: number) => Math.min(EXHAUSTION_DEATH_LEVEL, Math.max(0, level + delta));
+  if ("attributes" in clone) {
+    clone.attributes.exhaustion = clamp(clone.attributes.exhaustion ?? 0);
+    if (clone.attributes.exhaustion === EXHAUSTION_DEATH_LEVEL) {
+      clone.isDead = true;
+    }
+  } else {
+    clone.exhaustionLevel = clamp(clone.exhaustionLevel ?? 0);
+    if (clone.exhaustionLevel === EXHAUSTION_DEATH_LEVEL) {
+      clone.deathSaves = { ...clone.deathSaves, isDead: true };
+    }
+  }
+  return clone as T;
 }
 
 /**

@@ -7,7 +7,7 @@
  * --------
  * Implements the 3-tier hierarchical compendium lookup and search engine
  * (`SYSTEM_SRD` < `INSTANCE_LIBRARY` < `CAMPAIGN_HOMEBREW`), along with
- * canonical CC-BY-4.0 SRD 5.1 attribution, starter spell/breath actions, and
+ * canonical CC-BY-4.0 SRD 5.2.1 attribution, starter spell/breath actions, and
  * the Adult Red Dragon reference boss sheet.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
@@ -23,8 +23,9 @@
  *        deduplicates by `slug` in ascending precedence order before sorting
  *        alphabetically by `name`.
  *   3. `Mandatory CC-BY-4.0 Attribution`:
- *      - `SRD_51_ATTRIBUTION` and `CompendiumResolver.getAttribution()` expose
- *        the verbatim Wizards of the Coast SRD 5.1 Creative Commons legal notice.
+ *      - `SRD_521_ATTRIBUTION` and `CompendiumResolver.getAttribution()` expose
+ *        the Wizards of the Coast SRD 5.2.1 Creative Commons legal notice, plus
+ *        the SRD 5.1 notice for the few entries that fill SRD 5.2.1 gaps.
  *
  * EXECUTION LIFECYCLE:
  * --------------------
@@ -42,7 +43,7 @@ import { SRD_CURATED_CONTENT } from "./srdContent.ts";
 
 /**
  * Hierarchical compendium storage layer ordered from lowest to highest precedence:
- * - `"SYSTEM_SRD"`: Built-in read-only SRD 5.1 baseline catalog.
+ * - `"SYSTEM_SRD"`: Built-in read-only SRD 5.2.1 baseline catalog.
  * - `"INSTANCE_LIBRARY"`: Server-wide shared custom content overriding `"SYSTEM_SRD"`.
  * - `"CAMPAIGN_HOMEBREW"`: Campaign-local overrides taking highest precedence.
  */
@@ -118,10 +119,12 @@ export interface CompendiumQuery {
 
 /**
  * Verbatim Creative Commons Attribution 4.0 International (CC-BY-4.0) legal notice
- * required when distributing D&D 5e SRD 5.1 Open Game Content.
+ * required when distributing SRD 5.2.1 content. The second sentence covers the
+ * entries taken from SRD 5.1 where SRD 5.2.1 has no equivalent. Kept identical
+ * to `system.json` `attribution`.
  */
-export const SRD_51_ATTRIBUTION =
-  'This work includes material taken from the System Reference Document 5.1 ("SRD 5.1") by Wizards of the Coast LLC and available at https://dnd.wizards.com/resources/systems-reference-document. The SRD 5.1 is licensed under the Creative Commons Attribution 4.0 International License available at https://creativecommons.org/licenses/by/4.0/legalcode.';
+export const SRD_521_ATTRIBUTION =
+  'This work includes material from the System Reference Document 5.2.1 ("SRD 5.2.1") by Wizards of the Coast LLC, available at https://www.dndbeyond.com/srd. The SRD 5.2.1 is licensed under the Creative Commons Attribution 4.0 International License, available at https://creativecommons.org/licenses/by/4.0/legalcode. It also includes material taken from the System Reference Document 5.1 ("SRD 5.1") by Wizards of the Coast LLC and available at https://dnd.wizards.com/resources/systems-reference-document. The SRD 5.1 is licensed under the Creative Commons Attribution 4.0 International License available at https://creativecommons.org/licenses/by/4.0/legalcode.';
 
 /**
  * Three-tier compendium lookup and query engine enforcing
@@ -159,10 +162,10 @@ export class CompendiumResolver {
   }
 
   /**
-   * Static helper returning the mandatory SRD 5.1 CC-BY-4.0 notice.
+   * Static helper returning the mandatory SRD 5.2.1 CC-BY-4.0 notice.
    */
   public static getAttribution(): string {
-    return SRD_51_ATTRIBUTION;
+    return SRD_521_ATTRIBUTION;
   }
 
   /**
@@ -305,10 +308,10 @@ export class CompendiumResolver {
   }
 
   /**
-   * Returns the mandatory SRD 5.1 CC-BY-4.0 attribution text.
+   * Returns the mandatory SRD 5.2.1 CC-BY-4.0 attribution text.
    */
   public getAttribution(): string {
-    return SRD_51_ATTRIBUTION;
+    return SRD_521_ATTRIBUTION;
   }
 
   /**
@@ -379,7 +382,7 @@ export function getSpellsByLevel(
 }
 
 /**
- * Starter SRD 5.1 action definitions (`fireball`, `hold_person`, `fire_breath`)
+ * Starter SRD 5.2.1 action definitions (`fireball`, `hold_person`, `fire_breath`)
  * used by combat encounter pipelines and automated integration tests.
  */
 export const SRD_STARTER_ACTIONS: Record<string, ActionDefinition> = {
@@ -413,12 +416,13 @@ export const SRD_STARTER_ACTIONS: Record<string, ActionDefinition> = {
     resolutionKind: "saving_throw",
     saveAbility: "dex",
     halfDamageOnSave: true,
-    baseDamage: 63,
+    baseDamage: 59,
   },
 };
 
 /**
- * Canonical System Reference Document 5.1 baseline entities (weapons, armor, containers, spells, feats, and monsters).
+ * Canonical SRD 5.2.1 baseline entities (containers, weapons, armor, spells,
+ * subclasses and monsters) followed by the curated `srdContent.ts` catalog.
  */
 export const SYSTEM_SRD: CompendiumEntry[] = [
   // ==========================================================================
@@ -462,12 +466,12 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
     name: "Bag of Holding",
     entityType: "item",
     tier: "SYSTEM_SRD",
-    weight: 15,
+    weight: 5,
     capacity: 500,
     contentWeightMultiplier: 0,
     data: {
-      weight: 15,
-      unitWeight: 15,
+      weight: 5,
+      unitWeight: 5,
       capacity: 500,
       contentWeightMultiplier: 0,
       weightMultiplier: 0,
@@ -480,12 +484,12 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       en: {
         name: "Bag of Holding",
         description:
-          "This bag has an interior space considerably larger than its outside dimensions. It can hold up to 500 pounds, not exceeding a volume of 64 cubic feet. The bag always weighs 15 pounds, regardless of its contents.",
+          "This bag has an interior space considerably larger than its outside dimensions. It can hold up to 500 pounds, not exceeding a volume of 64 cubic feet. The bag weighs 5 pounds, regardless of its contents.",
       },
       fr: {
         name: "Sac sans fond",
         description:
-          "Ce sac possède un espace intérieur bien plus grand que ses dimensions extérieures. Il peut contenir jusqu'à 250 kg dans un volume de 1,8 mètre cube. Le sac pèse toujours 7,5 kg (15 livres), quel que soit son contenu.",
+          "Ce sac possède un espace intérieur bien plus grand que ses dimensions extérieures. Il peut contenir jusqu'à 250 kg dans un volume de 1,8 mètre cube. Le sac pèse toujours 2,5 kg (5 livres), quel que soit son contenu.",
       },
     },
   },
@@ -506,6 +510,7 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       damage: "1d4",
       damageType: "piercing",
       properties: ["finesse", "light", "thrown"],
+      mastery: "nick",
       range: "20/60",
       weight: 1,
       cost: "2 gp",
@@ -537,6 +542,7 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       versatileDamage: "1d10",
       damageType: "slashing",
       properties: ["versatile"],
+      mastery: "sap",
       weight: 3,
       cost: "15 gp",
     },
@@ -566,6 +572,7 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       damage: "2d6",
       damageType: "slashing",
       properties: ["heavy", "two-handed"],
+      mastery: "graze",
       weight: 6,
       cost: "50 gp",
     },
@@ -595,6 +602,7 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       damage: "1d6",
       damageType: "piercing",
       properties: ["ammunition", "two-handed"],
+      mastery: "vex",
       range: "80/320",
       weight: 2,
       cost: "25 gp",
@@ -625,6 +633,7 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       damage: "1d8",
       damageType: "piercing",
       properties: ["ammunition", "heavy", "two-handed"],
+      mastery: "slow",
       range: "150/600",
       weight: 2,
       cost: "50 gp",
@@ -655,6 +664,7 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       damage: "1d8",
       damageType: "piercing",
       properties: ["ammunition", "loading", "two-handed"],
+      mastery: "slow",
       range: "80/320",
       weight: 5,
       cost: "25 gp",
@@ -895,24 +905,24 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
     tier: "SYSTEM_SRD",
     data: {
       level: 1,
-      school: "evocation",
+      school: "abjuration",
       castingTime: "1 action",
       range: "Touch",
       components: ["V", "S"],
       duration: "Instantaneous",
-      healDice: "1d8",
+      healDice: "2d8",
       classes: ["bard", "cleric", "druid", "paladin", "ranger"],
     },
     i18n: {
       en: {
         name: "Cure Wounds",
         description:
-          "A creature you touch regains hit points equal to 1d8 + your spellcasting ability modifier.",
+          "A creature you touch regains hit points equal to 2d8 + your spellcasting ability modifier.",
       },
       fr: {
         name: "Soins",
         description:
-          "Une créature que vous touchez récupère un nombre de points de vie égal à 1d8 + votre modificateur d'incantation.",
+          "Une créature que vous touchez récupère un nombre de points de vie égal à 2d8 + votre modificateur d'incantation.",
       },
     },
   },
@@ -1048,18 +1058,19 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       range: "60 feet",
       components: ["S"],
       duration: "Instantaneous",
+      saveAbility: "con",
       classes: ["sorcerer", "warlock", "wizard"],
     },
     i18n: {
       en: {
         name: "Counterspell",
         description:
-          "You attempt to interrupt a creature in the process of casting a spell. If the spell is 3rd level or lower, it fails automatically.",
+          "You attempt to interrupt a creature casting a spell. On a failed Constitution save, the spell dissipates and a spell slot used for it isn't expended.",
       },
       fr: {
         name: "Contresort",
         description:
-          "Vous tentez d'interrompre une créature en train d'incanter un sort. Si le sort est de niveau 3 ou inférieur, il échoue automatiquement.",
+          "Vous tentez d'interrompre une créature en train d'incanter. Si elle rate un jet de Constitution, le sort se dissipe et l'emplacement utilisé n'est pas dépensé.",
       },
     },
   },
@@ -1137,7 +1148,7 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       halfDamageOnSave: true,
       damageDice: "8d8",
       damageType: "cold",
-      classes: ["sorcerer", "wizard"],
+      classes: ["druid", "sorcerer", "wizard"],
     },
     i18n: {
       en: {
@@ -1154,154 +1165,30 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
   },
 
   // ==========================================================================
-  // 5. FEATS
-  // ==========================================================================
-  {
-    id: "srd:feat:sharpshooter",
-    slug: "srd:feat:sharpshooter",
-    name: "Sharpshooter",
-    entityType: "feat",
-    tier: "SYSTEM_SRD",
-    data: {
-      category: "combat",
-      benefit:
-        "Attacking at long range doesn't impose disadvantage on ranged weapon attack rolls. Your ranged weapon attacks ignore half cover and three-quarters cover. Before you make an attack with a ranged weapon that you are proficient with, you can choose to take a -5 penalty to the attack roll to add +10 to the damage roll.",
-    },
-    i18n: {
-      en: {
-        name: "Sharpshooter",
-        description:
-          "Master of ranged strikes who ignores distance penalties, pierces partial cover, and can sacrifice attack accuracy (-5) for devastating power (+10 damage).",
-      },
-      fr: {
-        name: "Tireur d'élite",
-        description:
-          "Maître du tir à distance ignorant les malus de portée, transperçant les abris partiels et pouvant sacrifier la précision (-5 au toucher) pour infliger +10 dégâts.",
-      },
-    },
-  },
-  {
-    id: "srd:feat:great_weapon_master",
-    slug: "srd:feat:great_weapon_master",
-    name: "Great Weapon Master",
-    entityType: "feat",
-    tier: "SYSTEM_SRD",
-    data: {
-      category: "combat",
-      benefit:
-        "On your turn, when you score a critical hit with a melee weapon or reduce a creature to 0 hit points, you can make one melee weapon attack as a bonus action. Before you make a melee attack with a heavy weapon that you are proficient with, you can choose to take a -5 penalty to the attack roll to add +10 to the damage roll.",
-    },
-    i18n: {
-      en: {
-        name: "Great Weapon Master",
-        description:
-          "Wielder of massive weapons who cleaves through foes on critical hits or kills and can take -5 to hit for +10 damage.",
-      },
-      fr: {
-        name: "Maître des armes à deux mains",
-        description:
-          "Spécialiste des armes imposantes obtenant une attaque supplémentaire en action bonus lors d'un coup critique ou d'un coup fatal, et pouvant échanger -5 au toucher contre +10 dégâts.",
-      },
-    },
-  },
-  {
-    id: "srd:feat:tough",
-    slug: "srd:feat:tough",
-    name: "Tough",
-    entityType: "feat",
-    tier: "SYSTEM_SRD",
-    data: {
-      category: "general",
-      benefit:
-        "Your hit point maximum increases by an amount equal to twice your character level when you gain this feat. Whenever you gain a level thereafter, your hit point maximum increases by an additional 2 hit points.",
-    },
-    i18n: {
-      en: {
-        name: "Tough",
-        description:
-          "Increases your maximum Hit Points by 2 per character level immediately and retroactively upon each level-up.",
-      },
-      fr: {
-        name: "Robuste",
-        description:
-          "Augmente votre maximum de points de vie de 2 par niveau de personnage immédiatement et rétroactivement à chaque montée de niveau.",
-      },
-    },
-  },
-  {
-    id: "srd:feat:sentinel",
-    slug: "srd:feat:sentinel",
-    name: "Sentinel",
-    entityType: "feat",
-    tier: "SYSTEM_SRD",
-    data: {
-      category: "combat",
-      benefit:
-        "When you hit a creature with an opportunity attack, the creature's speed becomes 0 for the rest of the turn. Creatures provoke opportunity attacks even if they took the Disengage action. When a creature within 5 feet makes an attack against a target other than you, you can use your reaction to make a melee weapon attack against the attacking creature.",
-    },
-    i18n: {
-      en: {
-        name: "Sentinel",
-        description:
-          "Vigilant guardian whose opportunity attacks halt enemy movement to 0 and punish foes who bypass you to attack allies.",
-      },
-      fr: {
-        name: "Sentinelle",
-        description:
-          "Protecteur vigilant dont les attaques d'opportunité réduisent la vitesse de l'ennemi à 0 et punissent les créatures attaquant vos alliés à portée.",
-      },
-    },
-  },
-  {
-    id: "srd:feat:dual_wielder",
-    slug: "srd:feat:dual_wielder",
-    name: "Dual Wielder",
-    entityType: "feat",
-    tier: "SYSTEM_SRD",
-    data: {
-      category: "combat",
-      benefit:
-        "You gain a +1 bonus to AC while you are wielding a separate melee weapon in each hand. You can use two-weapon fighting even when the one-handed melee weapons you are wielding aren't light. You can draw or stow two one-handed weapons when you would normally be able to draw or stow only one.",
-    },
-    i18n: {
-      en: {
-        name: "Dual Wielder",
-        description:
-          "Grants +1 AC while holding two melee weapons and permits wielding non-light one-handed weapons in two-weapon fighting.",
-      },
-      fr: {
-        name: "Spécialiste du combat à deux armes",
-        description:
-          "Confère un bonus de +1 à la CA lors du maniement de deux armes de corps à corps et autorise le combat à deux armes avec des armes non légères.",
-      },
-    },
-  },
-
-  // ==========================================================================
-  // 6. READY-TO-USE MONSTER TEMPLATES
+  // 5. READY-TO-USE MONSTER TEMPLATES
   // ==========================================================================
   {
     id: "srd:monster:goblin",
     slug: "srd:monster:goblin",
-    name: "Goblin",
+    name: "Goblin Warrior",
     entityType: "monster",
     tier: "SYSTEM_SRD",
     data: {
       id: "srd:monster:goblin",
-      name: "Goblin",
+      name: "Goblin Warrior",
       level: 1,
       challengeRating: "1/4",
       cr: 0.25,
-      hpCurrent: 7,
-      hpMax: 7,
+      hpCurrent: 10,
+      hpMax: 10,
       tempHp: 0,
-      hitDiceCurrent: 2,
-      hitDiceMax: 2,
+      hitDiceCurrent: 3,
+      hitDiceMax: 3,
       hitDieSides: 6,
       armorBaseAc: 15,
       armorKind: "natural",
       hasShield: false,
-      abilities: { str: 8, dex: 14, con: 10, int: 10, wis: 8, cha: 8 },
+      abilities: { str: 8, dex: 15, con: 10, int: 10, wis: 8, cha: 8 },
       saveProficiencies: { dex: false, con: false, wis: false, cha: false },
       skillProficiencies: { stealth: "expertise" },
       exhaustionLevel: 0,
@@ -1328,12 +1215,12 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
     },
     i18n: {
       en: {
-        name: "Goblin",
+        name: "Goblin Warrior",
         description:
           "Small, black-hearted humanoids that gather in tribal hordes, inhabiting caves, ruins, and sinister dungeons.",
       },
       fr: {
-        name: "Gobelin",
+        name: "Guerrier gobelin",
         description:
           "Petits humanoïdes au cœur noir qui se rassemblent en tribus et hantent les cavernes, les ruines et les donjons sinistres.",
       },
@@ -1469,10 +1356,10 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       hitDiceCurrent: 2,
       hitDiceMax: 2,
       hitDieSides: 8,
-      armorBaseAc: 13,
+      armorBaseAc: 14,
       armorKind: "natural",
       hasShield: false,
-      abilities: { str: 10, dex: 14, con: 15, int: 6, wis: 8, cha: 5 },
+      abilities: { str: 10, dex: 16, con: 15, int: 6, wis: 8, cha: 5 },
       saveProficiencies: { dex: false, con: false, wis: false, cha: false },
       skillProficiencies: {},
       damageVulnerabilities: ["bludgeoning"],
@@ -1486,15 +1373,15 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
         {
           id: "shortsword",
           name: "Shortsword",
-          attackBonus: 4,
-          damage: "1d6 + 2",
+          attackBonus: 5,
+          damage: "1d6 + 3",
           damageType: "piercing",
         },
         {
           id: "shortbow",
           name: "Shortbow",
-          attackBonus: 4,
-          damage: "1d6 + 2",
+          attackBonus: 5,
+          damage: "1d6 + 3",
           damageType: "piercing",
           range: "80/320",
         },
@@ -1531,10 +1418,10 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       hitDiceCurrent: 2,
       hitDiceMax: 2,
       hitDieSides: 8,
-      armorBaseAc: 13,
+      armorBaseAc: 12,
       armorKind: "natural",
       hasShield: false,
-      abilities: { str: 12, dex: 15, con: 12, int: 3, wis: 12, cha: 6 },
+      abilities: { str: 14, dex: 15, con: 12, int: 3, wis: 12, cha: 6 },
       saveProficiencies: { dex: false, con: false, wis: false, cha: false },
       skillProficiencies: { perception: "proficient", stealth: "proficient" },
       exhaustionLevel: 0,
@@ -1546,7 +1433,7 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
           id: "bite",
           name: "Bite",
           attackBonus: 4,
-          damage: "2d4 + 2",
+          damage: "1d6 + 2",
           damageType: "piercing",
         },
       ],
@@ -1576,11 +1463,11 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       level: 4,
       challengeRating: "2",
       cr: 2,
-      hpCurrent: 59,
-      hpMax: 59,
+      hpCurrent: 68,
+      hpMax: 68,
       tempHp: 0,
-      hitDiceCurrent: 7,
-      hitDiceMax: 7,
+      hitDiceCurrent: 8,
+      hitDiceMax: 8,
       hitDieSides: 10,
       armorBaseAc: 11,
       armorKind: "natural",
@@ -1645,8 +1532,8 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       armorKind: "heavy",
       hasShield: false,
       spellcastingAbility: "cha",
-      abilities: { str: 27, dex: 10, con: 25, int: 16, wis: 13, cha: 21 },
-      saveProficiencies: { dex: true, con: true, wis: true, cha: true },
+      abilities: { str: 27, dex: 10, con: 25, int: 16, wis: 13, cha: 23 },
+      saveProficiencies: { dex: true, wis: true },
       skillProficiencies: { perception: "expertise", stealth: "proficient" },
       damageImmunities: ["fire"],
       exhaustionLevel: 0,
@@ -1671,16 +1558,16 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
       deathSaves: { successes: 0, failures: 0, isStable: false, isDead: false },
       actions: [
         {
-          id: "bite",
-          name: "Bite",
+          id: "rend",
+          name: "Rend",
           attackBonus: 14,
-          damage: "2d10 + 8",
-          damageType: "piercing",
+          damage: "1d10 + 8",
+          damageType: "slashing",
         },
         {
           id: "fire_breath",
           name: "Fire Breath (Recharge 5-6)",
-          damage: "18d6",
+          damage: "17d6",
           damageType: "fire",
           saveAbility: "dex",
           dc: 21,
@@ -1702,7 +1589,7 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
   },
 
   // ==========================================================================
-  // 7. CANONICAL SRD 5.1 SUBCLASSES
+  // 6. CANONICAL SRD 5.2.1 SUBCLASSES
   // ==========================================================================
   {
     id: "srd:subclass:berserker",
@@ -1767,13 +1654,13 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
   {
     id: "srd:subclass:open_hand",
     slug: "srd:subclass:open_hand",
-    name: "Way of the Open Hand",
+    name: "Warrior of the Open Hand",
     entityType: "subclass",
     tier: "SYSTEM_SRD",
     data: { classId: "monk", class: "monk" },
     i18n: {
-      en: { name: "Way of the Open Hand", description: "Masters of martial arts combat, whether armed or unarmed." },
-      fr: { name: "Voie de la paume de fer", description: "Maîtres absolus des arts martiaux au corps à corps." },
+      en: { name: "Warrior of the Open Hand", description: "Masters of unarmed combat who push, topple and stagger foes with their Focus." },
+      fr: { name: "Guerrier de la paume", description: "Maîtres absolus des arts martiaux au corps à corps." },
     },
   },
   {
@@ -1815,42 +1702,42 @@ export const SYSTEM_SRD: CompendiumEntry[] = [
   {
     id: "srd:subclass:draconic",
     slug: "srd:subclass:draconic",
-    name: "Draconic Bloodline",
+    name: "Draconic Sorcery",
     entityType: "subclass",
     tier: "SYSTEM_SRD",
     data: { classId: "sorcerer", class: "sorcerer" },
     i18n: {
-      en: { name: "Draconic Bloodline", description: "Innate magic mingled with the ancient blood of dragons." },
-      fr: { name: "Lignée draconique", description: "Magie innée mêlée au sang ancestral des dragons." },
+      en: { name: "Draconic Sorcery", description: "Innate magic mingled with the ancient blood of dragons." },
+      fr: { name: "Sorcellerie draconique", description: "Magie innée mêlée au sang ancestral des dragons." },
     },
   },
   {
     id: "srd:subclass:fiend",
     slug: "srd:subclass:fiend",
-    name: "The Fiend",
+    name: "Fiend Patron",
     entityType: "subclass",
     tier: "SYSTEM_SRD",
     data: { classId: "warlock", class: "warlock" },
     i18n: {
-      en: { name: "The Fiend", description: "Pact struck with a fiend from the lower planes of damnation." },
-      fr: { name: "Le fiélon", description: "Pacte scellé avec un être des plans inférieurs de damnation." },
+      en: { name: "Fiend Patron", description: "Pact struck with a fiend from the lower planes of damnation." },
+      fr: { name: "Protecteur fiélon", description: "Pacte scellé avec un être des plans inférieurs de damnation." },
     },
   },
   {
     id: "srd:subclass:evocation",
     slug: "srd:subclass:evocation",
-    name: "School of Evocation",
+    name: "Evoker",
     entityType: "subclass",
     tier: "SYSTEM_SRD",
     data: { classId: "wizard", class: "wizard" },
     i18n: {
-      en: { name: "School of Evocation", description: "Focuses study on creating powerful elemental magical effects." },
-      fr: { name: "École d'évocation", description: "Consacre l'étude magique aux déflagrations élémentaires puissantes." },
+      en: { name: "Evoker", description: "Focuses study on creating powerful elemental magical effects." },
+      fr: { name: "Évocateur", description: "Consacre l'étude magique aux déflagrations élémentaires puissantes." },
     },
   },
 
   // ==========================================================================
-  // 8. CURATED CLASSES, SPECIES, BACKGROUNDS, CONDITIONS, SPELLS, ITEMS, MONSTERS
+  // 7. CURATED CLASSES, SPECIES, BACKGROUNDS, FEATS, CONDITIONS, SPELLS, ITEMS, MONSTERS
   // ==========================================================================
   ...SRD_CURATED_CONTENT,
 ];
@@ -1876,7 +1763,7 @@ export function getLevelUpSpellChoices(
 export const SystemSRD = SYSTEM_SRD;
 
 /**
- * Constructs a pre-populated SRD 5.1 Adult Red Dragon (`CR 17`, `256 HP`, `AC 19`)
+ * Constructs a pre-populated SRD 5.2.1 Adult Red Dragon (`CR 17`, `256 HP`, `AC 19`)
  * `Dnd5eActorSheet` equipped with `3/Day` Legendary Resistance and `Recharge 5-6` Fire Breath.
  */
 export function createAdultRedDragonSheet(id = "npc-adult-red-dragon"): Dnd5eActorSheet {
@@ -1885,8 +1772,8 @@ export function createAdultRedDragonSheet(id = "npc-adult-red-dragon"): Dnd5eAct
     name: "Adult Red Dragon",
     level: 17,
     spellcastingAbility: "cha",
-    abilities: { str: 27, dex: 10, con: 25, int: 16, wis: 13, cha: 21 },
-    saveProficiencies: { dex: true, con: true, wis: true, cha: true },
+    abilities: { str: 27, dex: 10, con: 25, int: 16, wis: 13, cha: 23 },
+    saveProficiencies: { dex: true, wis: true },
     skillProficiencies: { perception: "expertise", stealth: "proficient" },
     armorKind: "heavy",
     armorBaseAc: 19,

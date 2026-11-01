@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import "../src/node.ts";
 import {
   applyLevelUp,
   calculateProficiencyBonus,
@@ -170,68 +171,47 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
   });
 
   describe("AC6: Subclass Archetype Tiers Gate", () => {
-    it("WHEN targetLevel corresponds to Cleric/Sorcerer subclass tier (level 1) and subclassId is missing, applyLevelUp throws an Error.", () => {
-      const cleric = createDefaultActorData("cleric-1", "Healer");
-      cleric.attributes.level = 0;
-      cleric.classId = "cleric";
-
-      assert.throws(
-        () => applyLevelUp(cleric, { targetLevel: 1, hitPointsMode: "fixed" }),
-        (err: Error) => err.message === "Subclass selection required at this level"
-      );
-
-      const sorcerer = createDefaultActorData("sorc-1", "Wild Mage");
-      sorcerer.attributes.level = 0;
-      sorcerer.classId = "sorcerer";
-
-      assert.throws(
-        () => applyLevelUp(sorcerer, { targetLevel: 1, hitPointsMode: "fixed" }),
-        (err: Error) => err.message === "Subclass selection required at this level"
-      );
-    });
-
-    it("WHEN targetLevel corresponds to Druid/Wizard subclass tier (level 2) and subclassId is missing, applyLevelUp throws an Error.", () => {
-      const wizard = createDefaultActorData("wiz-sub", "Mage");
-      wizard.attributes.level = 1;
-      wizard.classId = "wizard";
-
-      assert.throws(
-        () => applyLevelUp(wizard, { targetLevel: 2, hitPointsMode: "fixed" }),
-        (err: Error) => err.message === "Subclass selection required at this level"
-      );
-
-      const druid = createDefaultActorData("druid-sub", "Nature Friend");
-      druid.attributes.level = 1;
-      druid.classId = "druid";
-
-      assert.throws(
-        () => applyLevelUp(druid, { targetLevel: 2, hitPointsMode: "fixed" }),
-        (err: Error) => err.message === "Subclass selection required at this level"
-      );
-    });
-
-    it("WHEN targetLevel corresponds to other classes subclass tier (level 3) and subclassId is missing, applyLevelUp throws an Error.", () => {
-      const martialClasses = ["fighter", "rogue", "paladin", "barbarian", "monk", "bard", "ranger"];
-      for (const cls of martialClasses) {
+    const allClasses = [
+      "barbarian", "bard", "cleric", "druid", "fighter", "monk",
+      "paladin", "ranger", "rogue", "sorcerer", "warlock", "wizard",
+    ];
+    for (const cls of allClasses) {
+      it(`G10-${cls}-level-up-to-3-without-subclass-throws`, () => {
         const actor = createDefaultActorData(`actor-${cls}`, cls);
         actor.attributes.level = 2;
         actor.classId = cls;
-
+        assert.equal(getSubclassUnlockLevel(cls), 3);
         assert.throws(
           () => applyLevelUp(actor, { targetLevel: 3, hitPointsMode: "fixed" }),
-          (err: Error) => err.message === "Subclass selection required at this level",
-          `Failed subclass check for ${cls}`
+          (err: Error) => err.message === "Subclass selection required at this level"
         );
-      }
+      });
+
+      it(`G10-${cls}-level-up-to-2-needs-no-subclass`, () => {
+        const actor = createDefaultActorData(`actor-${cls}-1`, cls);
+        actor.classId = cls;
+        assert.equal(applyLevelUp(actor, { targetLevel: 2 }).attributes.level, 2);
+      });
+    }
+
+    it("review-actor-past-unlock-level-without-subclass-must-pick-one", () => {
+      const actor = createDefaultActorData("late-pick", "Late");
+      actor.classId = "fighter";
+      actor.attributes.level = 5;
+      assert.throws(
+        () => applyLevelUp(actor, { targetLevel: 6 }),
+        (err: Error) => err.message === "Subclass selection required at this level"
+      );
+      assert.equal(applyLevelUp(actor, { targetLevel: 6, subclassId: "srd:subclass:champion" }).subclassId, "srd:subclass:champion");
     });
 
     it("WHEN subclassId is provided at unlock level, applyLevelUp records subclassId on actor.", () => {
       const wizard = createDefaultActorData("wiz-ok", "Evoker");
-      wizard.attributes.level = 1;
+      wizard.attributes.level = 2;
       wizard.classId = "wizard";
 
       const leveled = applyLevelUp(wizard, {
-        targetLevel: 2,
+        targetLevel: 3,
         hitPointsMode: "fixed",
         subclassId: "school-of-evocation",
       });
@@ -240,14 +220,13 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
     });
 
     it("WHEN targetLevel does not match the class subclass unlock level, subclassId is not required.", () => {
-      const wizard = createDefaultActorData("wiz-lvl3", "Mage");
-      wizard.attributes.level = 2;
+      const wizard = createDefaultActorData("wiz-lvl4", "Mage");
+      wizard.attributes.level = 3;
       wizard.classId = "wizard";
       wizard.subclassId = "school-of-evocation";
 
-      // Leveling up to 3 does not throw for wizard (unlock is 2)
-      const result = applyLevelUp(wizard, { targetLevel: 3, hitPointsMode: "fixed" });
-      assert.equal(result.attributes.level, 3);
+      const result = applyLevelUp(wizard, { targetLevel: 4, hitPointsMode: "fixed" });
+      assert.equal(result.attributes.level, 4);
       assert.equal(result.subclassId, "school-of-evocation");
     });
   });
@@ -256,6 +235,7 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
     it("WHEN targetLevel corresponds to an ASI level and options.asiOrFeat.mode equals 'asi' with total bonus not equal to 2, throws 'Invalid ASI bonus sum'.", () => {
       const actor = createDefaultActorData("asi-actor", "Hero");
       actor.attributes.level = 3;
+      actor.subclassId = "srd:subclass:champion";
       actor.classId = "fighter";
 
       // Bonus sum = 3
@@ -306,6 +286,7 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
     it("WHEN targetLevel corresponds to an ASI level and options.asiOrFeat.mode equals 'asi' with any targeted score exceeding 20, throws 'Ability score cannot exceed 20'.", () => {
       const actor = createDefaultActorData("asi-cap", "Maxed Hero");
       actor.attributes.level = 3;
+      actor.subclassId = "srd:subclass:champion";
       actor.abilities.str.score = 19;
       actor.abilities.dex.score = 20;
 
@@ -335,6 +316,7 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
     it("WHEN options.asiOrFeat.mode equals 'asi' with valid +2 or +1/+1 bonuses, applyLevelUp updates ability scores.", () => {
       const actor = createDefaultActorData("asi-valid", "Growing Hero");
       actor.attributes.level = 3;
+      actor.subclassId = "srd:subclass:champion";
       actor.abilities.str.score = 16;
       actor.abilities.dex.score = 14;
 
@@ -360,6 +342,7 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
     it("WHEN options.asiOrFeat.mode equals 'asi' and increases Constitution, hpGain uses the updated Constitution modifier and adds it retroactively.", () => {
       const actor = createDefaultActorData("asi-con-boost", "Tough Hero");
       actor.attributes.level = 3;
+      actor.subclassId = "srd:subclass:champion";
       actor.attributes.hitDieSize = 10;
       actor.abilities.con.score = 13;
       actor.attributes.hp.max = 25;
@@ -380,18 +363,19 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
     it("WHEN targetLevel corresponds to an ASI level and options.asiOrFeat.mode equals 'feat' with an existing featId, applyLevelUp appends featId to actor features.", () => {
       const actor = createDefaultActorData("feat-actor", "Caster");
       actor.attributes.level = 3;
+      actor.subclassId = "srd:subclass:champion";
       actor.features = ["srd:feature:darkvision"];
 
       const result = applyLevelUp(actor, {
         targetLevel: 4,
         hitPointsMode: "fixed",
-        asiOrFeat: { mode: "feat", featId: "srd:feat:war-caster" },
+        asiOrFeat: { mode: "feat", featId: "srd:feat:skilled" },
       });
 
       assert.ok(result.features);
       assert.deepEqual(result.features, [
         "srd:feature:darkvision",
-        "srd:feat:war-caster",
+        "srd:feat:skilled",
       ]);
     });
 
@@ -407,7 +391,7 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
   });
 
   describe("AC9: Spell Slot Reconciliation (Full, Half, Pact Casters)", () => {
-    it("WHEN applyLevelUp executes on a Full Caster, reconcileSlots updates slot capacities according to canonical SRD 5.1 tables.", () => {
+    it("WHEN applyLevelUp executes on a Full Caster, reconcileSlots updates slot capacities according to canonical SRD 5.2.1 tables.", () => {
       const bard = createDefaultActorData("bard-1", "Minstrel");
       bard.attributes.level = 2;
       bard.classId = "bard";
@@ -431,16 +415,16 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
       assert.equal(leveled.spellSlots?.level2?.max, 2);
     });
 
-    it("WHEN applyLevelUp executes on a Half Caster, reconcileSlots updates slot capacities starting at level 2.", () => {
+    it("WHEN applyLevelUp executes on a Half Caster, reconcileSlots grants SRD 5.2.1 slots from level 1.", () => {
       const paladin = createDefaultActorData("pally-1", "Holy Warrior");
       paladin.attributes.level = 1;
       paladin.classId = "paladin";
 
-      // Level 1: 0 slots
+      // SRD 5.2.1: Paladins and Rangers cast from level 1 with two level-1 slots
       const atLvl1Slots = reconcileSlots(undefined, "half", 1);
-      assert.equal(atLvl1Slots.level1, undefined);
+      assert.deepEqual(atLvl1Slots.level1, { current: 2, max: 2 });
 
-      // Level 2: 2 1st-level slots
+      // Level 2: still 2 level-1 slots
       const leveled = applyLevelUp(paladin, {
         targetLevel: 2,
         hitPointsMode: "fixed",
@@ -473,6 +457,7 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
       // Level 11: 3 slots of 5th level (max increases from 2 to 3, delta = 1)
       const lock10 = createDefaultActorData("lock-10", "High Warlock");
       lock10.attributes.level = 10;
+      lock10.subclassId = "srd:subclass:fiend";
       lock10.spellSlots = { pact: { current: 1, max: 2, slotLevel: 5 } };
       const leveledLvl11 = applyLevelUp(lock10, {
         targetLevel: 11,
@@ -487,6 +472,7 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
     it("WHEN newSpellIds are provided, applyLevelUp registers them on the actor without duplicates.", () => {
       const wizard = createDefaultActorData("spell-wiz", "Scholar");
       wizard.attributes.level = 4;
+      wizard.subclassId = "srd:subclass:evocation";
       wizard.spellIds = ["srd:spell:magic-missile"];
 
       const result = applyLevelUp(wizard, {
@@ -507,6 +493,7 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
     it("WHEN applyLevelUp succeeds, applyLevelUp updates level, increments hitDiceMax & hitDiceCurrent, and recalculates proficiency bonus.", () => {
       const actor = createDefaultActorData("hero-final", "Protagonist");
       actor.attributes.level = 4;
+      actor.subclassId = "srd:subclass:champion";
       actor.attributes.hitDiceMax = 4;
       actor.attributes.hitDiceCurrent = 2;
 
@@ -556,7 +543,7 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
           hitPointsMode: "fixed",
           casterType: "full",
         };
-        if (lvl === 2) {
+        if (lvl === 3) {
           options.subclassId = "school-of-evocation";
         }
         if ([4, 8, 12, 16, 19].includes(lvl)) {

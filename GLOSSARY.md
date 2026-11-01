@@ -155,7 +155,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### DamageType
 
-- **Definition**: Normalized SRD 5.1 damage category (`acid`, `bludgeoning`, `cold`, `fire`, `force`, `lightning`, `necrotic`, `piercing`, `poison`, `psychic`, `radiant`, `slashing`, `thunder`).
+- **Definition**: Normalized SRD 5.2.1 damage category (`acid`, `bludgeoning`, `cold`, `fire`, `force`, `lightning`, `necrotic`, `piercing`, `poison`, `psychic`, `radiant`, `slashing`, `thunder`).
 - **Allowed Context**: `DamageType`, `damage type`.
 - **_Avoid_**: `element`, `damage category`.
 
@@ -209,7 +209,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### InstantDeath
 
-- **Definition**: SRD 5.1 rule triggering immediate character death when remaining damage after reaching 0 HP equals or exceeds the actor's maximum hit points (`hp.max`).
+- **Definition**: SRD 5.2.1 rule triggering immediate character death when remaining damage after reaching 0 HP equals or exceeds the actor's maximum hit points (`hp.max`).
 - **Allowed Context**: `InstantDeath`, `instant death`.
 - **_Avoid_**: `massive damage death`, `overkill death`.
 
@@ -299,7 +299,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### SystemSRD
 
-- **Definition**: Read-only baseline game reference data from the CC-BY-4.0 System Reference Document 5.1 bundled with the game system pack.
+- **Definition**: Read-only baseline game reference data from the CC-BY-4.0 System Reference Document 5.2.1 (2024 rules) bundled with the game system pack; SRD 5.1 (also CC-BY-4.0) fills only the entries SRD 5.2.1 lacks (ADR-0038).
 - **Allowed Context**: `SystemSRD`, `system SRD`.
 - **_Avoid_**: `core compendium`, `builtin srd`.
 
@@ -494,5 +494,23 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Pending batch of destructive or bulk `TrameCommand` mutations submitted via `/api/v1/mcp` while `MCP Staging Mode` is active, held in `TableRoomActor` and rendered as translucent purple ghost previews until the Game Master dispatches `CommitMcpStaging` or `RejectMcpStaging`.
 - **Allowed Context**: `/api/v1/mcp` tool execution, `TableRoomActor` staging queue, and Game Master canvas confirmation controls.
 - **_Avoid_**: AiDraftQueue, PendingBotCommands.
+
+### Background
+
+- **Definition**: SRD 5.2.1 character origin that raises three listed abilities by `+2/+1` or `+1/+1/+1` (cap 20) and grants one Origin feat, two skills, one tool and starting equipment; species never raise ability scores (`applyBackground`, ADR-0038).
+- **Allowed Context**: Character creation, `BACKGROUNDS`, `srd:background:*` compendium entries.
+- **_Avoid_**: Racial bonus, species ASI, origin package.
+
+### Exhaustion
+
+- **Definition**: SRD 5.2.1 cumulative condition (levels 1 to 6) that subtracts `2 × level` from every d20 Test and `5 ft × level` from Speed, never from passive scores or the spell save DC; level 6 is death (`applyExhaustion`, ADR-0038).
+- **Allowed Context**: `exhaustion` derived input, `srd:condition:exhaustion`, Long Rest recovery.
+- **_Avoid_**: Fatigue, exhaustion tiers (SRD 5.1 table).
+
+### WeaponMastery
+
+- **Definition**: SRD 5.2.1 weapon property (`Cleave`, `Graze`, `Nick`, `Push`, `Sap`, `Slow`, `Topple`, `Vex`) that a class with the Weapon Mastery feature can use with a number of weapon kinds set by its level (`getWeaponMasteryCount`).
+- **Allowed Context**: Weapon compendium entries (`data.mastery`), Barbarian, Fighter, Paladin, Ranger and Rogue progression.
+- **_Avoid_**: Weapon specialization, weapon trick.
 
 

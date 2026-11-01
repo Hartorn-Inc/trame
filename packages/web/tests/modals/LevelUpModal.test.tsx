@@ -90,7 +90,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
   it("WHEN LevelUpModal renders for an actor at target subclass level without a chosen subclass, LevelUpModal displays subclass selector and disables the Next button until a subclass is selected (AC1)", async () => {
     const actor = createDefaultActorData("actor-wizard", "Galdor");
     actor.classId = "wizard";
-    actor.attributes.level = 1; // advancing to lvl 2, wizard subclass unlock level is 2
+    actor.attributes.level = 2; // advancing to lvl 3, every SRD 5.2.1 class picks its subclass at 3
     delete (actor as any).subclassId;
     delete (actor.attributes as any).subclassId;
 
@@ -154,7 +154,6 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     actor.attributes.level = 1;
     actor.attributes.hitDieSize = 8; // Cleric d8
     actor.abilities.con.score = 12; // CON mod = +1
-    actor.subclassId = "srd:subclass:life"; // Clerics pick a domain at level 1, so step 1 is already satisfied
 
     let rollRequested = false;
     let requestedFormula = "";
@@ -249,7 +248,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
 
     const featSelect = container.querySelector("#asi-feat-select");
     assert.ok(featSelect, "Feat select must be rendered with id='asi-feat-select'");
-    featSelect.value = "srd:feat:tough";
+    featSelect.value = "srd:feat:alert";
     featSelect.dispatchEvent(new (globalThis as any).Event("change"));
 
     assert.equal(nextBtn.getAttribute("aria-disabled"), null, "Next must be enabled after selecting a valid Feat");
@@ -421,7 +420,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
   it("WHEN keyboard Tab and Shift+Tab are pressed, focus is trapped inside the active modal dialog (WCAG 2.4.3)", async () => {
     const actor = createDefaultActorData("actor-wizard", "Galdor");
     actor.classId = "wizard";
-    actor.attributes.level = 1;
+    actor.attributes.level = 2;
 
     const { container, unmount } = await renderModal({
       isOpen: true,
@@ -562,7 +561,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
   const EVOCATION = "srd:subclass:evocation";
 
   const CONTROL_SCENARIOS = [
-    { id: "step1-subclass-select", classId: "wizard", level: 1, steps: 0, subclassId: undefined },
+    { id: "step1-subclass-select", classId: "wizard", level: 2, steps: 0, subclassId: undefined },
     { id: "step2-hit-points-choices", classId: "fighter", level: 1, steps: 1, subclassId: undefined },
     { id: "step3-asi-tabs-and-selects", classId: "rogue", level: 3, steps: 2, subclassId: THIEF },
     { id: "step4-wizard-spell-checkboxes", classId: "wizard", level: 2, steps: 3, subclassId: EVOCATION },
@@ -659,7 +658,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
   }
 
   const SELECT_SCENARIOS = [
-    { id: "subclass-select", classId: "wizard", level: 1, steps: 0, mode: null, subclassId: undefined },
+    { id: "subclass-select", classId: "wizard", level: 2, steps: 0, mode: null, subclassId: undefined },
     { id: "asi-single-ability", classId: "rogue", level: 3, steps: 2, mode: null, subclassId: THIEF },
     { id: "asi-first-ability", classId: "rogue", level: 3, steps: 2, mode: "plusOneOne", subclassId: THIEF },
     { id: "asi-second-ability", classId: "rogue", level: 3, steps: 2, mode: "plusOneOne", subclassId: THIEF },
