@@ -12,7 +12,9 @@
 //!
 //! EXECUTION LIFECYCLE:
 //!   1. `ArchiveExporter` streams `manifest.json`, `database.jsonl`,
-//!      `notes/*.md`, and `assets/*.webp` into a PKWARE ZIP byte stream.
+//!      `notes/*.md`, `assets/*.webp`, and the referenced content-addressed
+//!      blobs (`stored-assets/*.webp`, see `stored_assets`) into a PKWARE ZIP
+//!      byte stream.
 //!   2. `ArchiveImporter` validates `manifest.json`, verifies entry digests,
 //!      optionally remaps UUIDs and wikilinks, and persists restored data.
 //! ============================================================================
@@ -20,6 +22,7 @@
 pub mod exporter;
 pub mod importer;
 pub mod manifest;
+pub mod stored_assets;
 
 pub use exporter::{
     ArchiveExportError, ArchiveExporter, CampaignExportSource, ExportEntity, NoteRecord,

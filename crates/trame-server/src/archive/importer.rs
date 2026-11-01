@@ -25,6 +25,12 @@
 //!     declared size, so the caps bound real bytes rather than zip headers.
 //!   - Every persisted entity, note, and asset is attributed to the imported
 //!     campaign ID (`CampaignImportTarget` takes an explicit `campaign_id`).
+//!   - `stored-assets/<stem>.webp` entries (content-addressed `AssetStore` blobs, see
+//!     `stored_assets`) must have a valid stem and WebP magic bytes. With an asset store
+//!     configured they are re-stored under the new campaign and every key referencing the
+//!     source campaign is rewritten; referenced keys without an embedded blob do not fail
+//!     the import but are listed in `ImportResult::missing_asset_keys`.
+//!   - `owner_user_id` entity fields are user IDs and are never remapped.
 //!
 //! EXECUTION LIFECYCLE:
 //!   1. Validate entry 0 (`manifest.json`), parse `CampaignManifest`, and check
@@ -34,12 +40,16 @@
 //!   3. Stream and verify `database.jsonl` and `notes/<uuid>.md`, optionally
 //!      remapping all entity/note/asset UUIDs and rewriting `[[<uuid>]]` /
 //!      `[[<uuid>|<label>]]` wikilinks.
-//!   4. Stream and verify each `assets/<uuid>.webp` entry into `BlobStore`,
-//!      then persist the campaign metadata, entities, and notes.
+//!   4. Rewrite content-addressed asset keys and collect missing ones.
+//!   5. Stream and verify each `assets/<uuid>.webp` entry into `BlobStore`, put the
+//!      `stored-assets/` blobs into the `AssetStore`, then persist the campaign
+//!      metadata, entities, and notes.
 //! ============================================================================
 
 use super::exporter::{ExportEntity, NoteRecord};
 use super::manifest::{CampaignManifest, CampaignMetadata};
+use super::stored_assets::{self, STORED_ASSET_PREFIX, is_valid_stem, is_webp};
+use crate::assets::store::AssetStore;
 use crate::storage::blob::{BlobStore, BlobStoreError, CHUNK_SIZE, Sha256Hasher};
 use async_zip::tokio::read::seek::ZipFileReader;
 use bytes::Bytes;
@@ -76,6 +86,10 @@ pub enum ArchiveError {
     #[error("archive limit exceeded: {0}")]
     LimitExceeded(String),
 }
+
+/// Entity field carrying the owning user of an actor. User IDs belong to the instance, not
+/// the campaign, so this field is exempt from UUID remapping.
+pub const OWNER_USER_ID_FIELD: &str = "owner_user_id";
 
 /// Maximum number of entries (including `manifest.json`) accepted in one archive.
 pub const MAX_ARCHIVE_ENTRIES: usize = 5_000;
@@ -114,6 +128,11 @@ pub struct ImportResult {
     pub scenes_restored: usize,
     pub notes_restored: usize,
     pub assets_restored: usize,
+    /// Source asset keys referenced by the archive whose blob was not embedded (deleted
+    /// before export). Their references are still rewritten to the new campaign, where they
+    /// resolve to "not found" exactly as they did at the source.
+    #[serde(default)]
+    pub missing_asset_keys: Vec<String>,
 }
 
 /// Options configuring archive extraction and collision handling.
@@ -300,12 +319,26 @@ impl CampaignImportTarget for InMemoryCampaignStore {
 pub struct ArchiveImporter<T: CampaignImportTarget, B: BlobStore> {
     target: T,
     blob_store: B,
+    /// Destination for `stored-assets/` entries and the instance their new keys live under;
+    /// without it those entries are verified but ignored and keys are left untouched.
+    asset_store: Option<(Arc<dyn AssetStore>, Uuid)>,
 }
 
 impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
     /// Creates a new `ArchiveImporter` bound to a database target and asset blob store.
     pub fn new(target: T, blob_store: B) -> Self {
-        Self { target, blob_store }
+        Self {
+            target,
+            blob_store,
+            asset_store: None,
+        }
+    }
+
+    /// Restores embedded content-addressed blobs into `asset_store` under `instance_id` and
+    /// rewrites every reference to them to the imported campaign.
+    pub fn with_asset_store(mut self, asset_store: Arc<dyn AssetStore>, instance_id: Uuid) -> Self {
+        self.asset_store = Some((asset_store, instance_id));
+        self
     }
 
     /// Imports a campaign archive using structured `ImportOptions`.
@@ -464,6 +497,8 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
         // Process non-asset entries (database.jsonl and notes/*.md)
         let mut entities = Vec::new();
         let mut notes = Vec::new();
+        let mut embedded_assets: Vec<(String, Bytes)> = Vec::new();
+        let mut owners: Vec<Option<serde_json::Value>> = Vec::new();
 
         for (idx, filename) in zip_entry_names.iter().enumerate() {
             if idx == 0 || filename.starts_with("assets/") {
@@ -521,7 +556,13 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    let entity: ExportEntity = serde_json::from_str(trimmed)?;
+                    let mut entity: ExportEntity = serde_json::from_str(trimmed)?;
+                    // A user ID, not campaign data: it must survive remapping verbatim.
+                    let owner = entity
+                        .data
+                        .as_object_mut()
+                        .and_then(|o| o.remove(OWNER_USER_ID_FIELD));
+                    owners.push(owner);
                     if remap_ids {
                         collect_uuids_from_json(&entity.data, &mut id_map);
                     }
@@ -536,6 +577,16 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                     id_map.entry(note.author_id).or_insert_with(Uuid::new_v4);
                 }
                 notes.push(note);
+            } else if let Some(stem) = filename
+                .strip_prefix(STORED_ASSET_PREFIX)
+                .and_then(|s| s.strip_suffix(".webp"))
+            {
+                if !is_valid_stem(stem) || !is_webp(&content) {
+                    return Err(ArchiveError::InvalidManifest(format!(
+                        "stored asset '{filename}' is not a content-addressed WebP image"
+                    )));
+                }
+                embedded_assets.push((stem.to_string(), Bytes::from(content)));
             }
         }
 
@@ -552,6 +603,51 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                     note.author_id = *new_author;
                 }
                 note.content_markdown = rewrite_wikilinks(&note.content_markdown, &id_map);
+            }
+        }
+        for (entity, owner) in entities.iter_mut().zip(owners) {
+            if let (Some(owner), Some(obj)) = (owner, entity.data.as_object_mut()) {
+                obj.insert(OWNER_USER_ID_FIELD.to_string(), owner);
+            }
+        }
+
+        // Content-addressed blobs: rewrite references to the imported campaign, report the
+        // ones the archive does not embed, and re-store the embedded ones.
+        let mut missing_asset_keys = Vec::new();
+        if let Some((_, instance_id)) = &self.asset_store {
+            let old_campaign = manifest.campaign.id;
+            let mut referenced = Vec::new();
+            for entity in &entities {
+                stored_assets::referenced_keys_in_json(&entity.data, old_campaign, &mut referenced);
+            }
+            for note in &notes {
+                referenced.extend(stored_assets::referenced_keys(
+                    &note.content_markdown,
+                    old_campaign,
+                ));
+            }
+            for (key, stem) in referenced {
+                if !embedded_assets.iter().any(|(s, _)| *s == stem)
+                    && !missing_asset_keys.contains(&key)
+                {
+                    missing_asset_keys.push(key);
+                }
+            }
+            for entity in &mut entities {
+                stored_assets::rewrite_keys_in_json(
+                    &mut entity.data,
+                    old_campaign,
+                    *instance_id,
+                    new_campaign_id,
+                );
+            }
+            for note in &mut notes {
+                note.content_markdown = stored_assets::rewrite_keys(
+                    &note.content_markdown,
+                    old_campaign,
+                    *instance_id,
+                    new_campaign_id,
+                );
             }
         }
 
@@ -685,6 +781,19 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
             assets_restored += 1;
         }
 
+        if let Some((asset_store, instance_id)) = &self.asset_store {
+            for (stem, bytes) in embedded_assets {
+                let key = stored_assets::asset_key(*instance_id, new_campaign_id, &stem);
+                if let Err(err) = asset_store.put_asset(&key, bytes, "image/webp").await {
+                    for aid in &uploaded_asset_ids {
+                        let _ = self.blob_store.delete(aid.as_str()).await;
+                    }
+                    return Err(ArchiveError::Io(std::io::Error::other(err.to_string())));
+                }
+                assets_restored += 1;
+            }
+        }
+
         // Persist campaign metadata, entities, notes, and asset ownership into target
         let mut final_campaign = manifest.campaign.clone();
         final_campaign.id = new_campaign_id;
@@ -717,6 +826,7 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
             scenes_restored,
             notes_restored,
             assets_restored,
+            missing_asset_keys,
         })
     }
 }

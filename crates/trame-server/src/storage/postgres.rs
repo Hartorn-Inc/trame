@@ -49,6 +49,7 @@ use crate::auth::pat::{PatError, PatRecord, PatStore};
 use crate::auth::session::{
     BoxFuture, CampaignMemberRecord, SessionError, SessionRecord, SessionStore, UserRecord,
 };
+use crate::campaigns::split_actor_entity;
 use crate::http::CampaignMembershipValidator;
 use crate::maps::{CampaignMapScene, SceneSaveError, restorable_scene};
 use crate::notes::{NotesError, PartyJournalEntry, PartyJournalStorage};
@@ -1849,6 +1850,24 @@ impl CampaignImportTarget for SqlxPostgresStore {
             if restorable_scene(campaign_id, entity).is_some() {
                 continue;
             }
+            if let Some((actor_id, name, owner, data)) = split_actor_entity(entity) {
+                let io = |e: String| ArchiveError::Io(std::io::Error::other(e));
+                // `actors.owner_user_id` references `users`: drop owners unknown here.
+                let owner = match owner {
+                    Some(uid) => {
+                        sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE id = $1")
+                            .bind(uid)
+                            .fetch_optional(&self.pool)
+                            .await
+                            .map_err(|e| io(e.to_string()))?
+                    }
+                    None => None,
+                };
+                self.create_actor(campaign_id, actor_id, owner, &name, data)
+                    .await
+                    .map_err(|e| io(e.to_string()))?;
+                continue;
+            }
             let entity_id = entity
                 .data
                 .get("id")
@@ -1856,17 +1875,6 @@ impl CampaignImportTarget for SqlxPostgresStore {
                 .and_then(|s| Uuid::parse_str(s).ok())
                 .unwrap_or_else(Uuid::new_v4);
 
-            if entity.entity_type == "actor" {
-                let name = entity
-                    .data
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Imported actor");
-                self.create_actor(campaign_id, entity_id, None, name, entity.data.clone())
-                    .await
-                    .map_err(|e| ArchiveError::Io(std::io::Error::other(e.to_string())))?;
-                continue;
-            }
             let valid_type = match entity.entity_type.as_str() {
                 "scene" | "item" => entity.entity_type.as_str(),
                 _ => "item",

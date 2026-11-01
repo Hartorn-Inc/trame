@@ -57,7 +57,7 @@
 
 use crate::archive::{
     ArchiveError, ArchiveExporter, ArchiveImporter, CampaignExportSource, CampaignImportTarget,
-    CampaignMetadata, ExportEntity, ImportResult, InMemoryCampaignStore, NoteRecord,
+    CampaignMetadata, ExportEntity, InMemoryCampaignStore, NoteRecord, stored_assets,
 };
 use crate::assets::store::{
     AssetStore, AssetStoreError, InMemoryAssetStore, PRESIGNED_URL_DEFAULT_TTL,
@@ -346,9 +346,14 @@ struct ScopedCampaignExportSource {
     entities: Vec<ExportEntity>,
     notes: Vec<NoteRecord>,
     asset_ids: Vec<Uuid>,
+    stored_assets: Vec<(String, Bytes)>,
 }
 
 impl CampaignExportSource for ScopedCampaignExportSource {
+    fn stored_assets(&self) -> Vec<(String, Bytes)> {
+        self.stored_assets.clone()
+    }
+
     fn campaign_metadata(&self) -> CampaignMetadata {
         self.metadata.clone()
     }
@@ -834,6 +839,7 @@ pub async fn export_campaign_handler(
                 entities: pg.list_entities_for_campaign_async(campaign_id).await?,
                 notes: pg.list_notes_for_campaign_async(campaign_id).await?,
                 asset_ids: state.campaign_store.asset_ids_for_campaign(campaign_id),
+                stored_assets: Vec::new(),
             })
         }
         .await;
@@ -852,16 +858,29 @@ pub async fn export_campaign_handler(
             entities: state.campaign_store.entities_for_campaign(campaign_id),
             notes: state.campaign_store.notes_for_campaign(campaign_id),
             asset_ids: state.campaign_store.asset_ids_for_campaign(campaign_id),
+            stored_assets: Vec::new(),
         }
     };
     let entities = std::mem::take(&mut source.entities);
-    source.entities =
-        match crate::maps::export_entities_with_scenes(&state, campaign_id, entities).await {
-            Ok(entities) => entities,
-            Err(err) => {
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "EXPORT_ERROR", &err);
-            }
-        };
+    let completed = async {
+        let entities =
+            crate::maps::export_entities_with_scenes(&state, campaign_id, entities).await?;
+        let entities =
+            crate::campaigns::export_entities_with_actors(&state, campaign_id, entities).await?;
+        let stored_assets =
+            referenced_stored_assets(&state, campaign_id, &entities, &source.notes).await?;
+        Ok::<_, String>((entities, stored_assets))
+    }
+    .await;
+    match completed {
+        Ok((entities, stored_assets)) => {
+            source.entities = entities;
+            source.stored_assets = stored_assets;
+        }
+        Err(err) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "EXPORT_ERROR", &err);
+        }
+    }
 
     let exporter = ArchiveExporter::new(source, state.blob_store.clone());
     let stream = match exporter.export_stream().await {
@@ -889,6 +908,41 @@ pub async fn export_campaign_handler(
     }
 
     (StatusCode::OK, resp_headers, body).into_response()
+}
+
+/// Loads every content-addressed blob of `campaign_id` referenced by `entities` or `notes`,
+/// once per stem. Blobs absent from the store are skipped: import reports them as
+/// `missing_asset_keys` instead of the whole export failing.
+async fn referenced_stored_assets(
+    state: &AppState,
+    campaign_id: Uuid,
+    entities: &[ExportEntity],
+    notes: &[NoteRecord],
+) -> Result<Vec<(String, Bytes)>, String> {
+    let mut referenced = Vec::new();
+    for entity in entities {
+        stored_assets::referenced_keys_in_json(&entity.data, campaign_id, &mut referenced);
+    }
+    for note in notes {
+        referenced.extend(stored_assets::referenced_keys(
+            &note.content_markdown,
+            campaign_id,
+        ));
+    }
+    let mut out: Vec<(String, Bytes)> = Vec::new();
+    for (key, stem) in referenced {
+        if out.iter().any(|(s, _)| *s == stem) {
+            continue;
+        }
+        match state.asset_store.get_asset(&key).await {
+            Ok(Some(bytes)) => out.push((stem, bytes)),
+            Ok(None) | Err(AssetStoreError::NotFound(_)) => {
+                tracing::warn!(%campaign_id, %key, "referenced asset missing; not exported");
+            }
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+    Ok(out)
 }
 
 fn is_client_archive_error(err: &ArchiveError) -> bool {
@@ -953,33 +1007,33 @@ pub async fn import_campaign_handler(
     let imported = match &state.postgres_store {
         Some(pg) => {
             ArchiveImporter::new((**pg).clone(), state.blob_store.clone())
+                .with_asset_store(state.asset_store.clone(), state.instance_id)
                 .import_stream(reader, true)
                 .await
         }
         None => {
             ArchiveImporter::new(state.campaign_store.clone(), state.blob_store.clone())
+                .with_asset_store(state.asset_store.clone(), state.instance_id)
                 .import_stream(reader, true)
                 .await
         }
     };
 
     match imported {
-        Ok(ImportResult {
-            campaign_id,
-            name,
-            actors_restored,
-            scenes_restored,
-            notes_restored,
-            assets_restored,
-        }) => {
+        Ok(result) => {
+            let campaign_id = result.campaign_id;
             if state.postgres_store.is_none() {
-                let scenes = state
-                    .campaign_store
-                    .entities_for_campaign(campaign_id)
+                let entities = state.campaign_store.entities_for_campaign(campaign_id);
+                let scenes = entities
                     .iter()
                     .filter_map(|e| crate::maps::restorable_scene(campaign_id, e))
                     .collect();
                 state.map_storage.restore_campaign_maps(campaign_id, scenes);
+                if let Err(err) =
+                    crate::campaigns::restore_imported_actors(&state, campaign_id, &entities).await
+                {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, "IMPORT_ERROR", &err);
+                }
             }
             state.membership.add_member(campaign_id, caller_user_id);
             if let Err(err) = state
@@ -994,18 +1048,7 @@ pub async fn import_campaign_handler(
                     &err.to_string(),
                 );
             }
-            (
-                StatusCode::CREATED,
-                Json(ImportResult {
-                    campaign_id,
-                    name,
-                    actors_restored,
-                    scenes_restored,
-                    notes_restored,
-                    assets_restored,
-                }),
-            )
-                .into_response()
+            (StatusCode::CREATED, Json(result)).into_response()
         }
         Err(ArchiveError::CampaignAlreadyExists(existing_id)) => (
             StatusCode::CONFLICT,

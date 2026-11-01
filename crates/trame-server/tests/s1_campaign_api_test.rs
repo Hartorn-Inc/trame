@@ -1526,6 +1526,212 @@ async fn a26b_archive_round_trip_restores_scenes_with_player_masking() {
 }
 
 // ---------------------------------------------------------------------------
+// Archive — REST actors and content-addressed asset keys round trip
+// ---------------------------------------------------------------------------
+
+async fn export_and_import(app: &Router, campaign_id: Uuid, cookie: &str) -> Value {
+    let req = Request::builder()
+        .uri(format!("/api/v1/campaigns/{campaign_id}/export"))
+        .header("cookie", cookie)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, archive) = send_raw(app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, imported) =
+        raw_post(app, "/api/v1/campaigns/import", cookie, archive.to_vec()).await;
+    assert_eq!(status, StatusCode::CREATED, "{imported}");
+    imported
+}
+
+fn imported_id(imported: &Value) -> Uuid {
+    Uuid::parse_str(imported["campaign_id"].as_str().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn archive_round_trip_restores_rest_actors() {
+    // (case, actors as (name, owner kind)); owner kind: "none", "player", "unknown_user"
+    let cases: [(&str, &[(&str, &str)]); 4] = [
+        ("no_actors", &[]),
+        ("gm_npc_without_owner", &[("Klarg", "none")]),
+        (
+            "player_owned_and_npc",
+            &[("Sildar", "player"), ("Klarg", "none")],
+        ),
+        ("unknown_owner_is_dropped", &[("Ghost", "unknown_user")]),
+    ];
+    for (case, spec) in cases {
+        let h = Harness::new();
+        let app = h.app();
+        let (source_id, _, gm) = h.campaign(&app).await;
+        let (player_id, _) = h.account().await;
+        h.join(source_id, player_id, "PLAYER").await;
+        for (name, owner_kind) in spec {
+            let owner = match *owner_kind {
+                "player" => json!(player_id),
+                "unknown_user" => json!(Uuid::new_v4()),
+                _ => Value::Null,
+            };
+            let (status, body) = call(
+                &app,
+                "POST",
+                &format!("/api/v1/campaigns/{source_id}/actors"),
+                Some(&gm),
+                json!({ "name": name, "owner_user_id": owner, "data": { "attributes": { "hp": { "current": 7, "max": 10 } } } }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "case {case}: {body}");
+        }
+
+        let imported = export_and_import(&app, source_id, &gm).await;
+        assert_eq!(
+            imported["actors_restored"],
+            json!(spec.len()),
+            "case {case}"
+        );
+        let new_id = imported_id(&imported);
+        let (status, body) = call(
+            &app,
+            "GET",
+            &format!("/api/v1/campaigns/{new_id}/actors"),
+            Some(&gm),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {body}");
+        let mut got: Vec<(String, Value, Value)> = body["actors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                (
+                    a["name"].as_str().unwrap().to_string(),
+                    a["owner_user_id"].clone(),
+                    a["data"]["attributes"]["hp"]["current"].clone(),
+                )
+            })
+            .collect();
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut want: Vec<(String, Value, Value)> = spec
+            .iter()
+            .map(|(name, owner_kind)| {
+                let owner = if *owner_kind == "player" {
+                    json!(player_id)
+                } else {
+                    Value::Null
+                };
+                (name.to_string(), owner, json!(7))
+            })
+            .collect();
+        want.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(got, want, "case {case}");
+        for actor in body["actors"].as_array().unwrap() {
+            assert!(
+                actor["data"].get("owner_user_id").is_none(),
+                "case {case}: owner is not sheet data"
+            );
+        }
+
+        let reimported = export_and_import(&app, new_id, &gm).await;
+        assert_eq!(
+            reimported["actors_restored"],
+            json!(spec.len()),
+            "case {case}: re-export does not duplicate actors"
+        );
+    }
+}
+
+#[tokio::test]
+async fn archive_round_trip_restores_and_rewrites_asset_keys() {
+    // (case, where the key is referenced, whether its blob exists at export)
+    let cases = [
+        ("scene_background", "scene_background", true),
+        ("staged_token_avatar", "token_avatar", true),
+        ("actor_portrait", "actor_portrait", true),
+        ("deleted_blob_is_reported", "actor_portrait", false),
+    ];
+    for (case, place, blob_exists) in cases {
+        let h = Harness::new();
+        let app = h.app();
+        let (source_id, _, gm) = h.campaign(&app).await;
+        let (status, upload) = raw_post(
+            &app,
+            &format!("/api/v1/campaigns/{source_id}/assets"),
+            &gm,
+            png_bytes(8, 8),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "case {case}: {upload}");
+        let uploaded = upload["key"].as_str().unwrap().to_string();
+        let key = if blob_exists {
+            uploaded.clone()
+        } else {
+            uploaded.replace(upload["hash"].as_str().unwrap(), &"f".repeat(64))
+        };
+
+        let mut scene: Value = serde_json::to_value(stored_scene(source_id, &[])).unwrap();
+        match place {
+            "scene_background" => scene["background_image_url"] = json!(key),
+            "token_avatar" => {
+                scene["staged_tokens"] = json!([{
+                    "id": Uuid::new_v4(), "name": "Goblin", "x": 0.0, "y": 0.0,
+                    "token_avatar_url": key
+                }]);
+            }
+            _ => {
+                let (status, body) = call(
+                    &app,
+                    "POST",
+                    &format!("/api/v1/campaigns/{source_id}/actors"),
+                    Some(&gm),
+                    json!({ "name": "Sildar", "data": { "portraitAssetKey": key } }),
+                )
+                .await;
+                assert_eq!(status, StatusCode::CREATED, "case {case}: {body}");
+            }
+        }
+        let (status, body) = put_scene_set(
+            &app,
+            source_id,
+            &gm,
+            json!({ "expected_version": 0, "scenes": [scene] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {body}");
+
+        let imported = export_and_import(&app, source_id, &gm).await;
+        let new_id = imported_id(&imported);
+        let new_key = key.replace(&source_id.to_string(), &new_id.to_string());
+        let want_missing = if blob_exists { json!([]) } else { json!([key]) };
+        assert_eq!(imported["missing_asset_keys"], want_missing, "case {case}");
+
+        let restored_ref = match place {
+            "scene_background" => {
+                get_scene_set(&app, new_id, &gm).await["scenes"][0]["background_image_url"].clone()
+            }
+            "token_avatar" => get_scene_set(&app, new_id, &gm).await["scenes"][0]["staged_tokens"]
+                [0]["token_avatar_url"]
+                .clone(),
+            _ => {
+                let (_, body) = call(
+                    &app,
+                    "GET",
+                    &format!("/api/v1/campaigns/{new_id}/actors"),
+                    Some(&gm),
+                    Value::Null,
+                )
+                .await;
+                body["actors"][0]["data"]["portraitAssetKey"].clone()
+            }
+        };
+        assert_eq!(restored_ref, json!(new_key), "case {case}: key rewritten");
+        let restored_blob = h.state.asset_store.get_asset(&new_key).await.unwrap();
+        let source_blob = h.state.asset_store.get_asset(&key).await.unwrap();
+        assert_eq!(restored_blob, source_blob, "case {case}: blob restored");
+        assert_eq!(restored_blob.is_some(), blob_exists, "case {case}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // A27 — Idle-Lease sweeper and Ping
 // ---------------------------------------------------------------------------
 
