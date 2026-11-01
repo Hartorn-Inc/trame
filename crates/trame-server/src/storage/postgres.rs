@@ -50,7 +50,7 @@ use crate::auth::session::{
     BoxFuture, CampaignMemberRecord, SessionError, SessionRecord, SessionStore, UserRecord,
 };
 use crate::http::CampaignMembershipValidator;
-use crate::maps::CampaignMapScene;
+use crate::maps::{CampaignMapScene, SceneSaveError};
 use crate::notes::{NotesError, PartyJournalEntry, PartyJournalStorage};
 use crate::timeline::{
     AppendEventInput, SessionTimelineEvent, SessionTimelineResponse, TimelineError, TimelineStorage,
@@ -151,6 +151,10 @@ pub enum ActorConcurrencyError {
     /// Underlying database execution error.
     #[error("database error: {0}")]
     Database(String),
+}
+
+fn storage_err(e: sqlx::Error) -> SceneSaveError {
+    SceneSaveError::Storage(e.to_string())
 }
 
 /// Executes an async database future from a synchronous trait method without
@@ -770,19 +774,57 @@ impl SqlxPostgresStore {
         Ok(res.rows_affected() > 0)
     }
 
-    /// Saves the full ordered list of `CampaignMapScene` records for a campaign into `scenes`
-    /// and synchronizes `campaign_entities` (`entity_type = 'scene'`).
+    /// Replaces the full ordered list of `CampaignMapScene` records for a campaign in `scenes`
+    /// and synchronizes `campaign_entities` (`entity_type = 'scene'`), provided
+    /// `campaigns.scenes_version` still equals `expected_version`.
+    ///
+    /// The compare-and-increment `UPDATE` runs first inside the transaction, so its row lock
+    /// serializes concurrent saves: the loser re-evaluates against the bumped version and gets
+    /// `SceneSaveError::VersionConflict` instead of overwriting. Returns the new version.
     pub async fn save_campaign_scenes_async(
         &self,
         campaign_id: Uuid,
         scenes: &[CampaignMapScene],
-    ) -> Result<(), String> {
-        self.ensure_campaign_row(campaign_id).await?;
+        expected_version: i64,
+    ) -> Result<i64, SceneSaveError> {
+        self.ensure_campaign_row(campaign_id)
+            .await
+            .map_err(SceneSaveError::Storage)?;
 
-        let mut tx = self.pool.begin().await.map_err(|e| e.to_string())?;
+        let mut tx = self.pool.begin().await.map_err(storage_err)?;
+        let new_version: Option<i64> = sqlx::query_scalar(
+            "UPDATE campaigns SET scenes_version = scenes_version + 1
+             WHERE id = $1 AND scenes_version = $2 RETURNING scenes_version",
+        )
+        .bind(campaign_id)
+        .bind(expected_version)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage_err)?;
+        let Some(new_version) = new_version else {
+            let current_version: i64 =
+                sqlx::query_scalar("SELECT scenes_version FROM campaigns WHERE id = $1")
+                    .bind(campaign_id)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(storage_err)?;
+            return Err(SceneSaveError::VersionConflict { current_version });
+        };
+        Self::replace_scene_rows(&mut tx, campaign_id, scenes)
+            .await
+            .map_err(SceneSaveError::Storage)?;
+        tx.commit().await.map_err(storage_err)?;
+        Ok(new_version)
+    }
+
+    async fn replace_scene_rows(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        campaign_id: Uuid,
+        scenes: &[CampaignMapScene],
+    ) -> Result<(), String> {
         sqlx::query("DELETE FROM scenes WHERE campaign_id = $1")
             .bind(campaign_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -790,7 +832,7 @@ impl SqlxPostgresStore {
             "DELETE FROM campaign_entities WHERE campaign_id = $1 AND entity_type = 'scene'",
         )
         .bind(campaign_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -806,7 +848,7 @@ impl SqlxPostgresStore {
             .bind(idx as i32)
             .bind(scene.revealed_to_players)
             .bind(&payload)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -817,13 +859,22 @@ impl SqlxPostgresStore {
             .bind(scene.id)
             .bind(campaign_id)
             .bind(&payload)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| e.to_string())?;
         }
-
-        tx.commit().await.map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Current `campaigns.scenes_version` for `campaign_id`; `0` when the campaign row is absent.
+    pub async fn load_scenes_version_async(&self, campaign_id: Uuid) -> Result<i64, String> {
+        let version: Option<i64> =
+            sqlx::query_scalar("SELECT scenes_version FROM campaigns WHERE id = $1")
+                .bind(campaign_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        Ok(version.unwrap_or(0))
     }
 
     /// Loads all persisted `CampaignMapScene` records for `campaign_id` ordered by `sort_order`.

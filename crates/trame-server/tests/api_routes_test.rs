@@ -155,15 +155,16 @@ async fn test_campaign_maps_rbac_and_sanitization() {
     assert_eq!(res_unauth.status(), StatusCode::UNAUTHORIZED);
 
     // 3. Player cannot PUT maps
-    let payload = trame_server::maps::PutCampaignMapsPayload {
+    let put_payload = |expected_version: i64| trame_server::maps::PutCampaignMapsPayload {
         scenes: vec![test_scene.clone()],
+        expected_version: Some(expected_version),
     };
     let req_player_put = Request::builder()
         .method("PUT")
         .uri(format!("/api/v1/campaigns/{campaign_id}/maps"))
         .header("cookie", &player_cookie)
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+        .body(Body::from(serde_json::to_vec(&put_payload(0)).unwrap()))
         .unwrap();
     let res_player_put = app.clone().oneshot(req_player_put).await.unwrap();
     assert_eq!(res_player_put.status(), StatusCode::FORBIDDEN);
@@ -174,10 +175,10 @@ async fn test_campaign_maps_rbac_and_sanitization() {
         .uri(format!("/api/v1/campaigns/{campaign_id}/maps"))
         .header("cookie", &gm_cookie)
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+        .body(Body::from(serde_json::to_vec(&put_payload(0)).unwrap()))
         .unwrap();
     let res_gm_put = app.clone().oneshot(req_gm_put).await.unwrap();
-    assert_eq!(res_gm_put.status(), StatusCode::NO_CONTENT);
+    assert_eq!(res_gm_put.status(), StatusCode::OK);
 
     // 5. GM GET returns unredacted scene
     let req_gm_get = Request::builder()
@@ -190,22 +191,31 @@ async fn test_campaign_maps_rbac_and_sanitization() {
     let gm_body = axum::body::to_bytes(res_gm_get.into_body(), 1024 * 1024)
         .await
         .unwrap();
-    let gm_scenes: Vec<trame_server::maps::CampaignMapScene> =
+    let gm_set: trame_server::maps::CampaignMapsResponse =
         serde_json::from_slice(&gm_body).unwrap();
+    assert_eq!(gm_set.version, 1);
+    let gm_scenes = gm_set.scenes;
     assert_eq!(gm_scenes.len(), 1);
     assert_eq!(
         gm_scenes[0].wall_segments[0].kind,
         WallKind::SecretDoor { is_open: false }
     );
     let raw_gm: serde_json::Value = serde_json::from_slice(&gm_body).unwrap();
-    assert_eq!(raw_gm[0]["wall_segments"][0]["wall_type"], "SecretDoor");
-    assert_eq!(raw_gm[0]["wall_segments"][0]["door_state"], "Closed");
-    assert!(raw_gm[0]["wall_segments"][0]["p1"].is_object());
+    assert_eq!(
+        raw_gm["scenes"][0]["wall_segments"][0]["wall_type"],
+        "SecretDoor"
+    );
+    assert_eq!(
+        raw_gm["scenes"][0]["wall_segments"][0]["door_state"],
+        "Closed"
+    );
+    assert!(raw_gm["scenes"][0]["wall_segments"][0]["p1"].is_object());
     assert_eq!(gm_scenes[0].staged_tokens.len(), 1);
     assert_eq!(gm_scenes[0].spatial_audio_emitters.len(), 1);
 
     // 5b. Verify camelCase JSON payload deserialization and OneWay WallType persistence
     let camelcase_payload = serde_json::json!({
+        "expected_version": 1,
         "scenes": [{
             "id": Uuid::new_v4(),
             "campaignId": campaign_id,
@@ -263,7 +273,7 @@ async fn test_campaign_maps_rbac_and_sanitization() {
         .body(Body::from(serde_json::to_vec(&camelcase_payload).unwrap()))
         .unwrap();
     let res_camel_put = app.clone().oneshot(req_camel_put).await.unwrap();
-    assert_eq!(res_camel_put.status(), StatusCode::NO_CONTENT);
+    assert_eq!(res_camel_put.status(), StatusCode::OK);
 
     // Restore original test scene for subsequent assertions
     let req_restore_put = Request::builder()
@@ -271,10 +281,10 @@ async fn test_campaign_maps_rbac_and_sanitization() {
         .uri(format!("/api/v1/campaigns/{campaign_id}/maps"))
         .header("cookie", &gm_cookie)
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+        .body(Body::from(serde_json::to_vec(&put_payload(2)).unwrap()))
         .unwrap();
     let res_restore_put = app.clone().oneshot(req_restore_put).await.unwrap();
-    assert_eq!(res_restore_put.status(), StatusCode::NO_CONTENT);
+    assert_eq!(res_restore_put.status(), StatusCode::OK);
 
     // 6. Player GET returns sanitized scene
     let req_player_get = Request::builder()
@@ -287,8 +297,10 @@ async fn test_campaign_maps_rbac_and_sanitization() {
     let player_body = axum::body::to_bytes(res_player_get.into_body(), 1024 * 1024)
         .await
         .unwrap();
-    let player_scenes: Vec<trame_server::maps::CampaignMapScene> =
+    let player_set: trame_server::maps::CampaignMapsResponse =
         serde_json::from_slice(&player_body).unwrap();
+    assert_eq!(player_set.version, 3);
+    let player_scenes = player_set.scenes;
     assert_eq!(player_scenes.len(), 1);
     assert_eq!(player_scenes[0].wall_segments[0].kind, WallKind::Normal);
     assert!(player_scenes[0].wall_segments[0].blocks_vision);

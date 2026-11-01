@@ -54,7 +54,10 @@ use crate::importers::uvtt::{
     ImportedMapResult, MAX_PAYLOAD_SIZE_BYTES, UvttImportError, import_uvtt_map,
     transcode_upload_to_webp,
 };
-use crate::maps::{CampaignMapScene, LightSource, load_campaign_scenes, save_campaign_scenes};
+use crate::maps::{
+    CampaignMapScene, LightSource, SceneSaveError, load_campaign_scene_set, save_campaign_scenes,
+    scene_save_error,
+};
 use crate::notes::{
     DirectiveAstNode, FilteredNoteDocument, InMemoryPartyJournalStorage, PartyJournalStorage,
     RevealHandoutCommand, UserRole, merge_party_note_ast, parse_markdown_ast, reveal_handout,
@@ -1397,7 +1400,7 @@ pub fn scene_from_import(
 }
 
 /// `POST /api/v1/campaigns/{id}/maps/import?name=` (raw `.uvtt` / `.dd2vtt` JSON, GM only)
-/// -> `201 { scene }`. Reuses the UVTT importer (64 MiB cap, magic bytes, pre-decode
+/// -> `201 { scene, version }` (the bumped scene-set version). Reuses the UVTT importer (64 MiB cap, magic bytes, pre-decode
 /// dimension guard) and appends the scene to the campaign.
 pub async fn import_map_handler(
     State(state): State<AppState>,
@@ -1437,16 +1440,34 @@ pub async fn import_map_handler(
         .filter(|n| !n.is_empty())
         .unwrap_or("Imported map");
     let scene = scene_from_import(campaign_id, name, &map);
-    let mut scenes = match load_campaign_scenes(&state, campaign_id).await {
-        Ok(s) => s,
-        Err(err) => return storage_error(err),
-    };
-    scenes.push(scene.clone());
-    if let Err(err) = save_campaign_scenes(&state, campaign_id, scenes).await {
-        return storage_error(err);
+    // An append never conflicts semantically, so a concurrent scene save only forces a
+    // re-read; the bounded retry keeps a pathological save storm from looping forever.
+    let mut attempt = 0;
+    loop {
+        let (mut scenes, expected_version) =
+            match load_campaign_scene_set(&state, campaign_id).await {
+                Ok(set) => set,
+                Err(err) => return storage_error(err),
+            };
+        scenes.push(scene.clone());
+        match save_campaign_scenes(&state, campaign_id, scenes, expected_version).await {
+            Ok(version) => {
+                return (
+                    StatusCode::CREATED,
+                    Json(json!({ "scene": scene, "version": version })),
+                )
+                    .into_response();
+            }
+            Err(SceneSaveError::VersionConflict { .. }) if attempt < MAP_IMPORT_SAVE_RETRIES => {
+                attempt += 1;
+            }
+            Err(err) => return scene_save_error(err, expected_version),
+        }
     }
-    (StatusCode::CREATED, Json(json!({ "scene": scene }))).into_response()
 }
+
+/// Extra load-append-save rounds `import_map_handler` attempts after a version conflict.
+const MAP_IMPORT_SAVE_RETRIES: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // Room sinks and router
