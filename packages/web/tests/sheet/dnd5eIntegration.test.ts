@@ -10,7 +10,6 @@ import {
   WidgetRegistry,
   type RenderedLayoutNode,
   type SheetLayoutNode,
-  type SheetLayoutTree,
   type WidgetLayoutNode,
 } from "../../src/sheet/index.ts";
 

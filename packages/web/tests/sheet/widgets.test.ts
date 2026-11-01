@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { DeclarativeSheetRenderer } from "../../src/sheet/DeclarativeSheetRenderer.ts";
-import { WidgetRegistry } from "../../src/sheet/WidgetRegistry.ts";
 import {
   StatBlock6,
   ResourceBar,
@@ -17,7 +15,6 @@ import {
   NotesMarkdownPane,
   sanitizeHtml,
 } from "../../src/sheet/widgets/index.ts";
-import type { SheetLayoutTree } from "../../src/sheet/types.ts";
 
 describe("Twelve Canonical Atomic Sheet Widgets & Command Dispatching", () => {
   it("WHEN a user clicks an ability card in StatBlock6, StatBlock6 dispatches a TrameCommand.RollDice command with formula 1d20 + modifier", () => {

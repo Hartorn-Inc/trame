@@ -1,6 +1,6 @@
 import { signal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
-import { t } from "../i18n/index.ts";
+import { t, tn } from "../i18n/index.ts";
 import { type PartyJournalEntry } from "../mobile/companionMode.ts";
 import { parseWikiMarkdown } from "../notes/wikiParser.ts";
 
@@ -446,7 +446,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                   <span aria-hidden="true">📁</span> {folderName}
                 </span>
                 <span class="atlas-tabular-nums" style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
-                  {folderNotes.length} {folderNotes.length === 1 ? t("docs.notes.count.singular") : t("docs.notes.count.plural")}
+                  {tn("docs.notes.count", folderNotes.length)}
                 </span>
               </div>
               <div
@@ -525,11 +525,11 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
         >
           <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
             <label htmlFor="note-title-input" style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: "1 1 200px" }}>
-              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>Note Title</span>
+              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>{t("docs.notes.titleLabel")}</span>
               <input
                 id="note-title-input"
                 data-testid="note-title-input"
-                aria-label="Note Title"
+                aria-label={t("docs.notes.titleLabel")}
                 class="ds-input"
                 value={selectedNote.title}
                 onInput={(e) => {
@@ -543,11 +543,11 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
             </label>
 
             <label htmlFor="note-folder-input" style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: "1 1 140px" }}>
-              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>Folder</span>
+              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>{t("docs.notes.folderLabel")}</span>
               <input
                 id="note-folder-input"
                 data-testid="note-folder-input"
-                aria-label="Note Folder"
+                aria-label={t("docs.notes.folderAria")}
                 class="ds-input"
                 value={selectedNote.folder}
                 onInput={(e) => {
@@ -560,11 +560,11 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
             </label>
 
             <label htmlFor="note-scope-select" style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: "0 0 160px" }}>
-              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>Scope</span>
+              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>{t("docs.notes.scopeLabel")}</span>
               <select
                 id="note-scope-select"
                 data-testid="note-scope-select"
-                aria-label="Note Scope"
+                aria-label={t("docs.notes.scopeAria")}
                 class="ds-input"
                 value={selectedNote.visibility}
                 onChange={(e) => {

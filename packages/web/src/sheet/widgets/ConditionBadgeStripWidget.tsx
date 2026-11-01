@@ -1,4 +1,5 @@
 import { h, type VNode } from 'preact';
+import { t } from '../../i18n/index.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
@@ -29,7 +30,7 @@ export function ConditionBadgeStripWidget(props: WidgetProps): VNode<any> {
     'div',
     { class: 'ds-condition-strip', 'data-testid': 'condition-badge-strip-widget' },
     conditions.length === 0
-      ? h('span', { class: 'ds-no-conditions' }, 'No active conditions')
+      ? h('span', { class: 'ds-no-conditions' }, t('sheet.conditions.none'))
       : conditions.map((cond) =>
           h(
             'span',
@@ -41,10 +42,10 @@ export function ConditionBadgeStripWidget(props: WidgetProps): VNode<any> {
                 type: 'button',
                 class: 'ds-btn-remove-cond',
                 'data-testid': `btn-remove-condition-${cond.id}`,
-                'aria-label': `Remove condition ${cond.name}`,
+                'aria-label': t('sheet.conditions.removeAria', { name: cond.name }),
                 onClick: () => handleRemove(cond.id),
               },
-              'Remove',
+              t('sheet.conditions.remove'),
             ),
           ),
         ),

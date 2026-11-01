@@ -9,7 +9,6 @@ import {
 import {
   type ActionEconomyType,
   CombatTrackerManager,
-  type CombatTokenState,
   type TableMode,
 } from "../hud/combatTracker.ts";
 import {

@@ -10,7 +10,6 @@ import {
   resolvedThemeSignal,
   setThemeMode,
   syncThemeWithDom,
-  systemPrefersDarkSignal,
   THEME_STORAGE_KEY,
   themeModeSignal,
   updateSystemThemePreference,

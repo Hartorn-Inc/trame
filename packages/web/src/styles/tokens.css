@@ -73,10 +73,16 @@
   --atlas-danger: #E0827D;
   --atlas-grid: rgba(184, 199, 209, 0.16);
   --atlas-shadow: rgba(5, 10, 16, 0.42);
+  /* Passive selected/hover tint of --atlas-action; never a text or border color */
+  --atlas-accent-primary-subtle: rgba(243, 187, 113, 0.14);
 
   /* Typography Families & Scale */
   --atlas-font-display: "Space Grotesk", system-ui, -apple-system, sans-serif;
   --atlas-font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --atlas-text-xs: 0.75rem;
+  --atlas-text-sm: 0.875rem;
+  --atlas-text-base: 1rem;
+  --atlas-text-lg: 1.125rem;
 
   /* Utilitarian Border Radii */
   --atlas-radius-sm: 4px;
@@ -114,6 +120,7 @@
   --atlas-danger: #A3333B;
   --atlas-grid: rgba(28, 48, 65, 0.14);
   --atlas-shadow: rgba(15, 26, 37, 0.12);
+  --atlas-accent-primary-subtle: rgba(153, 88, 23, 0.1);
 }
 
 @media (prefers-color-scheme: light) {
@@ -132,6 +139,7 @@
     --atlas-danger: #A3333B;
     --atlas-grid: rgba(28, 48, 65, 0.14);
     --atlas-shadow: rgba(15, 26, 37, 0.12);
+    --atlas-accent-primary-subtle: rgba(153, 88, 23, 0.1);
   }
 }
 

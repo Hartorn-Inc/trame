@@ -1,5 +1,7 @@
 import { h, type VNode } from "preact";
-import { useState, useId, useRef, useEffect } from "preact/hooks";
+import { useState, useId, useRef } from "preact/hooks";
+import { localizedName, t, tn, type MessageKey } from "../../i18n/index.ts";
+import { useModalFocusTrap } from "../a11y/useModalFocusTrap.ts";
 import {
   applyLevelUp,
   calculateProficiencyBonus,
@@ -39,13 +41,13 @@ export interface LevelUpModalProps {
   onToggleCoreStatsLocked?: (locked: boolean) => void;
 }
 
-const ABILITY_LABELS: Record<AbilityId, string> = {
-  str: "Force (STR)",
-  dex: "Dextérité (DEX)",
-  con: "Constitution (CON)",
-  int: "Intelligence (INT)",
-  wis: "Sagesse (WIS)",
-  cha: "Charisme (CHA)",
+const ABILITY_LABEL_KEYS: Record<AbilityId, MessageKey> = {
+  str: "ability.str.label",
+  dex: "ability.dex.label",
+  con: "ability.con.label",
+  int: "ability.int.label",
+  wis: "ability.wis.label",
+  cha: "ability.cha.label",
 };
 
 const ABILITY_KEYS: AbilityId[] = ["str", "dex", "con", "int", "wis", "cha"];
@@ -90,54 +92,25 @@ function getNewSpellsAllowance(cleanClass: string, targetLevel: number): number 
 
 function formatSlotLabel(slotKey: string): string {
   if (slotKey.toLowerCase().startsWith("level")) {
-    return `LVL ${slotKey.slice(5)}`;
+    return t("levelUp.spells.slotLevel", { level: slotKey.slice(5) });
   }
   return slotKey.toUpperCase();
 }
 
-function getFocusableElements(container: HTMLElement | null): HTMLElement[] {
-  if (!container) return [];
-  const focusables: HTMLElement[] = [];
-  const tags = ["BUTTON", "INPUT", "SELECT", "TEXTAREA", "A"];
-  const walk = (node: any) => {
-    if (!node) return;
-    if (node.nodeType === 1) {
-      const tag = (node.nodeName || "").toUpperCase();
-      const hasTabIndex = typeof node.hasAttribute === "function" && node.hasAttribute("tabindex");
-      const tabIndexVal = hasTabIndex ? node.getAttribute("tabindex") : null;
-      const isInteractive = tags.includes(tag) || (hasTabIndex && tabIndexVal !== "-1");
-      const isDisabled = Boolean(node.disabled || (typeof node.getAttribute === "function" && node.getAttribute("disabled") === "true"));
-      if (isInteractive && !isDisabled) {
-        focusables.push(node);
-      }
-    }
-    if (node.childNodes) {
-      for (let i = 0; i < node.childNodes.length; i++) {
-        walk(node.childNodes[i]);
-      }
-    }
-  };
-  walk(container);
-  return focusables;
+function formatModifier(mod: number): string {
+  return mod >= 0 ? `+${mod}` : `${mod}`;
 }
 
 export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
-  if (!props.isOpen) return null;
+  return props.isOpen ? h(LevelUpDialog, props) : null;
+}
 
+function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
   const { actor, onClose, onSave, diceRollService } = props;
   const titleId = useId();
   const descId = useId();
   const dialogRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!props.isOpen) return;
-    const focusables = getFocusableElements(dialogRef.current);
-    if (focusables.length > 0) {
-      focusables[0].focus();
-    } else if (dialogRef.current) {
-      dialogRef.current.focus();
-    }
-  }, [props.isOpen]);
+  const trapFocus = useModalFocusTrap(dialogRef);
 
   const currentLevel = actor.attributes.level;
   const targetLevel = currentLevel + 1;
@@ -206,21 +179,21 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
         const currentScore = actor.abilities[asiSingleAbility]?.score ?? 10;
         if (currentScore + 2 > 20) {
           isStep3Valid = false;
-          asiErrorMessage = `La caractéristique ${asiSingleAbility.toUpperCase()} dépasse le maximum de 20 (+2 donne ${currentScore + 2}).`;
+          asiErrorMessage = t("levelUp.asi.exceedsTwo", { ability: asiSingleAbility.toUpperCase(), score: currentScore + 2 });
         }
       } else {
         if (asiFirstAbility === asiSecondAbility) {
           isStep3Valid = false;
-          asiErrorMessage = "Veuillez choisir deux caractéristiques distinctes pour le bonus +1/+1.";
+          asiErrorMessage = t("levelUp.asi.distinct");
         } else {
           const firstScore = actor.abilities[asiFirstAbility]?.score ?? 10;
           const secondScore = actor.abilities[asiSecondAbility]?.score ?? 10;
           if (firstScore + 1 > 20) {
             isStep3Valid = false;
-            asiErrorMessage = `La caractéristique ${asiFirstAbility.toUpperCase()} dépasse le maximum de 20 (+1 donne ${firstScore + 1}).`;
+            asiErrorMessage = t("levelUp.asi.exceedsOne", { ability: asiFirstAbility.toUpperCase(), score: firstScore + 1 });
           } else if (secondScore + 1 > 20) {
             isStep3Valid = false;
-            asiErrorMessage = `La caractéristique ${asiSecondAbility.toUpperCase()} dépasse le maximum de 20 (+1 donne ${secondScore + 1}).`;
+            asiErrorMessage = t("levelUp.asi.exceedsOne", { ability: asiSecondAbility.toUpperCase(), score: secondScore + 1 });
           }
         }
       }
@@ -238,12 +211,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
     } else if (isWizard) {
       if (selectedSpellIds.length !== requiredWizardCount) {
         isStep4Valid = false;
-        spellErrorMessage = `Le Magicien doit sélectionner exactement ${requiredWizardCount} nouveau(x) sort(s) pour son grimoire (actuellement : ${selectedSpellIds.length}/${requiredWizardCount}).`;
+        spellErrorMessage = t("levelUp.spells.wizardError", { required: requiredWizardCount, selected: selectedSpellIds.length });
       }
     } else if (isKnownCaster) {
       if (selectedSpellIds.length > knownAllowance) {
         isStep4Valid = false;
-        spellErrorMessage = `Votre classe n'autorise que ${knownAllowance} nouveau(x) sort(s) au niveau ${targetLevel} (actuellement : ${selectedSpellIds.length}).`;
+        spellErrorMessage = t("levelUp.spells.knownError", { limit: knownAllowance, level: targetLevel, selected: selectedSpellIds.length });
       }
     }
   }
@@ -258,7 +231,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
   // Handle Server Dice Roll
   const handleRollDice = async () => {
     if (!diceRollService) {
-      setRollError("Service de dés serveur indisponible");
+      setRollError(t("dice.serviceUnavailable"));
       return;
     }
     try {
@@ -271,7 +244,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
       const rolled = result.rolls && result.rolls.length > 0 ? result.rolls[0] : result.total;
       setRolledValue(rolled);
     } catch (err: any) {
-      setRollError(err.message || "Erreur lors du tirage de dés");
+      setRollError(err.message || t("dice.rollFailed"));
       setRolledValue(null);
     } finally {
       setRollLoading(false);
@@ -325,7 +298,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
       await onSave(updatedActor);
       onClose();
     } catch (err: any) {
-      setSaveError(err.message || "Erreur lors de l'application de la montée de niveau");
+      setSaveError(err.message || t("levelUp.saveFailed"));
     } finally {
       setIsSubmitting(false);
     }
@@ -334,35 +307,11 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
   // Keyboard handlers: Escape closes modal, Tab is trapped inside
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
-      if (typeof e.stopPropagation === "function") {
-        e.stopPropagation();
-      }
+      e.stopPropagation();
       onClose();
       return;
     }
-    if (e.key === "Tab") {
-      const focusables = getFocusableElements(dialogRef.current);
-      if (focusables.length === 0) {
-        if (typeof e.preventDefault === "function") e.preventDefault();
-        return;
-      }
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const doc = typeof document !== "undefined" ? document : null;
-      const active = (doc && (doc as any).activeElement ? (doc as any).activeElement : e.target) as HTMLElement | null;
-
-      if (e.shiftKey) {
-        if (!active || active === first || (dialogRef.current && !dialogRef.current.contains(active))) {
-          if (typeof e.preventDefault === "function") e.preventDefault();
-          last.focus();
-        }
-      } else {
-        if (!active || active === last || (dialogRef.current && !dialogRef.current.contains(active))) {
-          if (typeof e.preventDefault === "function") e.preventDefault();
-          first.focus();
-        }
-      }
-    }
+    trapFocus(e);
   };
 
   const toggleSpellSelection = (spellId: string) => {
@@ -412,12 +361,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           h(
             "h2",
             { id: titleId, class: "text-xl font-bold tracking-tight text-[var(--atlas-action)]" },
-            `Montée de niveau : Niveau ${currentLevel} → ${targetLevel}`
+            t("levelUp.title", { from: currentLevel, to: targetLevel })
           ),
           h(
             "p",
             { id: descId, class: "text-xs text-[var(--atlas-text-muted)] mt-0.5" },
-            `Classe : ${classId || "Aventurier"} | Bonus de Maîtrise projeté : +${calculateProficiencyBonus(targetLevel)}`
+            t("levelUp.subtitle", { className: classId || t("levelUp.unknownClass"), bonus: calculateProficiencyBonus(targetLevel) })
           )
         ),
         h(
@@ -426,7 +375,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
             type: "button",
             class: "inline-flex items-center justify-center min-w-[40px] min-h-[40px] p-2 text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)] text-lg rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
             onClick: onClose,
-            "aria-label": "Fermer la fenêtre de montée de niveau",
+            "aria-label": t("levelUp.close"),
           },
           "✕"
         )
@@ -436,14 +385,14 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
       h(
         "nav",
         {
-          "aria-label": "Étapes de progression",
+          "aria-label": t("levelUp.steps.label"),
           class: "grid grid-cols-4 border-b border-[var(--atlas-border)] bg-[var(--atlas-surface)] text-xs font-semibold text-center",
         },
         [
-          { step: 1, label: "1. Archétype" },
-          { step: 2, label: "2. Points de Vie" },
-          { step: 3, label: isAsi ? "3. Carac. / Don" : "3. Aptitudes" },
-          { step: 4, label: isSpellcaster ? "4. Sorts" : "4. Récapitulatif" },
+          { step: 1, label: t("levelUp.step.archetype") },
+          { step: 2, label: t("levelUp.step.hitPoints") },
+          { step: 3, label: isAsi ? t("levelUp.step.asiOrFeat") : t("levelUp.step.features") },
+          { step: 4, label: isSpellcaster ? t("levelUp.step.spells") : t("levelUp.step.summary") },
         ].map((item) => {
           const isCurrent = currentStep === item.step;
           const isCompleted = currentStep > item.step;
@@ -474,20 +423,20 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           h(
             "div",
             { class: "space-y-4" },
-            h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, "Étape 1 : Confirmation de classe & Choix d'archétype"),
+            h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, t("levelUp.step1.heading")),
             h(
               "div",
               { class: "bg-[var(--atlas-surface-raised)] p-4 rounded-lg border border-[var(--atlas-border)] flex items-center justify-between" },
               h(
                 "div",
                 null,
-                h("span", { class: "text-[var(--atlas-text-muted)] block text-xs uppercase" }, "Classe active"),
-                h("strong", { class: "text-base text-[var(--atlas-text)]" }, classId || "Inconnue")
+                h("span", { class: "text-[var(--atlas-text-muted)] block text-xs uppercase" }, t("levelUp.activeClass")),
+                h("strong", { class: "text-base text-[var(--atlas-text)]" }, classId || t("levelUp.unknown"))
               ),
               h(
                 "div",
                 { class: "text-right" },
-                h("span", { class: "text-[var(--atlas-text-muted)] block text-xs uppercase" }, "Niveau cible"),
+                h("span", { class: "text-[var(--atlas-text-muted)] block text-xs uppercase" }, t("levelUp.targetLevel")),
                 h("span", { class: "text-lg font-bold text-[var(--atlas-action)]" }, targetLevel)
               )
             ),
@@ -498,7 +447,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                   h(
                     "label",
                     { for: "subclass-select", class: "block font-medium text-[var(--atlas-text)] text-sm" },
-                    "Sélectionnez votre archétype / sous-classe (Requis) :"
+                    t("levelUp.subclass.label")
                   ),
                   h(
                     "select",
@@ -508,24 +457,24 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                       value: subclassId,
                       onChange: (e: any) => setSubclassId(e.target.value),
                     },
-                    h("option", { value: "" }, "-- Choisir un archétype --"),
+                    h("option", { value: "" }, t("levelUp.subclass.placeholder")),
                     availableSubclasses.map((sc) =>
-                      h("option", { key: sc.id, value: sc.id }, sc.i18n?.fr?.name || sc.name)
+                      h("option", { key: sc.id, value: sc.id }, localizedName(sc))
                     )
                   ),
                   !subclassId &&
                     h(
                       "p",
                       { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" },
-                      "Le choix d'un archétype est obligatoire pour ce niveau."
+                      t("levelUp.subclass.required")
                     )
                 )
               : h(
                   "div",
                   { class: "p-4 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-[var(--atlas-text-muted)] text-xs" },
                   subclassId
-                    ? `Archétype actuel déjà enregistré : ${subclassId}`
-                    : "Aucune sélection d'archétype requise pour ce niveau de classe."
+                    ? t("levelUp.subclass.current", { subclass: subclassId })
+                    : t("levelUp.subclass.notNeeded")
                 )
           ),
 
@@ -534,11 +483,11 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           h(
             "div",
             { class: "space-y-4" },
-            h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, "Étape 2 : Augmentation des Points de Vie"),
+            h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, t("levelUp.step2.heading")),
             h(
               "p",
               { class: "text-xs text-[var(--atlas-text-muted)]" },
-              `Dé de vie de classe : 1d${hitDieSize} | Modificateur de Constitution : ${conModifier >= 0 ? `+${conModifier}` : conModifier}`
+              t("levelUp.hp.dieInfo", { die: hitDieSize, mod: formatModifier(conModifier) })
             ),
             h(
               "div",
@@ -563,13 +512,13 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     onChange: () => setHpMode("fixed"),
                     class: "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                   }),
-                  h("span", { class: "font-semibold" }, "Moyenne fixe")
+                  h("span", { class: "font-semibold" }, t("levelUp.hp.fixed"))
                 ),
                 h(
                   "div",
                   { class: "mt-2 text-xs text-[var(--atlas-text-muted)]" },
                   `floor(${hitDieSize}/2) + 1 + (${conModifier}) = `,
-                  h("strong", { class: "text-base text-[var(--atlas-action)]" }, `+${fixedHpGain} PV`)
+                  h("strong", { class: "text-base text-[var(--atlas-action)]" }, t("hp.gain", { value: fixedHpGain }))
                 )
               ),
               h(
@@ -592,12 +541,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     onChange: () => setHpMode("rolled"),
                     class: "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                   }),
-                  h("span", { class: "font-semibold" }, "Tirer le dé de vie")
+                  h("span", { class: "font-semibold" }, t("levelUp.hp.rolled"))
                 ),
                 h(
                   "div",
                   { class: "mt-2 text-xs text-[var(--atlas-text-muted)]" },
-                  `Lancé serveur faisant foi (1d${hitDieSize} + ${conModifier})`
+                  t("levelUp.hp.rolledHint", { die: hitDieSize, mod: formatModifier(conModifier) })
                 )
               )
             ),
@@ -616,17 +565,17 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                       onClick: handleRollDice,
                       disabled: rollLoading,
                     },
-                    rollLoading ? "Tirage en cours..." : `Lancer 1d${hitDieSize} sur le serveur`
+                    rollLoading ? t("dice.rolling") : t("levelUp.hp.rollButton", { die: hitDieSize })
                   ),
                   rolledValue !== null &&
                     h(
                       "div",
                       { class: "text-right" },
-                      h("span", { class: "text-xs text-[var(--atlas-text-muted)] block" }, `Résultat du dé : ${rolledValue}`),
+                      h("span", { class: "text-xs text-[var(--atlas-text-muted)] block" }, t("levelUp.hp.dieResult", { value: rolledValue })),
                       h(
                         "span",
                         { class: "text-lg font-bold text-[var(--atlas-action)]" },
-                        `+${Math.max(1, rolledValue + conModifier)} PV`
+                        t("hp.gain", { value: Math.max(1, rolledValue + conModifier) })
                       )
                     )
                 ),
@@ -636,13 +585,13 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                   h(
                     "p",
                     { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" },
-                    "Un tirage validé par le serveur est obligatoire pour continuer en mode dé de vie."
+                    t("levelUp.hp.rollRequired")
                   )
               ),
             h(
               "div",
               { class: "text-xs text-[var(--atlas-text-muted)] bg-[var(--atlas-surface-raised)] p-2.5 rounded border border-[var(--atlas-border)]" },
-              `PV Max actuels : ${actor.attributes.hp.max} → Projetés : `,
+              t("levelUp.hp.projected", { current: actor.attributes.hp.max }),
               h("strong", { class: "text-[var(--atlas-text)]" }, actor.attributes.hp.max + currentHpGain)
             )
           ),
@@ -653,12 +602,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
             ? h(
                 "div",
                 { class: "space-y-4" },
-                h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, "Étape 3 : Amélioration de Caractéristiques ou Don"),
+                h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, t("levelUp.step3.heading")),
                 h(
                   "div",
                   {
                     role: "tablist",
-                    "aria-label": "Mode de progression",
+                    "aria-label": t("levelUp.asi.modeLabel"),
                     class: "flex space-x-4 border-b border-[var(--atlas-border)] pb-2 text-sm",
                   },
                   h(
@@ -675,7 +624,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                       onClick: () => setAsiOrFeatMode("asi"),
                     },
                     h("span", { "aria-hidden": "true" }, asiOrFeatMode === "asi" ? "●" : "○"),
-                    "Amélioration de Caractéristiques (ASI)"
+                    t("levelUp.asi.tab")
                   ),
                   h(
                     "button",
@@ -691,7 +640,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                       onClick: () => setAsiOrFeatMode("feat"),
                     },
                     h("span", { "aria-hidden": "true" }, asiOrFeatMode === "feat" ? "●" : "○"),
-                    "Choisir un Don"
+                    t("levelUp.feat.tab")
                   )
                 ),
                 h(
@@ -719,7 +668,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                               onChange: () => setAsiSubMode("plusTwo"),
                               class: "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             }),
-                            h("span", null, "+2 à une caractéristique")
+                            h("span", null, t("levelUp.asi.plusTwo"))
                           ),
                           h(
                             "label",
@@ -732,19 +681,19 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                               onChange: () => setAsiSubMode("plusOneOne"),
                               class: "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             }),
-                            h("span", null, "+1 à deux caractéristiques")
+                            h("span", null, t("levelUp.asi.plusOneOne"))
                           )
                         ),
                         asiSubMode === "plusTwo"
                           ? h(
                               "div",
                               { class: "space-y-1" },
-                              h("label", { for: "asi-single-ability", class: "block text-xs text-[var(--atlas-text-muted)]" }, "Caractéristique (+2, max 20) :"),
+                              h("label", { for: "asi-single-ability", class: "block text-xs text-[var(--atlas-text-muted)]" }, t("levelUp.asi.singleLabel")),
                               h(
                                 "select",
                                 {
                                   id: "asi-single-ability",
-                                  "aria-label": "Caractéristique à augmenter de +2",
+                                  "aria-label": t("levelUp.asi.singleAria"),
                                   class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded p-2 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                                   value: asiSingleAbility,
                                   onChange: (e: any) => setAsiSingleAbility(e.target.value as AbilityId),
@@ -753,7 +702,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                                   h(
                                     "option",
                                     { key: k, value: k },
-                                    `${ABILITY_LABELS[k]} (Actuel : ${actor.abilities[k].score})`
+                                    t("levelUp.asi.option", { ability: t(ABILITY_LABEL_KEYS[k]), score: actor.abilities[k].score })
                                   )
                                 )
                               )
@@ -764,12 +713,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                               h(
                                 "div",
                                 { class: "space-y-1" },
-                                h("label", { for: "asi-first-ability", class: "block text-xs text-[var(--atlas-text-muted)]" }, "Première caractéristique (+1) :"),
+                                h("label", { for: "asi-first-ability", class: "block text-xs text-[var(--atlas-text-muted)]" }, t("levelUp.asi.firstLabel")),
                                 h(
                                   "select",
                                   {
                                     id: "asi-first-ability",
-                                    "aria-label": "Première caractéristique à augmenter de +1",
+                                    "aria-label": t("levelUp.asi.firstAria"),
                                     class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded p-2 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                                     value: asiFirstAbility,
                                     onChange: (e: any) => setAsiFirstAbility(e.target.value as AbilityId),
@@ -778,7 +727,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                                     h(
                                       "option",
                                       { key: k, value: k },
-                                      `${ABILITY_LABELS[k]} (Actuel : ${actor.abilities[k].score})`
+                                      t("levelUp.asi.option", { ability: t(ABILITY_LABEL_KEYS[k]), score: actor.abilities[k].score })
                                     )
                                   )
                                 )
@@ -786,12 +735,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                               h(
                                 "div",
                                 { class: "space-y-1" },
-                                h("label", { for: "asi-second-ability", class: "block text-xs text-[var(--atlas-text-muted)]" }, "Deuxième caractéristique (+1) :"),
+                                h("label", { for: "asi-second-ability", class: "block text-xs text-[var(--atlas-text-muted)]" }, t("levelUp.asi.secondLabel")),
                                 h(
                                   "select",
                                   {
                                     id: "asi-second-ability",
-                                    "aria-label": "Deuxième caractéristique à augmenter de +1",
+                                    "aria-label": t("levelUp.asi.secondAria"),
                                     class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded p-2 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                                     value: asiSecondAbility,
                                     onChange: (e: any) => setAsiSecondAbility(e.target.value as AbilityId),
@@ -800,7 +749,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                                     h(
                                       "option",
                                       { key: k, value: k },
-                                      `${ABILITY_LABELS[k]} (Actuel : ${actor.abilities[k].score})`
+                                      t("levelUp.asi.option", { ability: t(ABILITY_LABEL_KEYS[k]), score: actor.abilities[k].score })
                                     )
                                   )
                                 )
@@ -812,31 +761,31 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     : h(
                         "div",
                         { class: "space-y-2 pt-2" },
-                        h("label", { for: "asi-feat-select", class: "block text-xs text-[var(--atlas-text-muted)]" }, "Sélectionner un Don du compendium :"),
+                        h("label", { for: "asi-feat-select", class: "block text-xs text-[var(--atlas-text-muted)]" }, t("levelUp.feat.label")),
                         h(
                           "select",
                           {
                             id: "asi-feat-select",
-                            "aria-label": "Sélectionner un Don du compendium",
+                            "aria-label": t("levelUp.feat.aria"),
                             class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded p-2 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             value: selectedFeatId,
                             onChange: (e: any) => setSelectedFeatId(e.target.value),
                           },
-                          h("option", { value: "" }, "-- Choisir un Don --"),
+                          h("option", { value: "" }, t("levelUp.feat.placeholder")),
                           availableFeats.map((feat) =>
-                            h("option", { key: feat.id, value: feat.id }, feat.i18n?.fr?.name || feat.name)
+                            h("option", { key: feat.id, value: feat.id }, localizedName(feat))
                           )
                         ),
                         !selectedFeatId &&
-                          h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, "Veuillez sélectionner un Don pour valider l'étape.")
+                          h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, t("levelUp.feat.required"))
                       )
                 )
               )
             : h(
                 "div",
                 { class: "p-4 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-[var(--atlas-text-muted)] text-xs space-y-2" },
-                h("p", null, `Le niveau ${targetLevel} n'est pas un palier d'ASI pour votre classe.`),
-                h("p", null, "Vos aptitudes de classe par défaut seront enregistrées automatiquement.")
+                h("p", null, t("levelUp.noAsi.level", { level: targetLevel })),
+                h("p", null, t("levelUp.noAsi.features"))
               )),
 
         // Step 4: Spells & Summary
@@ -844,12 +793,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           h(
             "div",
             { class: "space-y-4" },
-            h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, isSpellcaster ? "Étape 4 : Emplacements & Sorts appris" : "Étape 4 : Récapitulatif"),
+            h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, isSpellcaster ? t("levelUp.step4.spellsHeading") : t("levelUp.step4.summaryHeading")),
             isSpellcaster &&
               h(
                 "div",
                 { class: "space-y-3" },
-                h("h4", { class: "text-xs font-semibold text-[var(--atlas-text-muted)] uppercase tracking-wider" }, "Nouveaux emplacements de sorts"),
+                h("h4", { class: "text-xs font-semibold text-[var(--atlas-text-muted)] uppercase tracking-wider" }, t("levelUp.spells.newSlots")),
                 h(
                   "div",
                   { class: "grid grid-cols-5 gap-2 text-xs" },
@@ -858,7 +807,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                       "div",
                       { key: slotKey, class: "p-2 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-center" },
                       h("span", { class: "text-[var(--atlas-text-muted)] block" }, formatSlotLabel(slotKey)),
-                      h("strong", { class: "text-[var(--atlas-action)] text-sm" }, `${(slotData as any).max} slots`)
+                      h("strong", { class: "text-[var(--atlas-action)] text-sm" }, tn("levelUp.spells.slots", (slotData as any).max))
                     )
                   )
                 ),
@@ -866,18 +815,18 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                   h(
                     "div",
                     { class: "p-4 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-[var(--atlas-text)] text-xs space-y-1.5" },
-                    h("div", { class: "font-semibold text-[var(--atlas-action)]" }, "Préparation divine des sorts"),
+                    h("div", { class: "font-semibold text-[var(--atlas-action)]" }, t("levelUp.spells.divineTitle")),
                     h(
                       "p",
                       null,
-                      "En tant que lanceur divin, l'ensemble des sorts de votre liste de classe correspondant à vos cercles d'emplacements disponibles est débloqué pour votre préparation quotidienne lors d'un long repos."
+                      t("levelUp.spells.divineBody")
                     )
                   ),
                 !isDivineCaster && isKnownCaster && knownAllowance === 0 &&
                   h(
                     "div",
                     { class: "p-3 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-[var(--atlas-text-muted)] text-xs" },
-                    `Aucun nouveau sort supplémentaire accordé au niveau ${targetLevel} selon la progression de votre classe.`
+                    t("levelUp.spells.noneGranted", { level: targetLevel })
                   ),
                 !isDivineCaster && availableSpellsForLevel.length > 0 && (!isKnownCaster || knownAllowance > 0) &&
                   h(
@@ -887,10 +836,10 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                       "h4",
                       { class: "text-xs font-semibold text-[var(--atlas-text-muted)] uppercase tracking-wider" },
                       isWizard
-                        ? `Ajouter des sorts au grimoire (Requis : ${selectedSpellIds.length}/${requiredWizardCount})`
+                        ? t("levelUp.spells.wizardHeading", { selected: selectedSpellIds.length, required: requiredWizardCount })
                         : isKnownCaster
-                        ? `Ajouter de nouveaux sorts (Limite : ${selectedSpellIds.length}/${knownAllowance})`
-                        : `Ajouter de nouveaux sorts (Optionnel : ${selectedSpellIds.length})`
+                        ? t("levelUp.spells.knownHeading", { selected: selectedSpellIds.length, limit: knownAllowance })
+                        : t("levelUp.spells.optionalHeading", { selected: selectedSpellIds.length })
                     ),
                     h(
                       "div",
@@ -923,9 +872,9 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                               onChange: () => toggleSpellSelection(spell.id),
                               class: "rounded text-[var(--atlas-action)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             }),
-                            h("span", null, spell.i18n?.fr?.name || spell.name)
+                            h("span", null, localizedName(spell))
                           ),
-                          h("span", { class: "text-[var(--atlas-text-muted)] text-[10px]" }, `Niv. ${spell.data.level}`)
+                          h("span", { class: "text-[var(--atlas-text-muted)] text-[10px]" }, t("levelUp.spells.level", { level: String(spell.data.level) }))
                         );
                       })
                     ),
@@ -936,14 +885,14 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
             h(
               "div",
               { class: "p-3 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] space-y-1 text-xs text-[var(--atlas-text)]" },
-              h("div", { class: "font-semibold text-[var(--atlas-action)] mb-1" }, "Résumé de l'avancement :"),
-              h("div", null, `• Niveau : ${currentLevel} → ${targetLevel}`),
-              h("div", null, `• PV Max : ${actor.attributes.hp.max} → ${actor.attributes.hp.max + currentHpGain} (+${currentHpGain})`),
-              subclassId && needsSubclass && h("div", null, `• Sous-classe : ${subclassId}`),
-              isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusTwo" && h("div", null, `• ASI : +2 en ${asiSingleAbility.toUpperCase()}`),
-              isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusOneOne" && h("div", null, `• ASI : +1 en ${asiFirstAbility.toUpperCase()} & +1 en ${asiSecondAbility.toUpperCase()}`),
-              isAsi && asiOrFeatMode === "feat" && h("div", null, `• Don : ${selectedFeatId}`),
-              selectedSpellIds.length > 0 && h("div", null, `• Nouveaux sorts sélectionnés : ${selectedSpellIds.length}`)
+              h("div", { class: "font-semibold text-[var(--atlas-action)] mb-1" }, t("levelUp.summary.title")),
+              h("div", null, t("levelUp.summary.level", { from: currentLevel, to: targetLevel })),
+              h("div", null, t("levelUp.summary.hp", { from: actor.attributes.hp.max, to: actor.attributes.hp.max + currentHpGain, gain: currentHpGain })),
+              subclassId && needsSubclass && h("div", null, t("levelUp.summary.subclass", { subclass: subclassId })),
+              isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusTwo" && h("div", null, t("levelUp.summary.asiTwo", { ability: asiSingleAbility.toUpperCase() })),
+              isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusOneOne" && h("div", null, t("levelUp.summary.asiOneOne", { first: asiFirstAbility.toUpperCase(), second: asiSecondAbility.toUpperCase() })),
+              isAsi && asiOrFeatMode === "feat" && h("div", null, t("levelUp.summary.feat", { feat: selectedFeatId })),
+              selectedSpellIds.length > 0 && h("div", null, t("levelUp.summary.spells", { count: selectedSpellIds.length }))
             ),
             saveError && h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, saveError)
           )
@@ -961,7 +910,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
             onClick: () => setCurrentStep((s) => Math.max(1, s - 1)),
             disabled: currentStep === 1 || isSubmitting,
           },
-          "Précédent"
+          t("action.previous")
         ),
         h(
           "div",
@@ -974,7 +923,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
               onClick: onClose,
               disabled: isSubmitting,
             },
-            "Annuler"
+            t("action.cancel")
           ),
           currentStep < 4
             ? h(
@@ -985,7 +934,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                   onClick: () => setCurrentStep((s) => Math.min(4, s + 1)),
                   disabled: !canProceed() || isSubmitting,
                 },
-                "Suivant"
+                t("action.next")
               )
             : h(
                 "button",
@@ -995,7 +944,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                   onClick: handleConfirmLevelUp,
                   disabled: !canProceed() || isSubmitting,
                 },
-                isSubmitting ? "Application..." : "Confirmer et Appliquer"
+                isSubmitting ? t("action.applying") : t("levelUp.confirm")
               )
         )
       )

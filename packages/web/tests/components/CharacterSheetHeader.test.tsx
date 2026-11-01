@@ -3,17 +3,16 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import { h, render, options } from "preact";
 import { signal } from "@preact/signals";
 import { createDefaultActorData, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
+import { localeSignal } from "../../src/i18n/index.ts";
 import {
   CharacterSheetHeader,
   persistActorUpdate,
   handleUpdateActorDataEvent,
-  type CharacterSheetHeaderProps,
 } from "../../src/components/character-sheet/CharacterSheetHeader.tsx";
 import {
   HudDrawers,
   isSheetDrawerOpenSignal,
   activeHudActorSignal,
-  coreStatsLockedSignal,
 } from "../../src/components/hud/HudDrawers.tsx";
 import {
   HudDrawers as CanonicalHudDrawers,
@@ -310,6 +309,7 @@ function setupMockDom() {
 }
 
 setupMockDom();
+localeSignal.value = "en";
 
 async function renderToDom(vnode: any) {
   options.debounceRendering = (cb: () => void) => cb();
@@ -362,7 +362,7 @@ describe("CharacterSheetHeader & HudDrawers REST/CQRS Dual Persistence Suite (#8
     actor.classId = "fighter";
     actor.attributes.level = 3;
 
-    const { container, getElementByTestId, unmount } = await renderToDom(
+    const { getElementByTestId, unmount } = await renderToDom(
       h(CharacterSheetHeader, {
         actor,
         campaignId: "campaign-101",
@@ -409,7 +409,7 @@ describe("CharacterSheetHeader & HudDrawers REST/CQRS Dual Persistence Suite (#8
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }) as any;
 
-    let savedActor: Dnd5eActorData | null = null;
+    let savedActor = null as Dnd5eActorData | null;
     const { getElementByTestId, container, unmount } = await renderToDom(
       h(CharacterSheetHeader, {
         actor,
@@ -664,7 +664,7 @@ describe("CharacterSheetHeader & HudDrawers REST/CQRS Dual Persistence Suite (#8
     assert.equal(actorSignal.value.name, "Local Hero Promoted");
   });
 
-  it("Affichage explicite des garde-fous métier et accessibilité clavier/ARIA complète (WCAG 2.1 AA) (AC6)", async () => {
+  it("displays explicit business guardrails with full keyboard and ARIA accessibility (WCAG 2.1 AA) (AC6)", async () => {
     const maxLevelActor = createDefaultActorData("actor-paladin", "Seelah");
     maxLevelActor.classId = "paladin";
     maxLevelActor.attributes.level = 20;
@@ -749,8 +749,8 @@ describe("CharacterSheetHeader & HudDrawers REST/CQRS Dual Persistence Suite (#8
     assert.ok(restModal, "RestModal must open upon clicking Long Rest");
 
     const buttons = restModal.querySelectorAll("button");
-    const confirmBtn = Array.from(buttons).find((b: any) =>
-      b.textContent?.includes("Confirmer le Repos Long")
+    const confirmBtn: any = Array.from(buttons).find((b: any) =>
+      b.textContent?.includes("Confirm Long Rest")
     );
     assert.ok(confirmBtn, "Confirm Long Rest button must be rendered in RestModal");
     confirmBtn.dispatchEvent(new (globalThis as any).Event("click"));

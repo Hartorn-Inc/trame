@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   CompendiumDragDropManager,
-  calculateContainerWeight,
   calculateTotalInventoryWeight,
   type InventoryContainerItem,
 } from "../../src/compendium/CompendiumDragDropManager.ts";

@@ -3,6 +3,7 @@ import { useState } from 'preact/hooks';
 import type { Dnd5eActorData } from '../../../../game-systems/dnd5e/src/index.ts';
 import { LevelUpModal, type DiceRollService } from '../modals/LevelUpModal.tsx';
 import { RestModal } from '../modals/RestModal.tsx';
+import { t } from '../../i18n/index.ts';
 
 export interface CharacterSheetHeaderProps {
   actor: Dnd5eActorData;
@@ -125,8 +126,8 @@ export function CharacterSheetHeader(props: CharacterSheetHeaderProps): VNode<an
   };
 
   const levelUpLabel = isLive
-    ? 'Level Up'
-    : `Level Up (Lvl ${currentLevel} -> ${currentLevel + 1})`;
+    ? t('sheetHeader.levelUp')
+    : t('sheetHeader.levelUpFromTo', { from: currentLevel, to: currentLevel + 1 });
 
   return h(
     'header',
@@ -134,21 +135,21 @@ export function CharacterSheetHeader(props: CharacterSheetHeaderProps): VNode<an
       class: `ds-character-sheet-header ${props.className ?? ''}`.trim(),
       'data-testid': 'character-sheet-header',
       role: 'region',
-      'aria-label': 'Character Sheet Actions',
+      'aria-label': t('sheetHeader.actionsLabel'),
     },
     h(
       'div',
       { class: 'ds-sheet-header-info' },
-      h('h2', { class: 'ds-sheet-character-name', 'data-testid': 'sheet-actor-name' }, currentActor?.name ?? 'Unnamed Character'),
+      h('h2', { class: 'ds-sheet-character-name', 'data-testid': 'sheet-actor-name' }, currentActor?.name ?? t('sheetHeader.unnamed')),
       h(
         'span',
         { class: 'ds-sheet-character-summary', 'data-testid': 'sheet-actor-summary' },
-        `Level ${currentLevel} ${currentActor?.classId ?? ''}`.trim(),
+        t('sheetHeader.summary', { level: currentLevel, className: currentActor?.classId ?? '' }).trim(),
       ),
     ),
     h(
       'div',
-      { class: 'ds-sheet-header-actions', role: 'toolbar', 'aria-label': 'Progression and Rest Actions' },
+      { class: 'ds-sheet-header-actions', role: 'toolbar', 'aria-label': t('sheetHeader.toolbarLabel') },
       h(
         'button',
         {
@@ -157,8 +158,8 @@ export function CharacterSheetHeader(props: CharacterSheetHeaderProps): VNode<an
           'data-testid': 'btn-level-up',
           disabled: isMaxLevel,
           'aria-disabled': isMaxLevel ? 'true' : 'false',
-          'aria-label': isMaxLevel ? 'Level Up disabled: Maximum Level 20 reached' : levelUpLabel,
-          title: isMaxLevel ? 'Maximum level reached (20)' : levelUpLabel,
+          'aria-label': isMaxLevel ? t('sheetHeader.levelUpDisabled') : levelUpLabel,
+          title: isMaxLevel ? t('sheetHeader.maxLevel') : levelUpLabel,
           onClick: () => {
             if (!isMaxLevel) setIsLevelUpOpen(true);
           },
@@ -171,10 +172,10 @@ export function CharacterSheetHeader(props: CharacterSheetHeaderProps): VNode<an
           type: 'button',
           class: 'ds-btn ds-btn-sm ds-btn-short-rest',
           'data-testid': 'btn-short-rest',
-          'aria-label': 'Short Rest',
+          'aria-label': t('rest.short.title'),
           onClick: () => setRestState({ isOpen: true, restType: 'short' }),
         },
-        'Short Rest',
+        t('rest.short.title'),
       ),
       h(
         'button',
@@ -182,10 +183,10 @@ export function CharacterSheetHeader(props: CharacterSheetHeaderProps): VNode<an
           type: 'button',
           class: 'ds-btn ds-btn-sm ds-btn-long-rest',
           'data-testid': 'btn-long-rest',
-          'aria-label': 'Long Rest',
+          'aria-label': t('rest.long.title'),
           onClick: () => setRestState({ isOpen: true, restType: 'long' }),
         },
-        'Long Rest',
+        t('rest.long.title'),
       ),
     ),
     isLevelUpOpen

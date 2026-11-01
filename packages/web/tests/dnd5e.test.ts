@@ -22,7 +22,6 @@ import {
   rollDeathSavingThrow,
   type CompendiumEntry,
   type DamageInstance,
-  type Dnd5eActorData,
 } from "../../game-systems/dnd5e/src/index.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -268,7 +267,7 @@ describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.1) Specification Suite", () => {
     assert.equal(res.actor.conditions.some((c) => c.id === "unconscious"), false);
 
     // Normal success and stabilization at 3 successes
-    let stActor = createDefaultActorData("stable-actor", "Ranger");
+    const stActor = createDefaultActorData("stable-actor", "Ranger");
     stActor.attributes.hp.current = 0;
     stActor.attributes.deathSaves = { successes: 2, failures: 0 };
     const resStable = rollDeathSavingThrow(stActor, 12);

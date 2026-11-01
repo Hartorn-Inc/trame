@@ -2,6 +2,7 @@ import { useSignal } from '@preact/signals';
 import type { CampaignMapScene } from './types.ts';
 import { filterScenesForRole, mapBackendSceneToFrontend } from './domain.ts';
 import { EmptyMapAtlasSvg } from '../components/icons/AtlasEmptyStates.tsx';
+import { t } from '../i18n/index.ts';
 
 export interface SceneAtlasProps {
   campaignId: string;
@@ -25,8 +26,8 @@ export function SceneAtlas({ campaignId, scenes, onSelectScene }: SceneAtlasProp
     <div class="scene-atlas" data-testid="scene-atlas" style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 'var(--atlas-space-md)' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 'var(--atlas-text-lg)' }}>Scene Atlas</h2>
-          <span class="atlas-tabular-nums" style={{ fontSize: 'var(--atlas-text-xs)', color: 'var(--atlas-text-muted)' }}>Campaign: {campaignId}</span>
+          <h2 style={{ margin: 0, fontSize: 'var(--atlas-text-lg)' }}>{t('maps.atlas.title')}</h2>
+          <span class="atlas-tabular-nums" style={{ fontSize: 'var(--atlas-text-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.campaignLabel', { id: campaignId })}</span>
         </div>
       </header>
 
@@ -48,11 +49,11 @@ export function SceneAtlas({ campaignId, scenes, onSelectScene }: SceneAtlasProp
                 cursor: 'pointer',
               }}
             >
-              Back to Gallery
+              {t('maps.atlas.back')}
             </button>
           </div>
           <div data-testid="atlas-map-canvas" style={{ width: '100%', height: '400px', background: 'var(--atlas-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <span>Viewing {activePreviewSceneSignal.value.title} ({activePreviewSceneSignal.value.walls.length} visible walls)</span>
+            <span>{t('maps.atlas.viewing', { title: activePreviewSceneSignal.value.title, walls: activePreviewSceneSignal.value.walls.length })}</span>
           </div>
         </div>
       ) : (
@@ -60,9 +61,9 @@ export function SceneAtlas({ campaignId, scenes, onSelectScene }: SceneAtlasProp
           {filteredScenes.length === 0 ? (
             <div data-testid="empty-atlas" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 'var(--atlas-space-lg)', color: 'var(--atlas-text-muted)', gridColumn: '1 / -1' }}>
               <EmptyMapAtlasSvg width={160} height={100} />
-              <h3 style={{ margin: 'var(--atlas-space-sm) 0 0 0', color: 'var(--atlas-text)' }}>No maps revealed</h3>
+              <h3 style={{ margin: 'var(--atlas-space-sm) 0 0 0', color: 'var(--atlas-text)' }}>{t('maps.atlas.emptyTitle')}</h3>
               <p style={{ margin: 'var(--atlas-space-xs) 0 0 0', color: 'var(--atlas-text-muted)', fontSize: 'var(--atlas-text-xs)' }}>
-                No maps revealed by GM yet.
+                {t('maps.atlas.emptyBody')}
               </p>
             </div>
           ) : (
@@ -95,10 +96,10 @@ export function SceneAtlas({ campaignId, scenes, onSelectScene }: SceneAtlasProp
                 }}
               >
                 <div style={{ height: '120px', background: 'var(--atlas-bg)', marginBottom: 'var(--atlas-space-xs)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <span style={{ fontSize: 'var(--atlas-text-xs)', color: 'var(--atlas-text-muted)' }}>Map Thumbnail</span>
+                  <span style={{ fontSize: 'var(--atlas-text-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.atlas.thumbnail')}</span>
                 </div>
                 <h4 style={{ margin: 0, fontSize: 'var(--atlas-text-sm)' }}>{scene.title}</h4>
-                <p style={{ margin: 0, fontSize: 'var(--atlas-text-xs)', color: 'var(--atlas-text-muted)' }}>Dimensions: {scene.widthPx}x{scene.heightPx}</p>
+                <p style={{ margin: 0, fontSize: 'var(--atlas-text-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.atlas.dimensions', { width: scene.widthPx, height: scene.heightPx })}</p>
               </button>
             ))
           )}

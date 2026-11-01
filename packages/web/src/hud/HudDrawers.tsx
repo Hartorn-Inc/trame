@@ -4,6 +4,7 @@ import type { Dnd5eActorData } from '../../../game-systems/dnd5e/src/index.ts';
 import { DeclarativeSheetView } from '../sheet/DeclarativeSheetView.tsx';
 import { CompendiumDrawer, type CompendiumEntry } from '../compendium/CompendiumDrawer.tsx';
 import { CharacterSheetHeader } from '../components/character-sheet/CharacterSheetHeader.tsx';
+import { t } from '../i18n/index.ts';
 
 export const isSheetDrawerOpenSignal = signal<boolean>(false);
 export const isCompendiumDrawerOpenSignal = signal<boolean>(false);
@@ -83,23 +84,23 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
           {
             class: 'ds-hud-sheet-drawer',
             'data-testid': 'hud-sheet-drawer',
-            'aria-label': 'Character Sheet Drawer',
+            'aria-label': t('hud.sheetDrawer'),
             onKeyDown: handleSheetKeyDown,
           },
           h(
             'header',
             { class: 'ds-drawer-header' },
-            h('h2', null, 'Character Sheet'),
+            h('h2', null, t('nav.sheet')),
             h(
               'button',
               {
                 type: 'button',
                 class: 'ds-btn ds-btn-sm ds-btn-close',
                 'data-testid': 'btn-close-sheet-drawer',
-                'aria-label': 'Close character sheet drawer',
+                'aria-label': t('hud.closeSheetDrawer'),
                 onClick: closeSheet,
               },
-              'Close',
+              t('action.close'),
             ),
           ),
           h(CharacterSheetHeader, {

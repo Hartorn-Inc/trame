@@ -1,10 +1,44 @@
+/**
+ * ============================================================================
+ * UI LOCALIZATION, LOCALE SIGNAL & TACTICAL UNITS (i18n/index.ts)
+ * ============================================================================
+ *
+ * PURPOSE:
+ * -----
+ * Single entry point for every user-visible UI string (grill decision G3).
+ * Components call `t(key)` / `tn(key, count)`; English (`en.ts`) is the
+ * canonical dictionary and French (`fr.ts`) must translate every key.
+ *
+ * INVARIANTS & SAFETY BOUNDARIES:
+ * -----
+ * 1. `Compile-Time Key Parity`:
+ *    - `MessageKey` is derived from the English dictionary and `FR` is typed
+ *      `Record<MessageKey, string>`, so a missing or extra French key fails
+ *      `tsc`. A runtime parity test guards the same contract.
+ * 2. `English Fallback`:
+ *    - A key absent from the active locale falls back to English, then to the
+ *      key itself, so a bad lookup is visible but never crashes rendering.
+ * 3. `Locale-Aware Plurals & Numbers`:
+ *    - `tn()` selects `<key>.one` / `<key>.other` through `Intl.PluralRules`
+ *      (French treats 0 as singular), and distances format decimals with the
+ *      active locale (`1.5 m` vs `1,5 m`).
+ * ============================================================================
+ */
 import { signal } from "@preact/signals";
+import { EN, type MessageKey } from "./en.ts";
+import { FR } from "./fr.ts";
 
+export type { MessageKey } from "./en.ts";
+
+/** Supported UI locales. English is canonical. */
 export type LocaleCode = "en" | "fr";
+/** Grid distance display: imperial feet or metric meters (1 square = 5 ft = 1.5 m). */
 export type UnitSystem = "imperial_ft" | "metric_m";
 
+/** `localStorage` key holding the user's explicit locale choice. */
 export const STORAGE_KEY_LOCALE = "trame_locale";
 
+/** Resolves the startup locale: stored choice, then browser language, then English. */
 export function getInitialLocale(): LocaleCode {
   try {
     const storage =
@@ -51,55 +85,10 @@ localeSignal.subscribe((val) => {
   }
 });
 
-export const I18N_DICTIONARY: Record<LocaleCode, Record<string, string>> = {
-  en: {
-    "nav.sheet": "Character Sheet",
-    "nav.dice": "Dice Roller",
-    "nav.inventory": "Inventory",
-    "nav.tracker": "Initiative Tracker",
-    "nav.journal": "Party Journal",
-    "note.scope.private": "Personal Note",
-    "note.scope.party": "Party Wiki",
-    "note.scope.dm_only": "GM Secret",
-    "action.reveal": "Reveal to Players",
-    "action.close": "Close",
-    "action.create_note": "New Note",
-    "docs.title": "Documents & Handouts",
-    "docs.notes": "Notes",
-    "docs.notes.empty": "No notes available",
-    "docs.notes.count.singular": "note",
-    "docs.notes.count.plural": "notes",
-    "docs.handouts": "Past Handouts",
-    "docs.handouts.empty": "No revealed handouts",
-    "docs.timeline": "Session Timeline",
-    "docs.timeline.empty": "No events recorded",
-    "distance.squares.singular": "case",
-    "distance.squares.plural": "cases",
-  },
-  fr: {
-    "nav.sheet": "Fiche de personnage",
-    "nav.dice": "Lanceur de dés",
-    "nav.inventory": "Inventaire",
-    "nav.tracker": "Piste d'initiative",
-    "nav.journal": "Journal de groupe",
-    "note.scope.private": "Note personnelle",
-    "note.scope.party": "Wiki de groupe",
-    "note.scope.dm_only": "Secret MJ",
-    "action.reveal": "Révéler aux joueurs",
-    "action.close": "Fermer",
-    "action.create_note": "Nouvelle note",
-    "docs.title": "Documents et aides de jeu",
-    "docs.notes": "Notes",
-    "docs.notes.empty": "Aucune note disponible",
-    "docs.notes.count.singular": "note",
-    "docs.notes.count.plural": "notes",
-    "docs.handouts": "Aides de jeu passées",
-    "docs.handouts.empty": "Aucune aide de jeu révélée",
-    "docs.timeline": "Chronologie de session",
-    "docs.timeline.empty": "Aucun événement enregistré",
-    "distance.squares.singular": "case",
-    "distance.squares.plural": "cases",
-  },
+/** Every UI dictionary, keyed by locale. English is the source of truth. */
+export const I18N_DICTIONARY: Record<LocaleCode, Record<MessageKey, string>> = {
+  en: EN,
+  fr: FR,
 };
 
 export const COMPENDIUM_LEXICON_FR_TO_EN: Record<string, string> = {
@@ -110,24 +99,71 @@ export const COMPENDIUM_LEXICON_FR_TO_EN: Record<string, string> = {
   "immobilisation de personne": "hold_person",
 };
 
-export function t(key: string, vars?: Record<string, string | number>): string {
-  const currentLocale = localeSignal.value;
-  let text = I18N_DICTIONARY[currentLocale]?.[key] ?? I18N_DICTIONARY.en[key] ?? key;
-  if (vars) {
-    for (const [k, v] of Object.entries(vars))
-      text = text.replaceAll(`{{${k}}}`, String(v));
+/** Interpolation values substituted into `{{name}}` placeholders. */
+export type MessageVars = Record<string, string | number>;
+
+function interpolate(text: string, vars?: MessageVars): string {
+  if (!vars) return text;
+  let out = text;
+  for (const [k, v] of Object.entries(vars)) {
+    out = out.replaceAll(`{{${k}}}`, String(v));
   }
-  return text;
+  return out;
 }
 
+/** Translates `key` in the active locale, substituting `{{var}}` placeholders. */
+export function t(key: MessageKey, vars?: MessageVars): string {
+  const text = I18N_DICTIONARY[localeSignal.value]?.[key] ?? EN[key] ?? key;
+  return interpolate(text, vars);
+}
+
+/**
+ * Translates a layout-authored string (sheet layout titles, tab labels,
+ * widget option labels). Known message keys are translated; literals supplied
+ * by third-party system layouts pass through unchanged.
+ */
+export function translateLayoutText(text: string): string {
+  return Object.hasOwn(EN, text) ? t(text as MessageKey) : text;
+}
+
+/**
+ * Translates a counted message. Looks up `<key>.one` or `<key>.other` using
+ * the active locale's CLDR plural category and exposes `{{count}}`.
+ */
+export function tn(key: string, count: number, vars?: MessageVars): string {
+  const category = new Intl.PluralRules(localeSignal.value).select(count) === "one" ? "one" : "other";
+  return t(`${key}.${category}` as MessageKey, { count, ...vars });
+}
+
+/** Formats a number with the active locale's decimal separator. */
+export function formatNumber(value: number, maximumFractionDigits = 1): string {
+  return new Intl.NumberFormat(localeSignal.value, { maximumFractionDigits }).format(value);
+}
+
+/**
+ * Formats a grid distance given in feet for the active unit system.
+ * Metric uses the D&D 5e convention 5 ft = 1.5 m and appends the square count.
+ */
 export function formatDistanceFt(feet: number): string {
   if (unitSystemSignal.value === "imperial_ft") {
-    return `${feet} ft`;
+    return t("distance.feet", { value: formatNumber(feet) });
   }
-  const meters = (feet * 0.3).toFixed(1).replace(/\.0$/, "");
   const squares = Math.round(feet / 5);
-  const squareUnit = squares <= 1 ? "case" : "cases";
-  return `${meters} m (${squares} ${squareUnit})`;
+  return t("distance.meters", {
+    value: formatNumber(feet * 0.3),
+    squares: tn("distance.squares", squares),
+  });
+}
+
+/** Compendium entry carrying an English name and optional localized names. */
+export type LocalizedEntry = {
+  name: string;
+  i18n?: Partial<Record<LocaleCode, { name?: string }>>;
+};
+
+/** Returns the entry name in the active locale, falling back to English. */
+export function localizedName(entry: LocalizedEntry): string {
+  return entry.i18n?.[localeSignal.value]?.name ?? entry.name;
 }
 
 export function resolveCompendiumSearchQuery(query: string): string[] {

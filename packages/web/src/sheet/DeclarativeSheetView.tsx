@@ -1,4 +1,5 @@
 import { h, type VNode } from 'preact';
+import { t, translateLayoutText } from '../i18n/index.ts';
 import { PadlockLockedIcon, PadlockUnlockedIcon } from './PadlockIcons.tsx';
 import { isNodeAuthorized } from './DeclarativeSheetRenderer.ts';
 import { BindingResolver } from './binding.ts';
@@ -26,7 +27,7 @@ const DEFAULT_DND5E_SHEET_LAYOUT: SheetLayoutTree = {
   root: {
     id: 'dnd5e-sheet-root',
     kind: 'section',
-    title: 'D&D 5e Character Sheet',
+    title: 'sheet.layout.title',
     visibilityTier: 'PUBLIC',
     children: [
       {
@@ -44,7 +45,7 @@ const DEFAULT_DND5E_SHEET_LAYOUT: SheetLayoutTree = {
               max: 'sheet.attributes.hp.max',
               temp: 'sheet.attributes.hp.temp',
             },
-            options: { label: 'Hit Points', color: 'var(--atlas-action)' },
+            options: { label: 'sheet.resource.hitPoints', color: 'var(--atlas-action)' },
           },
           {
             id: 'dnd5e-combat-stats',
@@ -128,7 +129,7 @@ const DEFAULT_DND5E_SHEET_LAYOUT: SheetLayoutTree = {
                 tabs: [
                   {
                     id: 'tab-combat',
-                    label: 'Combat',
+                    label: 'sheet.tab.combat',
                     visibilityTier: 'PUBLIC',
                     children: [
                       {
@@ -142,7 +143,7 @@ const DEFAULT_DND5E_SHEET_LAYOUT: SheetLayoutTree = {
                   },
                   {
                     id: 'tab-spells',
-                    label: 'Spellbook',
+                    label: 'sheet.tab.spells',
                     visibilityTier: 'PUBLIC',
                     children: [
                       {
@@ -162,7 +163,7 @@ const DEFAULT_DND5E_SHEET_LAYOUT: SheetLayoutTree = {
                   },
                   {
                     id: 'tab-inventory',
-                    label: 'Inventory',
+                    label: 'sheet.tab.inventory',
                     visibilityTier: 'PUBLIC',
                     children: [
                       {
@@ -180,7 +181,7 @@ const DEFAULT_DND5E_SHEET_LAYOUT: SheetLayoutTree = {
                   },
                   {
                     id: 'tab-features',
-                    label: 'Features & Traits',
+                    label: 'sheet.tab.features',
                     visibilityTier: 'PUBLIC',
                     children: [
                       {
@@ -194,7 +195,7 @@ const DEFAULT_DND5E_SHEET_LAYOUT: SheetLayoutTree = {
                   },
                   {
                     id: 'tab-bio',
-                    label: 'Biography & Notes',
+                    label: 'sheet.tab.bio',
                     visibilityTier: 'OWNER_ONLY',
                     children: [
                       {
@@ -291,7 +292,7 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
           id: node.id,
           class: `ds-layout-${node.kind} ${node.cssClass ?? ''}`,
         },
-        node.title ? h('h3', { class: 'ds-section-title' }, node.title) : null,
+        node.title ? h('h3', { class: 'ds-section-title' }, translateLayoutText(node.title)) : null,
         children,
       );
     }
@@ -304,7 +305,7 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
         { key: node.id, id: node.id, class: 'ds-layout-tabs' },
         h(
           'div',
-          { class: 'ds-tabs-header', role: 'tablist', 'aria-label': 'Character Sheet Sections' },
+          { class: 'ds-tabs-header', role: 'tablist', 'aria-label': t('sheet.tabsAria') },
           tabs.map((tab) =>
             h(
               'button',
@@ -319,7 +320,7 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
                 'aria-controls': `tab-body-${tab.id}`,
                 onClick: () => setActiveTabId(tab.id),
               },
-              tab.label,
+              translateLayoutText(tab.label),
             ),
           ),
         ),
@@ -360,11 +361,11 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
     return null;
   };
 
-  const lockLabel = isGmLocked
-    ? 'GM Locked'
+  const lockLabel = t(isGmLocked
+    ? 'sheet.lock.gmLocked'
     : effectiveLocked
-    ? 'Play Mode'
-    : 'Edit Mode';
+    ? 'sheet.lock.playMode'
+    : 'sheet.lock.editMode');
 
   return h(
     'div',
@@ -379,13 +380,13 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
           class: `ds-lock-toggle ${effectiveLocked ? 'is-locked' : 'is-unlocked'}`,
           'data-testid': 'sheet-padlock-toggle',
           'aria-pressed': effectiveLocked ? 'false' : 'true',
-          'aria-label': isGmLocked
-            ? 'GM Locked — Character sheet locked by GM'
+          'aria-label': t(isGmLocked
+            ? 'sheet.lock.gmLockedAria'
             : effectiveLocked
-            ? 'Play Mode — Character sheet locked in roll mode. Activate to enter edit mode.'
-            : 'Edit Mode — Character sheet unlocked in edit mode. Activate to enter roll mode.',
+            ? 'sheet.lock.playModeAria'
+            : 'sheet.lock.editModeAria'),
           disabled: isGmLocked,
-          title: isGmLocked ? 'Locked by GM' : (effectiveLocked ? 'Unlock Build Mode' : 'Lock Play Mode'),
+          title: t(isGmLocked ? 'sheet.lock.gmLockedTitle' : (effectiveLocked ? 'sheet.lock.unlockTitle' : 'sheet.lock.lockTitle')),
           onClick: toggleLock,
         },
         effectiveLocked ? h(PadlockLockedIcon, { size: 20 }) : h(PadlockUnlockedIcon, { size: 20 }),

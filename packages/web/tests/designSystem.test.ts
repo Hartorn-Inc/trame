@@ -8,13 +8,11 @@ import { fileURLToPath } from "node:url";
 import {
   auditSourceContent,
   CANONICAL_SECTION_TITLES,
-  CANONICAL_SECTIONS,
   contrastRatio,
   CONTRAST_MATRIX,
   extractCanonicalHeadings,
   hexToRgb,
   parseDesignMdFrontmatter,
-  parseYamlSubset,
   relativeLuminance,
   runAudit,
   validateCanonicalHeadings,
@@ -27,7 +25,6 @@ import {
   DARK_CANVAS_PALETTE,
   getCanvasThemePalette,
   LIGHT_CANVAS_PALETTE,
-  type ResolvedAtlasTheme,
   type TokenDispositionKind,
 } from "../src/canvas/CanvasThemePalette.ts";
 import {
@@ -38,8 +35,6 @@ import { DeclarativeSheetRenderer } from "../src/sheet/DeclarativeSheetRenderer.
 import { WidgetRegistry } from "../src/sheet/WidgetRegistry.ts";
 import type { SheetLayoutTree } from "../src/sheet/types.ts";
 import {
-  initThemeSignal,
-  readPersistedThemeMode,
   resolvedThemeSignal,
   setThemeMode,
   systemPrefersDarkSignal,
@@ -56,7 +51,6 @@ if (typeof module.register === "function") {
 
 const {
   ATLAS_ICON_PATHS,
-  ATLAS_ICON_NAMES,
   ATLAS_ICON_STROKE_WIDTH,
   renderAtlasIconSvg,
 } = await import("../src/components/icons/AtlasIcons.tsx");
@@ -68,7 +62,6 @@ const {
   EMPTY_STATE_KINDS,
   renderEmptyStateSvg,
   renderEmptyStateHtml,
-  AtlasEmptyStateContainer,
 } = await import("../src/components/icons/AtlasEmptyStates.tsx");
 
 const testFilename = fileURLToPath(import.meta.url);
@@ -242,7 +235,7 @@ describe("TRAME ATLAS v1.1 & Impeccable Design System Suite", () => {
         assert.equal(palette.tokenDispositions.selected.ringStrokeStyle, "double");
         assert.equal(palette.tokenDispositions.selected.badgeShape, "corner-chevrons");
 
-        assert.equal(palette.tokenDispositions.activeTurn.ringColorHex, 0xf59e0b);
+        assert.equal(palette.tokenDispositions.activeTurn.ringColorHex, palette.theme === "light" ? 0xb45309 : 0xf59e0b);
         assert.equal(palette.tokenDispositions.activeTurn.badgeShape, "chevron-beacon");
         assert.equal(palette.tokenDispositions.activeTurn.badgeGlyph, "›");
 

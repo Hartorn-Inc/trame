@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { RestModal, type RestModalProps, type DiceRollService } from "../../src/components/modals/RestModal.tsx";
 import { createDefaultActorData, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
+import { localeSignal } from "../../src/i18n/index.ts";
+
+localeSignal.value = "en";
 
 // Minimal DOM mock to allow Preact render and event dispatch in Node.js
 function setupMockDom() {
@@ -446,7 +449,7 @@ describe("RestModal Component", () => {
         onSave: () => slowSavePromise,
       });
 
-      const confirmBtn = findByText("Confirmer le Repos Court");
+      const confirmBtn = findByText("Confirm Short Rest");
       assert.ok(confirmBtn);
       confirmBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 10));
@@ -490,7 +493,7 @@ describe("RestModal Component", () => {
       });
 
       // Modal header and title
-      assert.ok(findByText("Repos court (Short Rest)"));
+      assert.ok(findByText("Short Rest"));
       // Vitality overview shows 3 / 4 hit dice and 12 / 34 HP
       assert.ok(findByText("3 / 4 (d10)"));
       assert.ok(findByText("12 / 34"));
@@ -500,12 +503,12 @@ describe("RestModal Component", () => {
       assert.equal(counter.textContent.trim(), "0");
 
       // Decrement button disabled at 0
-      const decBtn = container.querySelector("button[aria-label='Diminuer les dés de vie dépensés']");
+      const decBtn = container.querySelector("button[aria-label='Decrease hit dice spent']");
       assert.ok(decBtn);
       assert.equal(decBtn.disabled, true);
 
       // Increment button enabled
-      const incBtn = container.querySelector("button[aria-label='Augmenter les dés de vie dépensés']");
+      const incBtn = container.querySelector("button[aria-label='Increase hit dice spent']");
       assert.ok(incBtn);
       assert.equal(incBtn.disabled, false);
 
@@ -548,7 +551,7 @@ describe("RestModal Component", () => {
       });
 
       // Increment to spend 2 dice
-      const incBtn = container.querySelector("button[aria-label='Augmenter les dés de vie dépensés']");
+      const incBtn = container.querySelector("button[aria-label='Increase hit dice spent']");
       incBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 10));
       incBtn.dispatchEvent({ type: "click" });
@@ -558,7 +561,7 @@ describe("RestModal Component", () => {
       assert.equal(counter.textContent.trim(), "2");
 
       // Roll button is present
-      const rollBtn = findByText("Lancer les 2d10 de récupération");
+      const rollBtn = findByText("Roll 2d10 for recovery");
       assert.ok(rollBtn);
 
       // Click roll button
@@ -571,10 +574,10 @@ describe("RestModal Component", () => {
       assert.equal(rollCalls[0].options?.reason, "short_rest_hit_dice");
       assert.equal(rollCalls[1].formula, "1d10");
 
-      // Displays recovered HP preview (each roll 7 + CON 2 = 9 PV, total 18 PV)
+      // Displays recovered HP preview (each roll 7 + CON 2 = 9 HP, total 18 HP)
       // 15 + 18 = 33 / 40
-      assert.ok(findByText("+18 PV générés"));
-      assert.ok(findByText("15 → 33 / 40 (+18 PV)"));
+      assert.ok(findByText("+18 HP generated"));
+      assert.ok(findByText("15 → 33 / 40 (+18 HP)"));
 
       unmount();
     });
@@ -612,17 +615,17 @@ describe("RestModal Component", () => {
       });
 
       // Increment to spend 1 die
-      const incBtn = container.querySelector("button[aria-label='Augmenter les dés de vie dépensés']");
+      const incBtn = container.querySelector("button[aria-label='Increase hit dice spent']");
       incBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 10));
 
-      const rollBtn = findByText("Lancer les 1d8 de récupération");
+      const rollBtn = findByText("Roll 1d8 for recovery");
       rollBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 20));
 
       // Minimum 1 HP floor displayed
-      assert.ok(findByText("+1 PV (plancher min. 1)"));
-      assert.ok(findByText("10 → 11 / 30 (+1 PV)"));
+      assert.ok(findByText("+1 HP (min. 1 floor)"));
+      assert.ok(findByText("10 → 11 / 30 (+1 HP)"));
 
       unmount();
     });
@@ -656,17 +659,17 @@ describe("RestModal Component", () => {
       });
 
       // Spend 1 die
-      const incBtn = container.querySelector("button[aria-label='Augmenter les dés de vie dépensés']");
+      const incBtn = container.querySelector("button[aria-label='Increase hit dice spent']");
       incBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 10));
 
       // Roll
-      const rollBtn = findByText("Lancer les 1d10 de récupération");
+      const rollBtn = findByText("Roll 1d10 for recovery");
       rollBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 20));
 
       // Confirm button is enabled and clicked
-      const confirmBtn = findByText("Confirmer le Repos Court");
+      const confirmBtn = findByText("Confirm Short Rest");
       assert.ok(confirmBtn);
       assert.equal(confirmBtn.disabled, false);
       confirmBtn.dispatchEvent({ type: "click" });
@@ -712,7 +715,7 @@ describe("RestModal Component", () => {
         onSave: (updated) => { savedActor = updated; },
       });
 
-      const confirmBtn = findByText("Confirmer le Repos Court");
+      const confirmBtn = findByText("Confirm Short Rest");
       assert.ok(confirmBtn);
       assert.equal(confirmBtn.disabled, false);
       confirmBtn.dispatchEvent({ type: "click" });
@@ -750,17 +753,17 @@ describe("RestModal Component", () => {
         onSave: () => {},
       });
 
-      assert.ok(findByText("Repos long (Long Rest)"));
+      assert.ok(findByText("Long Rest"));
       // Full HP restore: 12 -> 34
-      assert.ok(findByText("12 → 34 / 34 (+22 PV)"));
+      assert.ok(findByText("12 → 34 / 34 (+22 HP)"));
       // Temp HP wiped to 0
       assert.ok(findByText("8 → 0"));
       // Hit dice recovery: max(1, floor(4/2)) = +2 (1 -> 3 / 4)
-      assert.ok(findByText("+2 dé(s) (1 → 3 / 4)"));
+      assert.ok(findByText("+2 hit dice (1 → 3 / 4)"));
       // Exhaustion reduced by 1: 2 -> 1
-      assert.ok(findByText("2 → 1 (-1 niveau)"));
+      assert.ok(findByText("2 → 1 (-1 level)"));
       // Death saves reset
-      assert.ok(findByText("Réinitialisés (0 succès, 0 échec)"));
+      assert.ok(findByText("Reset (0 successes, 0 failures)"));
       // Spell slots
       assert.ok(findByText("1 / 4 → 4 / 4")); // level 1 slots
       assert.ok(findByText("0 / 2 → 2 / 2")); // level 2 slots
@@ -794,7 +797,7 @@ describe("RestModal Component", () => {
         onSave: (updated) => { savedActor = updated; },
       });
 
-      const confirmBtn = findByText("Confirmer le Repos Long");
+      const confirmBtn = findByText("Confirm Long Rest");
       assert.ok(confirmBtn);
       confirmBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 20));
@@ -902,12 +905,12 @@ describe("RestModal Component", () => {
       // Shift+Tab on first element wraps to last
       firstBtn.focus();
       dialog.dispatchEvent({ type: "keydown", key: "Tab", shiftKey: true });
-      assert.equal((globalThis as any).document.activeElement, lastBtn);
+      assert.ok((globalThis as any).document.activeElement === lastBtn);
 
       // Tab on last element wraps to first
       lastBtn.focus();
       dialog.dispatchEvent({ type: "keydown", key: "Tab", shiftKey: false });
-      assert.equal((globalThis as any).document.activeElement, firstBtn);
+      assert.ok((globalThis as any).document.activeElement === firstBtn);
 
       unmount();
     });

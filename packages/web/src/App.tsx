@@ -27,6 +27,7 @@ import { computed, signal } from '@preact/signals';
 import {
   localeSignal,
   mobileCompanionOverrideSignal,
+  t,
   unitSystemSignal,
 } from './i18n/index.ts';
 import { MobileCompanionView } from './mobile/MobileCompanionView.tsx';
@@ -104,7 +105,7 @@ export function App() {
               <button
                 type="button"
                 data-testid="header-companion-toggle"
-                aria-label="Toggle companion mode"
+                aria-label={t('shell.toggleCompanion')}
                 aria-pressed={mobileCompanionOverrideSignal.value}
                 class={`ds-btn ${mobileCompanionOverrideSignal.value ? 'ds-btn-primary' : 'ds-btn-secondary'}`}
                 onClick={() => {
