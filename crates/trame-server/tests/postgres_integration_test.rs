@@ -52,6 +52,10 @@ async fn harness() -> Option<(Router, Arc<SqlxPostgresStore>)> {
 }
 
 async fn account(store: &SqlxPostgresStore) -> String {
+    account_with_id(store).await.1
+}
+
+async fn account_with_id(store: &SqlxPostgresStore) -> (Uuid, String) {
     let user_id = Uuid::new_v4();
     store
         .save_user(UserRecord {
@@ -73,7 +77,7 @@ async fn account(store: &SqlxPostgresStore) -> String {
         .create_session(user_id, &hash_session_token(&token), 3600)
         .await
         .unwrap();
-    format!("trame_session={token}")
+    (user_id, format!("trame_session={token}"))
 }
 
 async fn call(
@@ -227,47 +231,149 @@ async fn pg_scene_put_enforces_expected_version() {
     assert_eq!(body["version"], json!(3));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn pg_archive_import_starts_scene_set_at_version_zero() {
-    let Some((app, store)) = harness().await else {
-        return;
-    };
-    let gm = account(&store).await;
-    let (campaign_id, _) = create_campaign_with_actor(&app, &gm).await;
-    let maps = format!("/api/v1/campaigns/{campaign_id}/maps");
-    let (status, body) = call_json(&app, "PUT", &maps, &gm, scene_set(0)).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+fn scene_with_secrets(name: &str, revealed: bool) -> Value {
+    json!({
+        "id": Uuid::new_v4(),
+        "campaign_id": Uuid::nil(),
+        "name": name,
+        "grid_size_px": 70,
+        "grid_cell_distance_ft": 5.0,
+        "width_px": 1400,
+        "height_px": 1400,
+        "revealed_to_players": revealed,
+        "wall_segments": [{
+            "id": Uuid::new_v4(),
+            "p1": { "x": 0.0, "y": 0.0 },
+            "p2": { "x": 140.0, "y": 0.0 },
+            "wall_type": "SecretDoor",
+            "door_state": "Closed"
+        }],
+        "staged_tokens": [{
+            "id": Uuid::new_v4(), "name": "Ambush Goblin", "x": 70.0, "y": 70.0,
+            "visibility": "GmHidden"
+        }],
+        "spatial_audio_emitters": [{
+            "id": Uuid::new_v4(), "x": 10.0, "y": 10.0, "elevation_ft": 0.0,
+            "radius_ft": 30.0, "volume": 1.0, "looping": true, "gm_only": true,
+            "audio_clip_url": "secret.ogg"
+        }]
+    })
+}
 
+async fn export_then_import(app: &Router, gm: &str, campaign_id: &str) -> Value {
     let (status, archive) = call(
-        &app,
+        app,
         "GET",
         &format!("/api/v1/campaigns/{campaign_id}/export"),
-        &gm,
+        gm,
         Body::empty(),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     let (status, bytes) = call(
-        &app,
+        app,
         "POST",
         "/api/v1/campaigns/import",
-        &gm,
+        gm,
         Body::from(archive),
     )
     .await;
     let imported: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(status, StatusCode::CREATED, "{imported}");
-    let new_maps = format!(
-        "/api/v1/campaigns/{}/maps",
-        imported["campaign_id"].as_str().unwrap()
-    );
+    imported
+}
 
-    let (status, body) = call_json(&app, "GET", &new_maps, &gm, Value::Null).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["version"], json!(0));
-    let (status, body) = call_json(&app, "PUT", &new_maps, &gm, scene_set(0)).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["version"], json!(1));
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_archive_round_trip_restores_scenes_with_player_masking() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    // (case, scenes as (name, revealed_to_players))
+    let cases: [(&str, &[(&str, bool)]); 3] = [
+        ("no_scenes", &[]),
+        ("one_hidden_scene", &[("Cragmaw Hideout", false)]),
+        (
+            "several_scenes_mixed_visibility",
+            &[
+                ("Phandalin", true),
+                ("Cragmaw Hideout", false),
+                ("Wave Echo Cave", true),
+            ],
+        ),
+    ];
+    for (case, spec) in cases {
+        let gm = account(&store).await;
+        let (campaign_id, _) = create_campaign_with_actor(&app, &gm).await;
+        let scenes: Vec<Value> = spec
+            .iter()
+            .map(|(name, revealed)| scene_with_secrets(name, *revealed))
+            .collect();
+        let maps = format!("/api/v1/campaigns/{campaign_id}/maps");
+        let body = json!({ "expected_version": 0, "scenes": scenes });
+        let (status, body) = call_json(&app, "PUT", &maps, &gm, body).await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {body}");
+
+        let imported = export_then_import(&app, &gm, &campaign_id).await;
+        assert_eq!(
+            imported["scenes_restored"],
+            json!(spec.len()),
+            "case {case}"
+        );
+        let new_id = imported["campaign_id"].as_str().unwrap().to_string();
+        let new_maps = format!("/api/v1/campaigns/{new_id}/maps");
+
+        let (status, gm_view) = call_json(&app, "GET", &new_maps, &gm, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {gm_view}");
+        assert_eq!(gm_view["version"], json!(0), "case {case}");
+        let gm_scenes = gm_view["scenes"].as_array().unwrap().clone();
+        let names: Vec<&str> = gm_scenes
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        let want: Vec<&str> = spec.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, want, "case {case}: scene order");
+        for scene in &gm_scenes {
+            assert_eq!(scene["campaign_id"], json!(new_id), "case {case}");
+            assert_eq!(
+                scene["wall_segments"][0]["wall_type"],
+                json!("SecretDoor"),
+                "case {case}"
+            );
+        }
+
+        let (player_id, player) = account_with_id(&store).await;
+        let new_uuid = Uuid::parse_str(&new_id).unwrap();
+        store
+            .assign_campaign_member(new_uuid, player_id, None, "PLAYER")
+            .await
+            .unwrap();
+        let (status, player_view) = call_json(&app, "GET", &new_maps, &player, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {player_view}");
+        let revealed: Vec<&str> = spec.iter().filter(|s| s.1).map(|s| s.0).collect();
+        let player_scenes = player_view["scenes"].as_array().unwrap();
+        let player_names: Vec<&str> = player_scenes
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(player_names, revealed, "case {case}: only revealed scenes");
+        for scene in player_scenes {
+            assert_eq!(scene["wall_segments"][0]["wall_type"], json!("Normal"));
+            assert_eq!(scene["staged_tokens"], json!([]), "case {case}");
+            assert_eq!(scene["spatial_audio_emitters"], json!([]), "case {case}");
+        }
+
+        let body = json!({ "expected_version": 0, "scenes": gm_scenes });
+        let (status, body) = call_json(&app, "PUT", &new_maps, &gm, body).await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {body}");
+        assert_eq!(body["version"], json!(1), "case {case}");
+
+        let reimported = export_then_import(&app, &gm, &new_id).await;
+        assert_eq!(
+            reimported["scenes_restored"],
+            json!(spec.len()),
+            "case {case}: re-export does not duplicate scenes"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

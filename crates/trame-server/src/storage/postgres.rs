@@ -50,7 +50,7 @@ use crate::auth::session::{
     BoxFuture, CampaignMemberRecord, SessionError, SessionRecord, SessionStore, UserRecord,
 };
 use crate::http::CampaignMembershipValidator;
-use crate::maps::{CampaignMapScene, SceneSaveError};
+use crate::maps::{CampaignMapScene, SceneSaveError, restorable_scene};
 use crate::notes::{NotesError, PartyJournalEntry, PartyJournalStorage};
 use crate::timeline::{
     AppendEventInput, SessionTimelineEvent, SessionTimelineResponse, TimelineError, TimelineStorage,
@@ -866,38 +866,37 @@ impl SqlxPostgresStore {
         Ok(())
     }
 
-    /// Current `campaigns.scenes_version` for `campaign_id`; `0` when the campaign row is absent.
-    pub async fn load_scenes_version_async(&self, campaign_id: Uuid) -> Result<i64, String> {
-        let version: Option<i64> =
-            sqlx::query_scalar("SELECT scenes_version FROM campaigns WHERE id = $1")
-                .bind(campaign_id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|e| e.to_string())?;
-        Ok(version.unwrap_or(0))
-    }
-
-    /// Loads all persisted `CampaignMapScene` records for `campaign_id` ordered by `sort_order`.
-    pub async fn load_campaign_scenes_async(
+    /// Loads the scenes of `campaign_id` (ordered by `sort_order`) together with
+    /// `campaigns.scenes_version`; `(vec![], 0)` when the campaign row is absent.
+    ///
+    /// One `LEFT JOIN` statement reads both under a single MVCC snapshot, so a save committing
+    /// mid-read can never pair new scenes with the old version (or the reverse).
+    pub async fn load_campaign_scene_set_async(
         &self,
         campaign_id: Uuid,
-    ) -> Result<Vec<CampaignMapScene>, String> {
+    ) -> Result<(Vec<CampaignMapScene>, i64), String> {
         let rows = sqlx::query(
-            "SELECT payload FROM scenes WHERE campaign_id = $1 ORDER BY sort_order ASC, created_at ASC",
+            "SELECT c.scenes_version, s.payload
+             FROM campaigns c LEFT JOIN scenes s ON s.campaign_id = c.id
+             WHERE c.id = $1
+             ORDER BY s.sort_order ASC, s.created_at ASC",
         )
         .bind(campaign_id)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| e.to_string())?;
 
+        let mut version = 0;
         let mut scenes = Vec::with_capacity(rows.len());
         for row in rows {
-            let payload: serde_json::Value = row.try_get("payload").map_err(|e| e.to_string())?;
-            let scene: CampaignMapScene =
-                serde_json::from_value(payload).map_err(|e| e.to_string())?;
-            scenes.push(scene);
+            version = row.try_get("scenes_version").map_err(|e| e.to_string())?;
+            let payload: Option<serde_json::Value> =
+                row.try_get("payload").map_err(|e| e.to_string())?;
+            if let Some(payload) = payload {
+                scenes.push(serde_json::from_value(payload).map_err(|e| e.to_string())?);
+            }
         }
-        Ok(scenes)
+        Ok((scenes, version))
     }
 
     /// Upserts a campaign note by `(campaign_id, slug)`.
@@ -1834,7 +1833,22 @@ impl CampaignImportTarget for SqlxPostgresStore {
         self.ensure_campaign_row(campaign_id)
             .await
             .map_err(|e| ArchiveError::Io(std::io::Error::other(e)))?;
+        let map_scenes: Vec<CampaignMapScene> = entities
+            .iter()
+            .filter_map(|e| restorable_scene(campaign_id, e))
+            .collect();
+        if !map_scenes.is_empty() {
+            let io = |e: String| ArchiveError::Io(std::io::Error::other(e));
+            let mut tx = self.pool.begin().await.map_err(|e| io(e.to_string()))?;
+            Self::replace_scene_rows(&mut tx, campaign_id, &map_scenes)
+                .await
+                .map_err(io)?;
+            tx.commit().await.map_err(|e| io(e.to_string()))?;
+        }
         for entity in entities {
+            if restorable_scene(campaign_id, entity).is_some() {
+                continue;
+            }
             let entity_id = entity
                 .data
                 .get("id")

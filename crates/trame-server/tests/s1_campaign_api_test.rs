@@ -1377,6 +1377,154 @@ async fn a26b_uvtt_import_bumps_scene_set_version() {
     }
 }
 
+/// Map scene named `name` holding one of each GM secret: a closed secret door, a GM-hidden
+/// staged token and a GM-only audio emitter.
+fn scene_with_secrets(campaign_id: Uuid, name: &str, revealed: bool) -> Value {
+    json!({
+        "id": Uuid::new_v4(),
+        "campaign_id": campaign_id,
+        "name": name,
+        "grid_size_px": 70,
+        "grid_cell_distance_ft": 5.0,
+        "width_px": 1400,
+        "height_px": 1400,
+        "revealed_to_players": revealed,
+        "wall_segments": [{
+            "id": Uuid::new_v4(),
+            "p1": { "x": 0.0, "y": 0.0 },
+            "p2": { "x": 140.0, "y": 0.0 },
+            "wall_type": "SecretDoor",
+            "door_state": "Closed"
+        }],
+        "staged_tokens": [{
+            "id": Uuid::new_v4(), "name": "Ambush Goblin", "x": 70.0, "y": 70.0,
+            "visibility": "GmHidden"
+        }],
+        "spatial_audio_emitters": [{
+            "id": Uuid::new_v4(), "x": 10.0, "y": 10.0, "elevation_ft": 0.0,
+            "radius_ft": 30.0, "volume": 1.0, "looping": true, "gm_only": true,
+            "audio_clip_url": "secret.ogg"
+        }]
+    })
+}
+
+#[tokio::test]
+async fn a26b_archive_round_trip_restores_scenes_with_player_masking() {
+    // (case, scenes as (name, revealed_to_players))
+    let cases: [(&str, &[(&str, bool)]); 3] = [
+        ("no_scenes", &[]),
+        ("one_hidden_scene", &[("Cragmaw Hideout", false)]),
+        (
+            "several_scenes_mixed_visibility",
+            &[
+                ("Phandalin", true),
+                ("Cragmaw Hideout", false),
+                ("Wave Echo Cave", true),
+            ],
+        ),
+    ];
+    for (case, spec) in cases {
+        let h = Harness::new();
+        let app = h.app();
+        let (source_id, _, gm) = h.campaign(&app).await;
+        let scenes: Vec<Value> = spec
+            .iter()
+            .map(|(name, revealed)| scene_with_secrets(source_id, name, *revealed))
+            .collect();
+        let (status, body) = put_scene_set(
+            &app,
+            source_id,
+            &gm,
+            json!({ "expected_version": 0, "scenes": scenes }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {body}");
+
+        let req = Request::builder()
+            .uri(format!("/api/v1/campaigns/{source_id}/export"))
+            .header("cookie", &gm)
+            .body(Body::empty())
+            .unwrap();
+        let (status, _, archive) = send_raw(&app, req).await;
+        assert_eq!(status, StatusCode::OK, "case {case}");
+        let (status, imported) =
+            raw_post(&app, "/api/v1/campaigns/import", &gm, archive.to_vec()).await;
+        assert_eq!(status, StatusCode::CREATED, "case {case}: {imported}");
+        assert_eq!(
+            imported["scenes_restored"],
+            json!(spec.len()),
+            "case {case}"
+        );
+        let new_id = Uuid::parse_str(imported["campaign_id"].as_str().unwrap()).unwrap();
+
+        let gm_view = get_scene_set(&app, new_id, &gm).await;
+        assert_eq!(gm_view["version"], json!(0), "case {case}");
+        let gm_scenes = gm_view["scenes"].as_array().unwrap();
+        let names: Vec<&str> = gm_scenes
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        let want: Vec<&str> = spec.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, want, "case {case}: scene order");
+        for (scene, original) in gm_scenes.iter().zip(&scenes) {
+            assert_ne!(scene["id"], original["id"], "case {case}: ids remapped");
+            assert_eq!(scene["campaign_id"], json!(new_id), "case {case}");
+            assert_eq!(
+                scene["wall_segments"][0]["wall_type"],
+                json!("SecretDoor"),
+                "case {case}: GM keeps secrets"
+            );
+            assert_eq!(scene["staged_tokens"].as_array().unwrap().len(), 1);
+            assert_eq!(scene["spatial_audio_emitters"].as_array().unwrap().len(), 1);
+        }
+
+        let (player_id, player) = h.account().await;
+        h.join(new_id, player_id, "PLAYER").await;
+        let player_view = get_scene_set(&app, new_id, &player).await;
+        let player_scenes = player_view["scenes"].as_array().unwrap();
+        let revealed: Vec<&str> = spec.iter().filter(|s| s.1).map(|s| s.0).collect();
+        let player_names: Vec<&str> = player_scenes
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(player_names, revealed, "case {case}: only revealed scenes");
+        for scene in player_scenes {
+            assert_eq!(
+                scene["wall_segments"][0]["wall_type"],
+                json!("Normal"),
+                "case {case}: secret door masked"
+            );
+            assert_eq!(scene["staged_tokens"], json!([]), "case {case}");
+            assert_eq!(scene["spatial_audio_emitters"], json!([]), "case {case}");
+        }
+
+        let (status, body) = put_scene_set(
+            &app,
+            new_id,
+            &gm,
+            json!({ "expected_version": 0, "scenes": gm_scenes }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {body}");
+        assert_eq!(body["version"], json!(1), "case {case}");
+
+        let req = Request::builder()
+            .uri(format!("/api/v1/campaigns/{new_id}/export"))
+            .header("cookie", &gm)
+            .body(Body::empty())
+            .unwrap();
+        let (_, _, archive) = send_raw(&app, req).await;
+        let (status, reimported) =
+            raw_post(&app, "/api/v1/campaigns/import", &gm, archive.to_vec()).await;
+        assert_eq!(status, StatusCode::CREATED, "case {case}: {reimported}");
+        assert_eq!(
+            reimported["scenes_restored"],
+            json!(spec.len()),
+            "case {case}: re-export does not duplicate scenes"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // A27 — Idle-Lease sweeper and Ping
 // ---------------------------------------------------------------------------
