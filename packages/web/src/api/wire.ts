@@ -53,19 +53,72 @@ export interface WirePoint2D {
 export type WireRollVisibility = "Public" | "GmOnly" | "BlindGm";
 
 /**
- * Externally tagged `TrameCommand` (`{ MoveToken: { token_id, ... } }`).
- * Command payload typing belongs to the engine bridge; the transport only
- * forwards the tagged map.
+ * Internally tagged `TrameCommand` (`{ cmd: "MOVE_TOKEN", token_id, ... }`,
+ * `#[serde(tag = "cmd", rename_all = "SCREAMING_SNAKE_CASE")]`). Typed builders
+ * live in `table/commands.ts`; the transport only forwards the map inside the
+ * externally tagged `SubmitCommand` envelope.
  */
 export type WireTrameCommand = Record<string, unknown>;
 
-/** Externally tagged `TrameEvent` as emitted inside `CommandAccepted.events`. */
+/** Internally tagged `TrameEvent` (`{ event: "TOKEN_MOVED", ... }`) inside `CommandAccepted.events`. */
 export type WireTrameEvent = Record<string, unknown>;
 
-/** Token entry of `ProjectedTableState.tokens` (fields beyond `id` are engine-owned). */
+/** Coarse health tier sent for tokens the recipient does not control (`BloodiedState`). */
+export type WireBloodiedState = "UNHURT" | "BLOODIED" | "DOWN";
+
+/**
+ * Token entry of `ProjectedTableState.tokens` (full `TokenState`, owned or GM)
+ * or `public_tokens` (reduced `PublicTokenView`). Vitals and action economy
+ * are only present on full tokens.
+ */
 export interface WireTokenState {
-  /** Token UUID; equals its key in `tokens`. */
+  /** Token UUID; equals its key in `tokens` / `public_tokens`. */
   id: Uuid;
+  /** Display name. */
+  name?: string;
+  /** Controlling user, `null` for GM-controlled NPCs. */
+  owner_user_id?: Uuid | null;
+  /** Linked persistent actor sheet (ADR-0037), when any. */
+  actor_id?: Uuid | null;
+  /** Top-left footprint coordinate in canvas pixels (`px`). */
+  top_left?: WirePoint2D;
+  /** Footprint width in grid cells (`>= 1`). */
+  grid_w?: number;
+  /** Footprint height in grid cells (`>= 1`). */
+  grid_h?: number;
+  /** Base elevation in feet (`ft`). */
+  elevation_ft?: number;
+  /** Current hit points (full tokens only). */
+  hp?: number;
+  /** Maximum hit points (full tokens only). */
+  max_hp?: number;
+  /** Temporary hit points (full tokens only). */
+  temp_hp?: number;
+  /** Health tier (public tokens only). */
+  bloodied?: WireBloodiedState;
+  /** Visible condition labels. */
+  conditions?: string[];
+  [field: string]: unknown;
+}
+
+/** `ReactionPromptCloseReason` (engine): why a prompt left `active_reaction_prompts`. */
+export type ReactionPromptCloseReason = "RESOLVED" | "STALE" | "UNDONE";
+
+/**
+ * Tactical reaction window (`ReactionPrompt`). Prompts never expire on a timer
+ * (G2): they stay until `DecideReaction`, `ResolveReaction`, or a close event.
+ */
+export interface WireReactionPrompt {
+  /** Prompt UUID used by `DecideReaction` / `ResolveReaction`. */
+  prompt_id: Uuid;
+  /** Token allowed to spend its reaction. */
+  reactor_actor_id: Uuid;
+  /** Token whose movement opened the window. */
+  trigger_token_id: Uuid;
+  /** User who must decide; `null` means the GM decides. */
+  reactor_owner_user_id?: Uuid | null;
+  /** `true` after `Trigger`: waiting for `ResolveReaction`. */
+  awaiting_resolution?: boolean;
   [field: string]: unknown;
 }
 
@@ -90,12 +143,15 @@ export interface ProjectedTableState {
   cell_size_px: number;
   /** Tactical distance per grid cell in feet (`ft`). */
   feet_per_cell: number;
-  /** Tokens visible to this recipient, keyed by token UUID. */
+  /** Full tokens the recipient controls (every token for GMs), keyed by token UUID. */
   tokens: Record<Uuid, WireTokenState>;
+  /** Reduced views of visible tokens the recipient does not control (always empty for GMs). */
+  public_tokens?: Record<Uuid, WireTokenState>;
   walls: unknown[];
   persistent_aoes: Record<Uuid, unknown>;
   initiative_order: Uuid[];
-  active_turn_index: number;
+  /** Index into `initiative_order`; `null` when the active combatant is hidden or the order is empty. */
+  active_turn_index: number | null;
   round: number;
   lights: unknown[];
   fog_overrides: unknown[];
@@ -104,7 +160,7 @@ export interface ProjectedTableState {
   map_width_px: number;
   /** Battlemap height in canvas pixels (`px`). */
   map_height_px: number;
-  active_reaction_prompts: Record<Uuid, unknown>;
+  active_reaction_prompts: Record<Uuid, WireReactionPrompt>;
   /** Pending MCP proposals; always empty for non-GM recipients. */
   mcp_staging_proposals: Record<Uuid, McpStagingProposal>;
 }

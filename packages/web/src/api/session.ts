@@ -18,6 +18,10 @@
  * 2. `Bounded Logs`:
  *    - Dice and pointer-ping logs are capped (`DICE_LOG_LIMIT`,
  *      `POINTER_PING_LIMIT`) so a long session cannot grow memory unbounded.
+ * 3. `Initiative Totals Are Event-Sourced`:
+ *    - `ProjectedTableState` carries the initiative order but not the totals,
+ *      so `initiativeTotals` is rebuilt from `INITIATIVE_UPDATED` events and
+ *      `Initiative: {name}` dice rolls, and cleared when combat ends.
  * ============================================================================
  */
 import { signal, type Signal } from "@preact/signals";
@@ -26,6 +30,7 @@ import type {
   McpStagingProposal,
   ProjectedDiceRoll,
   ProjectedTableState,
+  ReactionPromptCloseReason,
   Uuid,
   WirePoint2D,
   WireTrameEvent,
@@ -65,11 +70,33 @@ export type SessionStatus = "restoring" | "anonymous" | "authenticated";
 /** WebSocket lifecycle for the active campaign room. */
 export type ConnectionStatus = "idle" | "connecting" | "open" | "closed";
 
-/** Latest persistent actor payload broadcast by `ActorUpdated` (ADR-0037). */
+/**
+ * Latest persistent actor sheet known to the client, from the REST actor routes
+ * or an `ActorUpdated` broadcast (ADR-0037).
+ */
 export interface ActorRecord {
   /** Optimistic-concurrency version (`>= 1`); stale broadcasts are dropped. */
   version: number;
+  /** Sheet payload (`Dnd5eActorData` for D&D 5e campaigns). */
   data: unknown;
+  /** Display name; absent when only a broadcast has been seen. */
+  name?: string;
+  /** Owning player, `null` for GM-owned sheets; absent when only a broadcast has been seen. */
+  ownerUserId?: Uuid | null;
+}
+
+/** Campaign member (`GET /api/v1/campaigns/{id}/members`). */
+export interface CampaignMember {
+  userId: Uuid;
+  displayName: string;
+  /** Campaign role: `"GM"`, `"PLAYER"`, `"SPECTATOR"`. */
+  role: string;
+}
+
+/** Last reaction prompt closed without a `Pass` (`REACTION_PROMPT_CLOSED`). */
+export interface ClosedReactionPrompt {
+  promptId: Uuid;
+  reason: ReactionPromptCloseReason;
 }
 
 /** Pointer ping broadcast by another session. */
@@ -103,6 +130,10 @@ export interface SessionState {
   lastRejection: Signal<string | null>;
   /** Last measured WebSocket round-trip time in milliseconds. */
   rttMs: Signal<number | null>;
+  /** Initiative totals keyed by token UUID (see invariant 3). */
+  initiativeTotals: Signal<Record<Uuid, number>>;
+  /** Most recent `REACTION_PROMPT_CLOSED` event, e.g. `UNDONE` after a GM undo. */
+  lastClosedPrompt: Signal<ClosedReactionPrompt | null>;
 }
 
 /** Creates an isolated set of session signals in their initial state. */
@@ -124,8 +155,16 @@ export function createSessionState(): SessionState {
     pointerPings: signal<PointerPing[]>([]),
     lastRejection: signal<string | null>(null),
     rttMs: signal<number | null>(null),
+    initiativeTotals: signal<Record<Uuid, number>>({}),
+    lastClosedPrompt: signal<ClosedReactionPrompt | null>(null),
   };
 }
 
 /** Application-wide session state. */
 export const session = createSessionState();
+
+/** Actor sheet opened by the last token click or actor-list selection (`null` = none). */
+export const selectedActorIdSignal = signal<Uuid | null>(null);
+
+/** Token selected on the table canvas; target of move, damage, and heal controls. */
+export const selectedTokenIdSignal = signal<Uuid | null>(null);
