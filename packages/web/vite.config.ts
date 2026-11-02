@@ -21,8 +21,8 @@
  *        `http://localhost:8080`, the `trame-server` default port. It has no
  *        `VITE_` prefix, so it never leaks into the client bundle.
  *   3. `Zero-Config Preact JSX`:
- *      - Uses esbuild's native `jsx: 'automatic'` with `jsxImportSource: 'preact'`
- *        so no external Babel/SWC plugins are required.
+ *      - Uses Oxc's native `jsx.runtime: 'automatic'` with `jsx.importSource: 'preact'`
+ *        (Vite 8 transformer) so no external Babel/SWC plugins are required.
  *
  * EXECUTION LIFECYCLE:
  * --------------------
@@ -36,9 +36,11 @@ import { defineConfig } from 'vite';
 const apiOrigin = process.env.TRAME_API_ORIGIN ?? 'http://localhost:8080';
 
 export default defineConfig({
-  esbuild: {
-    jsx: 'automatic',
-    jsxImportSource: 'preact',
+  oxc: {
+    jsx: {
+      runtime: 'automatic',
+      importSource: 'preact',
+    },
   },
   server: {
     host: '0.0.0.0',
