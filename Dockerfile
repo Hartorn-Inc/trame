@@ -45,7 +45,7 @@ RUN wasm-pack build crates/trame-engine --release --target web --out-dir ../../p
 FROM rust-source AS rust-builder
 RUN cargo build --release --locked --bin trame-server
 
-FROM node:24-bookworm-slim AS web-builder
+FROM node:24.22.2-bookworm-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c AS web-builder
 WORKDIR /build/packages/web
 COPY packages/web/package.json packages/web/package-lock.json ./
 RUN npm ci
@@ -54,7 +54,7 @@ COPY packages/game-systems ../game-systems
 COPY --from=wasm-builder /build/packages/web/src/wasm ./src/wasm
 RUN npx tsc --noEmit -p tsconfig.build.json && npx vite build
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 WORKDIR /app
 COPY --from=rust-builder /build/target/release/trame-server /app/trame-server
 COPY --from=web-builder /build/packages/web/dist /app/static
