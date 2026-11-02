@@ -21,10 +21,9 @@
 //!        `AoeTemplate::evaluate_targets` algorithms, guaranteeing zero drift
 //!        between local aiming overlays and authoritative server resolution.
 //!   2. `Fail-Closed JSON Boundary`:
-//!      - WebAssembly entrypoints (`wasm_compute_visibility_polygon` and
-//!        `wasm_preview_aoe_cells`) deserialize untrusted JSON inputs via
-//!        `serde_json` and return explicit `Result<String, JsValue>` errors
-//!        rather than panicking across the WASM FFI boundary.
+//!      - WebAssembly exports take one JSON request string and return a JSON
+//!        response string; malformed input throws a JS `Error` instead of
+//!        panicking across the WASM FFI boundary (see `wasm_api`).
 //!   3. `Pure Deterministic Execution`:
 //!      - All functions in `trame-engine` are free of I/O, network calls, and
 //!        ambient system clocks so that state transitions and WAL replays
@@ -32,78 +31,71 @@
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
-//!   `wasm_compute_visibility_polygon(walls_json, origin_x, origin_y, ...)`
-//!     ├── 1. Deserialize `Vec<WallSegment>` from `walls_json`.
-//!     ├── 2. Construct balanced 2.5D `Bvh2D` acceleration tree.
-//!     ├── 3. Cast radial rays across wall endpoints (`±1e-4` rad offsets).
-//!     └── 4. Serialize resulting `Vec<Point2D>` polygon back to JSON string.
-//!
-//!   `wasm_preview_aoe_cells(walls_json, aoe_json, cell_size_px, feet_per_cell)`
-//!     ├── 1. Deserialize `Vec<WallSegment>` and `AoeTemplate` payloads.
-//!     ├── 2. Build `Bvh2D` spatial index for wall-occlusion clipping.
-//!     ├── 3. Discretize affected `GridCell` coordinates under the chosen mode.
-//!     └── 4. Serialize affected `Vec<GridCell>` list back to JSON string.
+//!   JS `computeVisibilityPolygon(requestJson)` (likewise `previewAoeCells`,
+//!   `previewMove`, `countSoundOccludingWalls`, `evaluateDerivedDag`)
+//!     ├── 1. `#[wasm_bindgen]` wrapper below forwards to `wasm_api::*_json`.
+//!     ├── 2. Deserialize the camelCase request (walls, template, token...).
+//!     ├── 3. Run the same engine code the server uses.
+//!     └── 4. Serialize the result to JSON, or throw `Error(message)`.
 //! ============================================================================
 
 pub mod aoe;
 pub mod commands;
 pub mod geometry;
 pub mod rules;
+pub mod wasm_api;
 
-use crate::aoe::AoeTemplate;
-use crate::geometry::{Bvh2D, Point2D, WallSegment};
+pub use crate::commands::{
+    AmbientLightingPreset, CampaignRole, CommandActor, CommandError, FogOverrideCell,
+    FogOverrideMode, LightSource, McpStagingProposal, MovePreview, ReactionDecision,
+    ReactionPrompt, ReactionPromptCloseReason, RefundableResource, SceneActivation, TableMode,
+    TableSnapshotData, TableState, TokenState, TrameCommand, TrameEvent, UndoEntry,
+};
+pub use crate::geometry::{Bvh2D, Point2D, SenseProfile, WallKind, WallSegment};
+pub use crate::rules::{
+    ActiveEffect, AttributeModifier, DEATH_SAVE_FAILURES_TO_DIE, DamageAffinity, DamageResolution,
+    FormulaError, ModifierPhase, RulesEngineError, evaluate_actor_attributes, evaluate_derived_dag,
+    resolve_damage_application,
+};
 use wasm_bindgen::prelude::*;
 
-/// WebAssembly entrypoint that computes a JSON-serialized 2D radial visibility
-/// polygon around `(origin_x, origin_y)` (in canvas pixels) at eye elevation
-/// `observer_eye_ft` (in feet) up to `max_range_px` (in pixels) against a JSON
-/// array of `WallSegment` primitives.
-///
-/// When `has_truesight` is `true`, illusionary walls marked with
-/// `pierced_by_truesight: true` do not block the visibility rays. Returns a
-/// `JsValue` error string if `walls_json` fails schema deserialization.
-#[wasm_bindgen]
-pub fn wasm_compute_visibility_polygon(
-    walls_json: &str,
-    origin_x: f64,
-    origin_y: f64,
-    observer_eye_ft: f64,
-    max_range_px: f64,
-    has_truesight: bool,
-) -> Result<String, JsValue> {
-    let walls: Vec<WallSegment> = serde_json::from_str(walls_json)
-        .map_err(|e| JsValue::from_str(&format!("invalid walls_json: {e}")))?;
-    let bvh = Bvh2D::build(walls);
-    let poly = bvh.compute_visibility_polygon(
-        Point2D::new(origin_x, origin_y),
-        observer_eye_ft,
-        max_range_px,
-        has_truesight,
-    );
-    serde_json::to_string(&poly).map_err(|e| JsValue::from_str(&e.to_string()))
+fn into_js(result: Result<String, String>) -> Result<String, JsError> {
+    result.map_err(|message| JsError::new(&message))
 }
 
-/// WebAssembly entrypoint that computes the JSON-serialized list of `GridCell`
-/// coordinates affected by an `AoeTemplate` (`aoe_json`) clipped against
-/// `WallSegment`s (`walls_json`), given `cell_size_px` (in pixels, `> 0.0`) and
-/// `feet_per_cell` (in feet, typically `5.0`).
-///
-/// Used by the browser canvas for 60 FPS zero-latency spell aiming previews.
-/// Fails closed with a `JsValue` error if either JSON payload is malformed.
-#[wasm_bindgen]
-pub fn wasm_preview_aoe_cells(
-    walls_json: &str,
-    aoe_json: &str,
-    cell_size_px: f64,
-    feet_per_cell: f64,
-) -> Result<String, JsValue> {
-    let walls: Vec<WallSegment> = serde_json::from_str(walls_json)
-        .map_err(|e| JsValue::from_str(&format!("invalid walls_json: {e}")))?;
-    let template: AoeTemplate = serde_json::from_str(aoe_json)
-        .map_err(|e| JsValue::from_str(&format!("invalid aoe_json: {e}")))?;
-    let bvh = Bvh2D::build(walls);
-    let (cells, _) = template.evaluate_targets(&[], cell_size_px, feet_per_cell, &bvh);
-    serde_json::to_string(&cells).map_err(|e| JsValue::from_str(&e.to_string()))
+/// Visibility polygon around an observer. Request/response shapes:
+/// `wasm_api::compute_visibility_polygon_json`.
+#[wasm_bindgen(js_name = computeVisibilityPolygon)]
+pub fn compute_visibility_polygon(request_json: &str) -> Result<String, JsError> {
+    into_js(wasm_api::compute_visibility_polygon_json(request_json))
+}
+
+/// Grid cells covered by a wall-clipped AoE template. Request/response shapes:
+/// `wasm_api::preview_aoe_cells_json`.
+#[wasm_bindgen(js_name = previewAoeCells)]
+pub fn preview_aoe_cells(request_json: &str) -> Result<String, JsError> {
+    into_js(wasm_api::preview_aoe_cells_json(request_json))
+}
+
+/// Straight-move preview (wall collision and cost) under `MoveToken` rules. Request/response
+/// shapes: `wasm_api::preview_move_json`.
+#[wasm_bindgen(js_name = previewMove)]
+pub fn preview_move(request_json: &str) -> Result<String, JsError> {
+    into_js(wasm_api::preview_move_json(request_json))
+}
+
+/// Number of sound-blocking walls between an emitter and a listener. Request/response shapes:
+/// `wasm_api::count_sound_occluding_walls_json`.
+#[wasm_bindgen(js_name = countSoundOccludingWalls)]
+pub fn count_sound_occluding_walls(request_json: &str) -> Result<String, JsError> {
+    into_js(wasm_api::count_sound_occluding_walls_json(request_json))
+}
+
+/// `derivedDAG` evaluation with optional active effects, the single formula evaluator (G1).
+/// Request/response shapes: `wasm_api::evaluate_derived_dag_json`.
+#[wasm_bindgen(js_name = evaluateDerivedDag)]
+pub fn evaluate_derived_dag_wasm(request_json: &str) -> Result<String, JsError> {
+    into_js(wasm_api::evaluate_derived_dag_json(request_json))
 }
 
 #[cfg(test)]
@@ -295,6 +287,7 @@ mod tests {
                 target: "ac.base".to_string(),
                 phase: ModifierPhase::Add,
                 value: 2.0,
+                formula: None,
             }],
         };
         let eff2_duplicate = ActiveEffect {
@@ -307,6 +300,7 @@ mod tests {
                 target: "ac.base".to_string(),
                 phase: ModifierPhase::Add,
                 value: 2.0,
+                formula: None,
             }],
         };
 
@@ -371,6 +365,8 @@ mod tests {
                     token_id,
                     raw_damage: 28,
                     affinity: DamageAffinity::Resistant,
+                    is_critical: false,
+                    damage_type: None,
                 },
             )
             .unwrap();
@@ -391,5 +387,230 @@ mod tests {
             .unwrap();
         assert_eq!(state.data.tokens[&token_id].hp, 30);
         assert_eq!(state.data.tokens[&token_id].temp_hp, 5);
+    }
+
+    #[test]
+    fn test_move_token_wall_blocking_and_gm_override() {
+        let wall = WallSegment {
+            id: Uuid::new_v4(),
+            a: Point2D::new(150.0, 0.0),
+            b: Point2D::new(150.0, 500.0),
+            bottom_elevation_ft: 0.0,
+            top_elevation_ft: 10.0,
+            kind: WallKind::Door {
+                is_open: false,
+                is_locked: false,
+            },
+            blocks_vision: true,
+            blocks_light: true,
+            blocks_movement: true,
+            blocks_sound: true,
+        };
+        let mut state = TableState::new(100.0, 5.0, vec![wall.clone()]);
+        let player_id = Uuid::new_v4();
+        let token_id = Uuid::new_v4();
+        let mut tok = TokenState::new_default(token_id, "Valeros", Point2D::new(0.0, 100.0));
+        tok.owner_user_id = Some(player_id);
+        state.data.tokens.insert(token_id, tok);
+
+        let player = CommandActor {
+            user_id: player_id,
+            role: CampaignRole::Player,
+        };
+        let gm = CommandActor {
+            user_id: Uuid::new_v4(),
+            role: CampaignRole::Gm,
+        };
+
+        // Closed door blocks non-GM movement across x=150
+        let err = state
+            .apply_command(
+                &player,
+                TrameCommand::MoveToken {
+                    token_id,
+                    to_top_left: Point2D::new(200.0, 100.0),
+                    to_elevation_ft: Some(0.0),
+                    gm_teleport: false,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, CommandError::WallCollision { .. }));
+
+        // GM teleport bypasses wall blocking
+        state
+            .apply_command(
+                &gm,
+                TrameCommand::MoveToken {
+                    token_id,
+                    to_top_left: Point2D::new(200.0, 100.0),
+                    to_elevation_ft: Some(0.0),
+                    gm_teleport: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(state.data.tokens[&token_id].top_left.x, 200.0);
+
+        // Open the door -> player can move back across
+        state
+            .apply_command(
+                &player,
+                TrameCommand::ToggleDoor {
+                    wall_id: wall.id,
+                    is_open: true,
+                },
+            )
+            .unwrap();
+        state
+            .apply_command(
+                &player,
+                TrameCommand::MoveToken {
+                    token_id,
+                    to_top_left: Point2D::new(0.0, 100.0),
+                    to_elevation_ft: Some(0.0),
+                    gm_teleport: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(state.data.tokens[&token_id].top_left.x, 0.0);
+    }
+
+    #[test]
+    fn test_tabletop_setup_reactions_and_mcp_staging_commands() {
+        let mut state = TableState::new(100.0, 5.0, vec![]);
+        let gm = CommandActor {
+            user_id: Uuid::new_v4(),
+            role: CampaignRole::Gm,
+        };
+        let player_id = Uuid::new_v4();
+        let player = CommandActor {
+            user_id: player_id,
+            role: CampaignRole::Player,
+        };
+
+        // 1. SpawnToken & RemoveToken + Undo
+        let token_id = Uuid::new_v4();
+        let mut token = TokenState::new_default(token_id, "Kyra", Point2D::new(100.0, 100.0));
+        token.owner_user_id = Some(player_id);
+        state
+            .apply_command(&gm, TrameCommand::SpawnToken { token })
+            .unwrap();
+        assert!(state.data.tokens.contains_key(&token_id));
+
+        // 2. AddWall, AddLight, SetFogOverride, SetMapConfig
+        let wall_id = Uuid::new_v4();
+        state
+            .apply_command(
+                &gm,
+                TrameCommand::AddWall {
+                    wall: WallSegment::normal_wall(
+                        wall_id,
+                        Point2D::new(0.0, 0.0),
+                        Point2D::new(200.0, 0.0),
+                    ),
+                },
+            )
+            .unwrap();
+        assert_eq!(state.data.walls.len(), 1);
+
+        let light_id = Uuid::new_v4();
+        state
+            .apply_command(
+                &gm,
+                TrameCommand::AddLight {
+                    light: LightSource {
+                        id: light_id,
+                        position: Point2D::new(150.0, 150.0),
+                        elevation_ft: 5.0,
+                        bright_radius_ft: 20.0,
+                        dim_radius_ft: 40.0,
+                        color_hex: "#FFAA44".to_string(),
+                        intensity: 1.0,
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(state.data.lights.len(), 1);
+
+        state
+            .apply_command(
+                &gm,
+                TrameCommand::SetFogOverride {
+                    mode: FogOverrideMode::Reveal,
+                    cell_x: 3,
+                    cell_y: 4,
+                },
+            )
+            .unwrap();
+        assert_eq!(state.data.fog_overrides.len(), 1);
+
+        state
+            .apply_command(
+                &gm,
+                TrameCommand::SetMapConfig {
+                    background_url: Some("/api/v1/assets/hash123".to_string()),
+                    width_ft: 100,
+                    height_ft: 80,
+                },
+            )
+            .unwrap();
+        assert_eq!(state.data.map_width_px, 2000);
+        assert_eq!(state.data.map_height_px, 1600);
+
+        // 3. DecideReaction
+        let prompt_id = Uuid::new_v4();
+        state.data.active_reaction_prompts.insert(
+            prompt_id,
+            ReactionPrompt {
+                prompt_id,
+                reactor_actor_id: token_id,
+                trigger_token_id: Uuid::new_v4(),
+                pending_destination: Some(Point2D::new(300.0, 100.0)),
+                pending_elevation_ft: Some(0.0),
+                reactor_owner_user_id: Some(player_id),
+                resolved_reactor_ids: Vec::new(),
+                awaiting_resolution: false,
+            },
+        );
+        state
+            .apply_command(
+                &player,
+                TrameCommand::DecideReaction {
+                    prompt_id,
+                    actor_id: token_id,
+                    decision: ReactionDecision::Trigger {
+                        ability_id: Some("opportunity_attack".to_string()),
+                    },
+                },
+            )
+            .unwrap();
+        assert!(state.data.active_reaction_prompts[&prompt_id].awaiting_resolution);
+        assert!(!state.data.tokens[&token_id].has_reaction);
+        state
+            .apply_command(&player, TrameCommand::ResolveReaction { prompt_id })
+            .unwrap();
+        assert!(state.data.active_reaction_prompts.is_empty());
+
+        // 4. CommitMcpStaging & RejectMcpStaging
+        let proposal_id = Uuid::new_v4();
+        let spawned_by_mcp = Uuid::new_v4();
+        state.data.mcp_staging_proposals.insert(
+            proposal_id,
+            McpStagingProposal {
+                proposal_id,
+                summary: "Spawn Goblin".to_string(),
+                commands: vec![TrameCommand::SpawnToken {
+                    token: TokenState::new_default(
+                        spawned_by_mcp,
+                        "Goblin",
+                        Point2D::new(250.0, 250.0),
+                    ),
+                }],
+            },
+        );
+        state
+            .apply_command(&gm, TrameCommand::CommitMcpStaging { proposal_id })
+            .unwrap();
+        assert!(state.data.tokens.contains_key(&spawned_by_mcp));
+        assert!(state.data.mcp_staging_proposals.is_empty());
     }
 }

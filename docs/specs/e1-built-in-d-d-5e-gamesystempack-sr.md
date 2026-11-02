@@ -1,5 +1,7 @@
 # Technical & Functional Specification: Built-in D&D 5e GameSystemPack (SRD 5.1)
 
+> **Rules baseline superseded:** the pack now targets SRD 5.2.1 (2024 rules), see [ADR-0038](../adr/0038-srd-521-rules-baseline.md). SRD 5.1 content, subclass levels, feats and attribution text below are historical.
+
 ## 1. Context & Objectives
 
 This specification defines the complete implementation of the built-in D&D 5e system pack (`packages/game-systems/dnd5e`) for TRAME V1. The pack builds upon the generic `crates/trame-engine` core and standardizes the reference rules of the System Reference Document 5.1 (SRD 5.1) under the Creative Commons CC-BY-4.0 license.
@@ -93,7 +95,7 @@ export interface ResourcePool {
   resetOn: RestType;
 }
 
-export interface DeathSavesState {
+export interface DeathSaveCounters {
   successes: number;
   failures: number;
 }
@@ -141,7 +143,7 @@ export interface Dnd5eActorData {
     hitDiceCurrent: number;
     hitDieSize: number;
     exhaustion: number;
-    deathSaves: DeathSavesState;
+    deathSaves: DeathSaveCounters;
     spellcastingAbility?: AbilityId;
     baseArmorAC?: number;
     shieldBonus?: number;
@@ -212,7 +214,9 @@ The `system.json` file provides the configuration read by `trame-engine` for val
 
 ### 3.3 Derived Calculation Function (`computeDnd5eSheetDerived`)
 
-The `manifest.ts` module exposes the pure synchronous function `computeDnd5eSheetDerived(actor: Dnd5eActorData)` that computes derived values mirroring the `derivedDAG` graph for tests running without the WASM runtime:
+> **Superseded by the ADR-0001 amendment (single evaluator, G1):** there is no TypeScript evaluator. `computeDnd5eSheetDerived` keeps its signature but evaluates the `system.json` formulas through the WASM `evaluate_derived_dag`, installed with `setDerivedDagEvaluator` (the browser installs the `wasmBridge.ts` export; Node consumers and tests import `src/node.ts`). Calling it before an evaluator is installed throws. The rules below are now `system.json` formulas; AC uses the exclusive `Base` phase (`ac_base`, then `ac = ac_base + shield_bonus`, ADR-0038).
+
+The `manifest.ts` module exposes the pure synchronous function `computeDnd5eSheetDerived(actor: Dnd5eActorData)`, whose results follow these rules:
 1. Computes each ability modifier: `Math.floor((score - 10) / 2)`.
 2. Computes the proficiency bonus: `Math.floor((level - 1) / 4) + 2`.
 3. Computes passive perception: `10 + wisMod + (perceptionRank * profBonus)`.

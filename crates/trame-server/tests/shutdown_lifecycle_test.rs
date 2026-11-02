@@ -136,7 +136,7 @@ async fn test_graceful_shutdown_room_hibernation() {
     };
     room.send_envelope(
         gm_session_id,
-        trame_server::sync::ClientEnvelope::SubmitCommand(move_cmd),
+        trame_server::sync::ClientEnvelope::SubmitCommand(Box::new(move_cmd)),
     )
     .await
     .expect("command sent");
@@ -298,7 +298,7 @@ async fn test_hibernate_broadcasts_ws_close_1001_and_flushes_state() {
     };
     room.send_envelope(
         client1_session_id,
-        trame_server::sync::ClientEnvelope::SubmitCommand(move_cmd),
+        trame_server::sync::ClientEnvelope::SubmitCommand(Box::new(move_cmd)),
     )
     .await
     .expect("envelope sent");

@@ -172,6 +172,7 @@ async fn test_pat_http_endpoint_post_creation() {
         magic_link_service,
         session_store: store.clone(),
         totp_service,
+        security: Default::default(),
     };
     let app = build_auth_router(state);
 

@@ -6,15 +6,15 @@
  * PURPOSE:
  * --------
  * Defines the canonical TypeScript domain types, enumerations, and actor data
- * contracts for Dungeons & Dragons 5th Edition (SRD 5.1 CC-BY-4.0) within TRAME.
- * Without this shared contract layer, derived-stat evaluation, combat damage
- * mitigation, rest recovery, and compendium resolution would lack compile-time
- * type parity across client sheets and server-side pipelines.
+ * contracts for Dungeons & Dragons 5th Edition (SRD 5.2.1 CC-BY-4.0, 2024 rules)
+ * within TRAME. Without this shared contract layer, derived-stat evaluation,
+ * combat damage mitigation, rest recovery, and compendium resolution would lack
+ * compile-time type parity across client sheets and server-side pipelines.
  *
  * Open Game Content Attribution:
- * This work includes material taken from the System Reference Document 5.1 ("SRD 5.1")
- * by Wizards of the Coast LLC and available at https://dnd.wizards.com/resources/systems-reference-document.
- * The SRD 5.1 is licensed under the Creative Commons Attribution 4.0 International License
+ * This work includes material from the System Reference Document 5.2.1 ("SRD 5.2.1")
+ * by Wizards of the Coast LLC, available at https://www.dndbeyond.com/srd.
+ * The SRD 5.2.1 is licensed under the Creative Commons Attribution 4.0 International License,
  * available at https://creativecommons.org/licenses/by/4.0/legalcode.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
@@ -54,7 +54,7 @@
 export type AbilityId = "str" | "dex" | "con" | "int" | "wis" | "cha";
 
 /**
- * Canonical eighteen skill identifiers in D&D 5e (SRD 5.1).
+ * Canonical eighteen skill identifiers in D&D 5e (SRD 5.2.1).
  * Each skill maps deterministically to a governing `AbilityId` in `DND5E_SKILLS`.
  */
 export type SkillId =
@@ -86,7 +86,7 @@ export type SkillId =
 export type ProficiencyRank = 0 | 1 | 2;
 
 /**
- * Canonical thirteen damage types defined by the D&D 5e SRD 5.1 combat rules.
+ * Canonical thirteen damage types defined by the D&D 5e SRD 5.2.1 combat rules.
  * Used to index into `Dnd5eActorData.damageMitigations` during damage resolution.
  */
 export type DamageType =
@@ -143,7 +143,7 @@ export interface ResourcePool {
 /**
  * Death saving throw tally tracked while an actor is at `0` Hit Points.
  */
-export interface DeathSavesState {
+export interface DeathSaveCounters {
   /** Accumulated death save successes in the range `0..=3` (`3` stabilizes). */
   successes: number;
   /** Accumulated death save failures in the range `0..=3` (`3` causes death). */
@@ -169,17 +169,20 @@ export interface ActiveConditionState {
 /**
  * Spellcasting progression archetype used to allocate spell slots upon level-up:
  * - `"full"` / `"FULL_CASTER"`: 9-level progression (Bard, Cleric, Druid, Sorcerer, Wizard)
- * - `"half"` / `"HALF_CASTER"`: 5-level progression starting at level 2 (Paladin, Ranger)
+ * - `"half"` / `"HALF_CASTER"`: 5-level progression starting at level 1 (Paladin, Ranger)
+ * - `"third"` / `"THIRD_CASTER"`: 4-level progression starting at level 3 (one-third casters)
  * - `"pact"` / `"PACT_MAGIC"`: Warlock Pact Magic progression (uniform slot level, short-rest recovery)
  * - `"none"`: Non-spellcasting martial progression
  */
 export type CasterType =
   | "full"
   | "half"
+  | "third"
   | "pact"
   | "none"
   | "FULL_CASTER"
   | "HALF_CASTER"
+  | "THIRD_CASTER"
   | "PACT_MAGIC";
 
 /**
@@ -198,11 +201,16 @@ export interface AsiSelection {
 }
 
 /**
- * Feat acquisition selection referencing a canonical compendium feat identifier.
+ * Feat acquisition selection referencing one of the SRD 5.2.1 feats
+ * (`"srd:feat:<key>"` or the short `<key>`). Feats that raise an ability score
+ * (General feats `+1` up to 20, Epic Boons `+1` up to 30) require `abilityIncrease`
+ * naming one of the abilities the feat allows.
  */
 export interface FeatSelection {
   mode: "feat";
   featId: string;
+  /** Ability raised by `+1` for feats granting an increase; ignored for other feats. */
+  abilityIncrease?: AbilityId;
 }
 
 /**
@@ -222,9 +230,15 @@ export interface LevelUpOptions {
   hpIncreaseMode?: "fixed" | "roll";
   /** Certified Hit Die roll (`1..=hitDieSize`) required when `hitPointsMode === "rolled"`. */
   rolledHp?: number;
-  /** Archetype/subclass identifier required when `targetLevel` hits the class unlock tier. */
+  /**
+   * Subclass identifier, required when `targetLevel >= 3` (SRD 5.2.1: every class
+   * picks its subclass at level 3) and the actor has none yet.
+   */
   subclassId?: string;
-  /** ASI score bonuses (+2 or +1/+1 up to 20) or Feat selection at an ASI level. */
+  /**
+   * ASI score bonuses (+2 or +1/+1 up to 20) or Feat selection at an ASI level.
+   * A Constitution increase also raises max HP for every earlier level.
+   */
   asiOrFeat?: AsiOrFeatSelection;
   /** Canonical spell identifiers to register on the actor upon leveling up. */
   newSpellIds?: string[];
@@ -290,6 +304,13 @@ export interface Dnd5eActorData {
   id: string;
   /** Display name of the character, NPC, or monster. */
   name: string;
+  /**
+   * Content-addressed asset key returned by `POST /api/v1/campaigns/{id}/assets`,
+   * resolved to a signed URL by the client. Absent or `""` means no portrait.
+   * The pack never reads or rewrites it: every sheet transform carries the value
+   * through verbatim, so clearing a portrait is a client decision.
+   */
+  portraitAssetKey?: string;
   /** Actor classification controlling sheet presentation and NPC rules. */
   type: "character" | "npc" | "monster";
   /** Map of the six core ability scores (`1..=30`) and saving throw proficiencies. */
@@ -301,9 +322,13 @@ export interface Dnd5eActorData {
   classId?: string;
   /** Legacy or alternate primary class identifier alias. */
   class?: string;
-  /** Archetype or subclass identifier (e.g., `'school-of-evocation'`, `'champion'`). */
+  /** Archetype or subclass identifier (e.g., `'srd:subclass:evoker'`, `'champion'`). */
   subclassId?: string;
-  /** Acquired feature and feat identifiers. */
+  /** Species identifier (e.g., `'srd:species:dwarf'`); species grant no ability increases. */
+  speciesId?: string;
+  /** Background identifier (e.g., `'srd:background:sage'`), the source of ability increases. */
+  backgroundId?: string;
+  /** Acquired feature and feat identifiers (e.g., `'srd:feat:alert'`). */
   features?: string[];
   /** Learned and prepared spell identifiers. */
   spellIds?: string[];
@@ -339,10 +364,15 @@ export interface Dnd5eActorData {
     hitDiceCurrent: number;
     /** Number of faces on the class Hit Die (e.g., `6`, `8`, `10`, `12`). */
     hitDieSize: number;
-    /** Current exhaustion level (`0..=6`). */
+    /**
+     * Current exhaustion level (`0..=6`, SRD 5.2.1): `-2 * level` on d20 tests and
+     * `-5 ft * level` of speed; level `6` is death.
+     */
     exhaustion: number;
+    /** Walking speed in feet before exhaustion (species speed, defaults to `30`). */
+    speedFt?: number;
     /** Death saving throw counters while at `0` HP. */
-    deathSaves: DeathSavesState;
+    deathSaves: DeathSaveCounters;
     /** Primary ability used to compute Spell Save DC and Spell Attack Bonus. */
     spellcastingAbility?: AbilityId;
     /** Base Armor Class provided by equipped armor or natural armor (defaults to `10`). */

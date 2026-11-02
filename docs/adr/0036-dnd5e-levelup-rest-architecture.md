@@ -1,7 +1,7 @@
 # ADR-0036: D&D 5e Level-Up (Lvl 1-20), Short/Long Rests, and SRD 5.1 Compendium Expansion Architecture
 
 ## Status
-Accepted
+Accepted. Supersedes [ADR-0012](./0012-dnd5e-levelup-rest-architecture.md). Decision 3 (Dual Persistence Channel) is superseded by [ADR-0037](./0037-actor-rest-vs-token-trame-command-boundary.md): `Actor` sheet changes always use REST `PUT` with `expected_version`, never a WebSocket `UpdateActorData` command. The rules baseline is now SRD 5.2.1 ([ADR-0038](./0038-srd-521-rules-baseline.md)): every class takes its subclass at level 3, and the SRD 5.1 references below are historical.
 
 ## Context
 The `@trame/game-system-dnd5e` package initially contained a minimal `applyLevelUp` function in `packages/game-systems/dnd5e/src/progression.ts` without support for subclass selection, Ability Score Improvement (`+2` or `+1/+1`) versus Feat choices, spell learning, or multiclass/Pact Magic slot progression.

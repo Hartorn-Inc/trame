@@ -5,8 +5,6 @@ import {
   renderTrameLogoSvg,
   TRAME_LOGO_VARIANTS,
   normalizeLogoSize,
-  isLogoDuotone,
-  type TrameLogoVariant,
 } from "../src/components/icons/TrameLogo.tsx";
 import {
   AtlasIcon,

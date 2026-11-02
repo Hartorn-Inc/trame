@@ -17,6 +17,20 @@
 //!   - Asset entries (`assets/<uuid>.webp`) stream in bounded 64 KiB chunks to
 //!     `BlobStore::put_stream` so memory stays strictly below the 16 MiB RAM
 //!     ceiling; partial uploads are rolled back on any subsequent error.
+//!   - Zip-bomb caps: at most `MAX_ARCHIVE_ENTRIES` entries, a 4 MiB manifest,
+//!     declared entry sizes within `MAX_TEXT_ENTRY_BYTES` (32 MiB, buffered) or
+//!     `MAX_ASSET_ENTRY_BYTES` (64 MiB, streamed), and a declared total within
+//!     `MAX_TOTAL_UNCOMPRESSED_BYTES` (512 MiB). Each read loop aborts with
+//!     `ArchiveError::LimitExceeded` the moment an entry decompresses past its
+//!     declared size, so the caps bound real bytes rather than zip headers.
+//!   - Every persisted entity, note, and asset is attributed to the imported
+//!     campaign ID (`CampaignImportTarget` takes an explicit `campaign_id`).
+//!   - `stored-assets/<stem>.webp` entries (content-addressed `AssetStore` blobs, see
+//!     `stored_assets`) must have a valid stem and WebP magic bytes. With an asset store
+//!     configured they are re-stored under the new campaign and every key referencing the
+//!     source campaign is rewritten; referenced keys without an embedded blob do not fail
+//!     the import but are listed in `ImportResult::missing_asset_keys`.
+//!   - `owner_user_id` entity fields are user IDs and are never remapped.
 //!
 //! EXECUTION LIFECYCLE:
 //!   1. Validate entry 0 (`manifest.json`), parse `CampaignManifest`, and check
@@ -26,12 +40,16 @@
 //!   3. Stream and verify `database.jsonl` and `notes/<uuid>.md`, optionally
 //!      remapping all entity/note/asset UUIDs and rewriting `[[<uuid>]]` /
 //!      `[[<uuid>|<label>]]` wikilinks.
-//!   4. Stream and verify each `assets/<uuid>.webp` entry into `BlobStore`,
-//!      then persist the campaign metadata, entities, and notes.
+//!   4. Rewrite content-addressed asset keys and collect missing ones.
+//!   5. Stream and verify each `assets/<uuid>.webp` entry into `BlobStore`, put the
+//!      `stored-assets/` blobs into the `AssetStore`, then persist the campaign
+//!      metadata, entities, and notes.
 //! ============================================================================
 
 use super::exporter::{ExportEntity, NoteRecord};
 use super::manifest::{CampaignManifest, CampaignMetadata};
+use super::stored_assets::{self, STORED_ASSET_PREFIX, is_valid_stem, is_webp};
+use crate::assets::store::AssetStore;
 use crate::storage::blob::{BlobStore, BlobStoreError, CHUNK_SIZE, Sha256Hasher};
 use async_zip::tokio::read::seek::ZipFileReader;
 use bytes::Bytes;
@@ -65,6 +83,40 @@ pub enum ArchiveError {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("archive limit exceeded: {0}")]
+    LimitExceeded(String),
+}
+
+/// Entity field carrying the owning user of an actor. User IDs belong to the instance, not
+/// the campaign, so this field is exempt from UUID remapping.
+pub const OWNER_USER_ID_FIELD: &str = "owner_user_id";
+
+/// Maximum number of entries (including `manifest.json`) accepted in one archive.
+pub const MAX_ARCHIVE_ENTRIES: usize = 5_000;
+
+/// Maximum uncompressed size of `manifest.json` in bytes (4 MiB).
+pub const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Maximum uncompressed size of a buffered text entry (`database.jsonl`, `notes/*.md`) in
+/// bytes (32 MiB); these entries are parsed in memory.
+pub const MAX_TEXT_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Maximum uncompressed size of a streamed asset entry in bytes (64 MiB).
+pub const MAX_ASSET_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Maximum total uncompressed bytes across all entries of one archive (512 MiB).
+pub const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
+
+fn entry_byte_cap(path: &str) -> u64 {
+    if path.starts_with("assets/") {
+        MAX_ASSET_ENTRY_BYTES
+    } else {
+        MAX_TEXT_ENTRY_BYTES
+    }
+}
+
+fn lock_poisoned() -> ArchiveError {
+    ArchiveError::Io(std::io::Error::other("lock poisoned"))
 }
 
 /// Resulting counts and campaign metadata returned upon successful archive import.
@@ -76,6 +128,11 @@ pub struct ImportResult {
     pub scenes_restored: usize,
     pub notes_restored: usize,
     pub assets_restored: usize,
+    /// Source asset keys referenced by the archive whose blob was not embedded (deleted
+    /// before export). Their references are still rewritten to the new campaign, where they
+    /// resolve to "not found" exactly as they did at the source.
+    #[serde(default)]
+    pub missing_asset_keys: Vec<String>,
 }
 
 /// Options configuring archive extraction and collision handling.
@@ -84,20 +141,40 @@ pub struct ImportOptions {
     pub remap_ids: bool,
 }
 
-/// Database persistence target for imported campaign data.
+/// Database persistence target for imported campaign data. Every write is scoped to an
+/// explicit `campaign_id` so exports can later filter strictly by campaign.
 pub trait CampaignImportTarget: Send + Sync + 'static {
     async fn campaign_exists(&self, id: Uuid) -> Result<bool, ArchiveError>;
     async fn save_campaign(&self, campaign: &CampaignMetadata) -> Result<(), ArchiveError>;
-    async fn save_entities(&self, entities: &[ExportEntity]) -> Result<(), ArchiveError>;
-    async fn save_notes(&self, notes: &[NoteRecord]) -> Result<(), ArchiveError>;
+    async fn save_entities(
+        &self,
+        campaign_id: Uuid,
+        entities: &[ExportEntity],
+    ) -> Result<(), ArchiveError>;
+    async fn save_notes(&self, campaign_id: Uuid, notes: &[NoteRecord])
+    -> Result<(), ArchiveError>;
+    /// Records that `asset_ids` belong to `campaign_id` (no-op for stores that key assets
+    /// by campaign elsewhere).
+    async fn save_asset_ids(
+        &self,
+        _campaign_id: Uuid,
+        _asset_ids: &[Uuid],
+    ) -> Result<(), ArchiveError> {
+        Ok(())
+    }
 }
 
 /// Thread-safe in-memory campaign store suitable for testing and single-instance runtimes.
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryCampaignStore {
     pub campaigns: Arc<RwLock<HashMap<Uuid, CampaignMetadata>>>,
+    /// Entities; every non-`campaign` entity carries a `data.campaign_id` set on save.
     pub entities: Arc<RwLock<Vec<ExportEntity>>>,
     pub notes: Arc<RwLock<Vec<NoteRecord>>>,
+    /// Owning campaign of each note, keyed by note ID.
+    pub note_campaigns: Arc<RwLock<HashMap<Uuid, Uuid>>>,
+    /// Owning campaign of each blob asset, keyed by asset ID.
+    pub asset_campaigns: Arc<RwLock<HashMap<Uuid, Uuid>>>,
 }
 
 impl InMemoryCampaignStore {
@@ -107,64 +184,132 @@ impl InMemoryCampaignStore {
 
     pub fn with_campaign(campaign: CampaignMetadata) -> Self {
         let store = Self::new();
-        store
-            .campaigns
-            .write()
-            .unwrap()
-            .insert(campaign.id, campaign);
+        if let Ok(mut guard) = store.campaigns.write() {
+            guard.insert(campaign.id, campaign);
+        }
         store
     }
 
     pub fn get_campaign(&self, id: &Uuid) -> Option<CampaignMetadata> {
-        self.campaigns.read().unwrap().get(id).cloned()
+        self.campaigns.read().ok()?.get(id).cloned()
     }
 
     pub fn all_campaigns(&self) -> Vec<CampaignMetadata> {
-        self.campaigns.read().unwrap().values().cloned().collect()
+        self.campaigns
+            .read()
+            .map(|g| g.values().cloned().collect())
+            .unwrap_or_default()
     }
 
     pub fn all_entities(&self) -> Vec<ExportEntity> {
-        self.entities.read().unwrap().clone()
+        self.entities.read().map(|g| g.clone()).unwrap_or_default()
     }
 
     pub fn all_notes(&self) -> Vec<NoteRecord> {
-        self.notes.read().unwrap().clone()
+        self.notes.read().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// Entities whose `data.campaign_id` (or, for the `campaign` entity, `data.id`) equals
+    /// `campaign_id`.
+    pub fn entities_for_campaign(&self, campaign_id: Uuid) -> Vec<ExportEntity> {
+        let cid = campaign_id.to_string();
+        self.all_entities()
+            .into_iter()
+            .filter(|e| {
+                let key = if e.entity_type == "campaign" {
+                    "id"
+                } else {
+                    "campaign_id"
+                };
+                e.data.get(key).and_then(|v| v.as_str()) == Some(cid.as_str())
+            })
+            .collect()
+    }
+
+    /// Notes registered to `campaign_id`.
+    pub fn notes_for_campaign(&self, campaign_id: Uuid) -> Vec<NoteRecord> {
+        let Ok(owners) = self.note_campaigns.read() else {
+            return Vec::new();
+        };
+        self.all_notes()
+            .into_iter()
+            .filter(|n| owners.get(&n.id) == Some(&campaign_id))
+            .collect()
+    }
+
+    /// Blob asset IDs registered to `campaign_id`, sorted for deterministic exports.
+    pub fn asset_ids_for_campaign(&self, campaign_id: Uuid) -> Vec<Uuid> {
+        let mut ids: Vec<Uuid> = self
+            .asset_campaigns
+            .read()
+            .map(|g| {
+                g.iter()
+                    .filter(|(_, owner)| **owner == campaign_id)
+                    .map(|(id, _)| *id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        ids
     }
 }
 
 impl CampaignImportTarget for InMemoryCampaignStore {
     async fn campaign_exists(&self, id: Uuid) -> Result<bool, ArchiveError> {
-        let guard = self
-            .campaigns
-            .read()
-            .map_err(|_| ArchiveError::Io(std::io::Error::other("lock poisoned")))?;
+        let guard = self.campaigns.read().map_err(|_| lock_poisoned())?;
         Ok(guard.contains_key(&id))
     }
 
     async fn save_campaign(&self, campaign: &CampaignMetadata) -> Result<(), ArchiveError> {
-        let mut guard = self
-            .campaigns
-            .write()
-            .map_err(|_| ArchiveError::Io(std::io::Error::other("lock poisoned")))?;
+        let mut guard = self.campaigns.write().map_err(|_| lock_poisoned())?;
         guard.insert(campaign.id, campaign.clone());
         Ok(())
     }
 
-    async fn save_entities(&self, entities: &[ExportEntity]) -> Result<(), ArchiveError> {
-        let mut guard = self
-            .entities
-            .write()
-            .map_err(|_| ArchiveError::Io(std::io::Error::other("lock poisoned")))?;
-        guard.extend(entities.iter().cloned());
+    async fn save_entities(
+        &self,
+        campaign_id: Uuid,
+        entities: &[ExportEntity],
+    ) -> Result<(), ArchiveError> {
+        let mut guard = self.entities.write().map_err(|_| lock_poisoned())?;
+        for entity in entities {
+            let mut scoped = entity.clone();
+            if scoped.entity_type != "campaign"
+                && let Some(obj) = scoped.data.as_object_mut()
+            {
+                obj.insert(
+                    "campaign_id".to_string(),
+                    serde_json::Value::String(campaign_id.to_string()),
+                );
+            }
+            guard.push(scoped);
+        }
         Ok(())
     }
 
-    async fn save_notes(&self, notes: &[NoteRecord]) -> Result<(), ArchiveError> {
-        let mut guard = self
-            .notes
-            .write()
-            .map_err(|_| ArchiveError::Io(std::io::Error::other("lock poisoned")))?;
-        guard.extend(notes.iter().cloned());
+    async fn save_notes(
+        &self,
+        campaign_id: Uuid,
+        notes: &[NoteRecord],
+    ) -> Result<(), ArchiveError> {
+        let mut guard = self.notes.write().map_err(|_| lock_poisoned())?;
+        let mut owners = self.note_campaigns.write().map_err(|_| lock_poisoned())?;
+        for note in notes {
+            owners.insert(note.id, campaign_id);
+            guard.push(note.clone());
+        }
+        Ok(())
+    }
+
+    async fn save_asset_ids(
+        &self,
+        campaign_id: Uuid,
+        asset_ids: &[Uuid],
+    ) -> Result<(), ArchiveError> {
+        let mut owners = self.asset_campaigns.write().map_err(|_| lock_poisoned())?;
+        for id in asset_ids {
+            owners.insert(*id, campaign_id);
+        }
         Ok(())
     }
 }
@@ -174,12 +319,26 @@ impl CampaignImportTarget for InMemoryCampaignStore {
 pub struct ArchiveImporter<T: CampaignImportTarget, B: BlobStore> {
     target: T,
     blob_store: B,
+    /// Destination for `stored-assets/` entries and the instance their new keys live under;
+    /// without it those entries are verified but ignored and keys are left untouched.
+    asset_store: Option<(Arc<dyn AssetStore>, Uuid)>,
 }
 
 impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
     /// Creates a new `ArchiveImporter` bound to a database target and asset blob store.
     pub fn new(target: T, blob_store: B) -> Self {
-        Self { target, blob_store }
+        Self {
+            target,
+            blob_store,
+            asset_store: None,
+        }
+    }
+
+    /// Restores embedded content-addressed blobs into `asset_store` under `instance_id` and
+    /// rewrites every reference to them to the imported campaign.
+    pub fn with_asset_store(mut self, asset_store: Arc<dyn AssetStore>, instance_id: Uuid) -> Self {
+        self.asset_store = Some((asset_store, instance_id));
+        self
     }
 
     /// Imports a campaign archive using structured `ImportOptions`.
@@ -212,6 +371,11 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                 "archive is empty and contains no manifest.json".to_string(),
             ));
         }
+        if entry_count > MAX_ARCHIVE_ENTRIES {
+            return Err(ArchiveError::LimitExceeded(format!(
+                "archive has {entry_count} entries (max {MAX_ARCHIVE_ENTRIES})"
+            )));
+        }
 
         // Invariant 1: First entry MUST be manifest.json
         let first_entry_filename = zip_reader
@@ -228,13 +392,25 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
             )));
         }
 
-        // Invariant 2: Read and parse manifest.json
+        // Invariant 2: Read and parse manifest.json, bounded by actual decompressed bytes
+        // (the central directory sizes are attacker-controlled and are not trusted).
         let mut manifest_reader = zip_reader.reader_with_entry(0).await?;
-        let mut manifest_raw = String::new();
-        manifest_reader
-            .read_to_string_checked(&mut manifest_raw)
-            .await?;
-        let manifest: CampaignManifest = serde_json::from_str(&manifest_raw)
+        let mut manifest_raw = Vec::new();
+        let mut chunk = vec![0u8; CHUNK_SIZE];
+        loop {
+            let read_bytes = manifest_reader.read(&mut chunk).await?;
+            if read_bytes == 0 {
+                break;
+            }
+            manifest_raw.extend_from_slice(&chunk[..read_bytes]);
+            if manifest_raw.len() as u64 > MAX_MANIFEST_BYTES {
+                return Err(ArchiveError::LimitExceeded(format!(
+                    "manifest.json exceeds {MAX_MANIFEST_BYTES} bytes"
+                )));
+            }
+        }
+        drop(manifest_reader);
+        let manifest: CampaignManifest = serde_json::from_slice(&manifest_raw)
             .map_err(|e| ArchiveError::InvalidManifest(e.to_string()))?;
 
         // Invariant 4: Enforce FAIL_IF_EXISTS collision policy when remap_ids is false
@@ -243,8 +419,27 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
         }
 
         // Build manifest descriptor map
+        // Zip-bomb guard: declared sizes must respect per-entry and total caps. Streaming
+        // reads below abort as soon as an entry exceeds its declared size, so these caps
+        // bound real decompressed bytes, not just claims.
         let mut manifest_map = HashMap::new();
+        let mut declared_total: u64 = 0;
         for entry_desc in &manifest.entries {
+            let cap = entry_byte_cap(&entry_desc.path);
+            if entry_desc.byte_size > cap {
+                return Err(ArchiveError::LimitExceeded(format!(
+                    "entry '{}' declares {} bytes (max {cap})",
+                    entry_desc.path, entry_desc.byte_size
+                )));
+            }
+            declared_total = declared_total
+                .checked_add(entry_desc.byte_size)
+                .filter(|total| *total <= MAX_TOTAL_UNCOMPRESSED_BYTES)
+                .ok_or_else(|| {
+                    ArchiveError::LimitExceeded(format!(
+                        "archive declares more than {MAX_TOTAL_UNCOMPRESSED_BYTES} uncompressed bytes"
+                    ))
+                })?;
             manifest_map.insert(entry_desc.path.clone(), entry_desc.clone());
         }
 
@@ -302,13 +497,17 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
         // Process non-asset entries (database.jsonl and notes/*.md)
         let mut entities = Vec::new();
         let mut notes = Vec::new();
+        let mut embedded_assets: Vec<(String, Bytes)> = Vec::new();
+        let mut owners: Vec<Option<serde_json::Value>> = Vec::new();
 
         for (idx, filename) in zip_entry_names.iter().enumerate() {
             if idx == 0 || filename.starts_with("assets/") {
                 continue;
             }
 
-            let expected_desc = manifest_map.get(filename).expect("descriptor exists");
+            let expected_desc = manifest_map
+                .get(filename)
+                .ok_or_else(|| ArchiveError::UnlistedEntry(filename.clone()))?;
             let mut entry_reader = zip_reader.reader_with_entry(idx).await?;
 
             let mut hasher = Sha256Hasher::new();
@@ -321,9 +520,15 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                 if read_bytes == 0 {
                     break;
                 }
+                total_bytes += read_bytes as u64;
+                if total_bytes > expected_desc.byte_size {
+                    return Err(ArchiveError::LimitExceeded(format!(
+                        "entry '{filename}' decompresses beyond its declared {} bytes",
+                        expected_desc.byte_size
+                    )));
+                }
                 hasher.update(&chunk[..read_bytes]);
                 content.extend_from_slice(&chunk[..read_bytes]);
-                total_bytes += read_bytes as u64;
             }
 
             let calculated_digest = hasher.finalize_hex();
@@ -351,7 +556,13 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    let entity: ExportEntity = serde_json::from_str(trimmed)?;
+                    let mut entity: ExportEntity = serde_json::from_str(trimmed)?;
+                    // A user ID, not campaign data: it must survive remapping verbatim.
+                    let owner = entity
+                        .data
+                        .as_object_mut()
+                        .and_then(|o| o.remove(OWNER_USER_ID_FIELD));
+                    owners.push(owner);
                     if remap_ids {
                         collect_uuids_from_json(&entity.data, &mut id_map);
                     }
@@ -366,6 +577,16 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                     id_map.entry(note.author_id).or_insert_with(Uuid::new_v4);
                 }
                 notes.push(note);
+            } else if let Some(stem) = filename
+                .strip_prefix(STORED_ASSET_PREFIX)
+                .and_then(|s| s.strip_suffix(".webp"))
+            {
+                if !is_valid_stem(stem) || !is_webp(&content) {
+                    return Err(ArchiveError::InvalidManifest(format!(
+                        "stored asset '{filename}' is not a content-addressed WebP image"
+                    )));
+                }
+                embedded_assets.push((stem.to_string(), Bytes::from(content)));
             }
         }
 
@@ -384,9 +605,55 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                 note.content_markdown = rewrite_wikilinks(&note.content_markdown, &id_map);
             }
         }
+        for (entity, owner) in entities.iter_mut().zip(owners) {
+            if let (Some(owner), Some(obj)) = (owner, entity.data.as_object_mut()) {
+                obj.insert(OWNER_USER_ID_FIELD.to_string(), owner);
+            }
+        }
+
+        // Content-addressed blobs: rewrite references to the imported campaign, report the
+        // ones the archive does not embed, and re-store the embedded ones.
+        let mut missing_asset_keys = Vec::new();
+        if let Some((_, instance_id)) = &self.asset_store {
+            let old_campaign = manifest.campaign.id;
+            let mut referenced = Vec::new();
+            for entity in &entities {
+                stored_assets::referenced_keys_in_json(&entity.data, old_campaign, &mut referenced);
+            }
+            for note in &notes {
+                referenced.extend(stored_assets::referenced_keys(
+                    &note.content_markdown,
+                    old_campaign,
+                ));
+            }
+            for (key, stem) in referenced {
+                if !embedded_assets.iter().any(|(s, _)| *s == stem)
+                    && !missing_asset_keys.contains(&key)
+                {
+                    missing_asset_keys.push(key);
+                }
+            }
+            for entity in &mut entities {
+                stored_assets::rewrite_keys_in_json(
+                    &mut entity.data,
+                    old_campaign,
+                    *instance_id,
+                    new_campaign_id,
+                );
+            }
+            for note in &mut notes {
+                note.content_markdown = stored_assets::rewrite_keys(
+                    &note.content_markdown,
+                    old_campaign,
+                    *instance_id,
+                    new_campaign_id,
+                );
+            }
+        }
 
         // Stream asset entries in bounded 64 KiB chunks
         let mut uploaded_asset_ids: Vec<String> = Vec::new();
+        let mut uploaded_asset_uuids: Vec<Uuid> = Vec::new();
         let mut assets_restored = 0usize;
 
         for (idx, filename) in zip_entry_names.iter().enumerate() {
@@ -410,7 +677,9 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
             };
             let target_asset_id_str = target_asset_id.to_string();
 
-            let expected_desc = manifest_map.get(filename).expect("descriptor exists");
+            let expected_desc = manifest_map
+                .get(filename)
+                .ok_or_else(|| ArchiveError::UnlistedEntry(filename.clone()))?;
             let mut entry_reader = zip_reader.reader_with_entry(idx).await?;
 
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, BlobStoreError>>(2);
@@ -440,8 +709,19 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                     if read_bytes == 0 {
                         break;
                     }
-                    hasher.update(&chunk[..read_bytes]);
                     total_bytes += read_bytes as u64;
+                    if total_bytes > expected_desc.byte_size {
+                        let _ = tx
+                            .send(Err(BlobStoreError::InvalidArgument(
+                                "entry exceeds declared size".to_string(),
+                            )))
+                            .await;
+                        return Err(ArchiveError::LimitExceeded(format!(
+                            "entry '{filename}' decompresses beyond its declared {} bytes",
+                            expected_desc.byte_size
+                        )));
+                    }
+                    hasher.update(&chunk[..read_bytes]);
                     let bytes = Bytes::copy_from_slice(&chunk[..read_bytes]);
                     if tx.send(Ok(bytes)).await.is_err() {
                         return Err(ArchiveError::Storage(BlobStoreError::InvalidArgument(
@@ -497,25 +777,38 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
             }
 
             uploaded_asset_ids.push(target_asset_id_str);
+            uploaded_asset_uuids.push(target_asset_id);
             assets_restored += 1;
         }
 
-        // Persist campaign metadata, entities, and notes into target
+        if let Some((asset_store, instance_id)) = &self.asset_store {
+            for (stem, bytes) in embedded_assets {
+                let key = stored_assets::asset_key(*instance_id, new_campaign_id, &stem);
+                if let Err(err) = asset_store.put_asset(&key, bytes, "image/webp").await {
+                    for aid in &uploaded_asset_ids {
+                        let _ = self.blob_store.delete(aid.as_str()).await;
+                    }
+                    return Err(ArchiveError::Io(std::io::Error::other(err.to_string())));
+                }
+                assets_restored += 1;
+            }
+        }
+
+        // Persist campaign metadata, entities, notes, and asset ownership into target
         let mut final_campaign = manifest.campaign.clone();
         final_campaign.id = new_campaign_id;
-        if let Err(err) = self.target.save_campaign(&final_campaign).await {
-            for aid in &uploaded_asset_ids {
-                let _ = self.blob_store.delete(aid.as_str()).await;
-            }
-            return Err(err);
+        let persisted = async {
+            self.target.save_campaign(&final_campaign).await?;
+            self.target
+                .save_entities(new_campaign_id, &entities)
+                .await?;
+            self.target.save_notes(new_campaign_id, &notes).await?;
+            self.target
+                .save_asset_ids(new_campaign_id, &uploaded_asset_uuids)
+                .await
         }
-        if let Err(err) = self.target.save_entities(&entities).await {
-            for aid in &uploaded_asset_ids {
-                let _ = self.blob_store.delete(aid.as_str()).await;
-            }
-            return Err(err);
-        }
-        if let Err(err) = self.target.save_notes(&notes).await {
+        .await;
+        if let Err(err) = persisted {
             for aid in &uploaded_asset_ids {
                 let _ = self.blob_store.delete(aid.as_str()).await;
             }
@@ -533,6 +826,7 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
             scenes_restored,
             notes_restored,
             assets_restored,
+            missing_asset_keys,
         })
     }
 }
@@ -920,8 +1214,10 @@ mod tests {
             entity_type: "actor".to_string(),
             data: json!({ "id": Uuid::new_v4().to_string() }),
         }];
-        store.save_entities(&entities).await.unwrap();
+        store.save_entities(cid, &entities).await.unwrap();
         assert_eq!(store.all_entities().len(), 1);
+        assert_eq!(store.entities_for_campaign(cid).len(), 1);
+        assert!(store.entities_for_campaign(Uuid::new_v4()).is_empty());
 
         let notes = vec![NoteRecord {
             id: Uuid::new_v4(),
@@ -932,7 +1228,9 @@ mod tests {
             updated_at: "2025-01-01T00:00:00Z".to_string(),
             content_markdown: "Body".to_string(),
         }];
-        store.save_notes(&notes).await.unwrap();
+        store.save_notes(cid, &notes).await.unwrap();
         assert_eq!(store.all_notes().len(), 1);
+        assert_eq!(store.notes_for_campaign(cid).len(), 1);
+        assert!(store.notes_for_campaign(Uuid::new_v4()).is_empty());
     }
 }

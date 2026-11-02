@@ -1,17 +1,46 @@
+/**
+ * ============================================================================
+ * MOBILE COMPANION VIEW (mobile/MobileCompanionView.tsx)
+ * ============================================================================
+ *
+ * PURPOSE:
+ * -----
+ * Phone-sized companion for a player at the physical table: the board is not
+ * mounted (no WebGL below 768px), and five tabs expose the player's sheet,
+ * the table dice tray, the inventory, the combat tracker with reaction
+ * prompts, and the journal.
+ *
+ * INVARIANTS & SAFETY BOUNDARIES:
+ * -----
+ * 1. `Same Seams As Desktop`:
+ *    - Every tab reuses the desktop component (`ActorSheetPanel`, `DiceTray`,
+ *      `CombatTrackerBar`, `ReactionBanner`, `CampaignDocumentsTab`), so
+ *      sheet saves stay versioned REST PUTs and table actions stay commands.
+ * 2. `Sheet Resolution`:
+ *    - The sheet shown is the selected actor, else the first sheet owned by
+ *      the caller, else the first sheet the server returned. Players only
+ *      receive their own sheets, so this never reveals another player's.
+ * ============================================================================
+ */
 import { signal } from "@preact/signals";
-import {
-  localeSignal,
-  mobileCompanionOverrideSignal,
-  t,
-  unitSystemSignal,
-} from "../i18n/index.ts";
-import { DocumentsWorkspaceTab } from "../workspace/DocumentsWorkspaceTab.tsx";
+import { useEffect } from "preact/hooks";
+import { apiClient, type ApiClient } from "../api/client.ts";
+import { selectedActorIdSignal } from "../api/session.ts";
+import { LocaleToggle, UnitsToggle } from "../components/ShellToggles.tsx";
+import { mobileCompanionOverrideSignal, t, type MessageKey } from "../i18n/index.ts";
+import { ActorSheetPanel, INVENTORY_SHEET_LAYOUT } from "../sheet/ActorSheetPanel.tsx";
+import { CombatTrackerBar } from "../table/CombatTrackerBar.tsx";
+import { DiceTray } from "../table/DiceTray.tsx";
+import { ReactionBanner } from "../table/ReactionBanner.tsx";
+import { CampaignDocumentsTab } from "../workspace/CampaignDocumentsTab.tsx";
+
+const COMPACT_TOGGLE_STYLE = { padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" };
 
 export type MobileCompanionTab = "sheet" | "dice" | "inventory" | "tracker" | "journal";
 
 export const activeCompanionTabSignal = signal<MobileCompanionTab>("sheet");
 
-export const MOBILE_COMPANION_TABS: Array<{ id: MobileCompanionTab; key: string }> = [
+export const MOBILE_COMPANION_TABS: Array<{ id: MobileCompanionTab; key: MessageKey }> = [
   { id: "sheet", key: "nav.sheet" },
   { id: "dice", key: "nav.dice" },
   { id: "inventory", key: "nav.inventory" },
@@ -19,8 +48,32 @@ export const MOBILE_COMPANION_TABS: Array<{ id: MobileCompanionTab; key: string 
   { id: "journal", key: "nav.journal" },
 ];
 
-export function MobileCompanionView() {
+export interface MobileCompanionViewProps {
+  /** Campaign shown; defaults to `client.state.activeCampaignId`. */
+  campaignId?: string;
+  /** REST + socket gateway; defaults to the app-wide client. */
+  client?: ApiClient;
+  isGm?: boolean;
+}
+
+/** Actor whose sheet the companion shows (see invariant 2), or `null`. */
+export function companionActorId(client: ApiClient): string | null {
+  const actors = client.state.actors.value;
+  const selected = selectedActorIdSignal.value;
+  if (selected && actors[selected]) return selected;
+  const userId = client.state.user.value?.id;
+  const ids = Object.keys(actors);
+  return ids.find((id) => userId && actors[id].ownerUserId === userId) ?? ids[0] ?? null;
+}
+
+export function MobileCompanionView({ campaignId: campaignIdProp, client = apiClient, isGm = false }: MobileCompanionViewProps = {}) {
   const activeTab = activeCompanionTabSignal.value;
+  const campaignId = campaignIdProp ?? client.state.activeCampaignId.value ?? "";
+  const actorId = companionActorId(client);
+
+  useEffect(() => {
+    if (campaignId) client.listActors(campaignId).catch(() => undefined);
+  }, [client, campaignId]);
 
   return (
     <div
@@ -39,65 +92,65 @@ export function MobileCompanionView() {
           gap: "0.5rem",
         }}
       >
-        <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>Companion Mode</span>
+        <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>{t("shell.companionMode")}</span>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-          <button
-            type="button"
-            data-testid="header-locale-toggle"
-            aria-label={`Toggle language: ${localeSignal.value === "fr" ? "FR" : "EN"}`}
-            class="ds-btn ds-btn-secondary"
-            onClick={() => {
-              localeSignal.value = localeSignal.value === "en" ? "fr" : "en";
-            }}
-            style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" }}
-          >
-            {localeSignal.value === "fr" ? "FR" : "EN"}
-          </button>
-          <button
-            type="button"
-            data-testid="header-units-toggle"
-            aria-label={`Toggle grid units: ${unitSystemSignal.value === "imperial_ft" ? "5 ft" : "1.5 m"}`}
-            class="ds-btn ds-btn-secondary"
-            onClick={() => {
-              unitSystemSignal.value =
-                unitSystemSignal.value === "imperial_ft" ? "metric_m" : "imperial_ft";
-            }}
-            style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" }}
-          >
-            {unitSystemSignal.value === "imperial_ft" ? "5 ft" : "1.5 m"}
-          </button>
+          <LocaleToggle style={COMPACT_TOGGLE_STYLE} />
+          <UnitsToggle style={COMPACT_TOGGLE_STYLE} />
           {mobileCompanionOverrideSignal.value && (
             <button
               type="button"
               data-testid="companion-exit-button"
-              aria-label="Exit companion mode"
+              aria-label={t("shell.exitCompanion")}
               class="ds-btn ds-btn-secondary"
               onClick={() => {
                 mobileCompanionOverrideSignal.value = false;
               }}
               style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", minHeight: "44px", minWidth: "44px" }}
             >
-              Exit
+              {t("shell.exit")}
             </button>
           )}
         </div>
       </header>
 
       <main style={{ flex: 1, overflowY: "auto", padding: "1rem" }}>
-        {activeTab === "sheet" && <div data-testid="tab-sheet">{t("nav.sheet")}</div>}
-        {activeTab === "dice" && <div data-testid="tab-dice">{t("nav.dice")}</div>}
-        {activeTab === "inventory" && <div data-testid="tab-inventory">{t("nav.inventory")}</div>}
-        {activeTab === "tracker" && <div data-testid="tab-tracker">{t("nav.tracker")}</div>}
+        {activeTab === "sheet" && (
+          <div data-testid="tab-sheet">
+            <ActorSheetPanel campaignId={campaignId} client={client} actorId={actorId} context="live_table" />
+          </div>
+        )}
+        {activeTab === "dice" && (
+          <div data-testid="tab-dice">
+            <DiceTray client={client} />
+          </div>
+        )}
+        {activeTab === "inventory" && (
+          <div data-testid="tab-inventory">
+            <ActorSheetPanel
+              campaignId={campaignId}
+              client={client}
+              actorId={actorId}
+              context="live_table"
+              layout={INVENTORY_SHEET_LAYOUT}
+            />
+          </div>
+        )}
+        {activeTab === "tracker" && (
+          <div data-testid="tab-tracker" class="ds-stack">
+            <ReactionBanner client={client} isGm={isGm} />
+            <CombatTrackerBar client={client} isGm={isGm} />
+          </div>
+        )}
         {activeTab === "journal" && (
           <div data-testid="tab-journal">
-            <DocumentsWorkspaceTab />
+            <CampaignDocumentsTab campaignId={campaignId} client={client} isGm={isGm} />
           </div>
         )}
       </main>
 
       <nav
         data-testid="mobile-bottom-nav"
-        aria-label="Mobile companion navigation"
+        aria-label={t("shell.mobileNav")}
         style={{
           display: "flex",
           borderTop: "1px solid var(--atlas-border)",

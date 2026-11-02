@@ -6,7 +6,8 @@
  * PURPOSE:
  * --------
  * Aggregates and re-exports the complete public surface of `@trame/game-system-dnd5e`
- * (`types`, `manifest`, `pipeline`, `progression`, and `compendium`) behind a
+ * (`types`, `formulaEvaluator`, `manifest`, `pipeline`, `progression`, `origins`,
+ * `compendium`, `sheetLayout`, and `rest`) behind a
  * single deterministic entry point for both the server authority and web client.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
@@ -19,9 +20,11 @@
  */
 
 export * from "./types.ts";
+export * from "./formulaEvaluator.ts";
 export * from "./manifest.ts";
 export * from "./pipeline.ts";
 export * from "./progression.ts";
+export * from "./origins.ts";
 export * from "./compendium.ts";
 export * from "./sheetLayout.ts";
 export * from "./rest.ts";

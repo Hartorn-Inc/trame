@@ -457,9 +457,14 @@ pub async fn import_archive(
     let raw_bytes = tokio::fs::read(input).await?;
 
     if let Some(server_url) = server {
-        let path = format!("/api/v1/campaigns/import?remap_ids={remap_ids}");
-        let (status, body) =
-            send_http_request(server_url, "POST", &path, token, Some(&raw_bytes)).await?;
+        let (status, body) = send_http_request(
+            server_url,
+            "POST",
+            "/api/v1/campaigns/import",
+            token,
+            Some(&raw_bytes),
+        )
+        .await?;
         if status != 200 && status != 201 {
             return Err(ArchiveCliError::RemoteHttp {
                 status,
@@ -669,7 +674,9 @@ mod tests {
     use trame_server::archive::CampaignImportTarget;
     use trame_server::assets::store::InMemoryAssetStore;
     use trame_server::auth::magic_link::MagicLinkService;
-    use trame_server::auth::session::{AuthState, InMemorySessionStore, SessionStore};
+    use trame_server::auth::session::{
+        AuthState, IdentityStore, InMemorySessionStore, SessionStore, UserRecord,
+    };
     use trame_server::auth::totp::TotpService;
     use trame_server::http::{
         AppState, InMemoryBlobStore, InMemoryMapStorage, InMemoryMembershipValidator,
@@ -820,37 +827,43 @@ mod tests {
             .unwrap();
 
         source_store
-            .save_entities(&[
-                ExportEntity {
-                    entity_type: "scene".to_string(),
-                    data: json!({
-                        "id": scene_id,
-                        "campaign_id": campaign_id,
-                        "name": "Haunted House"
-                    }),
-                },
-                ExportEntity {
-                    entity_type: "actor".to_string(),
-                    data: json!({
-                        "id": actor_id,
-                        "campaign_id": campaign_id,
-                        "name": "Sanbalet"
-                    }),
-                },
-            ])
+            .save_entities(
+                campaign_id,
+                &[
+                    ExportEntity {
+                        entity_type: "scene".to_string(),
+                        data: json!({
+                            "id": scene_id,
+                            "campaign_id": campaign_id,
+                            "name": "Haunted House"
+                        }),
+                    },
+                    ExportEntity {
+                        entity_type: "actor".to_string(),
+                        data: json!({
+                            "id": actor_id,
+                            "campaign_id": campaign_id,
+                            "name": "Sanbalet"
+                        }),
+                    },
+                ],
+            )
             .await
             .unwrap();
 
         source_store
-            .save_notes(&[NoteRecord {
-                id: note_id,
-                title: "Smuggler Signals".to_string(),
-                folder: Some("secrets".to_string()),
-                author_id,
-                created_at: "2026-10-31T00:00:00Z".to_string(),
-                updated_at: "2026-10-31T00:00:00Z".to_string(),
-                content_markdown: format!("Watch [[{actor_id}|Sanbalet]] in [[{scene_id}]]."),
-            }])
+            .save_notes(
+                campaign_id,
+                &[NoteRecord {
+                    id: note_id,
+                    title: "Smuggler Signals".to_string(),
+                    folder: Some("secrets".to_string()),
+                    author_id,
+                    created_at: "2026-10-31T00:00:00Z".to_string(),
+                    updated_at: "2026-10-31T00:00:00Z".to_string(),
+                    content_markdown: format!("Watch [[{actor_id}|Sanbalet]] in [[{scene_id}]]."),
+                }],
+            )
             .await
             .unwrap();
 
@@ -948,6 +961,21 @@ mod tests {
         let campaign_id = Uuid::new_v4();
         membership.add_gm(campaign_id, gm_id);
         session_store
+            .save_user(UserRecord {
+                id: gm_id,
+                username: "cli-gm".to_string(),
+                role: "PLAYER".to_string(),
+                is_guest: false,
+                created_at: 0,
+                email: Some("cli-gm@example.com".to_string()),
+                password_hash: None,
+                mfa_enabled: false,
+                totp_secret: None,
+                pending_totp_secret: None,
+            })
+            .await
+            .unwrap();
+        session_store
             .assign_campaign_member(campaign_id, gm_id, None, "GM")
             .await
             .unwrap();
@@ -963,6 +991,7 @@ mod tests {
             magic_link_service,
             session_store,
             totp_service: Arc::new(TotpService::default()),
+            security: Default::default(),
         };
 
         let app_state = AppState {
@@ -976,6 +1005,9 @@ mod tests {
             auth_state,
             db_healthy: Arc::new(AtomicBool::new(true)),
             map_storage: InMemoryMapStorage::new(),
+            postgres_store: None,
+            campaign_data: Default::default(),
+            static_dir: None,
         };
 
         seed_campaign_for_export(

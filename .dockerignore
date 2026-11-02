@@ -1,0 +1,13 @@
+.git
+target
+**/node_modules
+**/dist
+packages/web/src/wasm
+packages/trame-engine-node
+e2e
+.trame-dev
+uploads-dev
+backups-dev
+.env
+.env.*
+*.trame

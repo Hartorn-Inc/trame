@@ -3,6 +3,9 @@ export function relativeLuminance(rgb: [number, number, number]): number;
 export function contrastRatio(hexA: string, hexB: string): number;
 export function auditSourceContent(relPath: string, content: string): string[];
 export function runAudit(repoRoot?: string): string[];
+export const WOFF2_HEADER_BYTES: number;
+export const WOFF2_MIN_FILE_BYTES: number;
+export function validateWoff2Buffer(relPath: string, buf: Buffer): string[];
 
 export const CANONICAL_SECTIONS: string[];
 export const CANONICAL_SECTION_TITLES: string[];

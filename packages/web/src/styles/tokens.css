@@ -12,6 +12,11 @@
  *   2. Uploaded battlemap art on `backgroundMap` is NEVER filtered by theme.
  *   3. All numeric combat, ruler, dice, and character sheet fields use
  *      `.atlas-tabular-nums` (`font-variant-numeric: tabular-nums`).
+ *   4. `--atlas-border` is a structural hairline (dividers, panel frames) and
+ *      may sit below 3:1. Anything a user operates (inputs, selects, secondary
+ *      buttons, choice cards) is framed by `--atlas-border-control` (>= 3:1).
+ *   5. Components style themselves through the `ds-*` primitives below; no
+ *      utility-class framework is installed, so undefined classes are inert.
  * ============================================================================
  */
 
@@ -73,10 +78,19 @@
   --atlas-danger: #E0827D;
   --atlas-grid: rgba(184, 199, 209, 0.16);
   --atlas-shadow: rgba(5, 10, 16, 0.42);
+  /* Modal backdrop dimming the page behind an aria-modal dialog */
+  --atlas-scrim: rgba(5, 10, 16, 0.72);
+  /* Passive selected/hover tint of --atlas-action; never a text or border color */
+  --atlas-accent-primary-subtle: rgba(243, 187, 113, 0.14);
 
   /* Typography Families & Scale */
   --atlas-font-display: "Space Grotesk", system-ui, -apple-system, sans-serif;
   --atlas-font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --atlas-font-size-xs: 0.75rem;
+  --atlas-font-size-sm: 0.875rem;
+  --atlas-font-size-base: 1rem;
+  --atlas-font-size-lg: 1.125rem;
+  --atlas-font-size-xl: 1.25rem;
 
   /* Utilitarian Border Radii */
   --atlas-radius-sm: 4px;
@@ -114,6 +128,8 @@
   --atlas-danger: #A3333B;
   --atlas-grid: rgba(28, 48, 65, 0.14);
   --atlas-shadow: rgba(15, 26, 37, 0.12);
+  --atlas-scrim: rgba(15, 26, 37, 0.56);
+  --atlas-accent-primary-subtle: rgba(153, 88, 23, 0.1);
 }
 
 @media (prefers-color-scheme: light) {
@@ -132,6 +148,8 @@
     --atlas-danger: #A3333B;
     --atlas-grid: rgba(28, 48, 65, 0.14);
     --atlas-shadow: rgba(15, 26, 37, 0.12);
+    --atlas-scrim: rgba(15, 26, 37, 0.56);
+    --atlas-accent-primary-subtle: rgba(153, 88, 23, 0.1);
   }
 }
 
@@ -191,7 +209,7 @@ body {
 
 .ds-brand-title {
   font-family: var(--atlas-font-display);
-  font-size: 20px;
+  font-size: var(--atlas-font-size-xl);
   font-weight: 600;
   letter-spacing: -0.015em;
   display: inline-flex;
@@ -217,7 +235,7 @@ body {
 
 .ds-panel-title {
   font-family: var(--atlas-font-display);
-  font-size: 16px;
+  font-size: var(--atlas-font-size-base);
   font-weight: 600;
   margin: 0;
 }
@@ -239,7 +257,7 @@ body {
 
 .ds-field-label {
   font-family: var(--atlas-font-sans);
-  font-size: 14px;
+  font-size: var(--atlas-font-size-sm);
   font-weight: 500;
   color: var(--atlas-text);
 }
@@ -254,7 +272,7 @@ body {
   padding: var(--atlas-space-sm) var(--atlas-space-md);
   border-radius: var(--atlas-radius-sm);
   font-family: var(--atlas-font-sans);
-  font-size: 14px;
+  font-size: var(--atlas-font-size-sm);
   font-weight: 500;
   line-height: 1.45;
   cursor: pointer;
@@ -265,6 +283,10 @@ body {
 .ds-btn[aria-disabled="true"] {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* aria-disabled buttons stay focusable and clickable so handlers can report why they refuse */
+.ds-btn:disabled {
   pointer-events: none;
 }
 
@@ -283,11 +305,24 @@ body {
 .ds-btn-secondary {
   background-color: var(--atlas-surface-raised);
   color: var(--atlas-text);
-  border: 1px solid var(--atlas-border-control, var(--atlas-border));
+  border: 1px solid var(--atlas-border-control);
 }
 
+/* Pressed state pairs the amber border with a heavier weight and inset rule (non-color cue) */
 .ds-btn-secondary[aria-pressed="true"] {
   border-color: var(--atlas-action);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--atlas-action);
+}
+
+.ds-btn-ghost {
+  background-color: transparent;
+  color: var(--atlas-text-muted);
+  border: 1px solid transparent;
+}
+
+.ds-btn-ghost:hover {
+  color: var(--atlas-text);
 }
 
 .ds-btn-danger {
@@ -302,9 +337,717 @@ body {
   border-radius: var(--atlas-radius-md);
   background-color: var(--atlas-surface-raised);
   color: var(--atlas-text);
-  border: 1px solid var(--atlas-border-control, var(--atlas-border));
+  border: 1px solid var(--atlas-border-control);
   font-family: var(--atlas-font-sans);
-  font-size: 14px;
+  font-size: var(--atlas-font-size-sm);
+}
+
+.ds-input[aria-invalid="true"] {
+  border-color: var(--atlas-danger);
+  border-width: 2px;
+}
+
+select.ds-input {
+  width: 100%;
+}
+
+/* Button reset: strips UA chrome so composite controls (icon buttons, sheet rows) start clean */
+.ds-btn-reset {
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.ds-btn-reset:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+.ds-btn-reset[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ds-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--atlas-hit-desktop);
+  min-height: var(--atlas-hit-desktop);
+  border-radius: var(--atlas-radius-sm);
+  color: var(--atlas-text-muted);
+  font-size: var(--atlas-font-size-lg);
+}
+
+.ds-icon-btn:hover {
+  color: var(--atlas-text);
+}
+
+/* Modal overlay: fixed full-viewport scrim centering one aria-modal dialog */
+.ds-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--atlas-space-md);
+  background-color: var(--atlas-scrim);
+}
+
+.ds-modal {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 42rem;
+  max-height: 90vh;
+  overflow: hidden;
+  background-color: var(--atlas-surface);
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-lg);
+  box-shadow: var(--atlas-elevation-overlay);
+}
+
+.ds-modal-narrow {
+  max-width: 36rem;
+}
+
+.ds-modal-header,
+.ds-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--atlas-space-md);
+  padding: var(--atlas-space-md) var(--atlas-space-lg);
+  background-color: var(--atlas-surface-raised);
+}
+
+.ds-modal-header {
+  border-bottom: 1px solid var(--atlas-border);
+}
+
+.ds-modal-footer {
+  border-top: 1px solid var(--atlas-border);
+}
+
+.ds-modal-title {
+  margin: 0;
+  font-family: var(--atlas-font-display);
+  font-size: var(--atlas-font-size-xl);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.ds-modal-subtitle {
+  margin: var(--atlas-space-xs) 0 0;
+  color: var(--atlas-text-muted);
+  font-size: var(--atlas-font-size-xs);
+}
+
+.ds-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-lg);
+  padding: var(--atlas-space-lg);
+  font-size: var(--atlas-font-size-sm);
+}
+
+/* Layout helpers on the 4px rhythm */
+.ds-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-md);
+}
+
+.ds-stack-sm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-grid-2,
+.ds-grid-3,
+.ds-grid-5 {
+  display: grid;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ds-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ds-grid-5 {
+  grid-template-columns: repeat(auto-fill, minmax(4.5rem, 1fr));
+}
+
+.ds-list-plain {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ds-section-title {
+  margin: 0;
+  font-family: var(--atlas-font-display);
+  font-size: var(--atlas-font-size-base);
+  font-weight: 600;
+}
+
+.ds-section-title:focus {
+  outline: none;
+}
+
+.ds-section-title:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+.ds-subheading {
+  margin: 0;
+  color: var(--atlas-text-muted);
+  font-size: var(--atlas-font-size-sm);
+  font-weight: 600;
+}
+
+/* Inset group: raised block separated from its panel by a hairline (no nested shadows) */
+.ds-inset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-sm);
+  padding: var(--atlas-space-md);
+  background-color: var(--atlas-surface-raised);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-md);
+}
+
+.ds-meta {
+  display: block;
+  color: var(--atlas-text-muted);
+  font-size: var(--atlas-font-size-xs);
+}
+
+.ds-value {
+  font-weight: 600;
+}
+
+.ds-value-lg {
+  font-size: var(--atlas-font-size-lg);
+  font-weight: 600;
+}
+
+.ds-hint {
+  margin: 0;
+  color: var(--atlas-text-muted);
+  font-size: var(--atlas-font-size-xs);
+}
+
+.ds-field-error {
+  margin: 0;
+  color: var(--atlas-danger);
+  font-size: var(--atlas-font-size-xs);
+  font-weight: 500;
+}
+
+.ds-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Choice card: label wrapping a radio or checkbox; the whole card is the hit target */
+.ds-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--atlas-space-sm);
+  min-height: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-sm) var(--atlas-space-md);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border-control);
+  border-radius: var(--atlas-radius-md);
+  cursor: pointer;
+}
+
+.ds-choice:focus-within {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+.ds-choice.is-selected {
+  border-color: var(--atlas-action);
+  border-width: 2px;
+}
+
+.ds-choice.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ds-choice-stacked {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.ds-choice input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--atlas-action);
+}
+
+.ds-scroll-list {
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+/* Wizard stepper: current step pairs the amber rule with aria-current; done steps carry a check glyph */
+.ds-stepper {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  border-bottom: 1px solid var(--atlas-border);
+  font-size: var(--atlas-font-size-xs);
+  font-weight: 600;
+  text-align: center;
+}
+
+.ds-stepper-item {
+  padding: var(--atlas-space-sm) var(--atlas-space-xs);
+  color: var(--atlas-text-muted);
+  border-bottom: 2px solid transparent;
+}
+
+.ds-stepper-item.is-complete {
+  color: var(--atlas-text);
+}
+
+.ds-stepper-item[aria-current="step"] {
+  color: var(--atlas-text);
+  background-color: var(--atlas-surface-raised);
+  border-bottom-color: var(--atlas-action);
+}
+
+.ds-tablist {
+  display: flex;
+  gap: var(--atlas-space-sm);
+  border-bottom: 1px solid var(--atlas-border);
+}
+
+.ds-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--atlas-space-xs);
+  min-height: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-sm) var(--atlas-space-md);
+  color: var(--atlas-text-muted);
+  border-bottom: 2px solid transparent;
+  font-weight: 500;
+}
+
+.ds-tab[aria-selected="true"] {
+  color: var(--atlas-text);
+  border-bottom-color: var(--atlas-action);
+  font-weight: 600;
+}
+
+.ds-counter {
+  min-width: 2.5rem;
+  text-align: center;
+  font-size: var(--atlas-font-size-base);
+  font-weight: 600;
+}
+
+/* Character sheet roll lists (saving throws, skills) */
+.ds-saves-widget,
+.ds-skills-widget {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-widget-title {
+  margin: 0;
+  font-family: var(--atlas-font-display);
+  font-size: var(--atlas-font-size-base);
+  font-weight: 600;
+}
+
+.ds-saves-list,
+.ds-skills-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ds-save-row,
+.ds-skill-row {
+  display: flex;
+  align-items: center;
+  gap: var(--atlas-space-sm);
+  border-bottom: 1px solid var(--atlas-border);
+}
+
+.ds-save-row.is-editable,
+.ds-skill-row.is-editable {
+  padding-right: var(--atlas-space-sm);
+}
+
+.ds-save-roll,
+.ds-skill-roll {
+  appearance: none;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--atlas-space-sm);
+  width: 100%;
+  min-height: var(--atlas-hit-desktop);
+  margin: 0;
+  padding: var(--atlas-space-xs) var(--atlas-space-sm);
+  border: 0;
+  background: transparent;
+  color: var(--atlas-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ds-save-roll:hover,
+.ds-skill-roll:hover {
+  background-color: var(--atlas-surface-raised);
+}
+
+.ds-save-roll:focus-visible,
+.ds-skill-roll:focus-visible,
+button.ds-prof-pip:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: -2px;
+}
+
+.ds-prof-pip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  color: var(--atlas-text-muted);
+  font-family: var(--atlas-font-sans);
+  font-size: var(--atlas-font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+button.ds-prof-pip {
+  appearance: none;
+  min-width: var(--atlas-hit-desktop);
+  min-height: var(--atlas-hit-desktop);
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--atlas-border-control);
+  border-radius: var(--atlas-radius-sm);
+  cursor: pointer;
+}
+
+.ds-prof-pip.is-proficient,
+.ds-prof-pip.rank-1,
+.ds-prof-pip.rank-2 {
+  color: var(--atlas-text);
+  font-weight: 600;
+}
+
+.ds-prof-pip.rank-0 {
+  font-weight: 400;
+}
+
+.ds-save-name,
+.ds-skill-name {
+  flex: 1;
+}
+
+.ds-skill-passive {
+  color: var(--atlas-text-muted);
+  font-size: var(--atlas-font-size-xs);
+}
+
+.ds-save-mod,
+.ds-skill-mod {
+  min-width: 2.5rem;
+  text-align: right;
+  font-weight: 600;
+}
+
+.ds-save-row.is-rollable,
+.ds-skill-row.is-rollable {
+  padding: 0;
+}
+
+/* Cartographic empty state (AtlasEmptyStates) */
+.ds-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--atlas-space-md);
+  padding: var(--atlas-space-lg);
+  text-align: center;
+}
+
+.ds-empty-state-illustration {
+  color: var(--atlas-text-muted);
+}
+
+.ds-empty-state-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-xs);
+  max-width: 36ch;
+}
+
+.ds-empty-state-heading {
+  margin: 0;
+  font-family: var(--atlas-font-display);
+  font-size: var(--atlas-font-size-base);
+  font-weight: 600;
+}
+
+.ds-empty-state-body {
+  margin: 0;
+  color: var(--atlas-text-muted);
+  font-size: var(--atlas-font-size-sm);
+}
+
+.ds-empty-state-actions {
+  display: flex;
+  justify-content: center;
+  gap: var(--atlas-space-sm);
+}
+
+/* Live table: board, tokens, tracker, GM toolbar, HUD drawers */
+.ds-table-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20rem;
+  gap: var(--atlas-space-md);
+  min-height: 0;
+}
+
+.ds-table-main,
+.ds-table-side {
+  min-width: 0;
+}
+
+.ds-table-canvas {
+  overflow: auto;
+  max-height: 70vh;
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-md);
+  background-color: var(--atlas-bg);
+}
+
+.ds-board {
+  position: relative;
+  cursor: crosshair;
+}
+
+.ds-board-map {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  filter: none;
+}
+
+.ds-board-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--atlas-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--atlas-grid) 1px, transparent 1px);
+  background-size: var(--board-cell) var(--board-cell);
+}
+
+.ds-token {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 2px solid var(--atlas-border-control);
+  border-radius: 50%;
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  font: inherit;
+  font-size: var(--atlas-font-size-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ds-token.is-public {
+  border-style: dashed;
+}
+
+.ds-token.is-selected {
+  border-width: 3px;
+  border-color: var(--atlas-action);
+  outline: 2px solid var(--atlas-action);
+  outline-offset: 2px;
+}
+
+.ds-token:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+.ds-board-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  filter: none;
+}
+
+.ds-board-canvas[hidden] {
+  display: none;
+}
+
+/* PixiJS draws tokens, rings and selection; the buttons stay as the accessible, focusable layer. */
+.ds-board.is-pixi .ds-token,
+.ds-board.is-pixi .ds-token.is-selected {
+  border-color: transparent;
+  outline: none;
+  background-color: transparent;
+  color: transparent;
+}
+
+.ds-board.is-pixi .ds-token:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+.ds-board-preview {
+  margin-block-end: var(--atlas-space-sm);
+}
+
+.ds-tracker,
+.ds-gm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--atlas-space-sm);
+  padding: var(--atlas-space-sm);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-md);
+  background-color: var(--atlas-surface);
+}
+
+.ds-tracker-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--atlas-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ds-tracker-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--atlas-space-xs);
+  padding: var(--atlas-space-xs) var(--atlas-space-sm);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-sm);
+}
+
+.ds-tracker-item.is-active {
+  border-color: var(--atlas-action);
+  background-color: var(--atlas-accent-primary-subtle);
+  font-weight: 600;
+}
+
+.ds-input-compact {
+  width: 5rem;
+}
+
+.ds-reaction-prompt {
+  border-color: var(--atlas-action);
+}
+
+.ds-hud-drawers-container {
+  position: relative;
+}
+
+.ds-hud-sheet-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(40rem, 100vw);
+  overflow-y: auto;
+  padding: var(--atlas-space-md);
+  background-color: var(--atlas-surface);
+  color: var(--atlas-text);
+  border-left: 1px solid var(--atlas-border);
+  box-shadow: var(--atlas-elevation-overlay);
+  z-index: 20;
+}
+
+.ds-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--atlas-space-sm);
+  margin-bottom: var(--atlas-space-md);
+}
+
+.ds-btn-sm {
+  min-height: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-xs) var(--atlas-space-sm);
+}
+
+.ds-btn-close {
+  background-color: transparent;
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border-control);
+}
+
+@media (max-width: 1023px) {
+  .ds-table-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* Map-Art Independence Rule: Never apply theme filters to PixiJS battlemap canvas */
@@ -321,9 +1064,18 @@ body {
 @media (max-width: 767px) {
   .ds-btn,
   .ds-input,
+  .ds-icon-btn,
+  .ds-tab,
+  button.ds-prof-pip,
   .nav-tab-btn {
     min-height: var(--atlas-hit-touch);
     min-width: var(--atlas-hit-touch);
+  }
+
+  .ds-choice,
+  .ds-save-roll,
+  .ds-skill-roll {
+    min-height: var(--atlas-hit-touch);
   }
 }
 

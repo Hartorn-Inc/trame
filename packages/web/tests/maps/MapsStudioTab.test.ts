@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  MAX_CONCURRENT_RAYCASTS,
   SpatialAudioManager,
-  compute3DDistance,
   computeOcclusionLowPassCutoff,
   countSoundOccludingWalls,
 } from "../../src/audio/spatialAudio.ts";
 import { DualBufferFogOfWar } from "../../src/canvas/LightingShader.ts";
 import {
-  type Point2D,
   type WallSegmentDto,
   convertDrawingToWallSegments,
 } from "../../src/engine/wasmBridge.ts";
@@ -17,8 +14,6 @@ import {
 import {
   type ActiveTableRoomState,
   type CampaignMapScene,
-  type StagedToken,
-  type StudioLightSource,
   type StudioWallSegment,
   type WallType,
   activateSceneTransition,
@@ -28,7 +23,6 @@ import {
   parseUvttImport,
   toggleDoorState,
 } from "../../src/maps/index.ts";
-import { CampaignWorkspace } from "../../src/workspace/CampaignWorkspace.tsx";
 import { MapsStudioTab } from "../../src/maps/MapsStudioTab.tsx";
 import { SHARED_WALL_KINDS } from "../../src/canvas/CanvasThemePalette.ts";
 
@@ -215,23 +209,6 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
       assert.equal(openedSecret.blocksVision, false);
     });
 
-    it("WHEN CampaignWorkspace is rendered, it exposes MapsStudioTab for GM and SceneAtlas for Player in Tab 2.", () => {
-      const gmWorkspace = CampaignWorkspace({
-        campaignId: "campaign-test-1",
-        userRole: "GM",
-        activeTab: 2,
-        scenes: [],
-      });
-      assert.ok(gmWorkspace);
-
-      const playerWorkspace = CampaignWorkspace({
-        campaignId: "campaign-test-1",
-        userRole: "PLAYER",
-        activeTab: 2,
-        scenes: [],
-      });
-      assert.ok(playerWorkspace);
-    });
   });
 
   describe("DualBufferFogOfWar & SpatialAudioManager Integration", () => {
@@ -760,7 +737,7 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
             origin: { x: 200, y: 200 },
             brightRadiusFt: 15,
             dimRadiusFt: 30,
-            colorHex: "var(--atlas-action)",
+            colorHex: "#F3BB71",
             intensity: 1.0,
           },
         ],

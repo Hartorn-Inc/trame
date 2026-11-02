@@ -2,6 +2,7 @@
 
 pub mod blob;
 pub mod local;
+pub mod postgres;
 pub mod s3;
 
 pub use blob::{
@@ -9,6 +10,9 @@ pub use blob::{
     slice_to_stream, stream_to_bytes,
 };
 pub use local::LocalFsStore;
+pub use postgres::{
+    ActorConcurrencyError, ActorRecord, CampaignNoteItem, CampaignRecord, SqlxPostgresStore,
+};
 pub use s3::{S3Config, S3Store};
 
 #[cfg(test)]

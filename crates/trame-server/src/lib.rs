@@ -52,12 +52,16 @@
 pub mod archive;
 pub mod assets;
 pub mod auth;
+pub mod campaigns;
+pub mod config;
 pub mod dice;
 pub mod http;
 pub mod importers;
 pub mod maps;
+pub mod mcp;
 pub mod notes;
 pub mod room;
+pub mod security;
 pub mod storage;
 pub mod sync;
 pub mod timeline;
@@ -73,7 +77,6 @@ mod tests {
     };
     use crate::auth::totp::TotpService;
     use crate::dice::{RollVisibility, SeededDiceRoller, project_roll_for_recipient};
-    use crate::http::{InMemoryMembershipValidator, build_router};
     use crate::importers::uvtt::{
         MAX_PAYLOAD_SIZE_BYTES, UvttDocument, UvttImportError, UvttLight, UvttPoint, UvttPortal,
         UvttResolution, import_uvtt_map, parse_hex_color,
@@ -131,6 +134,7 @@ mod tests {
             magic_link_service: magic_service.clone(),
             session_store: session_store.clone(),
             totp_service: Arc::new(TotpService::default()),
+            security: Default::default(),
         };
         let router = build_auth_router(auth_state);
 
@@ -151,6 +155,7 @@ mod tests {
 
         let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
             token: token.clone(),
+            nickname: None,
         })
         .unwrap();
         let req = Request::builder()
@@ -202,6 +207,7 @@ mod tests {
             magic_link_service: magic_service.clone(),
             session_store: session_store.clone(),
             totp_service: Arc::new(TotpService::default()),
+            security: Default::default(),
         };
         let router = build_auth_router(auth_state);
 
@@ -214,7 +220,11 @@ mod tests {
                 .expect("create invite token");
             assert_eq!(claims.role, custom_role);
 
-            let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+            let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
+                token,
+                nickname: None,
+            })
+            .unwrap();
             let req = Request::builder()
                 .method("POST")
                 .uri("/api/v1/auth/magic-link")
@@ -251,6 +261,7 @@ mod tests {
             magic_link_service: magic_service.clone(),
             session_store: session_store.clone(),
             totp_service: Arc::new(TotpService::default()),
+            security: Default::default(),
         };
         let router = build_auth_router(auth_state);
 
@@ -262,7 +273,11 @@ mod tests {
 
         session_store.revoke_invite(claims.jti).await.unwrap();
 
-        let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+        let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
+            token,
+            nickname: None,
+        })
+        .unwrap();
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/magic-link")
@@ -285,6 +300,7 @@ mod tests {
             magic_link_service: magic_service.clone(),
             session_store: session_store.clone(),
             totp_service: Arc::new(TotpService::default()),
+            security: Default::default(),
         };
         let router = build_auth_router(auth_state);
 
@@ -301,7 +317,11 @@ mod tests {
         };
         let token = magic_service.sign_claims(&expired_claims).unwrap();
 
-        let req_body = serde_json::to_vec(&MagicLinkLoginRequest { token }).unwrap();
+        let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
+            token,
+            nickname: None,
+        })
+        .unwrap();
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/magic-link")
@@ -327,35 +347,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_invite_link_handler_nominal() {
-        let session_store = Arc::new(InMemorySessionStore::new());
-        let magic_service = Arc::new(MagicLinkService::new(b"secret", "trame-test"));
-        let auth_state = AuthState {
-            magic_link_service: magic_service,
-            session_store,
-            totp_service: Arc::new(TotpService::default()),
-        };
+    async fn test_legacy_invite_minting_routes_are_removed() {
+        let auth_state = AuthState::new(
+            Arc::new(MagicLinkService::new(
+                b"0123456789abcdef0123456789abcdef",
+                "trame-test",
+            )),
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(TotpService::default()),
+        );
         let router = build_auth_router(auth_state);
-        let campaign_id = Uuid::new_v4();
-        let character_id = Uuid::new_v4();
+        let body = serde_json::json!({ "campaign_id": Uuid::new_v4() }).to_string();
 
-        let req_body = serde_json::to_vec(&crate::auth::session::CreateInviteLinkRequest {
-            campaign_id,
-            character_id: Some(character_id),
-            role: Some("PLAYER".to_string()),
-            ttl_seconds: Some(1800),
-        })
-        .unwrap();
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/invites")
-            .header("content-type", "application/json")
-            .body(Body::from(req_body))
-            .unwrap();
-
-        let resp = router.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        for (case, uri) in [
+            ("auth_invites_removed", "/api/v1/auth/invites"),
+            ("magic_link_mint_removed", "/api/v1/auth/magic-link/mint"),
+        ] {
+            let req = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap();
+            let resp = router.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "case {case}");
+        }
     }
 
     #[tokio::test]
@@ -620,97 +636,6 @@ mod tests {
             assert!((parsed[1] - expected[1]).abs() < 1e-4);
             assert!((parsed[2] - expected[2]).abs() < 1e-4);
         }
-    }
-
-    #[tokio::test]
-    async fn rbac_presigned_asset_endpoint_enforces_membership_and_not_found() {
-        let wal = Arc::new(InMemoryWalStorage::new());
-        let lease_mgr = Arc::new(RoomLeaseManager::new(wal, 25, 900_000));
-        let store = Arc::new(InMemoryAssetStore::new());
-        let membership = Arc::new(InMemoryMembershipValidator::new());
-        let instance_id = Uuid::new_v4();
-        let campaign_id = Uuid::new_v4();
-
-        let member_user_id = Uuid::new_v4();
-        let non_member_user_id = Uuid::new_v4();
-        membership.add_member(campaign_id, member_user_id);
-
-        let hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        let asset_key =
-            format!("instances/{instance_id}/campaigns/{campaign_id}/assets/{hash}.webp");
-        store
-            .put_asset(&asset_key, Bytes::from_static(b"SAMPLE_DATA"), "image/webp")
-            .await
-            .unwrap();
-
-        let app = build_router(lease_mgr, store.clone(), membership, instance_id);
-
-        // 1. Non-member user -> 403 Forbidden
-        let req_forbidden = Request::builder()
-            .uri(format!(
-                "/api/v1/campaigns/{campaign_id}/assets/{hash}/presign?user_id={non_member_user_id}"
-            ))
-            .body(Body::empty())
-            .unwrap();
-        let res_forbidden = app.clone().oneshot(req_forbidden).await.unwrap();
-        assert_eq!(res_forbidden.status(), StatusCode::FORBIDDEN);
-
-        // 2. Active member user with existing asset -> 200 OK + presigned URL
-        let req_ok = Request::builder()
-            .uri(format!(
-                "/api/v1/campaigns/{campaign_id}/assets/{hash}/presign?user_id={member_user_id}"
-            ))
-            .body(Body::empty())
-            .unwrap();
-        let res_ok = app.clone().oneshot(req_ok).await.unwrap();
-        assert_eq!(res_ok.status(), StatusCode::OK);
-        let body_bytes = axum::body::to_bytes(res_ok.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert!(json["url"].as_str().unwrap().contains(hash));
-        assert_eq!(json["expires_in_secs"], 900);
-
-        // 3. Active member user with missing asset hash -> 404 Not Found
-        let missing_hash = "0000000000000000000000000000000000000000000000000000000000000000";
-        let req_missing = Request::builder()
-            .uri(format!(
-                "/api/v1/campaigns/{campaign_id}/assets/{missing_hash}/presign?user_id={member_user_id}"
-            ))
-            .body(Body::empty())
-            .unwrap();
-        let res_missing = app.clone().oneshot(req_missing).await.unwrap();
-        assert_eq!(res_missing.status(), StatusCode::NOT_FOUND);
-
-        // 4. Invalid or path traversal hash format -> 400 Bad Request
-        let req_traversal = Request::builder()
-            .uri(format!(
-                "/api/v1/campaigns/{campaign_id}/assets/invalid..traversal/presign?user_id={member_user_id}"
-            ))
-            .body(Body::empty())
-            .unwrap();
-        let res_traversal = app.clone().oneshot(req_traversal).await.unwrap();
-        assert_eq!(res_traversal.status(), StatusCode::BAD_REQUEST);
-
-        // 5. Valid thumbnail hash suffix -> 200 OK
-        let thumb_key =
-            format!("instances/{instance_id}/campaigns/{campaign_id}/assets/{hash}_thumb.webp");
-        store
-            .put_asset(
-                &thumb_key,
-                Bytes::from_static(b"SAMPLE_THUMB"),
-                "image/webp",
-            )
-            .await
-            .unwrap();
-        let req_thumb = Request::builder()
-            .uri(format!(
-                "/api/v1/campaigns/{campaign_id}/assets/{hash}_thumb/presign?user_id={member_user_id}"
-            ))
-            .body(Body::empty())
-            .unwrap();
-        let res_thumb = app.oneshot(req_thumb).await.unwrap();
-        assert_eq!(res_thumb.status(), StatusCode::OK);
     }
 
     #[test]
@@ -981,7 +906,6 @@ Hidden Text
         let timeline = Arc::new(InMemoryTimelineStorage::new());
 
         let cmd = RevealHandoutCommand {
-            action: "notes.reveal_handout".to_string(),
             campaign_id: "camp-alpha".to_string(),
             session_num: 1,
             handout_id: "h-456".to_string(),
@@ -1181,9 +1105,10 @@ Hidden Text
         let player_proj =
             project_state_for_recipient(campaign_id, &state, player_id, CampaignRole::Player);
         assert!(player_proj.tokens.contains_key(&player_token_id));
-        assert!(player_proj.tokens.contains_key(&visible_goblin_id));
+        assert!(player_proj.public_tokens.contains_key(&visible_goblin_id));
         assert!(
-            !player_proj.tokens.contains_key(&occluded_lich_id),
+            !player_proj.tokens.contains_key(&occluded_lich_id)
+                && !player_proj.public_tokens.contains_key(&occluded_lich_id),
             "Occluded token behind wall must never be sent to player socket"
         );
         assert_eq!(
@@ -1251,12 +1176,12 @@ Hidden Text
         handle
             .send_envelope(
                 session_id,
-                ClientEnvelope::SubmitCommand(TrameCommand::MoveToken {
+                ClientEnvelope::SubmitCommand(Box::new(TrameCommand::MoveToken {
                     token_id,
                     to_top_left: Point2D::new(200.0, 0.0),
                     to_elevation_ft: None,
                     gm_teleport: false,
-                }),
+                })),
             )
             .await
             .unwrap();

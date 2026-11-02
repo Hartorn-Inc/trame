@@ -96,8 +96,8 @@ export function measureRulerWaypointsFt(
     return 0;
   }
 
-  let effectiveCellSizePx = 1;
-  let effectiveFeetPerCell = 1;
+  let effectiveCellSizePx: number;
+  let effectiveFeetPerCell: number;
   let metric: RulerMetric = "EUCLIDEAN";
   let squeezing = isSqueezing;
 
@@ -133,7 +133,7 @@ export function measureRulerWaypointsFt(
     const currZ = curr.elevationFt ?? curr.z ?? 0;
     const dzFt = Math.abs(currZ - prevZ);
 
-    let segDistFt = 0;
+    let segDistFt: number;
     if (normMetric === "FIVEFIVEFIVE" || normMetric === "555") {
       segDistFt = Math.max(dxFt, dyFt, dzFt);
     } else if (normMetric === "FIVETENFIVE" || normMetric === "5105") {

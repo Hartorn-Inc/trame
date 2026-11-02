@@ -14,14 +14,26 @@
  *      - Uses `render` from `preact` and reactive `@preact/signals` state
  *        (`PreactSignalState`) so high-frequency WebSocket updates bypass
  *        full-tree Virtual DOM reconciliation.
+ *   2. `Single Formula Evaluator (G1)`:
+ *      - Instantiates the `trame-engine` WASM once at startup and installs its
+ *        `evaluateDerivedDag` as the D&D 5e pack's derived-stat evaluator
+ *        before the first render, so character sheets compute with the same
+ *        Rust code as the server. If the WASM fails to load, the app still
+ *        renders and derived-stat evaluation fails closed.
  * ============================================================================
  */
 
 import { render } from 'preact';
 import './styles/tokens.css';
 import { App } from './App.tsx';
+import { evaluateDerivedDag, initEngine } from './engine/wasmBridge.ts';
+import { setDerivedDagEvaluator } from '../../game-systems/dnd5e/src/formulaEvaluator.ts';
 
 const container = document.getElementById('app');
-if (container) {
-  render(<App />, container);
-}
+void initEngine()
+  .then(() => setDerivedDagEvaluator(evaluateDerivedDag))
+  .finally(() => {
+    if (container) {
+      render(<App />, container);
+    }
+  });

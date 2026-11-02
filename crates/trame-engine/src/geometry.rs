@@ -34,6 +34,11 @@
 //!      - `Point2D::distance_3d` clamps `px_per_ft` to `>= 1e-6` and
 //!        `segment_intersection` rejects collinear/parallel segments where
 //!        `|denom| < 1e-10`.
+//!   5. `Single Wall Type`:
+//!      - `WallSegment` is the only wall primitive in the workspace. It accepts
+//!        the map-editor input shape (`p1`/`p2`, `wallType`, `doorState`) on
+//!        deserialization and `masked_for_players` is the one place that turns
+//!        closed secret doors and illusions into plain walls for non-GMs.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -57,6 +62,7 @@ pub const CHANNEL_GM_HIDDEN: u8 = 0b100;
 
 /// A 2D coordinate on the tabletop canvas measured in pixels (`px`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Point2D {
     /// Horizontal canvas coordinate in pixels (`px`), increasing rightward.
     pub x: f64,
@@ -86,6 +92,7 @@ impl Point2D {
 
 /// Axis-Aligned Bounding Box (AABB) in 2D canvas pixel coordinates (`px`) used by `Bvh2D` nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BoundingBox2D {
     /// Minimum X coordinate in pixels (`px`).
     pub min_x: f64,
@@ -132,6 +139,7 @@ impl BoundingBox2D {
 /// Architectural classification of a `WallSegment`, governing how vision, light,
 /// movement, and player wire masking behave.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum WallKind {
     /// Standard opaque masonry/dungeon wall that immediately blocks vision, light, and movement.
@@ -171,7 +179,15 @@ pub enum WallKind {
 }
 
 /// Authoritative 2.5D wall segment primitive with vertical elevation bounds and channel flags.
+///
+/// This is the single wall type shared by the engine, the server's scene storage, and the
+/// UVTT importer. Serialization always emits the canonical shape (`a`, `b`, `kind`, snake_case
+/// flags). Deserialization is tolerant (see `WallSegmentWire`): it also accepts `p1`/`p2`,
+/// camelCase field names, the map-editor `wallType` + `doorState` pair, and missing
+/// elevation/blocking fields (full height, blocking by default).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(from = "WallSegmentWire")]
 pub struct WallSegment {
     /// Unique identifier for the wall or door segment.
     pub id: Uuid,
@@ -250,10 +266,157 @@ impl WallSegment {
             _ => true,
         }
     }
+
+    /// Evaluates whether this wall blocks physical non-ethereal token movement,
+    /// returning `false` when `blocks_movement` is `false`, the door is open, or the wall is an `Illusion`.
+    pub fn is_blocking_movement(&self) -> bool {
+        self.effective_blocks_movement(false)
+    }
+
+    /// Returns the copy of this wall that a non-GM recipient may see: a closed `SecretDoor` or
+    /// any `Illusion` becomes a fully blocking `WallKind::Normal`, so wire payloads never reveal
+    /// hidden passages or illusory walls. Other walls are returned unchanged.
+    pub fn masked_for_players(&self) -> Self {
+        let hidden = matches!(
+            self.kind,
+            WallKind::SecretDoor { is_open: false } | WallKind::Illusion { .. }
+        );
+        if !hidden {
+            return self.clone();
+        }
+        Self {
+            kind: WallKind::Normal,
+            blocks_movement: true,
+            blocks_vision: true,
+            blocks_light: true,
+            blocks_sound: true,
+            ..self.clone()
+        }
+    }
+}
+
+fn default_wall_bottom_ft() -> f64 {
+    -1000.0
+}
+
+fn default_wall_top_ft() -> f64 {
+    1000.0
+}
+
+/// Map-editor wall classification (`wallType`) accepted on input for `WallSegment`.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+enum LegacyWallType {
+    Normal,
+    Window,
+    Terrain,
+    OneWay,
+    Door,
+    SecretDoor,
+    Illusion,
+}
+
+/// Map-editor door state (`doorState`): `"Open"` / `"Closed"` / `"Locked"` or `{ isOpen, isLocked }`.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+enum LegacyDoorState {
+    Label(String),
+    Flags {
+        #[serde(default, alias = "isOpen")]
+        is_open: bool,
+        #[serde(default, alias = "isLocked")]
+        is_locked: bool,
+    },
+}
+
+impl LegacyDoorState {
+    /// Returns `(is_open, is_locked)`; unknown labels read as closed and unlocked.
+    fn flags(&self) -> (bool, bool) {
+        match self {
+            LegacyDoorState::Label(label) => match label.to_ascii_lowercase().as_str() {
+                "open" => (true, false),
+                "locked" => (false, true),
+                _ => (false, false),
+            },
+            LegacyDoorState::Flags { is_open, is_locked } => (*is_open, *is_locked),
+        }
+    }
+}
+
+/// Tolerant input shape for `WallSegment`. `kind` wins over `wallType`; with neither the wall
+/// is `Normal`. Missing elevations default to full height (`-1000.0..=1000.0` ft); missing
+/// blocking flags default to `true`, except vision and light through a `Window`.
+///
+/// Field order mirrors the canonical `WallSegment` order (legacy-only fields last) so positional
+/// encodings such as non-named MessagePack still decode.
+#[derive(Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+struct WallSegmentWire {
+    id: Uuid,
+    #[serde(alias = "p1")]
+    a: Point2D,
+    #[serde(alias = "p2")]
+    b: Point2D,
+    #[serde(default)]
+    kind: Option<WallKind>,
+    #[serde(default, alias = "blocksMovement")]
+    blocks_movement: Option<bool>,
+    #[serde(default, alias = "blocksVision")]
+    blocks_vision: Option<bool>,
+    #[serde(default, alias = "blocksLight")]
+    blocks_light: Option<bool>,
+    #[serde(default, alias = "blocksSound")]
+    blocks_sound: Option<bool>,
+    #[serde(default = "default_wall_bottom_ft", alias = "bottomElevationFt")]
+    bottom_elevation_ft: f64,
+    #[serde(default = "default_wall_top_ft", alias = "topElevationFt")]
+    top_elevation_ft: f64,
+    #[serde(default, alias = "wallType")]
+    wall_type: Option<LegacyWallType>,
+    #[serde(default, alias = "doorState")]
+    door_state: Option<LegacyDoorState>,
+}
+
+impl From<WallSegmentWire> for WallSegment {
+    fn from(wire: WallSegmentWire) -> Self {
+        let (is_open, is_locked) = wire
+            .door_state
+            .as_ref()
+            .map_or((false, false), LegacyDoorState::flags);
+        let kind = wire.kind.unwrap_or(match wire.wall_type {
+            None | Some(LegacyWallType::Normal) => WallKind::Normal,
+            Some(LegacyWallType::Window) => WallKind::Window,
+            Some(LegacyWallType::Terrain) => WallKind::Terrain,
+            Some(LegacyWallType::OneWay) => WallKind::OneWay {
+                normal_x: 0.0,
+                normal_y: 0.0,
+            },
+            Some(LegacyWallType::Door) => WallKind::Door { is_open, is_locked },
+            Some(LegacyWallType::SecretDoor) => WallKind::SecretDoor { is_open },
+            Some(LegacyWallType::Illusion) => WallKind::Illusion {
+                pierced_by_truesight: true,
+            },
+        });
+        let see_through = matches!(kind, WallKind::Window);
+        Self {
+            id: wire.id,
+            a: wire.a,
+            b: wire.b,
+            kind,
+            blocks_movement: wire.blocks_movement.unwrap_or(true),
+            blocks_vision: wire.blocks_vision.unwrap_or(!see_through),
+            blocks_light: wire.blocks_light.unwrap_or(!see_through),
+            blocks_sound: wire.blocks_sound.unwrap_or(true),
+            bottom_elevation_ft: wire.bottom_elevation_ft,
+            top_elevation_ft: wire.top_elevation_ft,
+        }
+    }
 }
 
 /// Sensory capabilities and planar perception bitmask attached to a token (`01-TABLE-SPEC.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SenseProfile {
     /// Maximum bright/dim vision radius in feet (`ft`, default `120.0`).
     pub normal_range_ft: f64,
@@ -535,8 +698,8 @@ impl Bvh2D {
         has_truesight: bool,
     ) -> Point2D {
         let target = Point2D::new(
-            origin.x + angle_rad.cos() * max_range_px,
-            origin.y + angle_rad.sin() * max_range_px,
+            origin.x + libm::cos(angle_rad) * max_range_px,
+            origin.y + libm::sin(angle_rad) * max_range_px,
         );
         let Some(root) = &self.root else {
             return target;
@@ -595,7 +758,7 @@ impl Bvh2D {
         for wall in &self.walls {
             for pt in [wall.a, wall.b] {
                 if origin.distance_to(pt) <= max_range_px + 1.0 {
-                    let base = (pt.y - origin.y).atan2(pt.x - origin.x);
+                    let base = libm::atan2(pt.y - origin.y, pt.x - origin.x);
                     angles.push(base - eps);
                     angles.push(base);
                     angles.push(base + eps);
@@ -752,4 +915,44 @@ pub fn segment_intersection(
     } else {
         None
     }
+}
+
+/// Returns `true` when 2D line segment `p0..p1` intersects segment `q0..q1` (within a `1e-9` epsilon).
+pub fn segment_intersects_segment(p0: Point2D, p1: Point2D, q0: Point2D, q1: Point2D) -> bool {
+    segment_intersection(p0, p1, q0, q1).is_some()
+}
+
+/// Counts the sound-blocking walls crossed by the straight path from `emitter` (at
+/// `emitter_elevation_ft`) to `listener` (at `listener_elevation_ft`), positions in pixels.
+///
+/// A wall counts when `blocks_sound` is set, it is not an open door, the crossing lies strictly
+/// inside the path (`1e-6 < t < 1 - 1e-6`, so walls touching either endpoint are ignored), and the
+/// path elevation interpolated at the crossing lies within the wall's vertical span.
+pub fn count_sound_occluding_walls(
+    walls: &[WallSegment],
+    emitter: Point2D,
+    emitter_elevation_ft: f64,
+    listener: Point2D,
+    listener_elevation_ft: f64,
+) -> usize {
+    walls
+        .iter()
+        .filter(|wall| {
+            let open_door = matches!(
+                wall.kind,
+                WallKind::Door { is_open: true, .. } | WallKind::SecretDoor { is_open: true }
+            );
+            if !wall.blocks_sound || open_door {
+                return false;
+            }
+            segment_intersection(emitter, listener, wall.a, wall.b).is_some_and(|(t, _)| {
+                let ray_z_ft =
+                    emitter_elevation_ft + t * (listener_elevation_ft - emitter_elevation_ft);
+                t > 1e-6
+                    && t < 1.0 - 1e-6
+                    && ray_z_ft >= wall.bottom_elevation_ft
+                    && ray_z_ft <= wall.top_elevation_ft
+            })
+        })
+        .count()
 }

@@ -6,11 +6,11 @@ import { fileURLToPath } from "node:url";
 import {
   CompendiumResolver,
   DND5E_SKILLS,
-  DND5E_SRD51_MANIFEST,
+  DND5E_2024_MANIFEST,
   FULL_CASTER_SPELL_SLOTS,
   HALF_CASTER_SPELL_SLOTS,
   PACT_MAGIC_SPELL_SLOTS,
-  SRD_51_ATTRIBUTION,
+  SRD_521_ATTRIBUTION,
   applyLevelUp,
   applyLongRest,
   applyShortRest,
@@ -18,16 +18,16 @@ import {
   computeDnd5eSheetDerived,
   createDefaultActorData,
   decrementConditionDurations,
+  extractFormulaIdentifiers,
   resolveDamagePipeline,
   rollDeathSavingThrow,
   type CompendiumEntry,
   type DamageInstance,
-  type Dnd5eActorData,
 } from "../../game-systems/dnd5e/src/index.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.1) Specification Suite", () => {
+describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.2.1) Specification Suite", () => {
   it("T-DND-01: computes derived attributes, ability modifiers, and passive perception correctly", () => {
     const actor = createDefaultActorData("hero-1", "Valeros");
     actor.attributes.level = 1;
@@ -85,14 +85,14 @@ describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.1) Specification Suite", () => {
     const manifest = JSON.parse(raw);
 
     assert.equal(manifest.id, "dnd5e");
-    assert.equal(manifest.name, "Dungeons & Dragons 5th Edition (SRD 5.1)");
+    assert.equal(manifest.name, "Dungeons & Dragons 5th Edition (SRD 5.2.1)");
     assert.equal(manifest.license, "CC-BY-4.0");
-    assert.ok(manifest.attribution.includes("System Reference Document 5.1"));
+    assert.ok(manifest.attribution.includes("System Reference Document 5.2.1"));
 
     assert.deepEqual(manifest.abilities, ["str", "dex", "con", "int", "wis", "cha"]);
     assert.equal(manifest.skills.length, 18);
     assert.equal(DND5E_SKILLS.length, 18);
-    assert.equal(DND5E_SRD51_MANIFEST.skills.length, 18);
+    assert.equal(DND5E_2024_MANIFEST.skills.length, 18);
 
     // Topological sort acyclicity check on derivedDAG formulas
     const dag = manifest.derivedDAG as Record<string, string>;
@@ -107,8 +107,9 @@ describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.1) Specification Suite", () => {
     }
 
     for (const [target, expr] of Object.entries(dag)) {
+      const identifiers = new Set(extractFormulaIdentifiers(expr));
       for (const depKey of keys) {
-        if (depKey !== target && expr.includes(depKey)) {
+        if (depKey !== target && identifiers.has(depKey)) {
           adjacency[depKey].push(target);
           inDegree[target] = (inDegree[target] || 0) + 1;
         }
@@ -268,7 +269,7 @@ describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.1) Specification Suite", () => {
     assert.equal(res.actor.conditions.some((c) => c.id === "unconscious"), false);
 
     // Normal success and stabilization at 3 successes
-    let stActor = createDefaultActorData("stable-actor", "Ranger");
+    const stActor = createDefaultActorData("stable-actor", "Ranger");
     stActor.attributes.hp.current = 0;
     stActor.attributes.deathSaves = { successes: 2, failures: 0 };
     const resStable = rollDeathSavingThrow(stActor, 12);
@@ -414,7 +415,7 @@ describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.1) Specification Suite", () => {
     assert.deepEqual(FULL_CASTER_SPELL_SLOTS[5], [4, 3, 2, 0, 0, 0, 0, 0, 0]);
     assert.deepEqual(FULL_CASTER_SPELL_SLOTS[20], [4, 3, 3, 3, 3, 2, 2, 1, 1]);
 
-    assert.deepEqual(HALF_CASTER_SPELL_SLOTS[1], [0, 0, 0, 0, 0]);
+    assert.deepEqual(HALF_CASTER_SPELL_SLOTS[1], [2, 0, 0, 0, 0]);
     assert.deepEqual(HALF_CASTER_SPELL_SLOTS[5], [4, 2, 0, 0, 0]);
     assert.deepEqual(HALF_CASTER_SPELL_SLOTS[20], [4, 3, 3, 3, 2]);
 
@@ -426,6 +427,7 @@ describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.1) Specification Suite", () => {
     // Level-up execution with fixed HP
     const wizard = createDefaultActorData("wiz-1", "Mage");
     wizard.attributes.level = 4;
+    wizard.subclassId = "srd:subclass:evoker";
     wizard.attributes.hitDieSize = 6;
     wizard.abilities.con.score = 12; // conMod +1
     wizard.attributes.hp.max = 22;
@@ -512,12 +514,12 @@ describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.1) Specification Suite", () => {
     assert.equal(searchResults[0].slug, "flame-tongue");
   });
 
-  it("T-DND-17: provides verbatim SRD 5.1 CC-BY-4.0 attribution notice", () => {
+  it("T-DND-17: provides verbatim SRD 5.2.1 CC-BY-4.0 attribution notice", () => {
     const resolver = new CompendiumResolver([]);
     const notice = resolver.getAttribution();
 
-    assert.equal(notice, SRD_51_ATTRIBUTION);
-    assert.ok(notice.includes("System Reference Document 5.1"));
+    assert.equal(notice, SRD_521_ATTRIBUTION);
+    assert.ok(notice.includes("System Reference Document 5.2.1"));
     assert.ok(notice.includes("Wizards of the Coast LLC"));
     assert.ok(notice.includes("Creative Commons Attribution 4.0 International License"));
     assert.ok(notice.includes("https://creativecommons.org/licenses/by/4.0/legalcode"));

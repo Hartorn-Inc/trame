@@ -1,7 +1,7 @@
 # ADR-0035: SceneAtlas Gallery, Zero-Trust Access Control, and Secret Masking
 
 ## Status
-Accepted
+Accepted. Scenes are served as one versioned set (`GET .../maps` returns `{ scenes, version }`, see `SceneSetVersion` in `GLOSSARY.md`); there is no per-scene route.
 
 ## Context
 Browsing regional overviews, town layouts, or explored dungeon floors enhances the player experience via the `SceneAtlas` tab. However, a map scene contains privileged Game Master secrets:
@@ -14,9 +14,9 @@ Browsing regional overviews, town layouts, or explored dungeon floors enhances t
 Sending raw scene documents to web clients and relying on frontend JavaScript filtering violates zero-trust principles and allows secret exfiltration via browser developer tools.
 
 ## Decision
-1. **Strict Server-Side RBAC Filtering**: Backend routes `GET /api/v1/campaigns/{id}/maps` and `GET /api/v1/campaigns/{id}/maps/{map_id}` inspect caller role:
+1. **Strict Server-Side RBAC Filtering**: Backend route `GET /api/v1/campaigns/{id}/maps` inspects caller role:
    - For Game Masters (`CampaignRole::Gm`), the server transmits unredacted scene geometry and tokens.
-   - For Players (`CampaignRole::Player`), the server rejects unrevealed scenes (`revealed_to_players == false`) with `403 Forbidden`.
+   - For Players (`CampaignRole::Player`), the server omits unrevealed scenes (`revealed_to_players == false`) from the response; non-members receive `403 Forbidden`.
 2. **Active Secret Sanitization**: When serving requests from player accounts, the backend sanitizes the scene payload before serialization:
    - `WallType::SecretDoor` segments with `door_state != DoorState::Open` convert to `WallType::Normal`, with `door_state = None`.
    - `WallType::Illusion` segments convert to `WallType::Normal`.

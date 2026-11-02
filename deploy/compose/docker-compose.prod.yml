@@ -8,8 +8,24 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Required secrets use `:?` so Compose refuses to start when they are unset,
+    # mirroring the server's fail-closed startup outside `TRAME_ENV=dev`.
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://trame:${POSTGRES_PASSWORD:-trame_password}@postgres:5432/${POSTGRES_DB:-trame}}
+      # Any value other than `dev` requires every secret below.
+      TRAME_ENV: production
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-trame}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-trame}}
+      # 64 hex chars (32 bytes): AES-256-GCM key encrypting stored TOTP secrets.
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?set a 64-hex-char MASTER_ENCRYPTION_KEY}
+      # HMAC-SHA256 key signing presigned asset download URLs (>= 32 chars).
+      TRAME_JWT_SECRET: ${TRAME_JWT_SECRET:?set TRAME_JWT_SECRET (>= 32 chars)}
+      # HMAC-SHA256 key for campaign invite (magic link) tokens (>= 32 chars).
+      TRAME_INVITE_JWT_SECRET: ${TRAME_INVITE_JWT_SECRET:?set TRAME_INVITE_JWT_SECRET (>= 32 chars)}
+      # Public browser origin, e.g. https://trame.example.com (CORS / Origin checks, links).
+      TRAME_PUBLIC_ORIGIN: ${TRAME_PUBLIC_ORIGIN:?set TRAME_PUBLIC_ORIGIN}
+      # Adds the `Secure` attribute to session cookies; only disable for plain-HTTP testing.
+      TRAME_COOKIE_SECURE: ${TRAME_COOKIE_SECURE:-true}
+      # Built SPA directory inside the image (set by the Dockerfile; override only for custom builds).
+      TRAME_STATIC_DIR: /app/static
       TRAME_PORT: "8080"
       RUST_LOG: ${RUST_LOG:-info}
     deploy:
@@ -24,9 +40,9 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-trame}
       POSTGRES_USER: ${POSTGRES_USER:-trame}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trame_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
-      - postgres_prod_data:/var/lib/postgresql/data
+      - postgres_prod_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trame} -d ${POSTGRES_DB:-trame}"]
       interval: 5s

@@ -13,6 +13,23 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.11.1"
 thiserror.workspace = true
 uuid.workspace = true
-wasm-bindgen = "0.2"
+# Pure-Rust trig shared by native and wasm32 builds so geometry results are bit-identical.
+libm = { version = "0.2.16", default-features = false }
+wasm-bindgen = "0.2.130"
+# Optional JSON Schema derivation for `TrameCommand` (MCP `tools/list`); off for WASM builds.
+schemars = { version = "1.2.3", features = ["uuid1"], optional = true }
+
+[features]
+schema = ["dep:schemars"]
+
+# Debian bookworm's binaryen wasm-opt corrupts the externref table emitted by wasm-bindgen
+# 0.2.130 ("WebAssembly.Table.set(): Argument 1 is invalid for table"); ship rustc's output as is.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[dev-dependencies]
+# Exact f64 parsing so the parity fixtures compare bit-for-bit.
+serde_json = { workspace = true, features = ["float_roundtrip"] }

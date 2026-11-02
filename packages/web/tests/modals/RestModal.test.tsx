@@ -2,289 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { RestModal, type RestModalProps, type DiceRollService } from "../../src/components/modals/RestModal.tsx";
 import { createDefaultActorData, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
+import { localeSignal } from "../../src/i18n/index.ts";
+import { setupMockDom } from "../helpers/mockDom.ts";
 
-// Minimal DOM mock to allow Preact render and event dispatch in Node.js
-function setupMockDom() {
-  class MockClassList {
-    private classes = new Set<string>();
-    add(...tokens: string[]) { tokens.forEach((t) => this.classes.add(t)); }
-    remove(...tokens: string[]) { tokens.forEach((t) => this.classes.delete(t)); }
-    contains(token: string) { return this.classes.has(token); }
-    get length() { return this.classes.size; }
-    toString() { return Array.from(this.classes).join(" "); }
-  }
-
-  class MockNode {
-    nodeType = 1;
-    nodeName = "DIV";
-    parentNode: MockNode | null = null;
-    childNodes: MockNode[] = [];
-    attributes: Record<string, string> = {};
-    style: Record<string, string> = {};
-    classList = new MockClassList();
-    data = "";
-    _value = "";
-    checked = false;
-    disabled = false;
-    type = "text";
-    name = "";
-    id = "";
-    listeners: Record<string, Function[]> = {};
-
-    constructor(nodeName: string = "DIV", nodeType: number = 1) {
-      this.nodeName = nodeName.toUpperCase();
-      this.nodeType = nodeType;
-    }
-
-    get textContent(): string {
-      if (this.nodeType === 3) return this.data;
-      return this.childNodes.map((c) => c.textContent).join("");
-    }
-    set textContent(val: string) {
-      this.childNodes = [];
-      if (val) {
-        const textNode = new MockNode("#text", 3);
-        textNode.data = String(val);
-        textNode.parentNode = this;
-        this.childNodes.push(textNode);
-      }
-    }
-
-    get value(): string {
-      return this._value;
-    }
-    set value(v: string) {
-      this._value = String(v);
-    }
-
-    get firstChild(): MockNode | null {
-      return this.childNodes[0] || null;
-    }
-    get lastChild(): MockNode | null {
-      return this.childNodes[this.childNodes.length - 1] || null;
-    }
-    get nextSibling(): MockNode | null {
-      if (!this.parentNode) return null;
-      const idx = this.parentNode.childNodes.indexOf(this);
-      return idx >= 0 && idx + 1 < this.parentNode.childNodes.length ? this.parentNode.childNodes[idx + 1] : null;
-    }
-
-    appendChild<T extends MockNode>(child: T): T {
-      if (child.parentNode) child.parentNode.removeChild(child);
-      child.parentNode = this;
-      this.childNodes.push(child);
-      return child;
-    }
-
-    insertBefore<T extends MockNode>(newChild: T, refChild: MockNode | null): T {
-      if (!refChild) return this.appendChild(newChild);
-      if (newChild.parentNode) newChild.parentNode.removeChild(newChild);
-      const idx = this.childNodes.indexOf(refChild);
-      if (idx === -1) return this.appendChild(newChild);
-      newChild.parentNode = this;
-      this.childNodes.splice(idx, 0, newChild);
-      return newChild;
-    }
-
-    removeChild<T extends MockNode>(child: T): T {
-      const idx = this.childNodes.indexOf(child);
-      if (idx !== -1) {
-        child.parentNode = null;
-        this.childNodes.splice(idx, 1);
-      }
-      return child;
-    }
-
-    remove() {
-      if (this.parentNode) {
-        this.parentNode.removeChild(this);
-      }
-    }
-
-    focus() {
-      if (typeof document !== "undefined") {
-        (document as any).activeElement = this;
-      }
-    }
-
-    blur() {
-      if (typeof document !== "undefined" && (document as any).activeElement === this) {
-        (document as any).activeElement = null;
-      }
-    }
-
-    contains(other: MockNode | null): boolean {
-      let cur = other;
-      while (cur) {
-        if (cur === this) return true;
-        cur = cur.parentNode;
-      }
-      return false;
-    }
-
-    setAttribute(name: string, value: any) {
-      const strVal = String(value);
-      this.attributes[name] = strVal;
-      if (name === "class") {
-        this.classList = new MockClassList();
-        strVal.split(/\s+/).filter(Boolean).forEach((c) => this.classList.add(c));
-      }
-      if (name === "id") this.id = strVal;
-      if (name === "type") this.type = strVal;
-      if (name === "name") this.name = strVal;
-      if (name === "value") this._value = strVal;
-      if (name === "disabled") this.disabled = Boolean(value);
-      if (name === "checked") this.checked = Boolean(value);
-    }
-
-    getAttribute(name: string): string | null {
-      return this.attributes[name] ?? null;
-    }
-
-    hasAttribute(name: string): boolean {
-      return name in this.attributes;
-    }
-
-    removeAttribute(name: string) {
-      delete this.attributes[name];
-    }
-
-    addEventListener(type: string, listener: Function) {
-      if (!this.listeners[type]) this.listeners[type] = [];
-      this.listeners[type].push(listener);
-    }
-
-    removeEventListener(type: string, listener: Function) {
-      if (!this.listeners[type]) return;
-      this.listeners[type] = this.listeners[type].filter((l) => l !== listener);
-    }
-
-    dispatchEvent(event: { type: string; [k: string]: any }): boolean {
-      const target = event.target ?? this;
-      let stopped = false;
-      const originalStopPropagation = event.stopPropagation;
-      const eventObj = {
-        preventDefault: () => {},
-        ...event,
-        target,
-        currentTarget: this,
-        stopPropagation: () => {
-          stopped = true;
-          if (typeof originalStopPropagation === "function") {
-            originalStopPropagation();
-          }
-        },
-      };
-      const list = this.listeners[event.type] || [];
-      for (const handler of list) {
-        handler.call(this, eventObj);
-      }
-      if (this.parentNode && (event as any).bubbles !== false && !stopped) {
-        this.parentNode.dispatchEvent(eventObj);
-      }
-      return true;
-    }
-
-    matches(selector: string): boolean {
-      if (!selector || this.nodeType !== 1) return false;
-      if (selector.startsWith("#")) {
-        return this.id === selector.slice(1) || this.getAttribute("id") === selector.slice(1);
-      }
-      if (selector.startsWith(".")) {
-        return this.classList.contains(selector.slice(1));
-      }
-      if (selector.includes(":not(")) {
-        const notIdx = selector.indexOf(":not(");
-        const base = selector.slice(0, notIdx).trim();
-        const inner = selector.slice(notIdx + 5, selector.lastIndexOf(")")).trim();
-        if (base && !this.matches(base)) return false;
-        return !this.matches(inner);
-      }
-      const bracketIdx = selector.indexOf("[");
-      if (bracketIdx !== -1 && selector.endsWith("]")) {
-        const tagPart = selector.slice(0, bracketIdx).trim();
-        if (tagPart && this.nodeName.toLowerCase() !== tagPart.toLowerCase()) {
-          return false;
-        }
-        const inner = selector.slice(bracketIdx + 1, -1);
-        if (inner.includes("=")) {
-          const eqIdx = inner.indexOf("=");
-          const attr = inner.slice(0, eqIdx).trim();
-          const val = inner.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, "");
-          return this.getAttribute(attr) === val || (this as any)[attr] === val;
-        }
-        if (inner === "disabled") {
-          return Boolean(this.disabled || this.hasAttribute("disabled"));
-        }
-        return this.hasAttribute(inner);
-      }
-      return this.nodeName.toLowerCase() === selector.toLowerCase();
-    }
-
-    closest(selector: string): MockNode | null {
-      let cur: MockNode | null = this;
-      while (cur) {
-        if (cur.matches(selector)) {
-          return cur;
-        }
-        cur = cur.parentNode;
-      }
-      return null;
-    }
-
-    querySelector(selector: string): MockNode | null {
-      const all = this.querySelectorAll(selector);
-      return all[0] || null;
-    }
-
-    querySelectorAll(selector: string): MockNode[] {
-      const results: MockNode[] = [];
-      const walk = (current: MockNode) => {
-        for (const child of current.childNodes) {
-          if (child.nodeType === 1) {
-            if (child.matches(selector)) results.push(child);
-            walk(child);
-          }
-        }
-      };
-      walk(this);
-      return results;
-    }
-  }
-
-  const mockDoc = {
-    nodeType: 9,
-    nodeName: "#document",
-    activeElement: null as MockNode | null,
-    createElement(tag: string) {
-      return new MockNode(tag, 1);
-    },
-    createElementNS(_ns: string, tag: string) {
-      return new MockNode(tag, 1);
-    },
-    createTextNode(text: string) {
-      const n = new MockNode("#text", 3);
-      n.data = String(text);
-      return n;
-    },
-    createDocumentFragment() {
-      return new MockNode("#document-fragment", 11);
-    },
-    body: new MockNode("BODY", 1),
-  };
-
-  (globalThis as any).document = mockDoc;
-  (globalThis as any).window = globalThis;
-  (globalThis as any).Event = class {
-    type: string;
-    bubbles = true;
-    constructor(type: string, opts?: any) {
-      this.type = type;
-      if (opts?.bubbles !== undefined) this.bubbles = opts.bubbles;
-    }
-  };
-  return mockDoc;
-}
+localeSignal.value = "en";
 
 // Helper to render Preact component to mock DOM and clean up
 async function renderModal(props: RestModalProps) {
@@ -446,7 +167,7 @@ describe("RestModal Component", () => {
         onSave: () => slowSavePromise,
       });
 
-      const confirmBtn = findByText("Confirmer le Repos Court");
+      const confirmBtn = findByText("Confirm Short Rest");
       assert.ok(confirmBtn);
       confirmBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 10));
@@ -490,7 +211,7 @@ describe("RestModal Component", () => {
       });
 
       // Modal header and title
-      assert.ok(findByText("Repos court (Short Rest)"));
+      assert.ok(findByText("Short Rest"));
       // Vitality overview shows 3 / 4 hit dice and 12 / 34 HP
       assert.ok(findByText("3 / 4 (d10)"));
       assert.ok(findByText("12 / 34"));
@@ -499,15 +220,15 @@ describe("RestModal Component", () => {
       assert.ok(counter);
       assert.equal(counter.textContent.trim(), "0");
 
-      // Decrement button disabled at 0
-      const decBtn = container.querySelector("button[aria-label='Diminuer les dés de vie dépensés']");
+      // Decrement button refuses (aria-disabled) at 0
+      const decBtn = container.querySelector("button[aria-label='Decrease hit dice spent']");
       assert.ok(decBtn);
-      assert.equal(decBtn.disabled, true);
+      assert.equal(decBtn.getAttribute("aria-disabled"), "true");
 
-      // Increment button enabled
-      const incBtn = container.querySelector("button[aria-label='Augmenter les dés de vie dépensés']");
+      // Increment button accepts input
+      const incBtn = container.querySelector("button[aria-label='Increase hit dice spent']");
       assert.ok(incBtn);
-      assert.equal(incBtn.disabled, false);
+      assert.equal(incBtn.getAttribute("aria-disabled"), null);
 
       unmount();
     });
@@ -548,7 +269,7 @@ describe("RestModal Component", () => {
       });
 
       // Increment to spend 2 dice
-      const incBtn = container.querySelector("button[aria-label='Augmenter les dés de vie dépensés']");
+      const incBtn = container.querySelector("button[aria-label='Increase hit dice spent']");
       incBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 10));
       incBtn.dispatchEvent({ type: "click" });
@@ -558,7 +279,7 @@ describe("RestModal Component", () => {
       assert.equal(counter.textContent.trim(), "2");
 
       // Roll button is present
-      const rollBtn = findByText("Lancer les 2d10 de récupération");
+      const rollBtn = findByText("Roll 2d10 for recovery");
       assert.ok(rollBtn);
 
       // Click roll button
@@ -571,10 +292,10 @@ describe("RestModal Component", () => {
       assert.equal(rollCalls[0].options?.reason, "short_rest_hit_dice");
       assert.equal(rollCalls[1].formula, "1d10");
 
-      // Displays recovered HP preview (each roll 7 + CON 2 = 9 PV, total 18 PV)
+      // Displays recovered HP preview (each roll 7 + CON 2 = 9 HP, total 18 HP)
       // 15 + 18 = 33 / 40
-      assert.ok(findByText("+18 PV générés"));
-      assert.ok(findByText("15 → 33 / 40 (+18 PV)"));
+      assert.ok(findByText("+18 HP generated"));
+      assert.ok(findByText("15 → 33 / 40 (+18 HP)"));
 
       unmount();
     });
@@ -612,17 +333,17 @@ describe("RestModal Component", () => {
       });
 
       // Increment to spend 1 die
-      const incBtn = container.querySelector("button[aria-label='Augmenter les dés de vie dépensés']");
+      const incBtn = container.querySelector("button[aria-label='Increase hit dice spent']");
       incBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 10));
 
-      const rollBtn = findByText("Lancer les 1d8 de récupération");
+      const rollBtn = findByText("Roll 1d8 for recovery");
       rollBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 20));
 
       // Minimum 1 HP floor displayed
-      assert.ok(findByText("+1 PV (plancher min. 1)"));
-      assert.ok(findByText("10 → 11 / 30 (+1 PV)"));
+      assert.ok(findByText("+1 HP (min. 1 floor)"));
+      assert.ok(findByText("10 → 11 / 30 (+1 HP)"));
 
       unmount();
     });
@@ -656,19 +377,19 @@ describe("RestModal Component", () => {
       });
 
       // Spend 1 die
-      const incBtn = container.querySelector("button[aria-label='Augmenter les dés de vie dépensés']");
+      const incBtn = container.querySelector("button[aria-label='Increase hit dice spent']");
       incBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 10));
 
       // Roll
-      const rollBtn = findByText("Lancer les 1d10 de récupération");
+      const rollBtn = findByText("Roll 1d10 for recovery");
       rollBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 20));
 
       // Confirm button is enabled and clicked
-      const confirmBtn = findByText("Confirmer le Repos Court");
+      const confirmBtn = findByText("Confirm Short Rest");
       assert.ok(confirmBtn);
-      assert.equal(confirmBtn.disabled, false);
+      assert.equal(confirmBtn.getAttribute("aria-disabled"), null);
       confirmBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 20));
 
@@ -712,9 +433,9 @@ describe("RestModal Component", () => {
         onSave: (updated) => { savedActor = updated; },
       });
 
-      const confirmBtn = findByText("Confirmer le Repos Court");
+      const confirmBtn = findByText("Confirm Short Rest");
       assert.ok(confirmBtn);
-      assert.equal(confirmBtn.disabled, false);
+      assert.equal(confirmBtn.getAttribute("aria-disabled"), null);
       confirmBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 20));
 
@@ -750,17 +471,17 @@ describe("RestModal Component", () => {
         onSave: () => {},
       });
 
-      assert.ok(findByText("Repos long (Long Rest)"));
+      assert.ok(findByText("Long Rest"));
       // Full HP restore: 12 -> 34
-      assert.ok(findByText("12 → 34 / 34 (+22 PV)"));
+      assert.ok(findByText("12 → 34 / 34 (+22 HP)"));
       // Temp HP wiped to 0
       assert.ok(findByText("8 → 0"));
       // Hit dice recovery: max(1, floor(4/2)) = +2 (1 -> 3 / 4)
-      assert.ok(findByText("+2 dé(s) (1 → 3 / 4)"));
+      assert.ok(findByText("+2 hit dice (1 → 3 / 4)"));
       // Exhaustion reduced by 1: 2 -> 1
-      assert.ok(findByText("2 → 1 (-1 niveau)"));
+      assert.ok(findByText("2 → 1 (-1 level)"));
       // Death saves reset
-      assert.ok(findByText("Réinitialisés (0 succès, 0 échec)"));
+      assert.ok(findByText("Reset (0 successes, 0 failures)"));
       // Spell slots
       assert.ok(findByText("1 / 4 → 4 / 4")); // level 1 slots
       assert.ok(findByText("0 / 2 → 2 / 2")); // level 2 slots
@@ -794,7 +515,7 @@ describe("RestModal Component", () => {
         onSave: (updated) => { savedActor = updated; },
       });
 
-      const confirmBtn = findByText("Confirmer le Repos Long");
+      const confirmBtn = findByText("Confirm Long Rest");
       assert.ok(confirmBtn);
       confirmBtn.dispatchEvent({ type: "click" });
       await new Promise((r) => setTimeout(r, 20));
@@ -902,12 +623,12 @@ describe("RestModal Component", () => {
       // Shift+Tab on first element wraps to last
       firstBtn.focus();
       dialog.dispatchEvent({ type: "keydown", key: "Tab", shiftKey: true });
-      assert.equal((globalThis as any).document.activeElement, lastBtn);
+      assert.ok((globalThis as any).document.activeElement === lastBtn);
 
       // Tab on last element wraps to first
       lastBtn.focus();
       dialog.dispatchEvent({ type: "keydown", key: "Tab", shiftKey: false });
-      assert.equal((globalThis as any).document.activeElement, firstBtn);
+      assert.ok((globalThis as any).document.activeElement === firstBtn);
 
       unmount();
     });

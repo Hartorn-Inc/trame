@@ -8,8 +8,8 @@
 //! INVARIANTS & SAFETY BOUNDARIES:
 //!   - Validates RFC 6238 Appendix B reference vectors and 30-second windows.
 //!   - Verifies `<nonce_hex>:<ciphertext_hex>` AES-256-GCM round-trip storage.
-//!   - Verifies invalid/expired codes are rejected and valid codes issue a
-//!     `trame_session` cookie.
+//!   - Verifies `/totp/verify` requires the caller's own session, rejects
+//!     invalid codes, and never mints a `trame_session` cookie.
 //!
 //! EXECUTION LIFECYCLE:
 //!   1. Run RFC 6238 test vectors and AES-256-GCM encryption assertions.
@@ -146,11 +146,7 @@ async fn test_totp_http_flow_setup_enable_and_verify() {
     let store = Arc::new(InMemorySessionStore::new());
     let magic_link = Arc::new(MagicLinkService::new(b"test-secret", "trame-test"));
     let totp_service = Arc::new(TotpService::default());
-    let state = AuthState {
-        magic_link_service: magic_link,
-        session_store: store.clone(),
-        totp_service: totp_service.clone(),
-    };
+    let state = AuthState::new(magic_link, store.clone(), totp_service.clone());
     let app = build_auth_router(state);
 
     // 1. Create a user
@@ -250,42 +246,67 @@ async fn test_totp_http_flow_setup_enable_and_verify() {
     assert!(user_after_enable.totp_secret.is_some());
     assert!(user_after_enable.pending_totp_secret.is_none());
 
-    // 8. POST /api/v1/auth/totp/verify with INVALID code fails
-    let bad_verify_req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/totp/verify")
-        .header("Content-Type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&TotpVerifyRequest {
-                user_id,
-                code: "999999".to_string(),
-            })
-            .unwrap(),
-        ))
-        .unwrap();
-    let bad_verify_res = app.clone().oneshot(bad_verify_req).await.unwrap();
-    assert_eq!(bad_verify_res.status(), StatusCode::UNAUTHORIZED);
+    // 8. POST /api/v1/auth/totp/verify rejections: no session, foreign user_id, bad code
+    let verify_request = |cookie: Option<String>, uid: Uuid, code: &str| {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/totp/verify")
+            .header("Content-Type", "application/json");
+        if let Some(c) = cookie {
+            builder = builder.header("Cookie", c);
+        }
+        builder
+            .body(Body::from(
+                serde_json::to_vec(&TotpVerifyRequest {
+                    user_id: uid,
+                    code: code.to_string(),
+                })
+                .unwrap(),
+            ))
+            .unwrap()
+    };
+    let cookie = format!("trame_session={raw_token}");
+    let rejections = [
+        (
+            "no_session_cannot_mint_login",
+            None,
+            user_id,
+            valid_code.as_str(),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "session_for_other_user_id",
+            Some(cookie.clone()),
+            Uuid::new_v4(),
+            valid_code.as_str(),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "invalid_code",
+            Some(cookie.clone()),
+            user_id,
+            "999999",
+            StatusCode::UNAUTHORIZED,
+        ),
+    ];
+    for (case, cookie, uid, code, expected) in rejections {
+        let res = app
+            .clone()
+            .oneshot(verify_request(cookie, uid, code))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), expected, "case {case}");
+        assert!(!res.headers().contains_key("set-cookie"), "case {case}");
+    }
 
-    // 9. POST /api/v1/auth/totp/verify with VALID current code succeeds and issues cookie
-    let verify_req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/totp/verify")
-        .header("Content-Type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&TotpVerifyRequest {
-                user_id,
-                code: valid_code,
-            })
-            .unwrap(),
-        ))
+    // 9. POST /api/v1/auth/totp/verify with session + VALID code succeeds without a new cookie
+    let verify_res = app
+        .clone()
+        .oneshot(verify_request(Some(cookie), user_id, &valid_code))
+        .await
         .unwrap();
-    let verify_res = app.clone().oneshot(verify_req).await.unwrap();
     assert_eq!(verify_res.status(), StatusCode::OK);
-    assert!(verify_res.headers().contains_key("set-cookie"));
-    let cookie_hdr = verify_res.headers()["set-cookie"].to_str().unwrap();
-    assert!(cookie_hdr.contains("trame_session="));
-    assert!(cookie_hdr.contains("HttpOnly"));
-    assert!(cookie_hdr.contains("SameSite=Lax"));
+    assert!(!verify_res.headers().contains_key("set-cookie"));
 
     let verify_body = axum::body::to_bytes(verify_res.into_body(), usize::MAX)
         .await

@@ -14,6 +14,8 @@ colors:
   light-text-muted: "#465D6D"
   dark-border: "#405466"
   light-border: "#ACBFCB"
+  dark-border-control: "#678099"
+  light-border-control: "#607788"
   amber: "#F3BB71"
   amber-deep: "#995817"
   on-amber-dark: "#172535"
@@ -84,13 +86,15 @@ TRAME ships a first-class dual-theme palette (`dark` default for dimly lit eveni
 | `--atlas-surface-raised` | `#203243` (Raised Slate) | `#E8EFF3` (Raised Mist) | Hover/active rows, table headers, input backgrounds, and sticky toolbars. |
 | `--atlas-text` | `#F1F4F3` (Chalk Ink) | `#1C3041` (Deep Slate Ink) | Primary text (`>= 13.8:1` on dark surface, `>= 13.1:1` on light surface). |
 | `--atlas-text-muted` | `#B8C7D1` (Muted Steel) | `#465D6D` (Muted Slate) | Secondary labels and metadata (`>= 7.5:1` on dark, `>= 6.1:1` on light; `>= 4.5:1` on raised surfaces). |
-| `--atlas-border` | `#405466` (Structural Hairline) | `#ACBFCB` (Structural Rule) | `1px solid` structural dividers and control borders (`>= 3.0:1` UI contrast). |
+| `--atlas-border` | `#405466` (Structural Hairline) | `#ACBFCB` (Structural Rule) | `1px solid` structural dividers, panel and modal frames. Decorative only: below `3.0:1`, so never the sole boundary of something a user operates. |
+| `--atlas-border-control` | `#678099` (Control Edge) | `#607788` (Control Edge) | Borders of operable controls: inputs, selects, secondary buttons, choice cards, interactive list rows (`>= 3.0:1` against `--atlas-surface`, WCAG 1.4.11). |
 | `--atlas-action` | `#F3BB71` (Signal Amber) | `#995817` (Deep Amber Ochre) | Primary CTAs, active tool indicator, active turn accent, and unlocked `PadlockEditMode`. |
 | `--atlas-on-action` | `#172535` (Dark Slate Ink) | `#FFFFFF` (Crisp White) | Text/icon foreground on `--atlas-action` fills (`>= 8.9:1` dark, `>= 5.4:1` light). |
 | `--atlas-focus` | `#80CBE2` (Instrument Cyan) | `#155D77` (Deep Instrument Cyan) | `:focus-visible` keyboard ring (`2px solid`, `outline-offset: 2px`), ruler/LoS ray highlight (`>= 3.0:1`). |
 | `--atlas-danger` | `#D57973` (Coral Alert) | `#A3333B` (Crimson Alert) | Destructive actions, `InstantDeath` / failure alerts, and hostile accents (`>= 4.8:1` text contrast). |
 | `--atlas-grid` | `rgba(184, 199, 209, 0.16)` | `rgba(28, 48, 65, 0.14)` | Subtle cartographic grid lines on canvas and empty states. |
 | `--atlas-shadow` | `rgba(5, 10, 16, 0.42)` | `rgba(15, 26, 37, 0.12)` | Elevation shadow reserved strictly for floating overlays above the map canvas. |
+| `--atlas-scrim` | `rgba(5, 10, 16, 0.72)` | `rgba(15, 26, 37, 0.56)` | Backdrop behind `aria-modal` dialogs (`.ds-modal-backdrop`); flat, never blurred. |
 
 ### Named Color Rules
 1. **The Map-Art Independence Rule**: Switching between `dark`, `light`, and `system` themes updates DOM chrome (`--atlas-*`) and the PixiJS empty canvas void / grid lines via `CanvasThemePalette`, but **NEVER** applies CSS filters (`invert`, `brightness`, `hue-rotate`, `contrast`) to uploaded battlemap artwork on the `backgroundMap` layer (`mapArtFilter: "none"`), and **ALWAYS** keeps `FogLayer` Layer 0 (`Unexplored`) opaque dark (`#0F1A25`).
@@ -112,6 +116,17 @@ TRAME pairs a geometric, compact display face with a technical, high-legibility 
 | `ui` | `IBM Plex Sans` | `14px` / `1.45` | `500` | `0` | Buttons, inputs, tabs, `CombatTracker` rows, inventory items. |
 | `meta` | `IBM Plex Sans` | `12px` / `1.35` | `500` | `+0.01em` | Shortcut hints (`Kbd`), coordinates, distance badges, timestamps (never `< 12px`). |
 
+### Font-Size Tokens (`--atlas-font-size-*`)
+DOM chrome sizes text through these tokens (declared in `tokens.css`) instead of raw pixel values; the `ds-*` primitives consume them directly.
+
+| Token | Value | Maps To |
+| :--- | :--- | :--- |
+| `--atlas-font-size-xs` | `0.75rem` (`12px`) | `meta` — hints, metadata, stepper labels. |
+| `--atlas-font-size-sm` | `0.875rem` (`14px`) | `ui` — buttons, inputs, field labels, modal body. |
+| `--atlas-font-size-base` | `1rem` (`16px`) | `body` / `section-title` — prose, panel and section headings. |
+| `--atlas-font-size-lg` | `1.125rem` (`18px`) | Emphasized values (rolled HP, target level), icon-button glyphs. |
+| `--atlas-font-size-xl` | `1.25rem` (`20px`) | `headline` — modal titles, brand title. |
+
 ### Mandatory Numeric Discipline (`tabular-nums`)
 Every element displaying `AbilityScore`, `AbilityModifier`, `ProficiencyBonus`, `TempHP`, `ResourcePool`, `DeathSaveCounters`, `ElevationFt`, initiative scores, `RulerMetric` distances, container weights, countdown timers (`ReactionBanner`), or dice roll results **MUST** apply `font-variant-numeric: tabular-nums` (`.atlas-tabular-nums`).
 
@@ -131,7 +146,7 @@ Every element displaying `AbilityScore`, `AbilityModifier`, `ProficiencyBonus`, 
 **The Flat-By-Default Rule**:
 - **Level 0 (Canvas & Workspace Root)**: `--atlas-bg`, flat (`0` shadow).
 - **Level 1 (Structural Panels, Cards & Sheet Sections)**: `--atlas-surface` framed strictly by a `1px solid var(--atlas-border)` hairline and `0` box-shadow. Never nest bordered cards inside bordered cards; separate internal groups with `1px` hairlines or `16px` spacing.
-- **Level 2 (Raised Interactive Controls & Sticky Headers)**: `--atlas-surface-raised` with `1px solid var(--atlas-border)`.
+- **Level 2 (Raised Interactive Controls & Sticky Headers)**: `--atlas-surface-raised`; operable controls use `1px solid var(--atlas-border-control)`, sticky headers keep the `--atlas-border` hairline.
 - **Level 3 (Floating Overlays Above the Map Canvas, Modals & Context Menus)**: `--atlas-surface` with `1px solid var(--atlas-border)` and `--atlas-elevation-overlay: 0 10px 30px var(--atlas-shadow)`.
 - **Prohibited Effects**: Zero colored/amber glow shadows (`0 0 20px`), zero neon halos, zero backdrop-blur glassmorphism over combat stats, and zero hard brutalist offset shadows (`4px 4px 0`).
 
@@ -150,24 +165,27 @@ Every element displaying `AbilityScore`, `AbilityModifier`, `ProficiencyBonus`, 
 1. **Buttons (`.ds-btn`, `.ds-btn-primary`, `.ds-btn-secondary`, `.ds-btn-danger`)**:
    - Minimum height `40px` on desktop (`>= 44x44px` on touch / `< 768px`), horizontal padding `12px–16px`, radius `4px`, `IBM Plex Sans` `14px` weight `500`.
    - Primary (`button-primary`): `background: var(--atlas-action)`, `color: var(--atlas-on-action)`, `border: 1px solid transparent`.
-   - Secondary (`button-secondary`): `background: var(--atlas-surface-raised)`, `color: var(--atlas-text)`, `border: 1px solid var(--atlas-border)`.
+   - Secondary (`button-secondary`): `background: var(--atlas-surface-raised)`, `color: var(--atlas-text)`, `border: 1px solid var(--atlas-border-control)`. `aria-pressed="true"` adds an amber border, `600` weight and a `2px` inset underline so the state never relies on color alone.
+   - Disabled: buttons that can hold focus (wizard Next/Confirm, steppers, submit-while-busy) use `aria-disabled="true"` and guard their handler, so focus is not dropped to `<body>`; native `disabled` is reserved for controls that are never focused when they flip.
    - Danger (`button-danger`): `background: transparent`, `color: var(--atlas-danger)`, `border: 1px solid var(--atlas-danger)`.
 2. **Inputs & Form Controls (`.ds-input`)**:
-   - Height `40px` (`44px` on touch), `padding: 8px 12px`, `border-radius: 6px`, `background: var(--atlas-surface-raised)`, `color: var(--atlas-text)`, `border: 1px solid var(--atlas-border)`. Every input requires a visible `<label>` or explicit `aria-label`.
-3. **Map Tool Rail (`GmOverrideToolbar` / Tool Rail)**:
+   - Height `40px` (`44px` on touch), `padding: 8px 12px`, `border-radius: 6px`, `background: var(--atlas-surface-raised)`, `color: var(--atlas-text)`, `border: 1px solid var(--atlas-border-control)`. Every input requires a visible `<label>` or explicit `aria-label` (never both). `aria-invalid="true"` switches to a `2px` `--atlas-danger` border.
+3. **Modals (`.ds-modal-backdrop`, `.ds-modal`, `.ds-modal-header`, `.ds-modal-body`, `.ds-modal-footer`)**:
+   - Fixed full-viewport `--atlas-scrim` backdrop; Level 3 panel (`max-width: 42rem`, `36rem` with `.ds-modal-narrow`, `max-height: 90vh`, scrolling body). Every dialog uses `useModalFocusTrap` (document-level `Tab`/`Escape`, focus-in guard, `inert` background).
+4. **Map Tool Rail (`GmOverrideToolbar` / Tool Rail)**:
    - Vertical rail (`48px` wide) of `40x40px` icon buttons (`role="toolbar"`), displaying `aria-pressed="true|false"` and a `2px` `--atlas-action` left bar on the active tool.
-4. **Declarative Character Sheet (`DeclarativeSheetRenderer`) & `PadlockEditMode` Header**:
+5. **Declarative Character Sheet (`DeclarativeSheetRenderer`) & `PadlockEditMode` Header**:
    - Sticky header displaying actor name (`Space Grotesk` `20px`), level/class summary, and the `PadlockEditMode` toggle button (`data-testid="sheet-padlock-toggle"`, `aria-pressed="true|false"`).
    - When `locked` (`aria-pressed="false"`, default during play): displays `PadlockLockedIcon`; structural inputs are read-only while `roll-button` widgets remain 1-click interactive.
    - When `unlocked` (`aria-pressed="true"`): displays `PadlockUnlockedIcon` and a `1px solid var(--atlas-action)` header accent; structural inputs and level-up/equipment edits are enabled.
-5. **CombatTracker & ReactionBanner**:
+6. **CombatTracker & ReactionBanner**:
    - Compact horizontal/vertical strip displaying turn order with `.atlas-tabular-nums` initiative badges, non-color disposition icons (`AllyBadgeIcon` / `HostileBadgeIcon`), and a server-synchronized 5-second `ReactionBanner` countdown.
 
 ## Do's and Don'ts
 
 ### Do's
 - **DO** use `var(--atlas-*)` CSS custom properties for all DOM styles and `CanvasThemePalette` for all PixiJS v8 `SceneGraph` colors and stroke dash patterns.
-- **DO** verify `>= 4.5:1` contrast for all body/muted/alert text and `>= 3.0:1` for borders, focus rings, and active indicators in both `dark` and `light` themes.
+- **DO** verify `>= 4.5:1` contrast for all body/muted/alert text and `>= 3.0:1` for control borders (`--atlas-border-control`), focus rings, and active indicators in both `dark` and `light` themes. Structural hairlines (`--atlas-border`) are exempt because they never carry operability.
 - **DO** apply `.atlas-tabular-nums` (`font-variant-numeric: tabular-nums`) to every stat block, HP counter, initiative value, ruler measurement, and dice roll total.
 - **DO** provide non-color-only geometric/iconographic redundancy (`!` hostile badge, dashed strokes, padlock open/closed icons, `aria-pressed`) for every state.
 - **DO** use the inline cartographic SVG empty states (`AtlasEmptyStates` with zero baked-in SVG `<text>`) paired with localized HTML headings and primary action buttons.

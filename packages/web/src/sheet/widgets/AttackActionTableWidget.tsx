@@ -1,4 +1,5 @@
 import { h, type VNode } from 'preact';
+import { t } from '../../i18n/index.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 
@@ -62,9 +63,9 @@ export function AttackActionTableWidget(props: WidgetProps): VNode<any> {
   return h(
     'div',
     { class: 'ds-attack-table-widget', 'data-testid': 'attack-action-table-widget' },
-    h('h4', { class: 'ds-widget-title' }, 'Attacks & Spellcasting'),
+    h('h4', { class: 'ds-widget-title' }, t('sheet.attacks.title')),
     attacks.length === 0
-      ? h('p', { class: 'ds-empty-state', 'data-testid': 'attacks-empty-state' }, 'No attacks configured. Equip a weapon from Inventory or add one from Compendium.')
+      ? h('p', { class: 'ds-empty-state', 'data-testid': 'attacks-empty-state' }, t('sheet.attacks.empty'))
       : h(
           'table',
           { class: 'ds-attack-table' },
@@ -74,10 +75,10 @@ export function AttackActionTableWidget(props: WidgetProps): VNode<any> {
             h(
               'tr',
               null,
-              h('th', null, 'Name'),
-              h('th', null, 'To Hit'),
-              h('th', null, 'Damage/Type'),
-              h('th', null, 'Action'),
+              h('th', null, t('sheet.attacks.name')),
+              h('th', null, t('sheet.attacks.toHit')),
+              h('th', null, t('sheet.attacks.damage')),
+              h('th', null, t('sheet.attacks.action')),
             ),
           ),
           h(
@@ -95,7 +96,7 @@ export function AttackActionTableWidget(props: WidgetProps): VNode<any> {
                   null,
                   h('span', { class: 'ds-atk-name' }, atk.name),
                   isDepleted
-                    ? h('span', { class: 'ds-depleted-badge', 'data-testid': `depleted-badge-${atk.id}` }, ' [Depleted]')
+                    ? h('span', { class: 'ds-depleted-badge', 'data-testid': `depleted-badge-${atk.id}` }, t('sheet.attacks.depleted'))
                     : null,
                 ),
                 h('td', { class: 'atlas-tabular-nums' }, bonusDisplay),
@@ -109,11 +110,11 @@ export function AttackActionTableWidget(props: WidgetProps): VNode<any> {
                       type: 'button',
                       class: 'ds-btn-atk-roll',
                       'data-testid': `btn-atk-roll-${atk.id}`,
-                      'aria-label': `Roll attack with ${atk.name}`,
+                      'aria-label': t('sheet.attacks.rollAttackAria', { name: atk.name }),
                       disabled: isDepleted,
                       onClick: () => handleAttackRoll(atk),
                     },
-                    'Atk',
+                    t('sheet.attacks.rollAttack'),
                   ),
                   h(
                     'button',
@@ -121,10 +122,10 @@ export function AttackActionTableWidget(props: WidgetProps): VNode<any> {
                       type: 'button',
                       class: 'ds-btn-dmg-roll',
                       'data-testid': `btn-dmg-roll-${atk.id}`,
-                      'aria-label': `Roll damage for ${atk.name}`,
+                      'aria-label': t('sheet.attacks.rollDamageAria', { name: atk.name }),
                       onClick: () => handleDamageRoll(atk),
                     },
-                    'Dmg',
+                    t('sheet.attacks.rollDamage'),
                   ),
                 ),
               );

@@ -1,50 +1,53 @@
-# Spécification Technique & Fonctionnelle : Wiki Collaboratif, Révélation de Handouts, Timeline de Session et Mode Compagnon Mobile
+# Technical & Functional Specification: Collaborative Wiki, Handout Reveal, Session Timeline and Mobile Companion Mode
 
-## 1. Objectif et Périmètre
+## 1. Goal and Scope
 
-Ce document spécifie l'implémentation de quatre composants intégrés pour la plateforme TRAME (`packages/web` et `crates/trame-server`) :
-1. **Éditeur Markdown Wiki Collaboratif** : Support des liens de compendium `[[Entity]]` avec autocomplétion, édition multi-curseurs en temps réel via Yjs/`yrs`, et gestion sécurisée des blocs de directives `:::dm` et `:::handout`.
-2. **Modal de Révélation de Handout et Journal de Groupe** : Déclenchement de l'action `[ Reveal to Party ]` par le Maître de Jeu, affichage plein écran immédiat chez tous les joueurs connectés, et archivage persistant dans le Journal de Groupe.
-3. **Flux Chronologique Append-Only de Session (Session Timeline)** : Journal persistant des événements de session, exposé par WebSocket, point de terminaison REST et outil de serveur MCP (`get_session_timeline`).
-4. **Mode Compagnon Mobile Découplé (< 768px)** : Layout tactile léger avec quatre onglets, interdisant formellement l'instanciation de l'application PixiJS et des Framebuffer Objects (FBO) WebGL sur les écrans de largeur inférieure à 768 pixels.
+This document specifies the implementation of four integrated components of the TRAME platform (`packages/web` and `crates/trame-server`):
+1. **Collaborative Markdown wiki editor**: compendium links `[[Entity]]` with autocompletion, real-time multi-cursor editing through Yjs/`yrs`, and secure handling of the `:::dm` and `:::handout` directive blocks (`DirectiveBlock`).
+2. **Handout reveal modal and party journal**: the Game Master triggers the `[ Reveal to Party ]` action, every connected player immediately sees the handout full-screen (`HandoutRevealModal`), and the handout is archived persistently in the party journal (`PartyJournalEntry`).
+3. **Append-only session timeline (`SessionTimelineEvent`)**: a persistent log of session events, exposed over WebSocket, a REST endpoint and an MCP server tool (`get_session_timeline`).
+4. **Decoupled mobile companion mode (< 768 px, `MobileCompanionView`)**: a lightweight touch layout with five tabs that never creates the PixiJS application or WebGL Framebuffer Objects (FBO) on screens narrower than 768 pixels.
+
+> **Implementation status:** the web client reveals handouts through `POST /api/v1/campaigns/{id}/handouts/{handout_id}/reveal`, which applies `TrameCommand::RevealHandout` and broadcasts `ServerEnvelope::HandoutRevealed` (see `spec-3-scope-wiki-notes-private-part.md`, section 4). The notes REST contract is described there as well.
 
 ---
 
-## 2. Modèle de Données et Architecture des Protocoles
+## 2. Data Model and Protocol Architecture
 
-### 2.1 Grammaire Canonique des Directives Markdown
+### 2.1 Canonical Markdown Directive Grammar
 
-Les documents de notes sont formatés en texte Markdown UTF-8.
-Les directives interactives respectent strictement la syntaxe clé-valeur suivante :
+Note documents are UTF-8 Markdown text.
+Interactive directives strictly follow this key-value syntax:
 
 ```text
-:::handout{id="<uuid>" title="<titre>" revealed="<boolean>"}
-Contenu du document à révéler (texte, Markdown ou image)
+:::handout{id="<uuid>" title="<title>" revealed="<boolean>"}
+Content of the document to reveal (text, Markdown or image)
 :::
 
 :::dm
-Notes et secrets réservés exclusivement au Maître de Jeu
+Notes and secrets reserved exclusively for the Game Master
 :::
 ```
 
-- Les attributs de directive utilisent des guillemets doubles obligatoires.
-- Le titre peut contenir des espaces et des caractères de ponctuation sans briser l'analyseur syntaxique.
-- Les blocs `:::dm` ne comportent aucun attribut et masquent intégralement leur contenu textuel aux clients non-MJ.
+- Directive attributes require double quotes.
+- The title can contain spaces and punctuation without breaking the parser.
+- `:::dm` blocks have no attributes and hide their entire text content from non-GM clients.
 
-### 2.2 Architecture de Synchronisation CRDT et Isolation Zero-Trust
+### 2.2 CRDT Synchronization Architecture and Zero-Trust Isolation
 
-Pour empêcher la fuite de secrets sans rompre les vecteurs d'état CRDT :
-1. Les clients connectés avec le rôle `GameMaster` rejoignent la salle Yjs/`yrs` autoritaire via le canal WebSocket `notes:{note_id}:dm`.
-2. Les clients connectés avec le rôle `Player` ou `Spectator` NE se connectent JAMAIS à la salle CRDT brute Yjs/`yrs`.
-3. Les clients non-MJ s'abonnent au canal de diffusion WebSocket `notes:{note_id}:public`.
-4. Lorsque le document Yjs fait l'objet d'une mise à jour par le Maître de Jeu, `trame-server` exécute la fonction de transformation pure `FilteredNoteDocument::filter_for_role(raw_content, role)` :
-   - Si `role == UserRole::GameMaster`, le contenu intégral brut est conservé.
-   - Si `role != UserRole::GameMaster`, le compilateur AST supprime tous les blocs délimités par `:::dm` et tous les blocs `:::handout` dont l'attribut `revealed` est égal à `"false"`.
-5. `trame-server` diffuse l'instantané Markdown assaini résultant sous la forme d'un message JSON `notes.snapshot` sur le canal `notes:{note_id}:public`.
+To prevent secret leaks without breaking CRDT state vectors:
+1. Clients connected with the `GameMaster` role join the authoritative Yjs/`yrs` room through the WebSocket channel `notes:{note_id}:dm`.
+2. Clients connected with the `Player` or `Spectator` role NEVER connect to the raw Yjs/`yrs` CRDT room.
+3. Non-GM clients subscribe to the WebSocket broadcast channel `notes:{note_id}:public`.
+4. When the Game Master updates the Yjs document, `trame-server` runs the pure transformation function `FilteredNoteDocument::filter_for_role(raw_content, role)`:
+   - If `role == UserRole::GameMaster`, the full raw content is kept.
+   - If `role != UserRole::GameMaster`, the AST compiler removes every block delimited by `:::dm` and every `:::handout` block whose `revealed` attribute equals `"false"`.
+5. `trame-server` broadcasts the resulting sanitized Markdown snapshot as a `notes.snapshot` JSON message on the `notes:{note_id}:public` channel.
+6. When a `Player` saves a `PARTY` note, `trame-server` reinserts the hidden blocks at their original line-anchored positions (`LineAnchorNoteMerge`) before persisting, so a player edit never deletes or exposes GM secrets.
 
-### 2.3 Schéma de Persistance SQL du Journal de Groupe
+### 2.3 Party Journal SQL Persistence Schema
 
-Les Handouts révélés sont persistés dans la table PostgreSQL `party_journal_entries` :
+Revealed handouts are persisted in the PostgreSQL table `party_journal_entries`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS party_journal_entries (
@@ -59,9 +62,9 @@ CREATE TABLE IF NOT EXISTS party_journal_entries (
 CREATE INDEX IF NOT EXISTS idx_party_journal_campaign ON party_journal_entries(campaign_id, revealed_at DESC);
 ```
 
-### 2.4 Schéma de Persistance SQL de la Chronologie de Session
+### 2.4 Session Timeline SQL Persistence Schema
 
-La chronologie de session repose sur un journal d'événements append-only strict :
+The session timeline relies on a strict append-only event log:
 
 ```sql
 CREATE TABLE IF NOT EXISTS session_events (
@@ -80,47 +83,44 @@ CREATE TABLE IF NOT EXISTS session_events (
 CREATE INDEX IF NOT EXISTS idx_session_events_lookup ON session_events(campaign_id, session_num, seq_id ASC);
 ```
 
-Types d'événements supportés (`event_type`) :
-- `DiceRolled` : lancer de dé exécuté avec résultat numérique.
-- `CombatRoundStarted` : nouveau round de combat amorcé.
-- `RoomTransitioned` : déplacement du groupe vers une nouvelle salle ou scène.
-- `HandoutRevealed` : indice ou document révélé à la table.
+Supported event types (`event_type`):
+- `DiceRolled`: a dice roll with its numeric result.
+- `CombatRoundStarted`: a new combat round has started.
+- `RoomTransitioned`: the party moved to a new room or scene.
+- `HandoutRevealed`: a clue or document was revealed to the table.
 
 ---
 
-## 3. Interfaces Applicatives et Contrats d'API
+## 3. Application Interfaces and API Contracts
 
-### 3.1 Commandes et Messages Temps-Réel WebSocket
+### 3.1 Real-Time WebSocket Commands and Messages
 
-#### Commande Émise par le Maître de Jeu (Client -> Serveur)
+#### Reveal Request Sent by the Game Master (Client -> Server)
+`POST /api/v1/campaigns/{campaign_id}/handouts/{handout_id}/reveal` (GM only). The body is optional; the server reads the handout title and content from the campaign notes and applies the `RevealHandout` command to the live room.
 ```json
 {
-  "action": "notes.reveal_handout",
-  "campaign_id": "camp-123",
-  "session_num": 4,
-  "handout_id": "h-456",
-  "title": "Lettre intercepted",
-  "content": "Rendez-vous à minuit au vieux moulin."
+  "session_num": 4
 }
 ```
 
-#### Diffusion WebSocket de Révélation (Serveur -> Tous les Clients Connectés)
+#### Reveal WebSocket Broadcast (Server -> All Connected Clients)
 ```json
 {
   "event": "handout.revealed",
   "handout_id": "h-456",
-  "title": "Lettre interceptée",
-  "content": "Rendez-vous à minuit au vieux moulin.",
+  "title": "Intercepted letter",
+  "content": "Meet at midnight at the old mill.",
   "revealed_by": "user-gm-1",
   "timestamp": 1717171200000
 }
 ```
 
-### 3.2 Point de Terminaison REST de la Chronologie
+### 3.2 Timeline REST Endpoint
 
-- **Route** : `GET /api/campaigns/{campaign_id}/sessions/{session_num}/timeline`
-- **Paramètres de requête** : `after` (entier optionnel, valeur par défaut `0`), `limit` (entier optionnel, valeur par défaut `50`, maximum `200`).
-- **Réponse HTTP 200** :
+- **Route**: `GET /api/v1/campaigns/{campaign_id}/sessions/{session_num}/timeline`
+- **Access**: requires campaign membership; events are filtered by role.
+- **Query parameters**: `after` (optional integer, default `0`), `limit` (optional integer, default `50`, maximum `200`).
+- **HTTP 200 response**:
 ```json
 {
   "campaign_id": "camp-123",
@@ -137,19 +137,19 @@ Types d'événements supportés (`event_type`) :
     {
       "seq_id": 2,
       "timestamp": 1717171200000,
-      "event_type": "HandoutRevealed",
+      "event_type": "handout_revealed",
       "actor_id": "user-gm-1",
-      "payload": { "handout_id": "h-456", "title": "Lettre interceptée" }
+      "payload": { "handout_id": "h-456", "title": "Intercepted letter" }
     }
   ],
   "has_more": false
 }
 ```
 
-### 3.3 Contrat d'Outil MCP (`get_session_timeline`)
+### 3.3 MCP Tool Contract (`get_session_timeline`)
 
-- **Nom de l'outil** : `get_session_timeline`
-- **Schéma d'entrée** :
+- **Tool name**: `get_session_timeline`
+- **Input schema**:
 ```json
 {
   "type": "object",
@@ -160,78 +160,78 @@ Types d'événements supportés (`event_type`) :
   "required": ["campaign_id", "session_num"]
 }
 ```
-- **URI de ressource MCP retournée** : `campaign://{campaign_id}/sessions/{session_num}/timeline`
-- **Charge utile textuelle** : Transcription chronologique ordonnée par `seq_id` formatée en Markdown pour l'ingestion par le modèle d'IA générative.
+- **Returned MCP resource URI**: `campaign://{campaign_id}/sessions/{session_num}/timeline` (the session number and cursor are read from the URI).
+- **Text payload**: a chronological transcript ordered by `seq_id`, formatted as Markdown for ingestion by the generative AI model.
 
 ---
 
-## 4. Règles Métier et Invariants Déterministes (ASD-STE100)
+## 4. Business Rules and Deterministic Invariants (ASD-STE100)
 
-### 4.1 Invariants d'Édition et de Confidentialité des Notes
-1. `trame-server` MUST interdire à tout client ne disposant pas du rôle `GameMaster` de souscrire au canal Yjs `notes:{note_id}:dm`.
-2. WHEN un client sans rôle `GameMaster` tente de souscrire à `notes:{note_id}:dm`, THEN `trame-server` MUST rejeter la souscription avec le code d'erreur `FORBIDDEN`.
-3. WHEN `trame-server` sérialise un document de note pour un client sans rôle `GameMaster`, `trame-server` MUST supprimer tous les blocs `:::dm` du corps du document.
-4. WHEN `trame-server` sérialise un document de note pour un client sans rôle `GameMaster`, `trame-server` MUST supprimer tous les blocs `:::handout` dont l'attribut `revealed` est égal à `"false"`.
-5. IF un bloc `:::handout` possède l'attribut `revealed="true"`, THEN `trame-server` MUST conserver le bloc dans l'instantané public.
+### 4.1 Note Editing and Confidentiality Invariants
+1. `trame-server` MUST forbid any client without the `GameMaster` role from subscribing to the Yjs channel `notes:{note_id}:dm`.
+2. WHEN a client without the `GameMaster` role tries to subscribe to `notes:{note_id}:dm`, THEN `trame-server` MUST reject the subscription with the `FORBIDDEN` error code.
+3. WHEN `trame-server` serializes a note document for a client without the `GameMaster` role, `trame-server` MUST remove every `:::dm` block from the document body.
+4. WHEN `trame-server` serializes a note document for a client without the `GameMaster` role, `trame-server` MUST remove every `:::handout` block whose `revealed` attribute equals `"false"`.
+5. IF a `:::handout` block has the attribute `revealed="true"`, THEN `trame-server` MUST keep the block in the public snapshot.
 
-### 4.2 Invariants de Révélation de Handout
-1. Seul un utilisateur disposant du rôle `GameMaster` peut émettre la commande `notes.reveal_handout`.
-2. WHEN `trame-server` valide la commande `notes.reveal_handout`, THEN `trame-server` MUST enregistrer l'entrée correspondante dans la table `party_journal_entries`.
-3. WHEN `trame-server` valide la commande `notes.reveal_handout`, THEN `trame-server` MUST insérer un événement de type `HandoutRevealed` dans la table `session_events`.
-4. WHEN `trame-server` persiste la révélation d'un handout, THEN `trame-server` MUST diffuser l'événement `handout.revealed` à tous les clients connectés à la campagne.
-5. WHEN le client `packages/web` reçoit l'événement `handout.revealed`, THEN `packages/web` MUST afficher le composant `HandoutRevealModal` contenant le titre et le texte du handout.
+### 4.2 Handout Reveal Invariants
+1. Only a user with the `GameMaster` role can send the `RevealHandout` command (`POST .../handouts/{handout_id}/reveal`).
+2. WHEN `trame-server` accepts the `RevealHandout` command, THEN `trame-server` MUST record the matching entry in the `party_journal_entries` table.
+3. WHEN `trame-server` accepts the `RevealHandout` command, THEN `trame-server` MUST insert a `HandoutRevealed` event in the `session_events` table.
+4. WHEN `trame-server` persists a handout reveal, THEN `trame-server` MUST broadcast the `handout.revealed` event to every client connected to the campaign.
+5. WHEN the `packages/web` client receives the `handout.revealed` event, THEN `packages/web` MUST show the `HandoutRevealModal` component with the handout's title and text.
 
-### 4.3 Invariants du Mode Compagnon Mobile (< 768px)
-1. IF la largeur de la fenêtre du navigateur (`window.innerWidth`) est strictement inférieure à 768 pixels, THEN `packages/web` MUST activer le mode compagnon mobile.
-2. WHEN le mode compagnon mobile est actif, `packages/web` MUST monter le composant racine `MobileCompanionLayout`.
-3. WHEN le mode compagnon mobile est actif, `packages/web` MUST NOT instancier la classe `Application` de PixiJS.
-4. WHEN le mode compagnon mobile est actif, `packages/web` MUST NOT allouer de Framebuffer Object (FBO) WebGL.
-5. WHEN le mode compagnon mobile est actif, `MobileCompanionLayout` MUST présenter quatre boutons de navigation identifiés par les sélecteurs : `tab-button-sheet`, `tab-button-dice`, `tab-button-inventory`, et `tab-button-journal`.
-6. WHEN l'utilisateur clique sur un bouton de navigation, `MobileCompanionLayout` MUST monter la vue associée identifiée par son attribut `data-testid` (`tab-sheet`, `tab-dice`, `tab-inventory`, ou `tab-journal`).
-7. IF la largeur de la fenêtre du navigateur est supérieure ou égale à 768 pixels, THEN `packages/web` MUST monter le composant `TableCanvas`.
+### 4.3 Mobile Companion Mode Invariants (< 768 px)
+1. IF the browser window width (`window.innerWidth`) is strictly less than 768 pixels, THEN `packages/web` MUST enable mobile companion mode.
+2. WHEN mobile companion mode is active, `packages/web` MUST mount the root `MobileCompanionView` component.
+3. WHEN mobile companion mode is active, `packages/web` MUST NOT create the PixiJS `Application` class.
+4. WHEN mobile companion mode is active, `packages/web` MUST NOT allocate a WebGL Framebuffer Object (FBO).
+5. WHEN mobile companion mode is active, `MobileCompanionView` MUST show five navigation buttons with the selectors `tab-button-sheet`, `tab-button-dice`, `tab-button-inventory`, `tab-button-tracker` and `tab-button-journal`, each with a touch target of at least 44x44 px.
+6. WHEN the user clicks a navigation button, `MobileCompanionView` MUST mount the matching view identified by its `data-testid` attribute (`tab-sheet`, `tab-dice`, `tab-inventory`, `tab-tracker` or `tab-journal`).
+7. IF the browser window width is greater than or equal to 768 pixels, THEN `packages/web` MUST mount the `TableCanvas` component.
 
-### 4.4 Invariants de la Chronologie de Session
-1. `trame-server` MUST assigner à chaque événement dans `session_events` un identifiant séquentiel `seq_id` strictement croissant et unique pour le couple `(campaign_id, session_num)`.
-2. WHEN deux commandes créent concurremment des événements pour une même session, `trame-server` MUST sérialiser l'attribution des `seq_id` via la transaction de base de données.
-3. L'API `GET /api/campaigns/{campaign_id}/sessions/{session_num}/timeline` MUST retourner les événements triés par `seq_id ASC`.
+### 4.4 Session Timeline Invariants
+1. `trame-server` MUST assign every event in `session_events` a strictly increasing `seq_id` that is unique for the `(campaign_id, session_num)` pair.
+2. WHEN two commands concurrently create events for the same session, `trame-server` MUST serialize `seq_id` assignment through the database transaction.
+3. The `GET /api/v1/campaigns/{campaign_id}/sessions/{session_num}/timeline` API MUST return events sorted by `seq_id ASC`.
 
 ---
 
-## 5. Stratégie de Test et Validation Automatisée
+## 5. Test Strategy and Automated Validation
 
-Conformément aux directives d'alignement CI, la suite de tests frontend utilise exclusivement le moteur d'exécution natif Node 24 (`node:test` et `node:assert/strict`).
+Per the CI alignment guidelines, the frontend test suite uses only the native Node 24 runtime (`node:test` and `node:assert/strict`).
 
-### 5.1 Matrice de Tests Backend (`crates/trame-server`)
+### 5.1 Backend Test Matrix (`crates/trame-server`)
 
-1. `test_filter_for_role_purges_dm_and_unrevealed_handouts` :
-   - Entrée : chaîne Markdown contenant un bloc `:::dm` et deux blocs `:::handout` (un avec `revealed="false"`, un avec `revealed="true"`).
-   - Exécution : `FilteredNoteDocument::filter_for_role(input, UserRole::Player)`.
-   - Assertion : la sortie ne contient aucun fragment du bloc `:::dm` ni du handout non révélé, et conserve intégralement le handout révélé.
-2. `test_filter_for_role_preserves_everything_for_gamemaster` :
-   - Entrée : même document Markdown.
-   - Exécution : `FilteredNoteDocument::filter_for_role(input, UserRole::GameMaster)`.
-   - Assertion : la sortie est strictement identique au document source.
-3. `test_reveal_handout_inserts_journal_and_session_event` :
-   - Exécution : envoi de la commande `notes.reveal_handout` avec identifiant de session et de handout.
-   - Assertion : `party_journal_entries` contient la nouvelle ligne ; `session_events` contient un événement `HandoutRevealed` avec `seq_id == 1`.
-4. `test_session_timeline_sequential_ordering_under_concurrency` :
-   - Exécution : insertion concurrente de 50 événements de session via des threads parallèles.
-   - Assertion : tous les `seq_id` sont contigus, sans doublon, et strictement ordonnés de 1 à 50.
+1. `test_filter_for_role_purges_dm_and_unrevealed_handouts`:
+   - Input: a Markdown string with one `:::dm` block and two `:::handout` blocks (one with `revealed="false"`, one with `revealed="true"`).
+   - Execution: `FilteredNoteDocument::filter_for_role(input, UserRole::Player)`.
+   - Assertion: the output contains no fragment of the `:::dm` block or of the unrevealed handout, and keeps the revealed handout in full.
+2. `test_filter_for_role_preserves_everything_for_gamemaster`:
+   - Input: the same Markdown document.
+   - Execution: `FilteredNoteDocument::filter_for_role(input, UserRole::GameMaster)`.
+   - Assertion: the output is strictly identical to the source document.
+3. `test_reveal_handout_inserts_journal_and_session_event`:
+   - Execution: send the `RevealHandout` command with a session and handout identifier.
+   - Assertion: `party_journal_entries` contains the new row; `session_events` contains a `HandoutRevealed` event with `seq_id == 1`.
+4. `test_session_timeline_sequential_ordering_under_concurrency`:
+   - Execution: insert 50 session events concurrently from parallel threads.
+   - Assertion: every `seq_id` is contiguous, without duplicates, and strictly ordered from 1 to 50.
 
-### 5.2 Matrice de Tests Frontend (`packages/web`)
+### 5.2 Frontend Test Matrix (`packages/web`)
 
-1. `test_mobile_companion_mode_bypasses_pixijs_canvas` :
-   - Environnement : viewport simulé à 500 pixels de large.
-   - Rendu : montage du composant racine de l'application.
-   - Assertion : `document.querySelector('[data-testid="table-canvas"]')` est strictement `null` ; aucun appel au constructeur PixiJS n'a été émis.
-2. `test_desktop_mode_mounts_table_canvas` :
-   - Environnement : viewport simulé à 1024 pixels de large.
-   - Rendu : montage du composant racine de l'application.
-   - Assertion : `document.querySelector('[data-testid="table-canvas"]')` est présent dans le DOM.
-3. `test_mobile_companion_tab_navigation` :
-   - Environnement : viewport de 500 pixels.
-   - Actions : clics successifs sur `tab-button-sheet`, `tab-button-dice`, `tab-button-inventory`, et `tab-button-journal`.
-   - Assertions : affichage déterministe des conteneurs `tab-sheet`, `tab-dice`, `tab-inventory`, et `tab-journal`.
-4. `test_handout_reveal_modal_rendering_on_event` :
-   - Action : dispatch de l'événement WebSocket `handout.revealed`.
-   - Assertion : le conteneur `[data-testid="handout-reveal-modal"]` apparaît et affiche le titre et le contenu du document diffusé.
+1. `test_mobile_companion_mode_bypasses_pixijs_canvas`:
+   - Environment: simulated viewport 500 pixels wide.
+   - Render: mount the application root component.
+   - Assertion: `document.querySelector('[data-testid="table-canvas"]')` is strictly `null`; the PixiJS constructor was never called.
+2. `test_desktop_mode_mounts_table_canvas`:
+   - Environment: simulated viewport 1024 pixels wide.
+   - Render: mount the application root component.
+   - Assertion: `document.querySelector('[data-testid="table-canvas"]')` is present in the DOM.
+3. `test_mobile_companion_tab_navigation`:
+   - Environment: 500-pixel viewport.
+   - Actions: successive clicks on `tab-button-sheet`, `tab-button-dice`, `tab-button-inventory`, `tab-button-tracker` and `tab-button-journal`.
+   - Assertions: deterministic display of the `tab-sheet`, `tab-dice`, `tab-inventory`, `tab-tracker` and `tab-journal` containers.
+4. `test_handout_reveal_modal_rendering_on_event`:
+   - Action: dispatch the `handout.revealed` WebSocket event.
+   - Assertion: the `[data-testid="handout-reveal-modal"]` container appears and shows the broadcast document's title and content.

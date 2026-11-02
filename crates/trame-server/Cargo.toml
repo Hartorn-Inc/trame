@@ -8,7 +8,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-trame-engine = { path = "../trame-engine" }
+trame-engine = { path = "../trame-engine", features = ["schema"] }
 aes-gcm = "0.10"
 argon2 = "0.5"
 axum.workspace = true
@@ -18,15 +18,21 @@ bytes = "1.12"
 data-encoding = "2.11"
 futures-lite = "2"
 futures-util.workspace = true
+hmac = "0.13.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 rand.workspace = true
 rand_chacha.workspace = true
 rmp-serde.workspace = true
+schemars = { version = "1.2.3", features = ["uuid1"] }
 serde.workspace = true
 serde_json.workspace = true
-sha1 = "0.10"
+sha1 = "0.11.0"
+sha2 = "0.11.1"
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower = { version = "0.5", features = ["util"] }
-uuid.workspace = true
+tower-http = { version = "0.7.1", features = ["fs"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
+uuid = { workspace = true, features = ["v5"] }

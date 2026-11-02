@@ -1,5 +1,7 @@
 import { h, type VNode } from "preact";
-import { useState, useId, useRef, useEffect } from "preact/hooks";
+import { useState, useId, useLayoutEffect, useRef } from "preact/hooks";
+import { localizedName, t, tn, type MessageKey } from "../../i18n/index.ts";
+import { useModalFocusTrap } from "../a11y/useModalFocusTrap.ts";
 import {
   applyLevelUp,
   calculateProficiencyBonus,
@@ -39,13 +41,13 @@ export interface LevelUpModalProps {
   onToggleCoreStatsLocked?: (locked: boolean) => void;
 }
 
-const ABILITY_LABELS: Record<AbilityId, string> = {
-  str: "Force (STR)",
-  dex: "Dextérité (DEX)",
-  con: "Constitution (CON)",
-  int: "Intelligence (INT)",
-  wis: "Sagesse (WIS)",
-  cha: "Charisme (CHA)",
+const ABILITY_LABEL_KEYS: Record<AbilityId, MessageKey> = {
+  str: "ability.str.label",
+  dex: "ability.dex.label",
+  con: "ability.con.label",
+  int: "ability.int.label",
+  wis: "ability.wis.label",
+  cha: "ability.cha.label",
 };
 
 const ABILITY_KEYS: AbilityId[] = ["str", "dex", "con", "int", "wis", "cha"];
@@ -90,54 +92,30 @@ function getNewSpellsAllowance(cleanClass: string, targetLevel: number): number 
 
 function formatSlotLabel(slotKey: string): string {
   if (slotKey.toLowerCase().startsWith("level")) {
-    return `LVL ${slotKey.slice(5)}`;
+    return t("levelUp.spells.slotLevel", { level: slotKey.slice(5) });
   }
   return slotKey.toUpperCase();
 }
 
-function getFocusableElements(container: HTMLElement | null): HTMLElement[] {
-  if (!container) return [];
-  const focusables: HTMLElement[] = [];
-  const tags = ["BUTTON", "INPUT", "SELECT", "TEXTAREA", "A"];
-  const walk = (node: any) => {
-    if (!node) return;
-    if (node.nodeType === 1) {
-      const tag = (node.nodeName || "").toUpperCase();
-      const hasTabIndex = typeof node.hasAttribute === "function" && node.hasAttribute("tabindex");
-      const tabIndexVal = hasTabIndex ? node.getAttribute("tabindex") : null;
-      const isInteractive = tags.includes(tag) || (hasTabIndex && tabIndexVal !== "-1");
-      const isDisabled = Boolean(node.disabled || (typeof node.getAttribute === "function" && node.getAttribute("disabled") === "true"));
-      if (isInteractive && !isDisabled) {
-        focusables.push(node);
-      }
-    }
-    if (node.childNodes) {
-      for (let i = 0; i < node.childNodes.length; i++) {
-        walk(node.childNodes[i]);
-      }
-    }
-  };
-  walk(container);
-  return focusables;
+function formatModifier(mod: number): string {
+  return mod >= 0 ? `+${mod}` : `${mod}`;
 }
 
 export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
-  if (!props.isOpen) return null;
+  return props.isOpen ? h(LevelUpDialog, props) : null;
+}
 
+function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
   const { actor, onClose, onSave, diceRollService } = props;
   const titleId = useId();
   const descId = useId();
+  const hintId = useId();
   const dialogRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!props.isOpen) return;
-    const focusables = getFocusableElements(dialogRef.current);
-    if (focusables.length > 0) {
-      focusables[0].focus();
-    } else if (dialogRef.current) {
-      dialogRef.current.focus();
-    }
-  }, [props.isOpen]);
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const asiTabRef = useRef<HTMLButtonElement | null>(null);
+  const featTabRef = useRef<HTMLButtonElement | null>(null);
+  const renderedStep = useRef<number>(1);
+  useModalFocusTrap(dialogRef, { onEscape: onClose });
 
   const currentLevel = actor.attributes.level;
   const targetLevel = currentLevel + 1;
@@ -156,6 +134,15 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
 
   // Modal Wizard Step State
   const [currentStep, setCurrentStep] = useState<number>(1);
+  // Step whose Next/Confirm was pressed while invalid; its hints escalate to alerts.
+  const [attemptedStep, setAttemptedStep] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    if (renderedStep.current !== currentStep) {
+      renderedStep.current = currentStep;
+      headingRef.current?.focus();
+    }
+  }, [currentStep]);
   const [subclassId, setSubclassId] = useState<string>(actor.subclassId || actor.attributes.subclassId || "");
 
   // Step 2: Hit Points State
@@ -206,21 +193,21 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
         const currentScore = actor.abilities[asiSingleAbility]?.score ?? 10;
         if (currentScore + 2 > 20) {
           isStep3Valid = false;
-          asiErrorMessage = `La caractéristique ${asiSingleAbility.toUpperCase()} dépasse le maximum de 20 (+2 donne ${currentScore + 2}).`;
+          asiErrorMessage = t("levelUp.asi.exceedsTwo", { ability: asiSingleAbility.toUpperCase(), score: currentScore + 2 });
         }
       } else {
         if (asiFirstAbility === asiSecondAbility) {
           isStep3Valid = false;
-          asiErrorMessage = "Veuillez choisir deux caractéristiques distinctes pour le bonus +1/+1.";
+          asiErrorMessage = t("levelUp.asi.distinct");
         } else {
           const firstScore = actor.abilities[asiFirstAbility]?.score ?? 10;
           const secondScore = actor.abilities[asiSecondAbility]?.score ?? 10;
           if (firstScore + 1 > 20) {
             isStep3Valid = false;
-            asiErrorMessage = `La caractéristique ${asiFirstAbility.toUpperCase()} dépasse le maximum de 20 (+1 donne ${firstScore + 1}).`;
+            asiErrorMessage = t("levelUp.asi.exceedsOne", { ability: asiFirstAbility.toUpperCase(), score: firstScore + 1 });
           } else if (secondScore + 1 > 20) {
             isStep3Valid = false;
-            asiErrorMessage = `La caractéristique ${asiSecondAbility.toUpperCase()} dépasse le maximum de 20 (+1 donne ${secondScore + 1}).`;
+            asiErrorMessage = t("levelUp.asi.exceedsOne", { ability: asiSecondAbility.toUpperCase(), score: secondScore + 1 });
           }
         }
       }
@@ -238,12 +225,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
     } else if (isWizard) {
       if (selectedSpellIds.length !== requiredWizardCount) {
         isStep4Valid = false;
-        spellErrorMessage = `Le Magicien doit sélectionner exactement ${requiredWizardCount} nouveau(x) sort(s) pour son grimoire (actuellement : ${selectedSpellIds.length}/${requiredWizardCount}).`;
+        spellErrorMessage = t("levelUp.spells.wizardError", { required: requiredWizardCount, selected: selectedSpellIds.length });
       }
     } else if (isKnownCaster) {
       if (selectedSpellIds.length > knownAllowance) {
         isStep4Valid = false;
-        spellErrorMessage = `Votre classe n'autorise que ${knownAllowance} nouveau(x) sort(s) au niveau ${targetLevel} (actuellement : ${selectedSpellIds.length}).`;
+        spellErrorMessage = t("levelUp.spells.knownError", { limit: knownAllowance, level: targetLevel, selected: selectedSpellIds.length });
       }
     }
   }
@@ -257,8 +244,9 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
 
   // Handle Server Dice Roll
   const handleRollDice = async () => {
+    if (rollLoading) return;
     if (!diceRollService) {
-      setRollError("Service de dés serveur indisponible");
+      setRollError(t("dice.serviceUnavailable"));
       return;
     }
     try {
@@ -271,7 +259,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
       const rolled = result.rolls && result.rolls.length > 0 ? result.rolls[0] : result.total;
       setRolledValue(rolled);
     } catch (err: any) {
-      setRollError(err.message || "Erreur lors du tirage de dés");
+      setRollError(err.message || t("dice.rollFailed"));
       setRolledValue(null);
     } finally {
       setRollLoading(false);
@@ -280,7 +268,11 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
 
   // Compile and Save
   const handleConfirmLevelUp = async () => {
-    if (!canProceed() || isSubmitting) return;
+    if (isSubmitting) return;
+    if (!canProceed()) {
+      setAttemptedStep(currentStep);
+      return;
+    }
     try {
       setIsSubmitting(true);
       setSaveError(null);
@@ -325,43 +317,43 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
       await onSave(updatedActor);
       onClose();
     } catch (err: any) {
-      setSaveError(err.message || "Erreur lors de l'application de la montée de niveau");
+      setSaveError(err.message || t("levelUp.saveFailed"));
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Keyboard handlers: Escape closes modal, Tab is trapped inside
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      if (typeof e.stopPropagation === "function") {
-        e.stopPropagation();
-      }
-      onClose();
+  const handleNext = () => {
+    if (isSubmitting) return;
+    if (!canProceed()) {
+      setAttemptedStep(currentStep);
       return;
     }
-    if (e.key === "Tab") {
-      const focusables = getFocusableElements(dialogRef.current);
-      if (focusables.length === 0) {
-        if (typeof e.preventDefault === "function") e.preventDefault();
-        return;
-      }
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const doc = typeof document !== "undefined" ? document : null;
-      const active = (doc && (doc as any).activeElement ? (doc as any).activeElement : e.target) as HTMLElement | null;
+    setCurrentStep((s) => Math.min(4, s + 1));
+  };
 
-      if (e.shiftKey) {
-        if (!active || active === first || (dialogRef.current && !dialogRef.current.contains(active))) {
-          if (typeof e.preventDefault === "function") e.preventDefault();
-          last.focus();
-        }
-      } else {
-        if (!active || active === last || (dialogRef.current && !dialogRef.current.contains(active))) {
-          if (typeof e.preventDefault === "function") e.preventDefault();
-          first.focus();
-        }
-      }
+  const handlePrevious = () => {
+    if (currentStep === 1 || isSubmitting) return;
+    setCurrentStep((s) => Math.max(1, s - 1));
+  };
+
+  const handleCancel = () => {
+    if (!isSubmitting) onClose();
+  };
+
+  const selectAsiOrFeatMode = (mode: "asi" | "feat", moveFocus: boolean) => {
+    setAsiOrFeatMode(mode);
+    if (moveFocus) (mode === "asi" ? asiTabRef : featTabRef).current?.focus();
+  };
+
+  // Two-tab roving tabindex: arrows, Home and End all move to (and select) the other tab.
+  const handleTabKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+      e.preventDefault();
+      selectAsiOrFeatMode(asiOrFeatMode === "asi" ? "feat" : "asi", true);
+    } else if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      selectAsiOrFeatMode(e.key === "Home" ? "asi" : "feat", true);
     }
   };
 
@@ -384,50 +376,120 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
     ? reconcileSlots(actor.spellSlots, casterType, targetLevel)
     : {};
 
+  // Validation hint shared by every step: a quiet description until the user
+  // presses Next/Confirm on an invalid step, then an alert.
+  const attempted = attemptedStep === currentStep;
+  const validationProps = (hasHint: boolean) =>
+    hasHint ? { "aria-describedby": hintId, "aria-invalid": attempted ? ("true" as const) : undefined } : {};
+  const validationHint = (message: string | null) =>
+    message &&
+    h(
+      "p",
+      { id: hintId, class: attempted ? "ds-field-error" : "ds-hint", role: attempted ? "alert" : undefined },
+      message
+    );
+
+  const stepHeading = (text: string) =>
+    h("h3", { ref: headingRef, tabIndex: -1, class: "ds-section-title" }, text);
+
+  const asiTab = (mode: "asi" | "feat", label: string) => {
+    const selected = asiOrFeatMode === mode;
+    return h(
+      "button",
+      {
+        ref: mode === "asi" ? asiTabRef : featTabRef,
+        type: "button",
+        role: "tab",
+        id: `tab-${mode}`,
+        "aria-selected": selected ? "true" : "false",
+        "aria-controls": "tabpanel-asi-or-feat",
+        tabIndex: selected ? 0 : -1,
+        class: "ds-btn-reset ds-tab",
+        onClick: () => selectAsiOrFeatMode(mode, false),
+        onKeyDown: handleTabKeyDown,
+      },
+      h("span", { "aria-hidden": "true" }, selected ? "●" : "○"),
+      label
+    );
+  };
+
+  const abilitySelect = (id: string, labelText: string, value: AbilityId, onChange: (v: AbilityId) => void, describe: boolean) =>
+    h(
+      "div",
+      { class: "ds-field" },
+      h("label", { for: id, class: "ds-field-label" }, labelText),
+      h(
+        "select",
+        {
+          id,
+          class: "ds-input",
+          value,
+          onChange: (e: any) => onChange(e.target.value as AbilityId),
+          ...validationProps(describe),
+        },
+        ABILITY_KEYS.map((k) =>
+          h("option", { key: k, value: k }, t("levelUp.asi.option", { ability: t(ABILITY_LABEL_KEYS[k]), score: actor.abilities[k].score }))
+        )
+      )
+    );
+
+  const hpChoice = (mode: "fixed" | "rolled", label: string, detail: VNode<any> | string) =>
+    h(
+      "label",
+      { class: cx("ds-choice ds-choice-stacked", hpMode === mode && "is-selected") },
+      h(
+        "span",
+        { class: "ds-cluster" },
+        h("input", { type: "radio", name: "hpMode", value: mode, checked: hpMode === mode, onChange: () => setHpMode(mode) }),
+        h("span", { class: "ds-value" }, label)
+      ),
+      h("span", { class: "ds-meta" }, detail)
+    );
+
+  const asiSubModeChoice = (mode: "plusTwo" | "plusOneOne", label: string) =>
+    h(
+      "label",
+      { class: cx("ds-choice", asiSubMode === mode && "is-selected") },
+      h("input", { type: "radio", name: "asiSubMode", value: mode, checked: asiSubMode === mode, onChange: () => setAsiSubMode(mode) }),
+      h("span", null, label)
+    );
+
+  const step3AsiError = asiOrFeatMode === "asi" ? asiErrorMessage : null;
+  const step3FeatError = asiOrFeatMode === "feat" && !selectedFeatId ? t("levelUp.feat.required") : null;
+  const stepRefusing = !canProceed() || isSubmitting;
+
   return h(
     "div",
     {
       ref: dialogRef,
       "data-testid": "level-up-modal",
-      class: "ds-levelup-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4",
+      class: "ds-modal-backdrop",
       role: "dialog",
       "aria-modal": "true",
       "aria-labelledby": titleId,
       "aria-describedby": descId,
       tabIndex: -1,
-      onKeyDown: handleKeyDown,
     },
     h(
       "div",
-      {
-        class: "ds-levelup-modal w-full max-w-2xl bg-[var(--atlas-surface)] border border-[var(--atlas-border)] rounded-xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden text-[var(--atlas-text)]",
-      },
+      { class: "ds-modal", "data-testid": "level-up-panel" },
       // Modal Header
       h(
         "header",
-        { class: "px-6 py-4 border-b border-[var(--atlas-border)] flex items-center justify-between bg-[var(--atlas-surface-raised)]" },
+        { class: "ds-modal-header" },
         h(
           "div",
           null,
-          h(
-            "h2",
-            { id: titleId, class: "text-xl font-bold tracking-tight text-[var(--atlas-action)]" },
-            `Montée de niveau : Niveau ${currentLevel} → ${targetLevel}`
-          ),
+          h("h2", { id: titleId, class: "ds-modal-title" }, t("levelUp.title", { from: currentLevel, to: targetLevel })),
           h(
             "p",
-            { id: descId, class: "text-xs text-[var(--atlas-text-muted)] mt-0.5" },
-            `Classe : ${classId || "Aventurier"} | Bonus de Maîtrise projeté : +${calculateProficiencyBonus(targetLevel)}`
+            { id: descId, class: "ds-modal-subtitle" },
+            t("levelUp.subtitle", { className: classId || t("levelUp.unknownClass"), bonus: calculateProficiencyBonus(targetLevel) })
           )
         ),
         h(
           "button",
-          {
-            type: "button",
-            class: "inline-flex items-center justify-center min-w-[40px] min-h-[40px] p-2 text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)] text-lg rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
-            onClick: onClose,
-            "aria-label": "Fermer la fenêtre de montée de niveau",
-          },
+          { type: "button", class: "ds-btn-reset ds-icon-btn", onClick: onClose, "aria-label": t("levelUp.close") },
           "✕"
         )
       ),
@@ -435,15 +497,12 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
       // Stepper Bar
       h(
         "nav",
-        {
-          "aria-label": "Étapes de progression",
-          class: "grid grid-cols-4 border-b border-[var(--atlas-border)] bg-[var(--atlas-surface)] text-xs font-semibold text-center",
-        },
+        { "aria-label": t("levelUp.steps.label"), class: "ds-stepper" },
         [
-          { step: 1, label: "1. Archétype" },
-          { step: 2, label: "2. Points de Vie" },
-          { step: 3, label: isAsi ? "3. Carac. / Don" : "3. Aptitudes" },
-          { step: 4, label: isSpellcaster ? "4. Sorts" : "4. Récapitulatif" },
+          { step: 1, label: t("levelUp.step.archetype") },
+          { step: 2, label: t("levelUp.step.hitPoints") },
+          { step: 3, label: isAsi ? t("levelUp.step.asiOrFeat") : t("levelUp.step.features") },
+          { step: 4, label: isSpellcaster ? t("levelUp.step.spells") : t("levelUp.step.summary") },
         ].map((item) => {
           const isCurrent = currentStep === item.step;
           const isCompleted = currentStep > item.step;
@@ -452,13 +511,7 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
             {
               key: item.step,
               "aria-current": isCurrent ? "step" : undefined,
-              class: `py-2.5 px-1 border-b-2 transition-colors ${
-                isCurrent
-                  ? "border-[var(--atlas-action)] text-[var(--atlas-action)] bg-[var(--atlas-surface-raised)]"
-                  : isCompleted
-                  ? "border-[var(--atlas-border)] text-[var(--atlas-text)]"
-                  : "border-transparent text-[var(--atlas-text-muted)]"
-              }`,
+              class: cx("ds-stepper-item", isCompleted && "is-complete"),
             },
             isCompleted ? `✓ ${item.label}` : item.label
           );
@@ -468,64 +521,46 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
       // Modal Body
       h(
         "div",
-        { class: "p-6 overflow-y-auto flex-1 space-y-6 text-sm" },
+        { class: "ds-modal-body" },
         // Step 1: Subclass / Archetype
         currentStep === 1 &&
           h(
             "div",
-            { class: "space-y-4" },
-            h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, "Étape 1 : Confirmation de classe & Choix d'archétype"),
+            { class: "ds-stack" },
+            stepHeading(t("levelUp.step1.heading")),
             h(
               "div",
-              { class: "bg-[var(--atlas-surface-raised)] p-4 rounded-lg border border-[var(--atlas-border)] flex items-center justify-between" },
+              { class: "ds-inset" },
               h(
                 "div",
-                null,
-                h("span", { class: "text-[var(--atlas-text-muted)] block text-xs uppercase" }, "Classe active"),
-                h("strong", { class: "text-base text-[var(--atlas-text)]" }, classId || "Inconnue")
-              ),
-              h(
-                "div",
-                { class: "text-right" },
-                h("span", { class: "text-[var(--atlas-text-muted)] block text-xs uppercase" }, "Niveau cible"),
-                h("span", { class: "text-lg font-bold text-[var(--atlas-action)]" }, targetLevel)
+                { class: "ds-row" },
+                h("div", null, h("span", { class: "ds-meta" }, t("levelUp.activeClass")), h("strong", { class: "ds-value" }, classId || t("levelUp.unknown"))),
+                h("div", null, h("span", { class: "ds-meta" }, t("levelUp.targetLevel")), h("span", { class: "ds-value-lg atlas-tabular-nums" }, targetLevel))
               )
             ),
             needsSubclass
               ? h(
                   "div",
-                  { class: "space-y-2" },
-                  h(
-                    "label",
-                    { for: "subclass-select", class: "block font-medium text-[var(--atlas-text)] text-sm" },
-                    "Sélectionnez votre archétype / sous-classe (Requis) :"
-                  ),
+                  { class: "ds-field" },
+                  h("label", { for: "subclass-select", class: "ds-field-label" }, t("levelUp.subclass.label")),
                   h(
                     "select",
                     {
                       id: "subclass-select",
-                      class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded-md p-2.5 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
+                      class: "ds-input",
                       value: subclassId,
                       onChange: (e: any) => setSubclassId(e.target.value),
+                      ...validationProps(!subclassId),
                     },
-                    h("option", { value: "" }, "-- Choisir un archétype --"),
-                    availableSubclasses.map((sc) =>
-                      h("option", { key: sc.id, value: sc.id }, sc.i18n?.fr?.name || sc.name)
-                    )
+                    h("option", { value: "" }, t("levelUp.subclass.placeholder")),
+                    availableSubclasses.map((sc) => h("option", { key: sc.id, value: sc.id }, localizedName(sc)))
                   ),
-                  !subclassId &&
-                    h(
-                      "p",
-                      { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" },
-                      "Le choix d'un archétype est obligatoire pour ce niveau."
-                    )
+                  validationHint(subclassId ? null : t("levelUp.subclass.required"))
                 )
               : h(
-                  "div",
-                  { class: "p-4 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-[var(--atlas-text-muted)] text-xs" },
-                  subclassId
-                    ? `Archétype actuel déjà enregistré : ${subclassId}`
-                    : "Aucune sélection d'archétype requise pour ce niveau de classe."
+                  "p",
+                  { class: "ds-inset ds-hint" },
+                  subclassId ? t("levelUp.subclass.current", { subclass: subclassId }) : t("levelUp.subclass.notNeeded")
                 )
           ),
 
@@ -533,117 +568,59 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
         currentStep === 2 &&
           h(
             "div",
-            { class: "space-y-4" },
-            h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, "Étape 2 : Augmentation des Points de Vie"),
-            h(
-              "p",
-              { class: "text-xs text-[var(--atlas-text-muted)]" },
-              `Dé de vie de classe : 1d${hitDieSize} | Modificateur de Constitution : ${conModifier >= 0 ? `+${conModifier}` : conModifier}`
-            ),
+            { class: "ds-stack" },
+            stepHeading(t("levelUp.step2.heading")),
+            h("p", { class: "ds-hint" }, t("levelUp.hp.dieInfo", { die: hitDieSize, mod: formatModifier(conModifier) })),
             h(
               "div",
-              { class: "grid grid-cols-2 gap-4" },
-              h(
-                "label",
-                {
-                  class: `cursor-pointer p-4 rounded-lg border flex flex-col justify-between ${
-                    hpMode === "fixed"
-                      ? "border-[var(--atlas-action)] bg-[var(--atlas-surface-raised)] text-[var(--atlas-text)]"
-                      : "border-[var(--atlas-border)] bg-[var(--atlas-surface-raised)] text-[var(--atlas-text-muted)] hover:border-[var(--atlas-border)]"
-                  }`,
-                },
+              { class: "ds-grid-2" },
+              hpChoice(
+                "fixed",
+                t("levelUp.hp.fixed"),
                 h(
-                  "div",
-                  { class: "flex items-center space-x-2" },
-                  h("input", {
-                    type: "radio",
-                    name: "hpMode",
-                    value: "fixed",
-                    checked: hpMode === "fixed",
-                    onChange: () => setHpMode("fixed"),
-                    class: "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
-                  }),
-                  h("span", { class: "font-semibold" }, "Moyenne fixe")
-                ),
-                h(
-                  "div",
-                  { class: "mt-2 text-xs text-[var(--atlas-text-muted)]" },
+                  "span",
+                  null,
                   `floor(${hitDieSize}/2) + 1 + (${conModifier}) = `,
-                  h("strong", { class: "text-base text-[var(--atlas-action)]" }, `+${fixedHpGain} PV`)
+                  h("strong", { class: "atlas-tabular-nums" }, t("hp.gain", { value: fixedHpGain }))
                 )
               ),
-              h(
-                "label",
-                {
-                  class: `cursor-pointer p-4 rounded-lg border flex flex-col justify-between ${
-                    hpMode === "rolled"
-                      ? "border-[var(--atlas-action)] bg-[var(--atlas-surface-raised)] text-[var(--atlas-text)]"
-                      : "border-[var(--atlas-border)] bg-[var(--atlas-surface-raised)] text-[var(--atlas-text-muted)] hover:border-[var(--atlas-border)]"
-                  }`,
-                },
-                h(
-                  "div",
-                  { class: "flex items-center space-x-2" },
-                  h("input", {
-                    type: "radio",
-                    name: "hpMode",
-                    value: "rolled",
-                    checked: hpMode === "rolled",
-                    onChange: () => setHpMode("rolled"),
-                    class: "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
-                  }),
-                  h("span", { class: "font-semibold" }, "Tirer le dé de vie")
-                ),
-                h(
-                  "div",
-                  { class: "mt-2 text-xs text-[var(--atlas-text-muted)]" },
-                  `Lancé serveur faisant foi (1d${hitDieSize} + ${conModifier})`
-                )
-              )
+              hpChoice("rolled", t("levelUp.hp.rolled"), t("levelUp.hp.rolledHint", { die: hitDieSize, mod: formatModifier(conModifier) }))
             ),
             hpMode === "rolled" &&
               h(
                 "div",
-                { class: "p-4 rounded-lg bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] space-y-3" },
+                { class: "ds-inset" },
                 h(
                   "div",
-                  { class: "flex items-center justify-between" },
+                  { class: "ds-row" },
                   h(
                     "button",
                     {
                       type: "button",
-                      class: "min-h-[40px] px-4 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-50 text-[var(--atlas-on-action)] rounded font-medium text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
+                      class: "ds-btn ds-btn-secondary",
                       onClick: handleRollDice,
-                      disabled: rollLoading,
+                      "aria-disabled": rollLoading ? "true" : undefined,
+                      "aria-busy": rollLoading ? "true" : undefined,
+                      "aria-describedby": rolledValue === null && !rollError ? hintId : undefined,
                     },
-                    rollLoading ? "Tirage en cours..." : `Lancer 1d${hitDieSize} sur le serveur`
+                    rollLoading ? t("dice.rolling") : t("levelUp.hp.rollButton", { die: hitDieSize })
                   ),
                   rolledValue !== null &&
                     h(
                       "div",
-                      { class: "text-right" },
-                      h("span", { class: "text-xs text-[var(--atlas-text-muted)] block" }, `Résultat du dé : ${rolledValue}`),
-                      h(
-                        "span",
-                        { class: "text-lg font-bold text-[var(--atlas-action)]" },
-                        `+${Math.max(1, rolledValue + conModifier)} PV`
-                      )
+                      null,
+                      h("span", { class: "ds-meta" }, t("levelUp.hp.dieResult", { value: rolledValue })),
+                      h("span", { class: "ds-value-lg atlas-tabular-nums" }, t("hp.gain", { value: Math.max(1, rolledValue + conModifier) }))
                     )
                 ),
-                rollError && h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, rollError),
-                rolledValue === null &&
-                  !rollError &&
-                  h(
-                    "p",
-                    { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" },
-                    "Un tirage validé par le serveur est obligatoire pour continuer en mode dé de vie."
-                  )
+                rollError && h("p", { role: "alert", class: "ds-field-error" }, rollError),
+                validationHint(rolledValue === null && !rollError ? t("levelUp.hp.rollRequired") : null)
               ),
             h(
-              "div",
-              { class: "text-xs text-[var(--atlas-text-muted)] bg-[var(--atlas-surface-raised)] p-2.5 rounded border border-[var(--atlas-border)]" },
-              `PV Max actuels : ${actor.attributes.hp.max} → Projetés : `,
-              h("strong", { class: "text-[var(--atlas-text)]" }, actor.attributes.hp.max + currentHpGain)
+              "p",
+              { class: "ds-inset ds-hint" },
+              t("levelUp.hp.projected", { current: actor.attributes.hp.max }),
+              h("strong", { class: "atlas-tabular-nums" }, actor.attributes.hp.max + currentHpGain)
             )
           ),
 
@@ -652,47 +629,13 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
           (isAsi
             ? h(
                 "div",
-                { class: "space-y-4" },
-                h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, "Étape 3 : Amélioration de Caractéristiques ou Don"),
+                { class: "ds-stack" },
+                stepHeading(t("levelUp.step3.heading")),
                 h(
                   "div",
-                  {
-                    role: "tablist",
-                    "aria-label": "Mode de progression",
-                    class: "flex space-x-4 border-b border-[var(--atlas-border)] pb-2 text-sm",
-                  },
-                  h(
-                    "button",
-                    {
-                      type: "button",
-                      role: "tab",
-                      id: "tab-asi",
-                      "aria-selected": asiOrFeatMode === "asi" ? "true" : "false",
-                      "aria-controls": "tabpanel-asi-or-feat",
-                      class: `min-h-[40px] px-3 py-2 font-medium border-b-2 rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center gap-1.5 ${
-                        asiOrFeatMode === "asi" ? "border-[var(--atlas-action)] text-[var(--atlas-action)]" : "border-transparent text-[var(--atlas-text-muted)]"
-                      }`,
-                      onClick: () => setAsiOrFeatMode("asi"),
-                    },
-                    h("span", { "aria-hidden": "true" }, asiOrFeatMode === "asi" ? "●" : "○"),
-                    "Amélioration de Caractéristiques (ASI)"
-                  ),
-                  h(
-                    "button",
-                    {
-                      type: "button",
-                      role: "tab",
-                      id: "tab-feat",
-                      "aria-selected": asiOrFeatMode === "feat" ? "true" : "false",
-                      "aria-controls": "tabpanel-asi-or-feat",
-                      class: `min-h-[40px] px-3 py-2 font-medium border-b-2 rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center gap-1.5 ${
-                        asiOrFeatMode === "feat" ? "border-[var(--atlas-action)] text-[var(--atlas-action)]" : "border-transparent text-[var(--atlas-text-muted)]"
-                      }`,
-                      onClick: () => setAsiOrFeatMode("feat"),
-                    },
-                    h("span", { "aria-hidden": "true" }, asiOrFeatMode === "feat" ? "●" : "○"),
-                    "Choisir un Don"
-                  )
+                  { role: "tablist", "aria-label": t("levelUp.asi.modeLabel"), class: "ds-tablist" },
+                  asiTab("asi", t("levelUp.asi.tab")),
+                  asiTab("feat", t("levelUp.feat.tab"))
                 ),
                 h(
                   "div",
@@ -700,201 +643,115 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                     id: "tabpanel-asi-or-feat",
                     role: "tabpanel",
                     "aria-labelledby": asiOrFeatMode === "asi" ? "tab-asi" : "tab-feat",
+                    class: "ds-stack",
                   },
                   asiOrFeatMode === "asi"
-                    ? h(
-                        "div",
-                        { class: "space-y-4 pt-2" },
+                    ? [
                         h(
                           "div",
-                          { class: "flex space-x-4 text-xs" },
-                          h(
-                            "label",
-                            { class: "flex items-center space-x-1.5 cursor-pointer min-h-[40px] px-3 py-2 rounded border border-[var(--atlas-border)] bg-[var(--atlas-surface-raised)]" },
-                            h("input", {
-                              type: "radio",
-                              name: "asiSubMode",
-                              value: "plusTwo",
-                              checked: asiSubMode === "plusTwo",
-                              onChange: () => setAsiSubMode("plusTwo"),
-                              class: "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
-                            }),
-                            h("span", null, "+2 à une caractéristique")
-                          ),
-                          h(
-                            "label",
-                            { class: "flex items-center space-x-1.5 cursor-pointer min-h-[40px] px-3 py-2 rounded border border-[var(--atlas-border)] bg-[var(--atlas-surface-raised)]" },
-                            h("input", {
-                              type: "radio",
-                              name: "asiSubMode",
-                              value: "plusOneOne",
-                              checked: asiSubMode === "plusOneOne",
-                              onChange: () => setAsiSubMode("plusOneOne"),
-                              class: "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
-                            }),
-                            h("span", null, "+1 à deux caractéristiques")
-                          )
+                          { key: "submodes", class: "ds-cluster" },
+                          asiSubModeChoice("plusTwo", t("levelUp.asi.plusTwo")),
+                          asiSubModeChoice("plusOneOne", t("levelUp.asi.plusOneOne"))
                         ),
                         asiSubMode === "plusTwo"
                           ? h(
                               "div",
-                              { class: "space-y-1" },
-                              h("label", { for: "asi-single-ability", class: "block text-xs text-[var(--atlas-text-muted)]" }, "Caractéristique (+2, max 20) :"),
-                              h(
-                                "select",
-                                {
-                                  id: "asi-single-ability",
-                                  "aria-label": "Caractéristique à augmenter de +2",
-                                  class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded p-2 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
-                                  value: asiSingleAbility,
-                                  onChange: (e: any) => setAsiSingleAbility(e.target.value as AbilityId),
-                                },
-                                ABILITY_KEYS.map((k) =>
-                                  h(
-                                    "option",
-                                    { key: k, value: k },
-                                    `${ABILITY_LABELS[k]} (Actuel : ${actor.abilities[k].score})`
-                                  )
-                                )
-                              )
+                              { key: "single" },
+                              abilitySelect("asi-single-ability", t("levelUp.asi.singleLabel"), asiSingleAbility, setAsiSingleAbility, Boolean(step3AsiError))
                             )
                           : h(
                               "div",
-                              { class: "grid grid-cols-2 gap-4" },
-                              h(
-                                "div",
-                                { class: "space-y-1" },
-                                h("label", { for: "asi-first-ability", class: "block text-xs text-[var(--atlas-text-muted)]" }, "Première caractéristique (+1) :"),
-                                h(
-                                  "select",
-                                  {
-                                    id: "asi-first-ability",
-                                    "aria-label": "Première caractéristique à augmenter de +1",
-                                    class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded p-2 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
-                                    value: asiFirstAbility,
-                                    onChange: (e: any) => setAsiFirstAbility(e.target.value as AbilityId),
-                                  },
-                                  ABILITY_KEYS.map((k) =>
-                                    h(
-                                      "option",
-                                      { key: k, value: k },
-                                      `${ABILITY_LABELS[k]} (Actuel : ${actor.abilities[k].score})`
-                                    )
-                                  )
-                                )
-                              ),
-                              h(
-                                "div",
-                                { class: "space-y-1" },
-                                h("label", { for: "asi-second-ability", class: "block text-xs text-[var(--atlas-text-muted)]" }, "Deuxième caractéristique (+1) :"),
-                                h(
-                                  "select",
-                                  {
-                                    id: "asi-second-ability",
-                                    "aria-label": "Deuxième caractéristique à augmenter de +1",
-                                    class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded p-2 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
-                                    value: asiSecondAbility,
-                                    onChange: (e: any) => setAsiSecondAbility(e.target.value as AbilityId),
-                                  },
-                                  ABILITY_KEYS.map((k) =>
-                                    h(
-                                      "option",
-                                      { key: k, value: k },
-                                      `${ABILITY_LABELS[k]} (Actuel : ${actor.abilities[k].score})`
-                                    )
-                                  )
-                                )
-                              )
+                              { key: "pair", class: "ds-grid-2" },
+                              abilitySelect("asi-first-ability", t("levelUp.asi.firstLabel"), asiFirstAbility, setAsiFirstAbility, Boolean(step3AsiError)),
+                              abilitySelect("asi-second-ability", t("levelUp.asi.secondLabel"), asiSecondAbility, setAsiSecondAbility, Boolean(step3AsiError))
                             ),
-                        asiErrorMessage &&
-                          h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, asiErrorMessage)
-                      )
+                        h("div", { key: "hint" }, validationHint(step3AsiError)),
+                      ]
                     : h(
                         "div",
-                        { class: "space-y-2 pt-2" },
-                        h("label", { for: "asi-feat-select", class: "block text-xs text-[var(--atlas-text-muted)]" }, "Sélectionner un Don du compendium :"),
+                        { class: "ds-field" },
+                        h("label", { for: "asi-feat-select", class: "ds-field-label" }, t("levelUp.feat.label")),
                         h(
                           "select",
                           {
                             id: "asi-feat-select",
-                            "aria-label": "Sélectionner un Don du compendium",
-                            class: "w-full min-h-[40px] bg-[var(--atlas-surface-raised)] border border-[var(--atlas-border)] rounded p-2 text-[var(--atlas-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
+                            class: "ds-input",
                             value: selectedFeatId,
                             onChange: (e: any) => setSelectedFeatId(e.target.value),
+                            ...validationProps(Boolean(step3FeatError)),
                           },
-                          h("option", { value: "" }, "-- Choisir un Don --"),
-                          availableFeats.map((feat) =>
-                            h("option", { key: feat.id, value: feat.id }, feat.i18n?.fr?.name || feat.name)
-                          )
+                          h("option", { value: "" }, t("levelUp.feat.placeholder")),
+                          availableFeats.map((feat) => h("option", { key: feat.id, value: feat.id }, localizedName(feat)))
                         ),
-                        !selectedFeatId &&
-                          h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, "Veuillez sélectionner un Don pour valider l'étape.")
+                        validationHint(step3FeatError)
                       )
                 )
               )
             : h(
                 "div",
-                { class: "p-4 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-[var(--atlas-text-muted)] text-xs space-y-2" },
-                h("p", null, `Le niveau ${targetLevel} n'est pas un palier d'ASI pour votre classe.`),
-                h("p", null, "Vos aptitudes de classe par défaut seront enregistrées automatiquement.")
+                { class: "ds-stack" },
+                stepHeading(t("levelUp.step3.featuresHeading")),
+                h(
+                  "div",
+                  { class: "ds-inset ds-hint" },
+                  h("p", { class: "ds-hint" }, t("levelUp.noAsi.level", { level: targetLevel })),
+                  h("p", { class: "ds-hint" }, t("levelUp.noAsi.features"))
+                )
               )),
 
         // Step 4: Spells & Summary
         currentStep === 4 &&
           h(
             "div",
-            { class: "space-y-4" },
-            h("h3", { class: "text-base font-semibold text-[var(--atlas-text)]" }, isSpellcaster ? "Étape 4 : Emplacements & Sorts appris" : "Étape 4 : Récapitulatif"),
+            { class: "ds-stack" },
+            stepHeading(isSpellcaster ? t("levelUp.step4.spellsHeading") : t("levelUp.step4.summaryHeading")),
             isSpellcaster &&
               h(
                 "div",
-                { class: "space-y-3" },
-                h("h4", { class: "text-xs font-semibold text-[var(--atlas-text-muted)] uppercase tracking-wider" }, "Nouveaux emplacements de sorts"),
+                { class: "ds-stack-sm" },
+                h("h4", { class: "ds-subheading" }, t("levelUp.spells.newSlots")),
                 h(
                   "div",
-                  { class: "grid grid-cols-5 gap-2 text-xs" },
+                  { class: "ds-grid-5" },
                   Object.entries(projectedSlots).map(([slotKey, slotData]) =>
                     h(
                       "div",
-                      { key: slotKey, class: "p-2 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-center" },
-                      h("span", { class: "text-[var(--atlas-text-muted)] block" }, formatSlotLabel(slotKey)),
-                      h("strong", { class: "text-[var(--atlas-action)] text-sm" }, `${(slotData as any).max} slots`)
+                      { key: slotKey, class: "ds-inset" },
+                      h("span", { class: "ds-meta" }, formatSlotLabel(slotKey)),
+                      h("strong", { class: "atlas-tabular-nums" }, tn("levelUp.spells.slots", (slotData as any).max))
                     )
                   )
                 ),
                 isDivineCaster &&
                   h(
                     "div",
-                    { class: "p-4 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-[var(--atlas-text)] text-xs space-y-1.5" },
-                    h("div", { class: "font-semibold text-[var(--atlas-action)]" }, "Préparation divine des sorts"),
-                    h(
-                      "p",
-                      null,
-                      "En tant que lanceur divin, l'ensemble des sorts de votre liste de classe correspondant à vos cercles d'emplacements disponibles est débloqué pour votre préparation quotidienne lors d'un long repos."
-                    )
+                    { class: "ds-inset" },
+                    h("strong", null, t("levelUp.spells.divineTitle")),
+                    h("p", { class: "ds-hint" }, t("levelUp.spells.divineBody"))
                   ),
                 !isDivineCaster && isKnownCaster && knownAllowance === 0 &&
-                  h(
-                    "div",
-                    { class: "p-3 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] text-[var(--atlas-text-muted)] text-xs" },
-                    `Aucun nouveau sort supplémentaire accordé au niveau ${targetLevel} selon la progression de votre classe.`
-                  ),
+                  h("p", { class: "ds-inset ds-hint" }, t("levelUp.spells.noneGranted", { level: targetLevel })),
                 !isDivineCaster && availableSpellsForLevel.length > 0 && (!isKnownCaster || knownAllowance > 0) &&
                   h(
                     "div",
-                    { class: "space-y-2 pt-2" },
+                    { class: "ds-stack-sm" },
                     h(
                       "h4",
-                      { class: "text-xs font-semibold text-[var(--atlas-text-muted)] uppercase tracking-wider" },
+                      { id: `${hintId}-spells`, class: "ds-subheading" },
                       isWizard
-                        ? `Ajouter des sorts au grimoire (Requis : ${selectedSpellIds.length}/${requiredWizardCount})`
+                        ? t("levelUp.spells.wizardHeading", { selected: selectedSpellIds.length, required: requiredWizardCount })
                         : isKnownCaster
-                        ? `Ajouter de nouveaux sorts (Limite : ${selectedSpellIds.length}/${knownAllowance})`
-                        : `Ajouter de nouveaux sorts (Optionnel : ${selectedSpellIds.length})`
+                        ? t("levelUp.spells.knownHeading", { selected: selectedSpellIds.length, limit: knownAllowance })
+                        : t("levelUp.spells.optionalHeading", { selected: selectedSpellIds.length })
                     ),
                     h(
                       "div",
-                      { class: "max-h-48 overflow-y-auto border border-[var(--atlas-border)] rounded p-2 space-y-1 bg-[var(--atlas-surface-raised)] text-xs" },
+                      {
+                        role: "group",
+                        "aria-labelledby": `${hintId}-spells`,
+                        class: "ds-scroll-list ds-stack-sm",
+                        ...(spellErrorMessage ? { "aria-describedby": hintId } : {}),
+                      },
                       availableSpellsForLevel.map((spell) => {
                         const isChecked = selectedSpellIds.includes(spell.id);
                         const isMaxReached = isWizard
@@ -905,100 +762,94 @@ export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
                         const isDisabled = !isChecked && isMaxReached;
                         return h(
                           "label",
-                          {
-                            key: spell.id,
-                            class: `flex items-center justify-between min-h-[40px] px-3 py-2 rounded ${
-                              isDisabled ? "opacity-50 cursor-not-allowed text-[var(--atlas-text-muted)]" : "cursor-pointer"
-                            } ${
-                              isChecked ? "bg-[var(--atlas-surface)] text-[var(--atlas-text)] border border-[var(--atlas-border)] font-medium" : "hover:bg-[var(--atlas-surface)] text-[var(--atlas-text)]"
-                            }`,
-                          },
+                          { key: spell.id, class: cx("ds-choice", isChecked && "is-selected", isDisabled && "is-disabled") },
                           h(
-                            "div",
-                            { class: "flex items-center space-x-2" },
+                            "span",
+                            { class: "ds-cluster" },
                             h("input", {
                               type: "checkbox",
                               checked: isChecked,
                               disabled: isDisabled,
                               onChange: () => toggleSpellSelection(spell.id),
-                              class: "rounded text-[var(--atlas-action)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)]",
                             }),
-                            h("span", null, spell.i18n?.fr?.name || spell.name)
+                            h("span", null, localizedName(spell))
                           ),
-                          h("span", { class: "text-[var(--atlas-text-muted)] text-[10px]" }, `Niv. ${spell.data.level}`)
+                          h("span", { class: "ds-meta" }, t("levelUp.spells.level", { level: String(spell.data.level) }))
                         );
                       })
                     ),
-                    spellErrorMessage &&
-                      h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, spellErrorMessage)
+                    validationHint(spellErrorMessage)
                   )
               ),
             h(
               "div",
-              { class: "p-3 bg-[var(--atlas-surface-raised)] rounded border border-[var(--atlas-border)] space-y-1 text-xs text-[var(--atlas-text)]" },
-              h("div", { class: "font-semibold text-[var(--atlas-action)] mb-1" }, "Résumé de l'avancement :"),
-              h("div", null, `• Niveau : ${currentLevel} → ${targetLevel}`),
-              h("div", null, `• PV Max : ${actor.attributes.hp.max} → ${actor.attributes.hp.max + currentHpGain} (+${currentHpGain})`),
-              subclassId && needsSubclass && h("div", null, `• Sous-classe : ${subclassId}`),
-              isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusTwo" && h("div", null, `• ASI : +2 en ${asiSingleAbility.toUpperCase()}`),
-              isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusOneOne" && h("div", null, `• ASI : +1 en ${asiFirstAbility.toUpperCase()} & +1 en ${asiSecondAbility.toUpperCase()}`),
-              isAsi && asiOrFeatMode === "feat" && h("div", null, `• Don : ${selectedFeatId}`),
-              selectedSpellIds.length > 0 && h("div", null, `• Nouveaux sorts sélectionnés : ${selectedSpellIds.length}`)
+              { class: "ds-inset" },
+              h("strong", null, t("levelUp.summary.title")),
+              h("div", null, t("levelUp.summary.level", { from: currentLevel, to: targetLevel })),
+              h("div", null, t("levelUp.summary.hp", { from: actor.attributes.hp.max, to: actor.attributes.hp.max + currentHpGain, gain: currentHpGain })),
+              subclassId && needsSubclass && h("div", null, t("levelUp.summary.subclass", { subclass: subclassId })),
+              isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusTwo" && h("div", null, t("levelUp.summary.asiTwo", { ability: asiSingleAbility.toUpperCase() })),
+              isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusOneOne" && h("div", null, t("levelUp.summary.asiOneOne", { first: asiFirstAbility.toUpperCase(), second: asiSecondAbility.toUpperCase() })),
+              isAsi && asiOrFeatMode === "feat" && h("div", null, t("levelUp.summary.feat", { feat: selectedFeatId })),
+              selectedSpellIds.length > 0 && h("div", null, t("levelUp.summary.spells", { count: selectedSpellIds.length }))
             ),
-            saveError && h("p", { role: "alert", "aria-live": "polite", class: "text-xs text-[var(--atlas-danger)] font-medium" }, saveError)
+            saveError && h("p", { role: "alert", class: "ds-field-error" }, saveError)
           )
       ),
 
       // Modal Footer
       h(
         "footer",
-        { class: "px-6 py-4 border-t border-[var(--atlas-border)] flex items-center justify-between bg-[var(--atlas-surface-raised)]" },
+        { class: "ds-modal-footer" },
         h(
           "button",
           {
             type: "button",
-            class: "min-h-[40px] px-4 py-2 border border-[var(--atlas-border)] hover:bg-[var(--atlas-surface)] text-[var(--atlas-text)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] disabled:opacity-30 inline-flex items-center justify-center",
-            onClick: () => setCurrentStep((s) => Math.max(1, s - 1)),
-            disabled: currentStep === 1 || isSubmitting,
+            class: "ds-btn ds-btn-secondary",
+            onClick: handlePrevious,
+            "aria-disabled": currentStep === 1 || isSubmitting ? "true" : undefined,
           },
-          "Précédent"
+          t("action.previous")
         ),
         h(
           "div",
-          { class: "space-x-3" },
+          { class: "ds-cluster" },
           h(
             "button",
-            {
-              type: "button",
-              class: "min-h-[40px] px-4 py-2 text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)] text-xs font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] disabled:opacity-30 inline-flex items-center justify-center",
-              onClick: onClose,
-              disabled: isSubmitting,
-            },
-            "Annuler"
+            { type: "button", class: "ds-btn ds-btn-ghost", onClick: handleCancel, "aria-disabled": isSubmitting ? "true" : undefined },
+            t("action.cancel")
           ),
           currentStep < 4
             ? h(
                 "button",
                 {
+                  key: "next",
                   type: "button",
-                  class: "min-h-[40px] px-4 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
-                  onClick: () => setCurrentStep((s) => Math.min(4, s + 1)),
-                  disabled: !canProceed() || isSubmitting,
+                  class: "ds-btn ds-btn-primary",
+                  onClick: handleNext,
+                  "aria-disabled": stepRefusing ? "true" : undefined,
                 },
-                "Suivant"
+                t("action.next")
               )
             : h(
                 "button",
                 {
+                  key: "confirm",
                   type: "button",
-                  class: "min-h-[40px] px-5 py-2 bg-[var(--atlas-action)] hover:opacity-90 disabled:opacity-40 text-[var(--atlas-on-action)] rounded text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--atlas-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--atlas-surface)] inline-flex items-center justify-center",
+                  class: "ds-btn ds-btn-primary",
                   onClick: handleConfirmLevelUp,
-                  disabled: !canProceed() || isSubmitting,
+                  "aria-disabled": stepRefusing ? "true" : undefined,
+                  "aria-busy": isSubmitting ? "true" : undefined,
                 },
-                isSubmitting ? "Application..." : "Confirmer et Appliquer"
+                isSubmitting ? t("action.applying") : t("levelUp.confirm")
               )
         )
       )
     )
   );
+}
+
+/** Joins truthy class names. */
+function cx(...parts: Array<string | false | null | undefined>): string {
+  return parts.filter(Boolean).join(" ");
 }

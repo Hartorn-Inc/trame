@@ -1,5 +1,5 @@
 /**
- * D&D 5e (SRD 5.1 / SRD 5.2) Declarative Character Sheet Layout Manifest.
+ * D&D 5e (SRD 5.2.1) Declarative Character Sheet Layout Manifest.
  *
  * Conforms to the SheetLayoutTree AST schema and exclusively utilizes
  * canonical container nodes (section, column, row, tabs) and the 12 atomic widgets
@@ -84,7 +84,7 @@ export const DND5E_SHEET_LAYOUT: SheetLayoutTree = {
             },
             options: {
               label: "Hit Points",
-              color: "#e53e3e",
+              color: "var(--atlas-action)",
             },
           },
           {
@@ -228,6 +228,7 @@ export const DND5E_SHEET_LAYOUT: SheetLayoutTree = {
                         bindings: {
                           items: "sheet.items",
                           currency: "sheet.currency",
+                          strength: "sheet.abilities.str",
                         },
                       },
                     ],

@@ -28,8 +28,8 @@ describe("Ticket #88 - 12 Declarative Widgets Parametrized & CoreBuildLock Suite
 
   describe("Formal Invariant INV-02 & INV-03: CoreBuildLock Dual Mode Assertions", () => {
     it("WHEN isLocked is false, StatBlock6 allows modifying base ability scores via steppers", () => {
-      let dispatched: any[] = [];
-      const widget = StatBlock6({
+      const dispatched: any[] = [];
+      StatBlock6({
         id: "statblock-edit",
         boundValues: { abilities: { str: { score: 14, modifier: 2 } } },
         options: { displayOrder: ["str"] },

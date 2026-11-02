@@ -53,6 +53,7 @@ impl AuthTestHarness {
             magic_link_service: magic_service.clone(),
             session_store: session_store.clone(),
             totp_service: Arc::new(TotpService::default()),
+            security: Default::default(),
         };
         let router = build_auth_router(auth_state);
         Self {
@@ -98,6 +99,7 @@ async fn test_magic_link_guest_to_registered_binding() {
     // 2. Player follows magic link to execute 1-click onboarding
     let login_payload = serde_json::to_vec(&MagicLinkLoginRequest {
         token: invite_token,
+        nickname: None,
     })
     .unwrap();
 

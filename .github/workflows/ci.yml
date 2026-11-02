@@ -19,7 +19,24 @@ jobs:
   quality:
     name: "Quality (Format, Lint, Typecheck, Test & Build)"
     runs-on: ubuntu-26.04
-    timeout-minutes: 25
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+        env:
+          POSTGRES_DB: trame
+          POSTGRES_USER: trame
+          POSTGRES_PASSWORD: trame_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trame -d trame"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      WASM_PACK_VERSION: "0.15.1"
+      WASM_PACK_SHA256: "410101009739b9d01c7d5affaaad6e9c9a24b4cba6791a4805db8e89b9bf7af2" # x86_64-unknown-linux-musl
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,6 +44,18 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
+      - name: Install pinned Rust toolchain (rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+          rustup show active-toolchain
+      - name: Install pinned wasm-pack
+        run: |
+          name="wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl"
+          curl -sSfLo "${RUNNER_TEMP}/${name}.tar.gz" "https://github.com/wasm-bindgen/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${name}.tar.gz"
+          echo "${WASM_PACK_SHA256}  ${RUNNER_TEMP}/${name}.tar.gz" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${name}.tar.gz" --strip-components=1 -C "$HOME/.cargo/bin" "${name}/wasm-pack"
+          wasm-pack --version
       - name: Domain Glossary & ADR Integrity check
         run: python3 scripts/check-glossary-and-adrs.py
       - name: Impeccable Design System & WCAG AA Contrast check
@@ -36,7 +65,17 @@ jobs:
       - name: Rust Lint check (cargo clippy)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Rust Tests (cargo test)
+        env:
+          DATABASE_URL: postgresql://trame:trame_ci_password@localhost:5432/trame
         run: cargo test --workspace --all-targets
+      # Same outputs as `make wasm`; required by web lint/typecheck/tests/build and the parity test.
+      - name: WASM Build (wasm-pack trame-engine, browser + Node)
+        run: |
+          wasm-pack build crates/trame-engine --target web --out-dir ../../packages/web/src/wasm
+          wasm-pack build crates/trame-engine --target nodejs --out-dir ../../packages/trame-engine-node
+      - name: Game System Tests (dnd5e)
+        working-directory: packages/web
+        run: node --test "../game-systems/dnd5e/tests/**/*.test.ts"
       - name: Web Package Quality (install, lint, typecheck, test, build)
         working-directory: packages/web
         run: |
@@ -45,6 +84,17 @@ jobs:
           npm run typecheck
           npm test
           npm run build
+
+  image:
+    name: "Production Image Build"
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build production Dockerfile (WASM + SPA + server)
+        run: docker build --tag trame-server:ci .
 
   zizmor:
     name: "Zizmor"

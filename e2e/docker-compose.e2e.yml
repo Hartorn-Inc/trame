@@ -1,0 +1,32 @@
+# Browser E2E overlay for deploy/compose/docker-compose.prod.yml (see `make e2e`).
+# The Playwright container joins the server's network namespace, so the browser
+# reaches the production image (which serves the SPA from TRAME_STATIC_DIR) at
+# http://localhost:8080, a secure context that matches TRAME_PUBLIC_ORIGIN for
+# the WebSocket Origin check.
+services:
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.64.1-noble
+    profiles: ["e2e"]
+    network_mode: "service:trame-server"
+    ipc: host
+    depends_on:
+      - trame-server
+    working_dir: /e2e
+    environment:
+      E2E_BASE_URL: http://localhost:8080
+      E2E_ARTIFACTS_DIR: /e2e/artifacts
+      E2E_SLOW_MO: ${E2E_SLOW_MO:-250}
+      CI: "1"
+    volumes:
+      - ./e2e:/e2e
+      - e2e_node_modules:/e2e/node_modules
+    command:
+      - sh
+      - -c
+      - >-
+        npm ci --no-audit --no-fund && npx playwright test; rc=$$?;
+        chown -R ${E2E_UID:-1000}:${E2E_GID:-1000} /e2e/artifacts /e2e/test-results 2>/dev/null;
+        exit $$rc
+
+volumes:
+  e2e_node_modules:

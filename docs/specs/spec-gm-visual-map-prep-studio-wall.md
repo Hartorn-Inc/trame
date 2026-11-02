@@ -1,28 +1,28 @@
-# Spécification Technique & Fonctionnelle : GM Visual Map Prep Studio & Player SceneAtlas
+# Technical & Functional Specification: GM Visual Map Prep Studio & Player SceneAtlas
 
-## 1. Résumé Exécutif & Périmètre
+## 1. Executive Summary & Scope
 
-Cette spécification définit l'architecture et les règles métier pour l'onglet `MapsStudioTab` intégré au composant `CampaignWorkspace`. Le système comprend :
-1. Un **Map Prep Studio** pour le meneur de jeu, permettant de créer, importer, modifier et organiser des scènes de carte (`CampaignMapScene`) ;
-2. Un éditeur géométrique 2.5D (`MapsStudioTab Canvas`) pour tracer et éditer des segments de mur (`WallSegment`), positionner des sources lumineuses (`LightSource`), configurer des émetteurs sonores (`SpatialAudioEmitter`), pré-placer des tokens d'embuscade (`StagedToken`), et peindre manuellement le brouillard de guerre (`DualBufferFogOfWar`) ;
-3. Un orchestrateur de transition de scène (`ActivateScene`) déployant instantanément une scène préparée sur la table active gérée par `TableRoomActor` en transférant les héros des joueurs (`HeroToken`) sans perte d'état dynamique ;
-4. Une galerie interactive de consultation cartographique pour les joueurs (`SceneAtlas`), protégée par une politique de sécurité zero-trust masquant les portes secrètes, les murs illusoires et les créatures dissimulées.
-
----
-
-## 2. Termes Canoniques & Invariants ASD-STE100
-
-Le document applique strictement la norme ASD-STE100 et le glossaire canonique du projet :
-- **Acteur Explicite** : Tout énoncé d'exigence technique identifie le module sujet (`TableRoomActor`, `SpatialAudioManager`, `DualBufferFogOfWar`, `MapsStudioTab Canvas`, `BackendController`).
-- **Termes Prohibés** : Les synonymes `Push to Live Table`, `Visual Map Editor`, `multi-scene gallery grid`, `CHANNEL_GM_HIDDEN`, `sound dampening`, `DD2VTT` sont remplacés par leurs équivalents canoniques `ActivateScene`, `MapsStudioTab Canvas`, `SceneAtlas`, `VisibilityChannel::GmHidden`, `AcousticOcclusion`, `UvttMap`.
+This specification defines the architecture and business rules for the `MapsStudioTab` tab of the `CampaignWorkspace` component. The system includes:
+1. A **Map Prep Studio** for the game master to create, import, edit and organize map scenes (`CampaignMapScene`);
+2. A 2.5D geometric editor (`MapsStudioTab Canvas`) to draw and edit wall segments (`WallSegment`), place light sources (`LightSource`), configure sound emitters (`SpatialAudioEmitter`), pre-place ambush tokens (`StagedToken`), and paint the fog of war manually (`DualBufferFogOfWar`);
+3. A scene transition orchestrator (`ActivateScene`) that instantly deploys a prepared scene to the active table managed by `TableRoomActor`, carrying over the players' heroes (`HeroToken`) without losing dynamic state;
+4. An interactive map gallery for players (`SceneAtlas`), protected by a zero-trust security policy that hides secret doors, illusory walls and hidden creatures.
 
 ---
 
-## 3. Schéma de Persistance et Modèles de Données Rust
+## 2. Canonical Terms & ASD-STE100 Invariants
 
-### 3.1 Migration Base de Données SQL (`campaign_map_scenes`)
+This document strictly applies the ASD-STE100 standard and the project's canonical glossary:
+- **Explicit actor**: every technical requirement statement names the subject module (`TableRoomActor`, `SpatialAudioManager`, `DualBufferFogOfWar`, `MapsStudioTab Canvas`, `BackendController`).
+- **Prohibited terms**: the synonyms `Push to Live Table`, `Visual Map Editor`, `multi-scene gallery grid`, `sound dampening` and `DD2VTT` are replaced by their canonical equivalents `ActivateScene`, `MapsStudioTab Canvas`, `SceneAtlas`, `AcousticOcclusion` and `UvttMap`. In scene persistence, GM-hidden visibility is written `VisibilityChannel::GmHidden` (the engine's bitmask equivalent is `CHANNEL_GM_HIDDEN`).
 
-Le backend stocke les scènes de campagne dans la table PostgreSQL `campaign_map_scenes` :
+---
+
+## 3. Persistence Schema and Rust Data Models
+
+### 3.1 SQL Database Migration (`campaign_map_scenes`)
+
+The backend stores campaign scenes in the PostgreSQL table `campaign_map_scenes`:
 
 ```sql
 CREATE TABLE campaign_map_scenes (
@@ -50,7 +50,9 @@ CREATE TABLE campaign_map_scenes (
 CREATE INDEX idx_campaign_map_scenes_campaign_id ON campaign_map_scenes(campaign_id);
 ```
 
-### 3.2 Modèles de Données Domaine Rust (`trame-engine / trame-server`)
+### 3.2 Rust Domain Data Models (`trame-engine / trame-server`)
+
+> **Convergence note (spec v3, audit A29):** the engine's `WallSegment` (`crates/trame-engine/src/geometry.rs`, with `WallKind`) is the only wall type. `crates/trame-server/src/maps.rs` stores scenes with the engine `WallSegment`; its tolerant deserializer accepts the editor shape below (`p1`/`p2`, `wallType`, `doorState`), and responses carry the canonical `kind` plus those editor fields. The `WallType` / `WallSegment` listing below is that editor wire shape, not a second Rust type.
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -174,178 +176,180 @@ pub struct CampaignMapScene {
 
 ---
 
-## 4. Endpoints d'API REST & Sécurité Zero-Trust
+## 4. REST API Endpoints & Zero-Trust Security
 
-### 4.1 Spécification des Routes
+### 4.1 Route Specification
 
-- `GET /api/v1/campaigns/{campaign_id}/maps` : Récupère la liste des scènes de la campagne.
-- `POST /api/v1/campaigns/{campaign_id}/maps` : Crée une nouvelle scène de carte.
-- `GET /api/v1/campaigns/{campaign_id}/maps/{map_id}` : Récupère une scène spécifique avec sa géométrie intégrale.
-- `PUT /api/v1/campaigns/{campaign_id}/maps/{map_id}` : Met à jour la scène préparée (réservé au GM).
-- `DELETE /api/v1/campaigns/{campaign_id}/maps/{map_id}` : Supprime la scène préparée (réservé au GM).
-- `POST /api/v1/campaigns/{campaign_id}/maps/{map_id}/activate` : Exécute `ActivateScene` sur la table active.
+A campaign's scenes are read and written as one versioned set (the **scene-set version**, ADR-0037 optimistic concurrency). There are no per-scene routes.
 
-### 4.2 Matrice de Filtrage Zero-Trust pour les Joueurs
+- `GET /api/v1/campaigns/{campaign_id}/maps`: returns `{ "scenes": [CampaignMapScene], "version": <i64> }`. Campaign members only (`403 FORBIDDEN` otherwise); players receive the filtered set described in section 4.2.
+- `PUT /api/v1/campaigns/{campaign_id}/maps`: GM only. Body `{ "scenes": [...], "expected_version": <i64> }` replaces the whole scene set (create, edit and delete are all a `PUT`). A missing `expected_version` returns `400 MISSING_EXPECTED_VERSION`; a stale one returns `409 VERSION_CONFLICT` with `current_version`. On success the response has the same shape as `GET` with the bumped `version`.
+- `POST /api/v1/campaigns/{campaign_id}/maps/import`: imports a `.uvtt` / `.dd2vtt` file as a new scene (GM only, see section 7). It saves through the same path and bumps the scene-set version.
+- **Activation** is not a REST route: the GM client sends `TrameCommand::ActivateScene` over the table WebSocket (or MCP). The server replaces any client-supplied scene payload with the persisted scene (`resolve_scene_command`) and rejects unknown scene IDs, so clients cannot inject geometry and WAL replays stay deterministic.
 
-WHEN un utilisateur avec le rôle `CampaignRole::Player` envoie une requête `GET` sur `/api/v1/campaigns/{campaign_id}/maps`, THEN le backend filtre la sélection en appliquant les règles strictes suivantes :
-1. Le backend exclut toute scène dont `revealed_to_players == false`.
-2. Pour chaque scène autorisée renvoyée au joueur :
-   - Le backend mute chaque `WallSegment` de type `WallType::SecretDoor` dont `door_state != Some(DoorState::Open)` en `WallType::Normal`, avec `door_state = None`.
-   - Le backend mute chaque `WallSegment` de type `WallType::Illusion` en `WallType::Normal`.
-   - Le backend supprime tous les tokens de `staged_tokens` ayant `visibility == VisibilityChannel::GmHidden`.
-   - Le backend supprime tous les émetteurs de `spatial_audio_emitters` ayant `gm_only == true`.
-   - Le backend sérialise la texture `explored_fog_texture` encodée en PNG 8-bit niveaux de gris pour afficher la zone explorée sans révéler les zones masquées.
+The scene-set version is stored in `campaigns.scenes_version` (default `0`) when PostgreSQL is configured.
 
-WHEN un utilisateur avec le rôle `CampaignRole::Player` envoie une requête `GET /api/v1/campaigns/{campaign_id}/maps/{map_id}` pour une scène dont `revealed_to_players == false`, THEN le backend retourne un code d'erreur HTTP `403 Forbidden`.
+### 4.2 Zero-Trust Filtering Matrix for Players
 
-### 4.3 Template Déterministe `StarterDungeon`
+WHEN a user with the `CampaignRole::Player` role sends a `GET` request to `/api/v1/campaigns/{campaign_id}/maps`, THEN the backend filters the selection with the following strict rules:
+1. The backend excludes every scene where `revealed_to_players == false`.
+2. For every allowed scene returned to the player:
+   - The backend changes every `WallSegment` of type `WallType::SecretDoor` with `door_state != Some(DoorState::Open)` into `WallType::Normal`, with `door_state = None`.
+   - The backend changes every `WallSegment` of type `WallType::Illusion` into `WallType::Normal`.
+   - The backend removes every token from `staged_tokens` with `visibility == VisibilityChannel::GmHidden`.
+   - The backend removes every emitter from `spatial_audio_emitters` with `gm_only == true`.
+   - The backend serializes the `explored_fog_texture` texture encoded as an 8-bit grayscale PNG to show the explored area without revealing hidden areas.
 
-WHEN la requête `POST /api/v1/campaigns/{campaign_id}/maps` contient le payload `template = "StarterDungeon"`, THEN le backend instancie une `CampaignMapScene` déterministe avec les propriétés suivantes :
+Unrevealed scenes are simply absent from a player's `GET` response; there is no per-scene route that could expose them.
+
+### 4.3 Deterministic `StarterDungeon` Template
+
+WHEN the game master clicks the starter dungeon button in `MapsStudioTab`, THEN the web client builds a deterministic `CampaignMapScene` (`createStarterDungeonScene` in `packages/web/src/maps/domain.ts`) and saves it with the rest of the scene set through `PUT .../maps`. The scene has the following properties:
 - `name`: "The Forgotten Crypt"
 - `grid_type`: `GridType::Square`
 - `grid_size_px`: 70
 - `grid_cell_distance_ft`: 5.0
-- `width_px`: 2800 (40 cases)
-- `height_px`: 2100 (30 cases)
+- `width_px`: 2800 (40 cells)
+- `height_px`: 2100 (30 cells)
 - `default_ground_elevation_ft`: 0.0
 - `revealed_to_players`: false
 - `spawn_points`: `[SpawnPoint { id: <uuid>, name: "Crypt Entrance", x: 350.0, y: 1050.0 }]`
-- `wall_segments`: Les murs délimitent une antichambre rectangulaire de 10x10 cases `[(140, 700) -> (840, 700) -> (840, 1400) -> (140, 1400) -> (140, 700)]`, un couloir central de 4 cases de large jusqu'à `(1680, 1050)`, et une salle du boss finale de 16x16 cases jusqu'à `(2660, 1820)`. Une porte `WallType::Door` (`door_state: Some(DoorState::Closed)`) sépare le couloir de la salle finale à `(1680, 980) -> (1680, 1120)`. Une porte secrète `WallType::SecretDoor` (`door_state: Some(DoorState::Closed)`) est placée à `(490, 700) -> (630, 700)`.
-- `light_sources`: 2 torches murales dans l'antichambre à `(210.0, 770.0)` et `(210.0, 1330.0)` (`radius_ft: 20.0`, `color_hex: "#FFAA33"`, `intensity: 1.0`), et 1 brasero central dans la salle du boss à `(2170.0, 1050.0)` (`radius_ft: 40.0`, `color_hex: "#FF5500"`, `intensity: 1.2`).
-- `staged_tokens`: 2 squelettes pré-placés dans le couloir à `(1120.0, 980.0)` et `(1120.0, 1120.0)` avec `visibility: VisibilityChannel::GmHidden` et `monster_template_id: Some("Skeleton")`, et 1 boss nécromancien dans la salle finale à `(2380.0, 1050.0)` avec `visibility: VisibilityChannel::GmHidden` et `monster_template_id: Some("Boss")`.
+- `wall_segments`: the walls enclose a rectangular 10x10-cell antechamber `[(140, 700) -> (840, 700) -> (840, 1400) -> (140, 1400) -> (140, 700)]`, a 4-cell-wide central corridor up to `(1680, 1050)`, and a final 16x16-cell boss room up to `(2660, 1820)`. A `WallType::Door` door (`door_state: Some(DoorState::Closed)`) separates the corridor from the final room at `(1680, 980) -> (1680, 1120)`. A `WallType::SecretDoor` secret door (`door_state: Some(DoorState::Closed)`) is placed at `(490, 700) -> (630, 700)`.
+- `light_sources`: 2 wall torches in the antechamber at `(210.0, 770.0)` and `(210.0, 1330.0)` (`radius_ft: 20.0`, `color_hex: "#FFAA33"`, `intensity: 1.0`), and 1 central brazier in the boss room at `(2170.0, 1050.0)` (`radius_ft: 40.0`, `color_hex: "#FF5500"`, `intensity: 1.2`).
+- `staged_tokens`: 2 skeletons pre-placed in the corridor at `(1120.0, 980.0)` and `(1120.0, 1120.0)` with `visibility: VisibilityChannel::GmHidden` and `monster_template_id: Some("Skeleton")`, and 1 necromancer boss in the final room at `(2380.0, 1050.0)` with `visibility: VisibilityChannel::GmHidden` and `monster_template_id: Some("Boss")`.
 
 ---
 
-## 5. Moteur Géométrique 2.5D & Matrice d'Occlusion
+## 5. 2.5D Geometry Engine & Occlusion Matrix
 
-### 5.1 Invariants Géométriques des `WallSegment`
+### 5.1 `WallSegment` Geometric Invariants
 
-Le backend et le bridge Wasm valident chaque `WallSegment` selon les invariants stricts suivants :
-1. **Distance Minimale** : La distance euclidienne entre `p1` et `p2` doit être strictement supérieure à `0.1` ft :
+The backend and the WASM bridge validate every `WallSegment` against the following strict invariants:
+1. **Minimum length**: the Euclidean distance between `p1` and `p2` must be strictly greater than `0.1` ft:
    $$\sqrt{(p2.x - p1.x)^2 + (p2.y - p1.y)^2} > 0.1$$
-   IF la distance est inférieure ou égale à `0.1` ft, THEN le backend rejette la requête avec le code HTTP `422 Unprocessable Entity`.
-2. **Élévation Valide** : `bottom_elevation_ft < top_elevation_ft`.
-   IF `bottom_elevation_ft >= top_elevation_ft`, THEN le backend rejette la requête avec le code HTTP `422 Unprocessable Entity`.
+   IF the distance is less than or equal to `0.1` ft, THEN the backend rejects the request with HTTP `422 Unprocessable Entity`.
+2. **Valid elevation**: `bottom_elevation_ft < top_elevation_ft`.
+   IF `bottom_elevation_ft >= top_elevation_ft`, THEN the backend rejects the request with HTTP `422 Unprocessable Entity`.
 
-### 5.2 Matrice Physique et Optique
+### 5.2 Physical and Optical Matrix
 
-| WallType | DoorState | blocks_movement | blocks_light | blocks_sound | Rendu GM (`MapsStudioTab Canvas`) | Rendu Joueur (`SceneAtlas` / Table) |
+| WallType | DoorState | blocks_movement | blocks_light | blocks_sound | GM rendering (`MapsStudioTab Canvas`) | Player rendering (`SceneAtlas` / table) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `Normal` | `None` | `true` | `true` | `true` | Ligne bleue continue (#2A72D6) | Ligne d'obstacle standard |
-| `Window` | `None` | `true` | `false` | `true` | Ligne cyan pointillée (#00D2D3) | Vitre translucide cyan |
-| `Terrain` | `None` | Calcul élévation | Calcul élévation | Calcul élévation | Ligne verte double (#10AC84) | Ligne de dénivelé verte |
-| `Door` | `Closed` | `true` | `true` | `true` | Ligne orange continue (#FF9F43) | Porte fermée orange |
-| `Door` | `Open` | `false` | `false` | `false` | Ligne orange pointillée (#FF9F43) | Passage ouvert |
-| `Door` | `Locked` | `true` | `true` | `true` | Ligne rouge continue (#EE5253) | Porte fermée avec cadenas |
-| `SecretDoor`| `Closed` | `true` | `true` | `true` | Ligne violette 'S' (#5F27CD) | Ligne de mur normale bleue (#2A72D6) |
-| `SecretDoor`| `Open` | `false` | `false` | `false` | Ligne violette pointillée (#5F27CD) | Passage ouvert |
-| `Illusion` | `None` | `false` | `false` | `false` | Ligne magenta striée (#FF007F) | Ligne de mur normale bleue (#2A72D6) |
+| `Normal` | `None` | `true` | `true` | `true` | Solid blue line (#2A72D6) | Standard obstacle line |
+| `Window` | `None` | `true` | `false` | `true` | Dotted cyan line (#00D2D3) | Translucent cyan glass |
+| `Terrain` | `None` | Elevation-based | Elevation-based | Elevation-based | Double green line (#10AC84) | Green slope line |
+| `Door` | `Closed` | `true` | `true` | `true` | Solid orange line (#FF9F43) | Closed orange door |
+| `Door` | `Open` | `false` | `false` | `false` | Dotted orange line (#FF9F43) | Open passage |
+| `Door` | `Locked` | `true` | `true` | `true` | Solid red line (#EE5253) | Closed door with a padlock |
+| `SecretDoor`| `Closed` | `true` | `true` | `true` | Purple 'S' line (#5F27CD) | Normal blue wall line (#2A72D6) |
+| `SecretDoor`| `Open` | `false` | `false` | `false` | Dotted purple line (#5F27CD) | Open passage |
+| `Illusion` | `None` | `false` | `false` | `false` | Striped magenta line (#FF007F) | Normal blue wall line (#2A72D6) |
 
-### 5.3 Modèle d'Occlusion Acoustique 2.5D (`AcousticOcclusion`)
+### 5.3 2.5D Acoustic Occlusion Model (`AcousticOcclusion`)
 
-`SpatialAudioManager` calcule l'atténuation sonore entre un émetteur $E(x_e, y_e, z_e)$ et un récepteur $L(x_l, y_l, z_l)$ :
-1. `SpatialAudioManager` trace le segment de rayon direct $\vec{R} = L - E$.
-2. `SpatialAudioManager` compte le nombre $N$ d'intersections avec des `WallSegment` vérifiant :
-   - Le segment 2D $(p_1, p_2)$ coupe la projection 2D de $\vec{R}$ au point $(x_i, y_i)$.
-   - L'élévation $z_i$ du rayon au point d'intersection satisfait $bottom\_elevation\_ft \le z_i \le top\_elevation\_ft$.
-   - Le segment possède `blocks_sound == true`.
-3. Pour chaque intersection valide, `SpatialAudioManager` applique une atténuation de 12 dB ($facteur = 0.25$) et un filtre passe-bas du premier ordre avec fréquence de coupure à 800 Hz.
-
----
-
-## 6. Déploiement Atomique `ActivateScene` sur la Table de Jeu
-
-### 6.1 Protocole de Migration Déterministe des Tokens
-
-WHEN le meneur de jeu déclenche `ActivateScene` via l'envoi de `POST /api/v1/campaigns/{campaign_id}/maps/{map_id}/activate`, THEN `TableRoomActor` exécute la séquence atomique suivante :
-1. `TableRoomActor` récupère la `CampaignMapScene` identifiée par `map_id` depuis la base de données.
-2. `TableRoomActor` extrait tous les `HeroToken` actuels de la table (`owner_user_id.is_some()`), triés par ordre lexicographique de leur identifiant UUID.
-3. `TableRoomActor` préserve sans altération les attributs d'état des `HeroToken` : `hp_current`, `hp_max`, `temp_hp`, `conditions`, `inventory_items`.
-4. Pour chaque `HeroToken` d'indice `token_index` (indexé à 0) :
-   - WHEN `scene.spawn_points` n'est pas vide, THEN `TableRoomActor` assigne `token.x = scene.spawn_points[token_index % scene.spawn_points.len()].x`, `token.y = scene.spawn_points[token_index % scene.spawn_points.len()].y`, et `token.elevation_ft = scene.default_ground_elevation_ft`.
-   - WHEN `scene.spawn_points` est vide, THEN `TableRoomActor` assigne `token.x = 0.0`, `token.y = 0.0`, et `token.elevation_ft = scene.default_ground_elevation_ft`.
-5. `TableRoomActor` supprime tous les anciens PNJ et monstres non possédés (`owner_user_id.is_none()`).
-6. `TableRoomActor` instancie chaque `StagedToken` de la scène comme un nouveau token de table actif, en assignant `visibility = staged_token.visibility`.
-7. `TableRoomActor` remplace la géométrie de murs de la table par `scene.wall_segments`, les lumières par `scene.light_sources`, et les sources sonores par `scene.spatial_audio_emitters`.
-8. `TableRoomActor` diffuse l'événement WebSocket `SceneActivated` contenant le nouvel état complet à tous les clients connectés.
+`SpatialAudioManager` computes the sound attenuation between an emitter $E(x_e, y_e, z_e)$ and a listener $L(x_l, y_l, z_l)$:
+1. `SpatialAudioManager` traces the direct ray segment $\vec{R} = L - E$.
+2. `SpatialAudioManager` counts the number $N$ of intersections with `WallSegment`s that satisfy:
+   - The 2D segment $(p_1, p_2)$ crosses the 2D projection of $\vec{R}$ at the point $(x_i, y_i)$.
+   - The ray elevation $z_i$ at the intersection point satisfies $bottom\_elevation\_ft \le z_i \le top\_elevation\_ft$.
+   - The segment has `blocks_sound == true`.
+3. For every valid intersection, `SpatialAudioManager` applies a 12 dB attenuation ($factor = 0.25$) and a first-order low-pass filter with an 800 Hz cutoff frequency.
 
 ---
 
-## 7. Pipeline d'Importation `UvttMap` (`.uvtt` / `.dd2vtt`)
+## 6. Atomic `ActivateScene` Deployment on the Game Table
 
-Le convertisseur `wasmBridge.ts` et le service backend d'import transforment les fichiers universels `UvttMap` selon les étapes suivantes :
-1. **Extraction de Texture & Résolution** : Le convertisseur décode la chaîne base64 `image` en buffer image, et extrait `resolution.map_size` et `resolution.pixels_per_grid`.
-2. **Conversion des Murs Linéaires** : Pour chaque élément dans `line_of_sight` :
-   - Le convertisseur décompose les poly-lignes en segments consécutifs `(p[k], p[k+1])`.
-   - Le convertisseur instancie un `WallSegment` avec `wall_type = WallType::Normal`, `bottom_elevation_ft = 0.0`, `top_elevation_ft = 10.0`, `blocks_light = true`, `blocks_movement = true`, `blocks_sound = true`.
-3. **Conversion des Portes & Portails** : Pour chaque élément dans `portals` :
-   - Le convertisseur instancie un `WallSegment` reliant les coordonnées de la porte.
-   - Le convertisseur assigne `wall_type = WallType::Door`.
-   - IF `portal.closed == true`, THEN le convertisseur assigne `door_state = Some(DoorState::Closed)` et `blocks_sound = true`.
-   - ELSE le convertisseur assigne `door_state = Some(DoorState::Open)` et `blocks_sound = false`.
-4. **Conversion des Lumières Ponctuelles** : Pour chaque élément dans `lights` :
-   - Le convertisseur instancie une `LightSource` avec les coordonnées `(position.x * pixels_per_grid, position.y * pixels_per_grid)`.
-   - Le convertisseur préserve le rayon `radius_ft = range * 5.0` et la couleur hexadécimale issue de la composante RVB `color`.
+### 6.1 Deterministic Token Migration Protocol
 
----
-
-## 8. Interface Utilisateur & Interaction Frontend (`@trame/web`)
-
-### 8.1 Studio de Préparation MJ (`MapsStudioTab Canvas`)
-
-L'onglet `MapsStudioTab` offre au meneur de jeu :
-1. Une barre d'outils comprenant les sélecteurs : `Select/Move`, `Draw Wall` (avec sous-menu `Normal`, `Window`, `Terrain`, `Door`, `SecretDoor`, `Illusion`), `Light Source Tool`, `Spatial Audio Tool`, `Staged Monster Spawner`, `Fog Brush`.
-2. Des réglages d'accrochage à la grille (`Snap to Grid`) : activé par défaut sur les intersections et centres de cases de la grille carrée.
-3. Un inspecteur contextuel de segment sélectionné permettant de modifier `DoorState` (`Open`, `Closed`, `Locked`) et les bornes d'élévation `bottom_elevation_ft` et `top_elevation_ft`.
-4. La palette **1-Click GM Monster Templates** permettant d'insérer instantanément un `StagedToken` (`Goblin`, `Bandit`, `Guard`, `Skeleton`, `Wolf`, `Ogre`, `Boss`) avec le commutateur `VisibilityChannel` configuré sur `GmHidden` par défaut.
-5. Le bouton d'action principal `[ActivateScene]` déclenchant le déploiement immédiat sur la table active.
-6. Le commutateur `[Revealed in Player Atlas]` (`revealed_to_players`) pour publier ou retirer la scène de la galerie des joueurs.
-
-### 8.2 Galerie `SceneAtlas` pour les Joueurs
-
-Pour les joueurs, l'onglet `MapsStudioTab` affiche exclusivement la galerie `SceneAtlas` :
-1. Affichage sous forme de grille de vignettes représentant les scènes publiées (`revealed_to_players == true`).
-2. Clic sur une vignette ouvrant la scène en plein écran avec contrôles fluides de zoom et de déplacement panoramique (pan/zoom).
-3. Rendu sécurisé conforme à l'ADR 0035 : portes secrètes affichées comme des murs ordinaires, absence de tokens masqués, et affichage exclusif du brouillard de guerre exploré.
+WHEN the game master sends `TrameCommand::ActivateScene` over the table WebSocket (or MCP), THEN `TableRoomActor` runs the following atomic sequence:
+1. `TableRoomActor` loads the `CampaignMapScene` identified by `map_id` from the database.
+2. `TableRoomActor` extracts every current `HeroToken` on the table (`owner_user_id.is_some()`), sorted lexicographically by UUID.
+3. `TableRoomActor` keeps the `HeroToken` state attributes unchanged: `hp_current`, `hp_max`, `temp_hp`, `conditions`, `inventory_items`.
+4. For every `HeroToken` with index `token_index` (0-based):
+   - WHEN `scene.spawn_points` is not empty, THEN `TableRoomActor` sets `token.x = scene.spawn_points[token_index % scene.spawn_points.len()].x`, `token.y = scene.spawn_points[token_index % scene.spawn_points.len()].y`, and `token.elevation_ft = scene.default_ground_elevation_ft`.
+   - WHEN `scene.spawn_points` is empty, THEN `TableRoomActor` sets `token.x = 0.0`, `token.y = 0.0`, and `token.elevation_ft = scene.default_ground_elevation_ft`.
+5. `TableRoomActor` removes every former unowned NPC and monster (`owner_user_id.is_none()`).
+6. `TableRoomActor` creates each `StagedToken` of the scene as a new active table token (`SyntheticToken`), with `visibility = staged_token.visibility`.
+7. `TableRoomActor` replaces the table's wall geometry with `scene.wall_segments`, the lights with `scene.light_sources`, and the sound sources with `scene.spatial_audio_emitters`.
+8. `TableRoomActor` broadcasts the `SceneActivated` WebSocket event with the complete new state to every connected client (filtered per recipient).
 
 ---
 
-## 9. Sous-Systèmes Spécialisés
+## 7. `UvttMap` Import Pipeline (`.uvtt` / `.dd2vtt`)
 
-### 9.1 Brouillard de Guerre Manuel (`DualBufferFogOfWar`)
-
-`DualBufferFogOfWar` maintient deux textures WebGL distinctes :
-- `ActiveVisionTexture` : Re-calculée à chaque frame selon la ligne de vue dynamique des tokens actifs sur la table.
-- `ExploredMemoryTexture` : Accumule les zones observées. Dans `MapsStudioTab Canvas`, le meneur de jeu peut peindre directement sur `ExploredMemoryTexture` avec un pinceau circulaire (rayon réglable de 10 à 200 px, modes `Reveal` et `Hide`).
-- `DualBufferFogOfWar` encode la texture `ExploredMemoryTexture` exclusivement en un buffer d'octets PNG 8-bit en niveaux de gris (canal R représentant l'alpha d'exploration de 0 à 255) pour la persistance en base de données et le transfert réseau.
-
-### 9.2 Positionnement du Récepteur Audio Spatial
-
-`SpatialAudioManager` détermine la position du récepteur d'écoute $L(x_l, y_l, z_l)$ selon les règles déterministes suivantes :
-- Pour le meneur de jeu (GM) : le récepteur est centré sur le viewport du canvas : $x_l = viewport.center_x$, $y_l = viewport.center_y$, et $z_l = 0.0$ ft.
-- Pour un joueur :
-  - IF le joueur possède au moins un token héros sur la table active, THEN le récepteur se lie aux coordonnées du premier token héros trié par ordre lexicographique de son identifiant UUID : $x_l = hero_token.x$, $y_l = hero_token.y$, et $z_l = hero_token.elevation_ft$.
-  - IF le joueur ne possède aucun token sur la table active, THEN le récepteur est assigné à $x_l = 0.0$, $y_l = 0.0$, et $z_l = 0.0$ ft.
+The `wasmBridge.ts` converter and the backend import service (GM-only route `POST /api/v1/campaigns/{campaign_id}/maps/import`) transform universal `UvttMap` files through the following steps. Oversized or malformed images are rejected before decoding (ADR-0002).
+1. **Texture & resolution extraction**: the converter decodes the base64 `image` string into an image buffer, and reads `resolution.map_size` and `resolution.pixels_per_grid`.
+2. **Line wall conversion**: for every element of `line_of_sight`:
+   - The converter splits the polylines into consecutive segments `(p[k], p[k+1])`.
+   - The converter creates a `WallSegment` with `wall_type = WallType::Normal`, `bottom_elevation_ft = 0.0`, `top_elevation_ft = 10.0`, `blocks_light = true`, `blocks_movement = true`, `blocks_sound = true`.
+3. **Door & portal conversion**: for every element of `portals`:
+   - The converter creates a `WallSegment` joining the door coordinates.
+   - The converter sets `wall_type = WallType::Door`.
+   - IF `portal.closed == true`, THEN the converter sets `door_state = Some(DoorState::Closed)` and `blocks_sound = true`.
+   - ELSE the converter sets `door_state = Some(DoorState::Open)` and `blocks_sound = false`.
+4. **Point light conversion**: for every element of `lights`:
+   - The converter creates a `LightSource` at `(position.x * pixels_per_grid, position.y * pixels_per_grid)`.
+   - The converter keeps the radius `radius_ft = range * 5.0` and the hexadecimal color from the RGB `color` component.
 
 ---
 
-## 10. Stratégie de Test TDD & Critères d'Acceptation
+## 8. User Interface & Frontend Interaction (`@trame/web`)
 
-### 10.1 Suite 1 : Backend UVTT Importer Test (`tests/uvtt_importer_test.rs`)
-- **Test 1.1** : Importer un fichier `.uvtt` valide contenant 12 segments de murs, 3 portes et 4 lumières colorées. Valider que 15 `WallSegment` et 4 `LightSource` sont créés avec les coordonnées exactes et couleurs RVB conformes.
-- **Test 1.2** : Rejeter un fichier `.uvtt` corrompu ou contenant des segments de longueur $< 0.1$ ft en renvoyant une erreur de validation explicite.
+### 8.1 GM Prep Studio (`MapsStudioTab Canvas`)
 
-### 10.2 Suite 2 : Sécurité RBAC & Masquage SceneAtlas Test (`tests/scene_atlas_security_test.rs`)
-- **Test 2.1** : Un compte joueur requêtant `GET /api/v1/campaigns/{id}/maps` ne reçoit que les scènes avec `revealed_to_players == true`.
-- **Test 2.2** : Un compte joueur requêtant `GET /api/v1/campaigns/{id}/maps/{map_id}` sur une scène masquée reçoit un code HTTP `403 Forbidden`.
-- **Test 2.3** : Vérifier que dans le payload reçu par un joueur pour une scène révélée, aucun segment ne possède `WallType::SecretDoor` fermé (transformé en `WallType::Normal`), aucun segment ne possède `WallType::Illusion` (transformé en `WallType::Normal`), aucun token ne possède `visibility == VisibilityChannel::GmHidden`, et aucun son n'a `gm_only == true`.
+The `MapsStudioTab` tab offers the game master:
+1. A toolbar with the selectors `Select/Move`, `Draw Wall` (with a `Normal`, `Window`, `Terrain`, `Door`, `SecretDoor`, `Illusion` sub-menu), `Light Source Tool`, `Spatial Audio Tool`, `Staged Monster Spawner`, `Fog Brush`.
+2. Grid snapping settings (`Snap to Grid`): on by default on the intersections and centers of the square grid cells.
+3. A contextual inspector for the selected segment to change `DoorState` (`Open`, `Closed`, `Locked`) and the elevation bounds `bottom_elevation_ft` and `top_elevation_ft`.
+4. The **1-Click GM Monster Templates** palette to instantly insert a `StagedToken` (`Goblin`, `Bandit`, `Guard`, `Skeleton`, `Wolf`, `Ogre`, `Boss`) with the `VisibilityChannel` switch set to `GmHidden` by default.
+5. The main action button `[ActivateScene]` that deploys the scene to the active table immediately.
+6. The `[Revealed in Player Atlas]` switch (`revealed_to_players`) to publish the scene to, or remove it from, the players' gallery.
 
-### 10.3 Suite 3 : Transition de Table ActivateScene Test (`tests/activate_scene_test.rs`)
-- **Test 3.1** : Déclencher `ActivateScene` sur une table contenant 3 tokens joueurs. Vérifier que les 3 `HeroToken` sont conservés avec leurs points de vie intacts, et positionnés sur les coordonnées des `spawn_points` selon la règle déterministe `token_index % spawn_points.len()`.
-- **Test 3.2** : Vérifier le repli déterministe vers `(0.0, 0.0, scene.default_ground_elevation_ft)` lorsque `spawn_points` est une liste vide.
-- **Test 3.3** : Vérifier que les anciens monstres de la table sont purgés et que les `StagedToken` de la nouvelle scène sont instanciés avec leur visibilité respective.
+### 8.2 `SceneAtlas` Gallery for Players
 
-### 10.4 Suite 4 : Frontend Studio & Canvas Interaction Test (`apps/web/src/tests/MapsStudioTab.spec.ts`)
-- **Test 4.1** : Vérifier le tracé interactif de murs avec magnétisme sur la grille (`Snap to Grid`).
-- **Test 4.2** : Vérifier le basculement d'état d'une porte (`Closed` -> `Open` -> `Locked`) et la mise à jour réactive des propriétés d'occlusion.
-- **Test 4.3** : Vérifier l'insertion d'un monstre via le menu 1-Click GM Monster Templates et l'attribution par défaut de `VisibilityChannel::GmHidden`.
+For players, the `MapsStudioTab` tab shows only the `SceneAtlas` gallery:
+1. A grid of thumbnails of the published scenes (`revealed_to_players == true`).
+2. Clicking a thumbnail opens the scene full-screen with smooth zoom and pan controls.
+3. Secure rendering according to ADR-0035: secret doors shown as ordinary walls, no hidden tokens, and only the explored fog of war shown.
+
+---
+
+## 9. Specialized Subsystems
+
+### 9.1 Manual Fog of War (`DualBufferFogOfWar`)
+
+`DualBufferFogOfWar` keeps two separate WebGL textures:
+- `ActiveVisionTexture`: recomputed every frame from the dynamic line of sight of the active tokens on the table.
+- `ExploredMemoryTexture`: accumulates the observed areas. In `MapsStudioTab Canvas`, the game master can paint directly on `ExploredMemoryTexture` with a circular brush (radius adjustable from 10 to 200 px, `Reveal` and `Hide` modes).
+- `DualBufferFogOfWar` encodes the `ExploredMemoryTexture` texture only as an 8-bit grayscale PNG byte buffer (the R channel holds the exploration alpha from 0 to 255) for database persistence and network transfer.
+
+### 9.2 Spatial Audio Listener Position
+
+`SpatialAudioManager` determines the listener position $L(x_l, y_l, z_l)$ with the following deterministic rules:
+- For the game master (GM): the listener is centered on the canvas viewport: $x_l = viewport.center_x$, $y_l = viewport.center_y$, and $z_l = 0.0$ ft.
+- For a player:
+  - IF the player owns at least one hero token on the active table, THEN the listener follows the coordinates of the first hero token sorted lexicographically by UUID: $x_l = hero_token.x$, $y_l = hero_token.y$, and $z_l = hero_token.elevation_ft$.
+  - IF the player owns no token on the active table, THEN the listener is set to $x_l = 0.0$, $y_l = 0.0$, and $z_l = 0.0$ ft.
+
+---
+
+## 10. TDD Test Strategy & Acceptance Criteria
+
+### 10.1 Suite 1: Backend UVTT Importer Test (`tests/uvtt_importer_test.rs`)
+- **Test 1.1**: import a valid `.uvtt` file with 12 wall segments, 3 doors and 4 colored lights. Check that 15 `WallSegment`s and 4 `LightSource`s are created with exact coordinates and matching RGB colors.
+- **Test 1.2**: reject a corrupted `.uvtt` file, or one with segments shorter than $0.1$ ft, with an explicit validation error.
+
+### 10.2 Suite 2: RBAC Security & SceneAtlas Masking Test (`tests/scene_atlas_security_test.rs`)
+- **Test 2.1**: a player account requesting `GET /api/v1/campaigns/{id}/maps` receives only the scenes with `revealed_to_players == true`.
+- **Test 2.2**: a non-member requesting `GET /api/v1/campaigns/{id}/maps` receives HTTP `403 Forbidden`; a GM `PUT` with a stale `expected_version` receives `409 VERSION_CONFLICT`.
+- **Test 2.3**: in the payload a player receives for a revealed scene, no segment is a closed `WallType::SecretDoor` (changed into `WallType::Normal`), no segment is a `WallType::Illusion` (changed into `WallType::Normal`), no token has `visibility == VisibilityChannel::GmHidden`, and no sound has `gm_only == true`.
+
+### 10.3 Suite 3: ActivateScene Table Transition Test (`tests/activate_scene_test.rs`)
+- **Test 3.1**: trigger `ActivateScene` on a table with 3 player tokens. Check that the 3 `HeroToken`s are kept with their hit points intact, and placed on the `spawn_points` coordinates according to the deterministic rule `token_index % spawn_points.len()`.
+- **Test 3.2**: check the deterministic fallback to `(0.0, 0.0, scene.default_ground_elevation_ft)` when `spawn_points` is an empty list.
+- **Test 3.3**: check that the table's former monsters are removed and that the new scene's `StagedToken`s are created with their respective visibility.
+
+### 10.4 Suite 4: Frontend Studio & Canvas Interaction Test (`packages/web/tests/MapsStudioTab.test.tsx`)
+- **Test 4.1**: check interactive wall drawing with grid snapping (`Snap to Grid`).
+- **Test 4.2**: check door state switching (`Closed` -> `Open` -> `Locked`) and the reactive update of the occlusion properties.
+- **Test 4.3**: check inserting a monster through the 1-Click GM Monster Templates menu and the default `VisibilityChannel::GmHidden` assignment.

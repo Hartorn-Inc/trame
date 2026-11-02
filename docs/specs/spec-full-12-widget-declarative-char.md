@@ -120,7 +120,7 @@ graph TD
 - Validation: Enforces `INV-05` (cycle detection), `INV-06` (attunement cap of 3), `INV-07` (tare and zero-multiplier weight for *Bag of Holding*), and `INV-08` (Strength-based encumbrance thresholds).
 
 ### 4.11 FeatureTraitListWidget (`FeatureTraitList`)
-- Description: Lists racial traits, class features, feats, and passive abilities.
+- Description: Lists species traits, class features, feats, and passive abilities.
 - `boundValues`: `{ features: Array<{ id: string, name: string, source: 'race' | 'class' | 'feat' | 'other', summary: string, description: string }> }`
 - `derivedDAG`: `{ groupedFeatures: Record<string, Array<{ id: string, name: string, summary: string }>> }`
 - Behavior: Items are expandable for full text and searchable via filter input.

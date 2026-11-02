@@ -1,6 +1,7 @@
 import { signal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
-import { t } from "../i18n/index.ts";
+import { useEffect, useRef } from "preact/hooks";
+import { useModalFocusTrap } from "../components/a11y/useModalFocusTrap.ts";
+import { t, tn } from "../i18n/index.ts";
 import { type PartyJournalEntry } from "../mobile/companionMode.ts";
 import { parseWikiMarkdown } from "../notes/wikiParser.ts";
 
@@ -155,90 +156,41 @@ export function HandoutRevealModal() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!activeModal || typeof window === "undefined") return;
-    const previousActiveElement =
-      typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        activeHandoutModalSignal.value = null;
-        return;
-      }
-      if (e.key === "Tab" && typeof document !== "undefined") {
-        const modalEl = document.querySelector?.('[data-testid="handout-reveal-modal"]');
-        const focusable = modalEl?.querySelectorAll?.(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-        );
-        if (focusable && focusable.length > 0) {
-          const first = focusable[0] as HTMLElement;
-          const last = focusable[focusable.length - 1] as HTMLElement;
-          if (e.shiftKey && document.activeElement === first) {
-            e.preventDefault();
-            last.focus?.();
-          } else if (!e.shiftKey && document.activeElement === last) {
-            e.preventDefault();
-            first.focus?.();
-          }
-        }
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      previousActiveElement?.focus?.();
-    };
-  }, [activeModal]);
-
   if (!activeModal) return null;
+  return <HandoutRevealDialog key={activeModal.handoutId} handout={activeModal} />;
+}
+
+function HandoutRevealDialog({ handout }: { handout: PartyJournalEntry }) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const close = () => {
+    activeHandoutModalSignal.value = null;
+  };
+  useModalFocusTrap(dialogRef, { onEscape: close });
 
   return (
     <div
+      ref={dialogRef}
       data-testid="handout-reveal-modal"
       role="dialog"
       aria-modal="true"
       aria-labelledby="handout-title"
-      class="modal-backdrop fullscreen"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "var(--atlas-bg)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-      }}
+      tabIndex={-1}
+      class="ds-modal-backdrop"
     >
-      <div
-        class="modal-card ds-overlay-modal"
-        style={{
-          background: "var(--atlas-surface)",
-          padding: "1.5rem",
-          maxWidth: "600px",
-          width: "90%",
-          borderRadius: "var(--atlas-radius-lg, 8px)",
-          border: "1px solid var(--atlas-border)",
-        }}
-      >
-        <h3 id="handout-title" data-testid="handout-title">{activeModal.title}</h3>
-        <div
-          data-testid="handout-content"
-          style={{ marginTop: "0.5rem", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-        >
-          {activeModal.content}
+      <div class="ds-modal ds-modal-narrow">
+        <div class="ds-modal-body">
+          <h3 id="handout-title" data-testid="handout-title" class="ds-modal-title">
+            {handout.title}
+          </h3>
+          <div data-testid="handout-content" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {handout.content}
+          </div>
         </div>
-        <button
-          type="button"
-          autoFocus
-          data-testid="close-handout-modal"
-          class="ds-btn ds-btn-secondary"
-          onClick={() => {
-            activeHandoutModalSignal.value = null;
-          }}
-          style={{ marginTop: "1rem" }}
-        >
-          {t("action.close")}
-        </button>
+        <div class="ds-modal-footer" style={{ justifyContent: "flex-end" }}>
+          <button type="button" data-testid="close-handout-modal" class="ds-btn ds-btn-secondary" onClick={close}>
+            {t("action.close")}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -250,6 +202,17 @@ export const currentUserIdSignal = signal<string>("");
 export interface DocumentsWorkspaceTabProps {
   isGm?: boolean;
   currentUserId?: string;
+  /**
+   * Notes come from the campaign server, which has no per-user `PRIVATE` scope:
+   * that filter and option are hidden.
+   */
+  serverBacked?: boolean;
+  /** Persists the note; when set, the editor shows a Save button. */
+  onSaveNote?: (note: NoteHierarchyNode) => void;
+  /** Reveals a handout through the server instead of the local journal. */
+  onRevealHandout?: (handout: { id: string; title: string; content: string }) => void;
+  /** Disables Save and Reveal while a request is in flight. */
+  busy?: boolean;
 }
 
 export function updateHandoutDirectiveRevealed(
@@ -324,6 +287,10 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
 
   const handleRevealHandout = (handout: { id: string; title: string; content: string }) => {
     if (!isGm) return;
+    if (props.onRevealHandout) {
+      props.onRevealHandout(handout);
+      return;
+    }
     const activeGm = currentUserId || "gm";
     const entry: PartyJournalEntry = {
       handoutId: handout.id,
@@ -376,15 +343,17 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" }}>
           <h3>{t("docs.notes")}</h3>
           <div style={{ display: "flex", gap: "0.5rem" }}>
-            <button
-              type="button"
-              data-testid="filter-private"
-              aria-pressed={effectiveFilter === "PRIVATE"}
-              class={`ds-btn ${effectiveFilter === "PRIVATE" ? "ds-btn-primary" : "ds-btn-secondary"}`}
-              onClick={() => toggleFilter("PRIVATE")}
-            >
-              {t("note.scope.private")}
-            </button>
+            {!props.serverBacked && (
+              <button
+                type="button"
+                data-testid="filter-private"
+                aria-pressed={effectiveFilter === "PRIVATE"}
+                class={`ds-btn ${effectiveFilter === "PRIVATE" ? "ds-btn-primary" : "ds-btn-secondary"}`}
+                onClick={() => toggleFilter("PRIVATE")}
+              >
+                {t("note.scope.private")}
+              </button>
+            )}
             <button
               type="button"
               data-testid="filter-party"
@@ -446,7 +415,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                   <span aria-hidden="true">📁</span> {folderName}
                 </span>
                 <span class="atlas-tabular-nums" style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
-                  {folderNotes.length} {folderNotes.length === 1 ? t("docs.notes.count.singular") : t("docs.notes.count.plural")}
+                  {tn("docs.notes.count", folderNotes.length)}
                 </span>
               </div>
               <div
@@ -480,7 +449,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                         minHeight: "44px",
                         padding: "0.5rem 0.75rem",
                         background: isSelected ? "var(--atlas-surface-raised)" : "var(--atlas-surface)",
-                        border: isSelected ? "2px solid var(--atlas-action)" : "1px solid var(--atlas-border)",
+                        border: isSelected ? "2px solid var(--atlas-action)" : "1px solid var(--atlas-border-control)",
                         borderRadius: "var(--atlas-radius-sm, 4px)",
                         display: "flex",
                         justifyContent: "space-between",
@@ -525,11 +494,11 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
         >
           <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
             <label htmlFor="note-title-input" style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: "1 1 200px" }}>
-              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>Note Title</span>
+              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>{t("docs.notes.titleLabel")}</span>
               <input
                 id="note-title-input"
                 data-testid="note-title-input"
-                aria-label="Note Title"
+                aria-label={t("docs.notes.titleLabel")}
                 class="ds-input"
                 value={selectedNote.title}
                 onInput={(e) => {
@@ -543,11 +512,11 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
             </label>
 
             <label htmlFor="note-folder-input" style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: "1 1 140px" }}>
-              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>Folder</span>
+              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>{t("docs.notes.folderLabel")}</span>
               <input
                 id="note-folder-input"
                 data-testid="note-folder-input"
-                aria-label="Note Folder"
+                aria-label={t("docs.notes.folderAria")}
                 class="ds-input"
                 value={selectedNote.folder}
                 onInput={(e) => {
@@ -560,11 +529,11 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
             </label>
 
             <label htmlFor="note-scope-select" style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: "0 0 160px" }}>
-              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>Scope</span>
+              <span style={{ fontSize: "0.8rem", color: "var(--atlas-text-muted)" }}>{t("docs.notes.scopeLabel")}</span>
               <select
                 id="note-scope-select"
                 data-testid="note-scope-select"
-                aria-label="Note Scope"
+                aria-label={t("docs.notes.scopeAria")}
                 class="ds-input"
                 value={selectedNote.visibility}
                 onChange={(e) => {
@@ -574,7 +543,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                   );
                 }}
               >
-                <option value="PRIVATE">{t("note.scope.private")}</option>
+                {!props.serverBacked && <option value="PRIVATE">{t("note.scope.private")}</option>}
                 <option value="PARTY">{t("note.scope.party")}</option>
                 {isGm && <option value="DM_ONLY">{t("note.scope.dm_only")}</option>}
               </select>
@@ -601,6 +570,20 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
             />
           </label>
 
+          {props.onSaveNote && (
+            <div class="ds-cluster">
+              <button
+                type="button"
+                data-testid="save-note-btn"
+                class="ds-btn ds-btn-primary"
+                disabled={props.busy}
+                onClick={() => props.onSaveNote?.(selectedNote)}
+              >
+                {t("docs.notes.save")}
+              </button>
+            </div>
+          )}
+
           {isGm && parsedActiveNote && parsedActiveNote.handouts.length > 0 && (
             <div data-testid="note-handout-directives" style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
               {parsedActiveNote.handouts.map((handout) => (
@@ -609,6 +592,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                   type="button"
                   data-testid="btn-reveal-handout"
                   class="ds-btn ds-btn-primary"
+                  disabled={props.busy}
                   onClick={() => handleRevealHandout(handout)}
                 >
                   {t("action.reveal")}: {handout.title}
@@ -644,7 +628,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                   activeHandoutModalSignal.value = handout;
                 }
               }}
-              style={{ minHeight: "44px", padding: "0.5rem", border: "1px solid var(--atlas-border)", cursor: "pointer" }}
+              style={{ minHeight: "44px", padding: "0.5rem", border: "1px solid var(--atlas-border-control)", cursor: "pointer" }}
             >
               <h4>{handout.title}</h4>
               <p style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{handout.content}</p>

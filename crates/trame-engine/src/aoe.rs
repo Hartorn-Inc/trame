@@ -41,6 +41,7 @@ use uuid::Uuid;
 
 /// Geometric primitive describing the unclipped 2.5D volume of an Area of Effect.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "shape", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AoeShape {
     /// 3D spherical volume centered at `(origin, origin_elevation_ft)`.
@@ -84,6 +85,7 @@ pub enum AoeShape {
 
 /// Ruleset selector determining how continuous geometric shapes map onto discrete grid squares (`01-TABLE-SPEC.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum GridDiscretizationMode {
     /// Standard 5e DMG: cell is affected if its center point `(cx, cy)` is inside the clipped shape.
@@ -98,6 +100,7 @@ pub enum GridDiscretizationMode {
 
 /// Complete specification of a projected or persistent Area of Effect on the tabletop.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AoeTemplate {
     /// Unique identifier for this AoE instance.
     pub id: Uuid,
@@ -117,6 +120,7 @@ pub struct AoeTemplate {
 
 /// Discrete 2D grid coordinate `(col, row)` indexing a single tabletop square.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GridCell {
     /// Zero-based horizontal column index (can be negative off-canvas).
     pub col: i32,
@@ -126,6 +130,7 @@ pub struct GridCell {
 
 /// Lightweight spatial projection of a token used during AoE target evaluation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TokenSpatialRef {
     /// Unique identifier of the token.
     pub id: Uuid,
@@ -181,7 +186,7 @@ impl AoeTemplate {
                 } else if dist_2d_ft < 1e-6 {
                     true
                 } else {
-                    let pt_deg = dy_ft.atan2(dx_ft).to_degrees();
+                    let pt_deg = libm::atan2(dy_ft, dx_ft).to_degrees();
                     let diff = normalize_angle_deg(pt_deg - *direction_deg).abs();
                     diff <= (*angle_deg * 0.5) + 1e-6
                 }
@@ -192,8 +197,9 @@ impl AoeTemplate {
             } => {
                 // Origin is treated as the center of the cube on `(x, y)`
                 let rad = -rotation_deg.to_radians();
-                let rx = dx_ft * rad.cos() - dy_ft * rad.sin();
-                let ry = dx_ft * rad.sin() + dy_ft * rad.cos();
+                let (sin, cos) = (libm::sin(rad), libm::cos(rad));
+                let rx = dx_ft * cos - dy_ft * sin;
+                let ry = dx_ft * sin + dy_ft * cos;
                 let half = *side_ft * 0.5 + 1e-6;
                 rx.abs() <= half && ry.abs() <= half && dz_ft <= *side_ft + 1e-6
             }
@@ -203,8 +209,9 @@ impl AoeTemplate {
                 direction_deg,
             } => {
                 let rad = -direction_deg.to_radians();
-                let along = dx_ft * rad.cos() - dy_ft * rad.sin();
-                let perp = dx_ft * rad.sin() + dy_ft * rad.cos();
+                let (sin, cos) = (libm::sin(rad), libm::cos(rad));
+                let along = dx_ft * cos - dy_ft * sin;
+                let perp = dx_ft * sin + dy_ft * cos;
                 along >= -1e-6
                     && along <= *length_ft + 1e-6
                     && perp.abs() <= (*width_ft * 0.5) + 1e-6

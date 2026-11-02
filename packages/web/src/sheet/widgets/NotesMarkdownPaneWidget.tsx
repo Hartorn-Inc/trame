@@ -1,4 +1,5 @@
 import { h, type VNode } from 'preact';
+import { t } from '../../i18n/index.ts';
 import { useSafeEffect, useSafeRef, useSafeState } from '../safeHooks.ts';
 import { TrameCommand } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
@@ -99,16 +100,16 @@ export function NotesMarkdownPaneWidget(props: WidgetProps): VNode<any> {
   return h(
     'div',
     { class: 'ds-notes-widget', 'data-testid': 'notes-markdown-pane-widget' },
-    h('h4', { class: 'ds-widget-title' }, 'Notes & Biography'),
+    h('h4', { class: 'ds-widget-title' }, t('sheet.notes.title')),
     h(
       'div',
       { class: 'ds-bio-section' },
-      h('label', { class: 'ds-field-label', for: 'bio-textarea' }, 'Character Biography'),
+      h('label', { class: 'ds-field-label', for: 'bio-textarea' }, t('sheet.notes.bio')),
       h('textarea', {
         id: 'bio-textarea',
         class: 'ds-bio-textarea',
         'data-testid': 'bio-textarea',
-        'aria-label': 'Character Biography',
+        'aria-label': t('sheet.notes.bio'),
         rows: 4,
         value: bio,
         onInput: (e: Event) => handleBioChange((e.target as HTMLTextAreaElement).value),
@@ -118,12 +119,12 @@ export function NotesMarkdownPaneWidget(props: WidgetProps): VNode<any> {
     h(
       'div',
       { class: 'ds-notes-section' },
-      h('label', { class: 'ds-field-label', for: 'notes-textarea' }, 'Session & Character Notes'),
+      h('label', { class: 'ds-field-label', for: 'notes-textarea' }, t('sheet.notes.notes')),
       h('textarea', {
         id: 'notes-textarea',
         class: 'ds-notes-textarea',
         'data-testid': 'notes-textarea',
-        'aria-label': 'Session & Character Notes',
+        'aria-label': t('sheet.notes.notes'),
         rows: 8,
         value: text,
         onInput: (e: Event) => handleChange((e.target as HTMLTextAreaElement).value),

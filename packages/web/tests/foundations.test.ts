@@ -31,9 +31,10 @@ import { TableClientStore } from "../src/store/tableStore.ts";
 describe("[F3] @trame/game-system-dnd5e canonical rules & pipeline", () => {
   it("computes derived stats, skill expertise, and exhaustion penalties across parameterized levels", () => {
     const cases = [
-      { level: 1, exhaustion: 0, expectedPb: 2, expectedPerception: 15, expectedDc: 15 },
-      { level: 5, exhaustion: 0, expectedPb: 3, expectedPerception: 17, expectedDc: 16 },
-      { level: 17, exhaustion: 2, expectedPb: 6, expectedPerception: 19, expectedDc: 15 },
+      { level: 1, exhaustion: 0, expectedPb: 2, expectedPerception: 15, expectedDc: 16 },
+      { level: 5, exhaustion: 0, expectedPb: 3, expectedPerception: 17, expectedDc: 17 },
+      // SRD 5.2.1: exhaustion penalizes d20 tests only, never passive scores or the spell save DC
+      { level: 17, exhaustion: 2, expectedPb: 6, expectedPerception: 23, expectedDc: 20 },
     ];
 
     for (const tc of cases) {

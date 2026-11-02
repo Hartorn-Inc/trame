@@ -222,6 +222,33 @@ export const SHARED_WALL_KINDS: Record<CanonicalWallKind, WallKindVisualStyle> =
   },
 };
 
+/**
+ * Light-theme stroke colors per wall kind. Geometry (width, dash, marker) is
+ * inherited from `SHARED_WALL_KINDS`; only colors change so every stroke keeps
+ * >= 3:1 non-text contrast (WCAG 2.2 SC 1.4.11) against the light canvas void
+ * `#F4F7F9`. The dark-theme colors fall to ~1:1 on that background.
+ */
+const LIGHT_WALL_COLORS: Record<CanonicalWallKind, string> = {
+  Normal: "#475569",
+  Window: "#155D77",
+  Terrain: "#2F6B47",
+  OneWay: "#995817",
+  SecretDoor: "#553C9A",
+  Door: "#995817",
+  Illusion: "#6B46C1",
+};
+
+export const LIGHT_WALL_KINDS: Record<CanonicalWallKind, WallKindVisualStyle> = Object.fromEntries(
+  (Object.keys(SHARED_WALL_KINDS) as CanonicalWallKind[]).map((kind) => [
+    kind,
+    {
+      ...SHARED_WALL_KINDS[kind],
+      strokeColorCss: LIGHT_WALL_COLORS[kind],
+      strokeColorHex: parseInt(LIGHT_WALL_COLORS[kind].slice(1), 16),
+    },
+  ]),
+) as Record<CanonicalWallKind, WallKindVisualStyle>;
+
 export const DARK_CANVAS_PALETTE: CanvasThemePaletteSpec = deepFreeze({
   theme: "dark",
   mapArtFilter: "none",
@@ -375,15 +402,15 @@ export const LIGHT_CANVAS_PALETTE: CanvasThemePaletteSpec = deepFreeze({
       badgeGlyph: "",
     },
     activeTurn: {
-      ringColorHex: 0xf59e0b,
-      ringColorCss: "#F59E0B",
+      ringColorHex: 0xb45309,
+      ringColorCss: "#B45309",
       ringStrokeStyle: "solid",
       dashPatternPx: null,
       badgeShape: "chevron-beacon",
       badgeGlyph: "›",
     },
   },
-  wallKinds: SHARED_WALL_KINDS,
+  wallKinds: LIGHT_WALL_KINDS,
 });
 
 /**

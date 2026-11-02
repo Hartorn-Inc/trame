@@ -423,7 +423,7 @@ export function mapBackendSceneToFrontend(raw: Record<string, any>): CampaignMap
       origin: { x: Number(origin.x), y: Number(origin.y) },
       brightRadiusFt: Number(l.brightRadiusFt ?? radius * 0.5),
       dimRadiusFt: radius,
-      colorHex: String(l.color_hex || l.colorHex || 'var(--atlas-action)'),
+      colorHex: String(l.color_hex || l.colorHex || DARK_CANVAS_PALETTE.actionCss),
       intensity: Number(l.intensity ?? 1.0),
       elevationFt: Number(l.elevation_ft ?? l.elevationFt ?? 0),
     };

@@ -1,6 +1,7 @@
 //! Two-pass streaming .trame campaign archive exporter.
 
 use super::manifest::{ArchiveEntryDescriptor, CampaignManifest, CampaignMetadata, ManifestStats};
+use super::stored_assets::STORED_ASSET_PREFIX;
 use crate::storage::blob::{BlobStore, BlobStoreError, CHUNK_SIZE, Sha256Hasher};
 use async_zip::tokio::write::ZipFileWriter;
 use async_zip::{Compression, ZipEntryBuilder};
@@ -119,6 +120,11 @@ pub trait CampaignExportSource: Send + Sync + 'static {
     fn stream_entities(&self) -> Vec<ExportEntity>;
     fn stream_notes(&self) -> Vec<NoteRecord>;
     fn list_asset_ids(&self) -> Vec<Uuid>;
+    /// Content-addressed `AssetStore` blobs referenced by the campaign, as `(stem, bytes)`,
+    /// written to `stored-assets/{stem}.webp` (see `stored_assets`).
+    fn stored_assets(&self) -> Vec<(String, Bytes)> {
+        Vec::new()
+    }
 }
 
 /// Streaming exporter generating `.trame` PKWARE ZIP archives in two strict passes.
@@ -211,6 +217,16 @@ impl<S: CampaignExportSource, B: BlobStore> ArchiveExporter<S, B> {
                 sha256: desc.sha256_hex,
             });
             total_uncompressed_bytes += desc.byte_size;
+        }
+
+        // 4. stored-assets/*.webp digests & sizes
+        for (stem, bytes) in self.source.stored_assets() {
+            entries.push(ArchiveEntryDescriptor {
+                path: format!("{STORED_ASSET_PREFIX}{stem}.webp"),
+                byte_size: bytes.len() as u64,
+                sha256: Sha256Hasher::digest(&bytes),
+            });
+            total_uncompressed_bytes += bytes.len() as u64;
         }
 
         let campaign = self.source.campaign_metadata();
@@ -322,6 +338,15 @@ impl<S: CampaignExportSource, B: BlobStore> ArchiveExporter<S, B> {
                 }
             }
             asset_sink.close().await?;
+        }
+
+        // Entry 5: stored-assets/*.webp (content-addressed blobs, already in memory)
+        for (stem, bytes) in source.stored_assets() {
+            let path = format!("{STORED_ASSET_PREFIX}{stem}.webp");
+            let builder = ZipEntryBuilder::new(path.into(), Compression::Stored);
+            let mut sink = zip_writer.write_entry_stream(builder).await?;
+            sink.write_all(&bytes).await?;
+            sink.close().await?;
         }
 
         zip_writer.close().await?;

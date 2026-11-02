@@ -28,8 +28,11 @@
  *      - CSS/WebGL theme filters applied to `.trame-pixijs-canvas` or `backgroundMap`
  *      - `<text>` elements baked inside `AtlasEmptyStates.tsx` SVGs
  *      - Uppercase tracked-out eyebrow kickers above headings
- *   5. Verifies self-hosted WOFF2 font binaries (`wOF2` magic header) and
- *      brand SVG/PNG favicons exist under `packages/web/public/`.
+ *   5. Verifies self-hosted WOFF2 font binaries (48-byte header: `wOF2`
+ *      signature, `length` equal to the file size, `numTables >= 1`,
+ *      `totalCompressedSize > 0`, file >= 1 KiB), the upstream license files
+ *      listed in `packages/web/public/fonts/README.md`, and brand SVG/PNG
+ *      favicons under `packages/web/public/`.
  *   6. Verifies CanvasThemePalette invariants (`mapArtFilter: "none"`,
  *      `fogUnexploredHex: 0x0f1a25`).
  *   7. Executes the `impeccable detect` native binary (`engine-v0.1.18`,
@@ -397,6 +400,49 @@ export function auditSourceContent(relPath, content) {
   return errors;
 }
 
+/** Size of the fixed WOFF2 table directory header, in bytes (W3C WOFF2 §3). */
+export const WOFF2_HEADER_BYTES = 48;
+/** Smallest plausible real WOFF2 font; header-only placeholders sit far below this. */
+export const WOFF2_MIN_FILE_BYTES = 1024;
+
+/**
+ * Validates the 48-byte WOFF2 header of `buf` (big-endian fields) so placeholder or
+ * truncated files cannot pass as fonts. Returns one error per failing field, each
+ * naming `relPath`; an empty array means the header is consistent with a real font.
+ */
+export function validateWoff2Buffer(relPath, buf) {
+  if (buf.length < WOFF2_HEADER_BYTES) {
+    return [
+      `${relPath}: truncated WOFF2 file (${buf.length} bytes is smaller than the ${WOFF2_HEADER_BYTES}-byte header)`,
+    ];
+  }
+  const errors = [];
+  const signature = buf.subarray(0, 4).toString("latin1");
+  if (signature !== "wOF2") {
+    errors.push(`${relPath}: WOFF2 signature (bytes 0-3) is '${signature}', expected 'wOF2'`);
+  }
+  const declaredLength = buf.readUInt32BE(8);
+  if (declaredLength !== buf.length) {
+    errors.push(
+      `${relPath}: WOFF2 length field (bytes 8-11) is ${declaredLength} but the file is ${buf.length} bytes`,
+    );
+  }
+  const numTables = buf.readUInt16BE(12);
+  if (numTables < 1) {
+    errors.push(`${relPath}: WOFF2 numTables (bytes 12-13) is ${numTables}, expected >= 1`);
+  }
+  const totalCompressedSize = buf.readUInt32BE(20);
+  if (totalCompressedSize === 0) {
+    errors.push(`${relPath}: WOFF2 totalCompressedSize (bytes 20-23) is 0, expected > 0`);
+  }
+  if (buf.length < WOFF2_MIN_FILE_BYTES) {
+    errors.push(
+      `${relPath}: file size ${buf.length} bytes is below the ${WOFF2_MIN_FILE_BYTES}-byte minimum for a real font`,
+    );
+  }
+  return errors;
+}
+
 export function runAudit(repoRoot = ROOT) {
   const errors = [];
 
@@ -462,14 +508,27 @@ export function runAudit(repoRoot = ROOT) {
     if (!fs.existsSync(fp)) {
       errors.push(`Missing self-hosted WOFF2 font: packages/web/public/fonts/${fontFile}`);
     } else {
-      const buf = fs.readFileSync(fp);
-      if (buf.length < 4 || buf.subarray(0, 4).toString("ascii") !== "wOF2") {
-        errors.push(`Invalid WOFF2 magic header in packages/web/public/fonts/${fontFile}`);
-      }
+      errors.push(...validateWoff2Buffer(`packages/web/public/fonts/${fontFile}`, fs.readFileSync(fp)));
     }
   }
   if (!fs.existsSync(path.join(repoRoot, "packages/web/public/fonts/OFL-1.1.txt"))) {
     errors.push("Missing packages/web/public/fonts/OFL-1.1.txt license attribution");
+  }
+  const fontsReadmePath = path.join(repoRoot, "packages/web/public/fonts/README.md");
+  if (!fs.existsSync(fontsReadmePath)) {
+    errors.push("Missing packages/web/public/fonts/README.md font provenance notes");
+  } else {
+    const listedLicenses = new Set(
+      [...fs.readFileSync(fontsReadmePath, "utf8").matchAll(/`(LICENSE-[\w.-]+\.txt)`/g)].map((m) => m[1]),
+    );
+    if (listedLicenses.size === 0) {
+      errors.push("packages/web/public/fonts/README.md lists no upstream LICENSE-*.txt files");
+    }
+    for (const license of listedLicenses) {
+      if (!fs.existsSync(path.join(repoRoot, "packages/web/public/fonts", license))) {
+        errors.push(`Missing upstream font license listed in README.md: packages/web/public/fonts/${license}`);
+      }
+    }
   }
 
   for (const brandAsset of [

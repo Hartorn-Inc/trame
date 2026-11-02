@@ -139,12 +139,19 @@ pub fn is_valid_pat_format(token: &str) -> bool {
 }
 
 /// Service managing Personal Access Token creation, validation, and revocation.
-#[derive(Clone)]
-pub struct PatService<S: PatStore> {
+pub struct PatService<S: PatStore + ?Sized> {
     store: Arc<S>,
 }
 
-impl<S: PatStore> PatService<S> {
+impl<S: PatStore + ?Sized> Clone for PatService<S> {
+    fn clone(&self) -> Self {
+        Self {
+            store: Arc::clone(&self.store),
+        }
+    }
+}
+
+impl<S: PatStore + ?Sized> PatService<S> {
     /// Creates a new `PatService` bound to a backing `PatStore`.
     pub fn new(store: Arc<S>) -> Self {
         Self { store }
@@ -225,12 +232,19 @@ impl<S: PatStore> PatService<S> {
 }
 
 /// Middleware helper for authenticating Bearer `trame_pat_...` requests with constant-time lookup.
-#[derive(Clone)]
-pub struct PatMiddleware<S: PatStore> {
+pub struct PatMiddleware<S: PatStore + ?Sized> {
     service: PatService<S>,
 }
 
-impl<S: PatStore> PatMiddleware<S> {
+impl<S: PatStore + ?Sized> Clone for PatMiddleware<S> {
+    fn clone(&self) -> Self {
+        Self {
+            service: self.service.clone(),
+        }
+    }
+}
+
+impl<S: PatStore + ?Sized> PatMiddleware<S> {
     /// Creates a new `PatMiddleware` with the provided `PatStore`.
     pub fn new(store: Arc<S>) -> Self {
         Self {

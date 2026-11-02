@@ -6,9 +6,9 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ## 1. Core Architectural Primitives
 
-- **`TrameCommand`**: The single canonical CQRS command enum representing every possible mutation on a campaign or table (e.g., `MoveToken`, `ToggleDoor`, `ProjectAoE`, `ApplyDamage`, `RevealHandout`). Dispatched identically from the WebSocket client, REST API, or MCP tools.
+- **`TrameCommand`**: The single canonical CQRS command enum representing every possible mutation on a campaign or table (e.g., `MoveToken`, `ToggleDoor`, `ProjectAoe`, `ApplyDamage`, `AdvanceTurn`, `SetAmbientLighting`, `UndoLastAction`). The variant names in `crates/trame-engine/src/commands.rs` are canonical. Dispatched identically from the WebSocket client, REST API, or MCP tools.
 - **`TrameEvent`**: An immutable domain event emitted after a `TrameCommand` passes RBAC and spatial/rule validation, broadcast to connected clients (filtered per player visibility) and appended to the session timeline.
-- **`UndoEntry`**: A compensating state delta generated alongside every `TrameCommand` execution, pushed onto the per-map 50-action ring buffer so the GM can revert mistakes in 1 click (`Cmd+Z`).
+- **`UndoEntry`**: A state snapshot generated alongside every tactical `TrameCommand` execution, pushed onto the per-map 50-action ring buffer so the GM can revert mistakes in 1 click (`Cmd+Z`).
 - **`TableRoomActor`**: The single-owner Tokio actor in `trame-server` holding the authoritative live state of an active campaign in RAM (`Arc<RwLock<CampaignRoomState>>`).
 - **`Idle-Lease`**: The 15-minute inactivity timer tracking exclusively human/MCP mutations (`TrameCommand`, dice rolls, note edits) while ignoring WebSocket Ping/Pong keep-alives, allowing Cloud Run instances to cleanly snapshot and scale to `0`.
 
@@ -30,7 +30,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 - **`GameSystemPack`**: A declarative manifest (`system.json` + JSON Schemas + `derivedDAG` + `sheetLayout` + compendium packs) defining a tabletop RPG system without hardcoding game rules in the server binary.
 - **`derivedDAG`**: The topological directed acyclic graph of pure mathematical expressions (`trame-engine`) computing derived actor attributes (e.g., ability modifiers, AC, spell save DC) in deterministic order.
-- **`ActiveEffect`**: A buff, condition, feat, or equipped item modifier evaluated through the strict 5-phase pipeline: `BASE` -> `ADD` -> `MULTIPLY` -> `OVERRIDE` -> `CLAMP`, obeying same-source non-stacking rules.
+- **`ActiveEffect`**: A spell, condition, feat, or equipped item modifier evaluated through the strict 5-phase pipeline: `Base` -> `Add` -> `Multiply` -> `Override` -> `ClampMin`/`ClampMax` (`ModifierPhase` in `rules.rs`). The `Base` phase is exclusive and keeps the largest candidate ("best wins"); same-named effects do not stack and keep the largest magnitude.
 - **`VisibilityTier`**: Field-level RBAC on actor sheets (`PUBLIC`, `OWNER_AND_GM`, `GM_ONLY`). Server snapshots strip unauthorized fields before serialization.
 
 ---
@@ -71,9 +71,9 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ActiveEffect
 
-- **Definition**: Declarative mutation applied to a numeric or string actor property following the strict 5-phase order (`BASE_FORMULA` -> `ADD` -> `OVERRIDE_CONDITIONAL` -> `MULTIPLY` -> `FINAL_CLAMP`).
+- **Definition**: Declarative mutation applied to a numeric or string actor property following the strict 5-phase order (`Base` -> `Add` -> `Multiply` -> `Override` -> `ClampMin`/`ClampMax`, where `ClampMin` applies the lower bound before `ClampMax` applies the upper bound).
 - **Allowed Context**: `ActiveEffect`, `active effect`, 5-phase modifier pipeline.
-- **_Avoid_**: `buff`, `debuff`, `stat modifier`, `status effect`.
+- **_Avoid_**: `buff`, `debuff`, `stat modifier`, `status effect`, `BASE_FORMULA`, `OVERRIDE_CONDITIONAL`, `FINAL_CLAMP`.
 
 ### Actor
 
@@ -81,11 +81,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: `Actor`, `actor`.
 - **_Avoid_**: `character`, `entity`, `token` (when referring to the persistent sheet record).
 
-### AmbientPreset
+### AmbientLightingPreset
 
-- **Definition**: Environmental lighting and atmospheric configuration (`Daylight`, `Dusk`, `NightMoonlight`, `PitchDarkness`).
+- **Definition**: Environmental lighting and atmospheric configuration (`Daylight`, `Dusk`, `NightMoonlight`, `PitchDarkness`), changed on the live table by `TrameCommand::SetAmbientLighting`.
 - **Allowed Context**: Map lighting configuration, Game Master override toolbar, and canvas rendering.
-- **_Avoid_**: WeatherMode, LightingTheme, SkyboxPreset.
+- **_Avoid_**: AmbientPreset, SetAmbientPreset, WeatherMode, LightingTheme, SkyboxPreset.
 
 ### CampaignHomebrew
 
@@ -101,7 +101,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### CampaignWorkspace
 
-- **Definition**: Campaign-scoped authenticated Preact shell housing the `Map`, `Actors`, `Journal`, `Compendium`, and `Settings` workspaces alongside the live tabletop canvas.
+- **Definition**: Campaign-scoped authenticated Preact shell housing the 5 top-level navigation tabs (`Table`, `Maps`, `Actors`, `Documents`, and `Compendium`) alongside slide-over `HudDrawers` on the live `Table` tab.
 - **Allowed Context**: Active campaign preparation, workspace tab switching, and live tabletop session framing.
 - **_Avoid_**: CampaignDashboard, GameRoomShell, TableWrapper.
 
@@ -155,7 +155,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### DamageType
 
-- **Definition**: Normalized SRD 5.1 damage category (`acid`, `bludgeoning`, `cold`, `fire`, `force`, `lightning`, `necrotic`, `piercing`, `poison`, `psychic`, `radiant`, `slashing`, `thunder`).
+- **Definition**: Normalized SRD 5.2.1 damage category (`acid`, `bludgeoning`, `cold`, `fire`, `force`, `lightning`, `necrotic`, `piercing`, `poison`, `psychic`, `radiant`, `slashing`, `thunder`).
 - **Allowed Context**: `DamageType`, `damage type`.
 - **_Avoid_**: `element`, `damage category`.
 
@@ -209,7 +209,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### InstantDeath
 
-- **Definition**: SRD 5.1 rule triggering immediate character death when remaining damage after reaching 0 HP equals or exceeds the actor's maximum hit points (`hp.max`).
+- **Definition**: SRD 5.2.1 rule triggering immediate character death when remaining damage after reaching 0 HP equals or exceeds the actor's maximum hit points (`hp.max`).
 - **Allowed Context**: `InstantDeath`, `instant death`.
 - **_Avoid_**: `massive damage death`, `overkill death`.
 
@@ -257,7 +257,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ReactionBanner
 
-- **Definition**: Authoritative HUD countdown banner that interrupts action movement interpolation for eligible reacting actors.
+- **Definition**: HUD banner shown to the owner of the reacting token (the Game Master for monsters) while a `ReactionPrompt` is pending. A `MoveToken` that leaves a hostile `ThreatReach` stops on the exit square until the owner dispatches `DecideReaction` (`Trigger` or `Pass`). There is no timer; the Game Master can force `Pass`. See `ReactionPrompt`.
 - **Allowed Context**: Movement interruption window and combat reaction declaration.
 - **_Avoid_**: ReactionPopup, OpportunityModal, InterruptionWidget.
 
@@ -267,11 +267,11 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: `ResourcePool`, `resource pool`.
 - **_Avoid_**: `feature counter`, `ability charge`, `resource tracker`.
 
-### ReversiblePatch
+### UndoEntry
 
-- **Definition**: Transactional state modification record storing forward mutations and inverse rollback data.
-- **Allowed Context**: Engine command stack, GM undo actions, and fog-of-war rollbacks.
-- **_Avoid_**: UndoAction, DeltaState, MutationSnapshot.
+- **Definition**: Inverse state record produced by each tactical `TrameCommand` and pushed onto the per-map 50-entry ring buffer so the Game Master can revert it.
+- **Allowed Context**: Engine command stack, GM undo actions, fog-of-war rollbacks, and composite MCP batch commits.
+- **_Avoid_**: ReversiblePatch, UndoAction, DeltaState, MutationSnapshot.
 
 ### RulerMetric
 
@@ -299,7 +299,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### SystemSRD
 
-- **Definition**: Read-only baseline game reference data from the CC-BY-4.0 System Reference Document 5.1 bundled with the game system pack.
+- **Definition**: Read-only baseline game reference data from the CC-BY-4.0 System Reference Document 5.2.1 (2024 rules) bundled with the game system pack; SRD 5.1 (also CC-BY-4.0) fills only the entries SRD 5.2.1 lacks (ADR-0038).
 - **Allowed Context**: `SystemSRD`, `system SRD`.
 - **_Avoid_**: `core compendium`, `builtin srd`.
 
@@ -324,7 +324,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 ### TimeSync
 
 - **Definition**: Two-way timestamp ping-pong protocol estimating clock offset between client and server.
-- **Allowed Context**: Network synchronization, reaction banner timers, and latency compensation.
+- **Allowed Context**: Network synchronization and latency compensation.
 - **_Avoid_**: ClockAlignment, NetworkNtp, TimeCorrection.
 
 ### TurnTrigger
@@ -416,3 +416,119 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Campaign role enumeration (`GameMaster`, `Player`, `Spectator`) governing authority over notes, handouts, tokens, and table state mutations.
 - **Allowed Context**: Note RBAC evaluation, command dispatch permissions, and WebSocket envelope filtering.
 - **_Avoid_**: PlayerRole, CampaignRank, UserPrivilege.
+
+### ActivateScene
+
+- **Definition**: Atomic room transition command (`ActivateScene { scene_id }`) that loads a persisted map scene's walls, lights, audio emitters, and `StagedToken` entities into `TableRoomActor` while preserving active `HeroToken` instances and repositioning them onto scene spawn points.
+- **Allowed Context**: Scene transitions, `MapsStudioTab` activation, and `TableRoomActor` state swaps.
+- **_Avoid_**: PublishMapToTable, SwitchBattlemap, PushScene.
+
+### HeroToken
+
+- **Definition**: Persistent player-owned token (`owner_user_id.is_some()`) whose hit points, conditions, and inventory survive across `ActivateScene` transitions.
+- **Allowed Context**: Scene activation transitions, player token ownership, and spawn-point placement.
+- **_Avoid_**: PlayerPiece, AvatarToken, PersistentPawn.
+
+### LineAnchorNoteMerge
+
+- **Definition**: Deterministic Markdown AST reconciliation algorithm (`merge_party_note_ast`) that splices confidential `:::dm` and unrevealed `:::handout` `DirectiveBlock` segments back into their original line-anchored positions when a `Player` edits a `PARTY` note.
+- **Allowed Context**: Collaborative `PARTY` note saves, `FilteredNoteDocument` round-trip safety, and secret preservation.
+- **_Avoid_**: NoteDiffPatch, SecretReinjector, WikiMerge.
+
+### MapsStudioTab
+
+- **Definition**: Game Master preparation workspace tab within `CampaignWorkspace` for authoring 2.5D wall segments, doors, light sources, spatial audio emitters, spawn points, and `StagedToken` encounters prior to triggering `ActivateScene`.
+- **Allowed Context**: Campaign map authoring, UVTT import review, and scene preparation.
+- **_Avoid_**: MapEditorView, BattlemapBuilder, SceneDesigner.
+
+### SceneAtlas
+
+- **Definition**: Zero-trust player-facing map browser tab within `CampaignWorkspace` displaying only discovered scenes and explored fog-of-war snapshots with all secret doors, traps, and `GM_HIDDEN` tokens stripped.
+- **Allowed Context**: Player map navigation and discovered scene review.
+- **_Avoid_**: PlayerMapGallery, WorldMapTab, AtlasBrowser.
+
+### StagedToken
+
+- **Definition**: Encounter token pre-placed inside a persisted map scene (`MapsStudioTab`) with an initial `VisibilityChannel` (`MATERIAL` or `GM_HIDDEN`), instantiated into the live `TableRoomActor` when `ActivateScene` executes.
+- **Allowed Context**: Encounter preparation, ambush staging, and scene activation.
+- **_Avoid_**: PreplacedMonster, DraftToken, AmbushMarker.
+
+### AuthoritativeInitiativeRoll
+
+- **Definition**: Server-side `ChaCha20Rng` `1d20 + dex_mod` roll executed by `TableRoomActor` for every active combatant without a pre-supplied initiative score when transitioning to `Turn-by-Turn Mode`, sorted descending with ties broken by `dex_mod` then `token_id`.
+- **Allowed Context**: `StartTurnByTurn` execution, `CombatTracker` initialization, and encounter startup.
+- **_Avoid_**: ClientInitiativeBatch, ManualOrderPrompt.
+
+### GuestSessionUpgrade
+
+- **Definition**: Automatic onboarding flow where a player opening a Magic Link invite URL (`?invite=<jwt>`) receives an immediate authenticated guest `trame_session` cookie bound to the invited `Campaign`, with optional later credential binding via `POST /api/v1/auth/bind`.
+- **Allowed Context**: Magic Link invite redemption, 1-click player onboarding, and guest-to-account binding.
+- **_Avoid_**: ForcedSignupRedirect, AnonymousSpectatorToken.
+
+### LinkedActorToken
+
+- **Definition**: Table token bound to a persistent `Actor` (`actor_id` set), whose hit points, temporary hit points, conditions, and death saves stay synchronized in both directions with that `Actor`.
+- **Allowed Context**: Player character and named NPC tokens, `ApplyDamage` / `HealActor` persistence, and `ActorUpdated` token resynchronization.
+- **_Avoid_**: BoundToken, SheetToken.
+
+### SyntheticToken
+
+- **Definition**: Table token with no persistent `Actor` (`actor_id` empty) whose combat state lives only in its own `TokenState`, so damage to one instance never affects another.
+- **Allowed Context**: Compendium monster spawns, `StagedToken` instantiation, and encounter minions.
+- **_Avoid_**: UnlinkedToken, MinionCopy, DisposableActor.
+
+### PublicTokenView
+
+- **Definition**: Reduced view of a token sent to a participant who does not control it: name, portrait, position, size, visible conditions, and `BloodiedState`, with no armor class or hit point numbers.
+- **Allowed Context**: Player state projection, enemy and NPC tokens on the player canvas, and the player combat tracker.
+- **_Avoid_**: RedactedToken, MaskedToken, EnemyStub.
+
+### BloodiedState
+
+- **Definition**: Coarse health tier shown in a `PublicTokenView`: `Unhurt` above half of maximum hit points, `Bloodied` at half or below, and `Down` at 0 hit points.
+- **Allowed Context**: Player-facing health indicator on enemy tokens and in the combat tracker.
+- **_Avoid_**: HealthBarPercent, HpHint, WoundLevel.
+
+### McpStagingProposal
+
+- **Definition**: Pending batch of destructive or bulk `TrameCommand` mutations submitted via `/api/v1/mcp` while `MCP Staging Mode` is active, stored in the table snapshot data (`mcp_staging_proposals`) rather than in transient actor memory, projected to Game Masters only, and rendered as translucent purple ghost previews until the Game Master dispatches `CommitMcpStaging` (applied all-or-nothing) or `RejectMcpStaging`.
+- **Allowed Context**: `/api/v1/mcp` tool execution, `TableRoomActor` staging queue, and Game Master canvas confirmation controls.
+- **_Avoid_**: AiDraftQueue, PendingBotCommands.
+
+### Background
+
+- **Definition**: SRD 5.2.1 character origin that raises three listed abilities by `+2/+1` or `+1/+1/+1` (cap 20) and grants one Origin feat, two skills, one tool and starting equipment; species never raise ability scores (`applyBackground`, ADR-0038).
+- **Allowed Context**: Character creation, `BACKGROUNDS`, `srd:background:*` compendium entries.
+- **_Avoid_**: Racial bonus, species ASI, origin package.
+
+### Exhaustion
+
+- **Definition**: SRD 5.2.1 cumulative condition (levels 1 to 6) that subtracts `2 × level` from every d20 Test and `5 ft × level` from Speed, never from passive scores or the spell save DC; level 6 is death (`applyExhaustion`, ADR-0038).
+- **Allowed Context**: `exhaustion` derived input, `srd:condition:exhaustion`, Long Rest recovery.
+- **_Avoid_**: Fatigue, exhaustion tiers (SRD 5.1 table).
+
+### WeaponMastery
+
+- **Definition**: SRD 5.2.1 weapon property (`Cleave`, `Graze`, `Nick`, `Push`, `Sap`, `Slow`, `Topple`, `Vex`) that a class with the Weapon Mastery feature can use with a number of weapon kinds set by its level (`getWeaponMasteryCount`).
+- **Allowed Context**: Weapon compendium entries (`data.mastery`), Barbarian, Fighter, Paladin, Ranger and Rogue progression.
+- **_Avoid_**: Weapon specialization, weapon trick.
+
+### ReactionPrompt
+
+- **Definition**: Pending opportunity-reaction decision opened by a Turn-by-Turn `MoveToken` that leaves the `ThreatReach` of a hostile token that still has its reaction, is not GM-hidden or incapacitated, and can see the mover. It is addressed to the reactor's owner (the Game Master for unowned tokens), has no timer, and blocks player movement of the interrupted token until `DecideReaction` (`Trigger` or `Pass`, which the Game Master can force). After `Trigger`, `ResolveReaction` resumes the remaining move. Its `prompt_id` is a one-way SHA-256-derived UUID, so players cannot recover a hidden reactor's ID, and WAL replay reproduces the same IDs.
+- **Allowed Context**: `ProjectedTableState.active_reaction_prompts`, `ReactionPromptOpened` / `ReactionPromptClosed` events, and `ReactionBanner` rendering.
+- **_Avoid_**: OpportunityWindow, ReactionTimer, InterruptToken.
+
+### ReactionPromptCloseReason
+
+- **Definition**: Why a `ReactionPrompt` closed, carried by `ReactionPromptClosed` (serialized `RESOLVED`, `STALE`, `UNDONE`): `Resolved` (the triggered reaction was played out with `ResolveReaction`), `Stale` (combat ended, the trigger or reactor token was removed, or the Game Master moved the trigger token), or `Undone` (`UndoLastAction` restored a state without the prompt). A `Pass` decision closes the prompt through `ReactionDecided` instead.
+- **Allowed Context**: Reaction event handling and client prompt reconciliation.
+- **_Avoid_**: PromptOutcome, CancelReason.
+
+### SceneSetVersion
+
+- **Definition**: Integer optimistic-concurrency version of a campaign's whole map scene set (`campaigns.scenes_version`, default `0`). `GET .../maps` returns `{ scenes, version }`; `PUT .../maps` must echo it as `expected_version` (missing: `400 MISSING_EXPECTED_VERSION`, stale: `409 VERSION_CONFLICT` with `current_version`). Every scene write, including UVTT import, bumps it by one.
+- **Allowed Context**: `MapsStudioTab` saves, scene REST routes, and concurrent GM editing.
+- **_Avoid_**: MapRevision, SceneEtag, MapsVersion.
+
+

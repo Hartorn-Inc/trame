@@ -87,14 +87,32 @@ pub enum NotesError {
     Forbidden(String),
     #[error("Storage lock poisoned")]
     LockPoisoned,
+    /// Persistent storage rejected the operation. The field holds the cause for server logs;
+    /// `Display` stays generic because handlers echo it to clients.
+    #[error("storage backend error")]
+    Storage(String),
+    /// The handout title exceeds `MAX_HANDOUT_TITLE_CHARS`; nothing was persisted.
+    #[error("handout title is {0} characters; the maximum is {MAX_HANDOUT_TITLE_CHARS}")]
+    HandoutTitleTooLong(usize),
     #[error("Timeline error: {0}")]
     Timeline(#[from] TimelineError),
 }
+
+/// Maximum handout title length in characters, matching
+/// `party_journal_entries.title VARCHAR(200)`.
+///
+/// Enforced when a handout is revealed rather than when a note is saved: notes also arrive
+/// through archive import, which bypasses the note route, and reveal is the single path
+/// into the journal.
+pub const MAX_HANDOUT_TITLE_CHARS: usize = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartyJournalEntry {
     pub handout_id: String,
     pub campaign_id: String,
+    /// Session number the reveal was recorded under; the same value as its timeline event.
+    #[serde(default)]
+    pub session_num: u32,
     pub title: String,
     pub content: String,
     pub revealed_at: u64,
@@ -103,7 +121,6 @@ pub struct PartyJournalEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevealHandoutCommand {
-    pub action: String,
     pub campaign_id: String,
     pub session_num: u32,
     pub handout_id: String,
@@ -127,9 +144,11 @@ pub trait PartyJournalStorage: Send + Sync {
     fn get_entry(&self, handout_id: &str) -> Result<Option<PartyJournalEntry>, NotesError>;
 }
 
+/// Party journal keyed by `(campaign_id, handout_id)`: revealing the same handout again
+/// replaces its entry, matching the deterministic row id used by PostgreSQL.
 #[derive(Default)]
 pub struct InMemoryPartyJournalStorage {
-    entries: RwLock<HashMap<String, PartyJournalEntry>>,
+    entries: RwLock<HashMap<(String, String), PartyJournalEntry>>,
 }
 
 impl InMemoryPartyJournalStorage {
@@ -143,7 +162,7 @@ impl InMemoryPartyJournalStorage {
 impl PartyJournalStorage for InMemoryPartyJournalStorage {
     fn insert_entry(&self, entry: PartyJournalEntry) -> Result<(), NotesError> {
         let mut map = self.entries.write().map_err(|_| NotesError::LockPoisoned)?;
-        map.insert(entry.handout_id.clone(), entry);
+        map.insert((entry.campaign_id.clone(), entry.handout_id.clone()), entry);
         Ok(())
     }
 
@@ -160,7 +179,7 @@ impl PartyJournalStorage for InMemoryPartyJournalStorage {
 
     fn get_entry(&self, handout_id: &str) -> Result<Option<PartyJournalEntry>, NotesError> {
         let map = self.entries.read().map_err(|_| NotesError::LockPoisoned)?;
-        Ok(map.get(handout_id).cloned())
+        Ok(map.values().find(|e| e.handout_id == handout_id).cloned())
     }
 }
 
@@ -255,8 +274,10 @@ pub fn parse_markdown_ast(markdown: &str) -> Vec<DirectiveAstNode> {
             }
             nodes.push(DirectiveAstNode::HandoutDirective {
                 raw: raw_lines.join("\n"),
-                id: String::new(),
-                title: String::new(),
+                id: handout_attr(trimmed, "id").unwrap_or_default().to_string(),
+                title: handout_attr(trimmed, "title")
+                    .unwrap_or_default()
+                    .to_string(),
                 revealed,
                 content: content_lines.join("\n"),
             });
@@ -473,27 +494,25 @@ fn tokenize_directive_attrs(input: &str) -> Vec<&str> {
     tokens
 }
 
-pub(crate) fn parse_handout_revealed_attr(header: &str) -> bool {
-    let Some(start_brace) = header.find('{') else {
-        return false;
-    };
-    let Some(end_brace) = header.rfind('}') else {
-        return false;
-    };
+/// Returns the unquoted value of attribute `name` in a `:::handout{...}` header, matching
+/// whole quote-aware tokens so `title="revealed=true"` never reads as the `revealed` flag.
+fn handout_attr<'a>(header: &'a str, name: &str) -> Option<&'a str> {
+    let start_brace = header.find('{')?;
+    let end_brace = header.rfind('}')?;
     if end_brace <= start_brace {
-        return false;
+        return None;
     }
-    let attrs_str = &header[start_brace + 1..end_brace];
-    for part in tokenize_directive_attrs(attrs_str) {
-        if let Some((k, v)) = part.split_once('=') {
+    tokenize_directive_attrs(&header[start_brace + 1..end_brace])
+        .into_iter()
+        .find_map(|part| {
+            let (k, v) = part.split_once('=')?;
             let key = k.trim().trim_matches('"').trim_matches('\'');
-            let val = v.trim().trim_matches('"').trim_matches('\'');
-            if key == "revealed" {
-                return val.eq_ignore_ascii_case("true");
-            }
-        }
-    }
-    false
+            (key == name).then(|| v.trim().trim_matches('"').trim_matches('\''))
+        })
+}
+
+pub(crate) fn parse_handout_revealed_attr(header: &str) -> bool {
+    handout_attr(header, "revealed").is_some_and(|v| v.eq_ignore_ascii_case("true"))
 }
 
 fn now_ms() -> u64 {
@@ -505,9 +524,10 @@ fn now_ms() -> u64 {
 
 /// Executes the handout reveal pipeline:
 /// 1. Enforces GM-only RBAC
-/// 2. Persists entry to Party Journal storage
-/// 3. Appends HandoutRevealed event to Session Timeline
-/// 4. Returns HandoutRevealedBroadcast for WebSocket fan-out
+/// 2. Rejects titles over `MAX_HANDOUT_TITLE_CHARS` before any storage call
+/// 3. Persists entry to Party Journal storage under `cmd.session_num`
+/// 4. Appends HandoutRevealed event to Session Timeline under the same session
+/// 5. Returns HandoutRevealedBroadcast for WebSocket fan-out
 pub fn reveal_handout(
     actor_role: UserRole,
     actor_user_id: &str,
@@ -520,11 +540,16 @@ pub fn reveal_handout(
             "Only users with GameMaster role can reveal handouts to the party".to_string(),
         ));
     }
+    let title_chars = cmd.title.chars().count();
+    if title_chars > MAX_HANDOUT_TITLE_CHARS {
+        return Err(NotesError::HandoutTitleTooLong(title_chars));
+    }
 
     let timestamp = now_ms();
     let journal_entry = PartyJournalEntry {
         handout_id: cmd.handout_id.clone(),
         campaign_id: cmd.campaign_id.clone(),
+        session_num: cmd.session_num,
         title: cmd.title.clone(),
         content: cmd.content.clone(),
         revealed_at: timestamp,
