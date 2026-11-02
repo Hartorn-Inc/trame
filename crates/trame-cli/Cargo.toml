@@ -11,7 +11,7 @@ workspace = true
 trame-engine = { path = "../trame-engine" }
 trame-server = { path = "../trame-server" }
 axum.workspace = true
-async_zip = { version = "=0.0.17", features = ["tokio", "deflate"] }
+async_zip = { version = "=0.0.19", features = ["tokio", "deflate"] }
 bytes = "=1.12.1"
 futures-lite = "=2.6.1"
 futures-util.workspace = true
