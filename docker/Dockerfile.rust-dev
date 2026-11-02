@@ -1,6 +1,6 @@
 # TRAME Local Development Container (Rust + wasm-pack + sqlx-cli)
 # The Rust tag must match `channel` in `rust-toolchain.toml`.
-FROM rust:1.99.1-bookworm
+FROM rust:1.99.1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b
 
 ARG WASM_PACK_VERSION=0.15.1
 ARG WASM_PACK_SHA256_X86_64=410101009739b9d01c7d5affaaad6e9c9a24b4cba6791a4805db8e89b9bf7af2
