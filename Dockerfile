@@ -15,7 +15,7 @@
 # The Rust tag must match `channel` in `rust-toolchain.toml`; the Node tag must
 # match the `web-dev` service in `docker-compose.dev.yml`.
 
-FROM rust:1.99.1-bookworm AS rust-source
+FROM rust:1.99.1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS rust-source
 # rust-toolchain.toml stays outside /build so rustup never auto-installs from it;
 # the build fails instead when this image tag drifts from the pinned channel.
 COPY rust-toolchain.toml /tmp/rust-toolchain.toml

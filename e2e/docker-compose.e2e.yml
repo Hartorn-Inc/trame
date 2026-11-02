@@ -5,7 +5,7 @@
 # the WebSocket Origin check.
 services:
   playwright:
-    image: mcr.microsoft.com/playwright:v1.64.1-noble
+    image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
     profiles: ["e2e"]
     network_mode: "service:trame-server"
     ipc: host
