@@ -9,7 +9,7 @@ x-logging: &logging
 
 services:
   postgres:
-    image: postgres:18-alpine
+    image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
     logging: *logging
     restart: unless-stopped
     environment:
@@ -30,7 +30,7 @@ services:
 
   minio:
     # Silo: maintained MinIO fork (same MINIO_* variables and `server` command); minio/minio left Docker Hub.
-    image: pgsty/silo:RELEASE.2026-10-18T00-00-00Z
+    image: pgsty/silo:RELEASE.2026-10-18T00-00-00Z@sha256:2636fc4155d9a7e41ff58cdb65ddd13ba9304e67184e13c25bc5cb34016269d7
     logging: *logging
     restart: unless-stopped
     command: server /data --console-address ":9001"
