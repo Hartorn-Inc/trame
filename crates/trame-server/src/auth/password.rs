@@ -19,7 +19,7 @@
 //! ============================================================================
 
 use super::session::{AuthState, BoxFuture, SessionError, SessionStore, UserRecord};
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use argon2::{Algorithm, Argon2, Params, Version};
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -170,10 +170,8 @@ impl PasswordService {
         let mut salt_bytes = [0u8; 16];
         let mut rng = rand::rng();
         rng.fill(&mut salt_bytes);
-        let salt = SaltString::encode_b64(&salt_bytes)
-            .map_err(|e| PasswordError::HashingError(e.to_string()))?;
         let hash = argon2
-            .hash_password(password.as_bytes(), &salt)
+            .hash_password_with_salt(password.as_bytes(), &salt_bytes)
             .map_err(|e| PasswordError::HashingError(e.to_string()))?
             .to_string();
         Ok(hash)

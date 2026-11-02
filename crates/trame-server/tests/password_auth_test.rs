@@ -16,7 +16,7 @@
 //!
 //! ============================================================================
 
-use argon2::password_hash::PasswordHash;
+use argon2::password_hash::phc::PasswordHash;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use std::sync::Arc;
@@ -89,7 +89,7 @@ fn test_argon2id_hashing_and_verification() {
 
     // Salt length is 16 bytes (Base64-encoded to 22 characters)
     if let Some(salt) = parsed.salt {
-        assert_eq!(salt.as_str().len(), 22);
+        assert_eq!(salt.to_string().len(), 22);
     }
 
     // Criterion 4: Valid password returns true
@@ -99,6 +99,22 @@ fn test_argon2id_hashing_and_verification() {
     assert!(!service.verify_password("WrongPassword!123", &hash));
     assert!(!service.verify_password("", &hash));
     assert!(!service.verify_password(password, "invalid-hash-string"));
+}
+
+/// PHC hashes written by the previous `argon2` release must keep verifying, so stored
+/// `users.password_hash` values survive crate upgrades (generated with argon2 0.5.3).
+#[test]
+fn test_argon2id_verifies_hashes_stored_by_earlier_releases() {
+    let service = PasswordService::new();
+    let stored = "$argon2id$v=19$m=19456,t=2,p=1$ExbFS+XKwFUKi+lKFVwIag$yaXeLYZI/gUQ99ncIRVCiLmkhsLrcMRu18QkEtOpvYA";
+    let cases: Vec<(&str, &str, bool)> = vec![
+        ("argon2_0_5_3_correct_password", "TrameSec2026!", true),
+        ("argon2_0_5_3_wrong_password", "TrameSec2026?", false),
+    ];
+
+    for (id, password, expected) in cases {
+        assert_eq!(service.verify_password(password, stored), expected, "{id}");
+    }
 }
 
 #[tokio::test]

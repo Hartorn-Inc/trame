@@ -130,10 +130,10 @@ impl TotpService {
             Aes256Gcm::new_from_slice(&self.master_key).map_err(|_| TotpError::EncryptionError)?;
         let mut nonce_bytes = [0u8; 12];
         rand::rng().fill(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
 
         let ciphertext = cipher
-            .encrypt(nonce, secret_bytes)
+            .encrypt(&nonce, secret_bytes)
             .map_err(|_| TotpError::EncryptionError)?;
 
         let nonce_hex = HEXLOWER.encode(&nonce_bytes);
@@ -158,10 +158,11 @@ impl TotpService {
 
         let cipher =
             Aes256Gcm::new_from_slice(&self.master_key).map_err(|_| TotpError::DecryptionError)?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce =
+            Nonce::try_from(nonce_bytes.as_slice()).map_err(|_| TotpError::InvalidPayloadFormat)?;
 
         let plaintext = cipher
-            .decrypt(nonce, ct_bytes.as_slice())
+            .decrypt(&nonce, ct_bytes.as_slice())
             .map_err(|_| TotpError::DecryptionError)?;
         Ok(plaintext)
     }

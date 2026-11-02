@@ -9,8 +9,8 @@ workspace = true
 
 [dependencies]
 trame-engine = { path = "../trame-engine", features = ["schema"] }
-aes-gcm = "=0.10.3"
-argon2 = "=0.5.3"
+aes-gcm = "=0.11.1"
+argon2 = "=0.6.0"
 axum.workspace = true
 async_zip = { version = "=0.0.17", features = ["tokio", "deflate"] }
 base64 = "=0.22.1"
