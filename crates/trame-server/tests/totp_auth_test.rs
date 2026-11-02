@@ -94,6 +94,25 @@ fn test_aes_256_gcm_roundtrip_and_nonce_ciphertext_format() {
     }
 }
 
+/// Payloads written by the previous `aes-gcm` release must keep decrypting, so stored
+/// `totp_secret` columns survive crate upgrades (generated with aes-gcm 0.10.3).
+#[test]
+fn test_aes_256_gcm_decrypts_payloads_stored_by_earlier_releases() {
+    let service = TotpService::new([0x42u8; 32], "TRAME");
+    let cases: Vec<(&str, &str, &[u8])> = vec![(
+        "aes_gcm_0_10_3_rfc6238_secret",
+        "dd961d7a4885ca6bc7503195:6f44e90e697c0f959a7fead05e880cc23765ca7db4114abb9eeb0f9f450f6b876d82320e",
+        b"12345678901234567890",
+    )];
+
+    for (id, stored, expected) in cases {
+        let decrypted = service
+            .decrypt_secret(stored)
+            .unwrap_or_else(|e| panic!("{id}: stored payload must decrypt: {e}"));
+        assert_eq!(decrypted, expected, "{id}: plaintext mismatch");
+    }
+}
+
 #[test]
 fn test_totp_setup_secret_generation_and_otpauth_url() {
     let service = TotpService::default();
