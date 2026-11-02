@@ -63,7 +63,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends landrun bubblewrap ca-certificates curl
           mkdir -p "$HOME/.npm" "$HOME/.cache" "$HOME/.cargo"
           # renovate: datasource=github-releases depName=rtk-ai/rtk
-          RTK_VERSION="v1.0.1"
+          RTK_VERSION="v1.1.0"
           RTK_ARCHIVE="rtk-x86_64-unknown-linux-musl.tar.gz"
           curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/${RTK_VERSION}/${RTK_ARCHIVE}" -o "/tmp/${RTK_ARCHIVE}"
           curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/${RTK_VERSION}/checksums.txt" -o "/tmp/rtk-checksums.txt"
