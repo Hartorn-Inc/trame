@@ -45,7 +45,7 @@ RUN wasm-pack build crates/trame-engine --release --target web --out-dir ../../p
 FROM rust-source AS rust-builder
 RUN cargo build --release --locked --bin trame-server
 
-FROM node:24-bookworm-slim AS web-builder
+FROM node:24.22.2-bookworm-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c AS web-builder
 WORKDIR /build/packages/web
 COPY packages/web/package.json packages/web/package-lock.json ./
 RUN npm ci
