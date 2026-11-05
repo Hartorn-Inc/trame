@@ -437,6 +437,7 @@ fn redeem_error(err: InviteRedeemError) -> Response {
         InviteRedeemError::Expired => (StatusCode::GONE, "INVITE_EXPIRED"),
         InviteRedeemError::Exhausted => (StatusCode::GONE, "INVITE_EXHAUSTED"),
         InviteRedeemError::EmailTaken => (StatusCode::CONFLICT, "EMAIL_ALREADY_EXISTS"),
+        InviteRedeemError::MemberRemoved => (StatusCode::FORBIDDEN, "MEMBER_REMOVED"),
         InviteRedeemError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "STORAGE_ERROR"),
     };
     error_response(status, code, &err.to_string())

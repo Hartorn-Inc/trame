@@ -1071,6 +1071,56 @@ async fn pg_invite_redemption_is_bounded_and_listed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn pg_removed_member_cannot_replay_the_invite_they_redeemed() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    // (case_id, GM mints a fresh invite after the removal, expected status, expected code)
+    let cases = [
+        (
+            "same_invite_rejected",
+            false,
+            StatusCode::FORBIDDEN,
+            Some("MEMBER_REMOVED"),
+        ),
+        ("new_invite_readmits", true, StatusCode::OK, None),
+    ];
+    for (case, fresh_invite, want_status, want_code) in cases {
+        let gm = account(&store).await;
+        let (campaign_id, _) = create_campaign_with_actor(&app, &gm).await;
+        let (member_id, member) = account_with_role(&store, InstanceRole::Member).await;
+        let mut token = mint_invite(&app, &gm, &campaign_id, json!({ "max_uses": 5 })).await;
+        let redeem = json!({ "token": token });
+        let (status, resp) =
+            call_json(&app, "POST", "/api/v1/invites/redeem", &member, redeem).await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {resp}");
+        let (status, resp) = call_json(
+            &app,
+            "DELETE",
+            &format!("/api/v1/campaigns/{campaign_id}/members/{member_id}"),
+            &gm,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {resp}");
+
+        if fresh_invite {
+            token = mint_invite(&app, &gm, &campaign_id, json!({ "max_uses": 5 })).await;
+        }
+        let redeem = json!({ "token": token });
+        let (status, resp) =
+            call_json(&app, "POST", "/api/v1/invites/redeem", &member, redeem).await;
+        assert_eq!(status, want_status, "case {case}: {resp}");
+        assert_eq!(resp["code"].as_str(), want_code, "case {case}");
+        let member_now = store
+            .get_campaign_member(Uuid::parse_str(&campaign_id).unwrap(), member_id)
+            .await
+            .unwrap();
+        assert_eq!(member_now.is_some(), fresh_invite, "case {case}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn pg_concurrent_redemptions_respect_max_uses() {
     let Some((app, store)) = harness().await else {
         return;

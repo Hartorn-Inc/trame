@@ -37,6 +37,10 @@
 //!   5. `No Duplicate Membership`:
 //!      - An existing member redeeming again gets `already_member = true`;
 //!        no use is consumed and the existing role (e.g. `GM`) is kept.
+//!   6. `Removal Sticks Per Invite`:
+//!      - An account that already redeemed an invite and is no longer a member
+//!        (removed by the GM) gets `MemberRemoved`; only a new invite lets it
+//!        back in, so removal is not undone by replaying the same link.
 //! ============================================================================
 
 use super::magic_link::now_epoch_seconds;
@@ -213,6 +217,10 @@ pub enum InviteRedeemError {
     /// The new account's email belongs to another account.
     #[error("email already registered")]
     EmailTaken,
+    /// The account already redeemed this invite and was later removed from the campaign;
+    /// only a new invite from the Game Master lets it back in.
+    #[error("removed from this campaign; ask the Game Master for a new invite")]
+    MemberRemoved,
     /// Storage failure.
     #[error("storage error: {0}")]
     Storage(String),
@@ -573,15 +581,22 @@ impl AccountStore for InMemorySessionStore {
                 .ok_or(InviteRedeemError::NotFound)?;
             let invite = accounts.invites[index].clone();
             let mut members = self.campaign_members.write().await;
-            if let InviteRedeemer::ExistingUser(user_id) = &redeemer
-                && let Some(existing) = members.get(&(invite.campaign_id, *user_id))
-            {
-                return Ok(InviteRedemptionOutcome {
-                    invite,
-                    user_id: *user_id,
-                    member: existing.clone(),
-                    already_member: true,
-                });
+            if let InviteRedeemer::ExistingUser(user_id) = &redeemer {
+                if let Some(existing) = members.get(&(invite.campaign_id, *user_id)) {
+                    return Ok(InviteRedemptionOutcome {
+                        invite,
+                        user_id: *user_id,
+                        member: existing.clone(),
+                        already_member: true,
+                    });
+                }
+                if accounts
+                    .redemptions
+                    .iter()
+                    .any(|(i, u, _)| *i == invite.id && u == user_id)
+                {
+                    return Err(InviteRedeemError::MemberRemoved);
+                }
             }
             let status = invite.status(now);
             if status != InviteStatus::Active {

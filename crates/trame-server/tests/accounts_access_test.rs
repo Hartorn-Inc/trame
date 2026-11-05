@@ -1386,6 +1386,66 @@ async fn sec13_removing_member_closes_their_sockets() {
     }
 }
 
+#[tokio::test]
+async fn sec13_removed_member_cannot_replay_the_invite_they_redeemed() {
+    // (case_id, GM mints a fresh invite after the removal, expected status, expected code)
+    let cases = [
+        (
+            "same_invite_rejected",
+            false,
+            StatusCode::FORBIDDEN,
+            Some("MEMBER_REMOVED"),
+        ),
+        ("new_invite_readmits", true, StatusCode::OK, None),
+    ];
+    for (case, fresh_invite, want_status, want_code) in cases {
+        let h = Harness::dev();
+        let (campaign_id, _, gm) = h.campaign().await;
+        let (player_id, player) = h.account(InstanceRole::Member).await;
+        let mint_body = json!({ "max_uses": 5 });
+        let token = h.mint(campaign_id, &gm, mint_body.clone()).await["token"].clone();
+        let (status, _, body) = call(
+            &h.app(),
+            "POST",
+            "/api/v1/invites/redeem",
+            Some(&player),
+            json!({ "token": token }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "case {case}: {body}");
+        let (status, _, _) = call(
+            &h.app(),
+            "DELETE",
+            &format!("/api/v1/campaigns/{campaign_id}/members/{player_id}"),
+            Some(&gm),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "case {case}");
+
+        let token = if fresh_invite {
+            h.mint(campaign_id, &gm, mint_body).await["token"].clone()
+        } else {
+            token
+        };
+        let (status, _, body) = call(
+            &h.app(),
+            "POST",
+            "/api/v1/invites/redeem",
+            Some(&player),
+            json!({ "token": token }),
+        )
+        .await;
+        assert_eq!(status, want_status, "case {case}: {body}");
+        assert_eq!(body["code"].as_str(), want_code, "case {case}");
+        assert_eq!(
+            h.member_role(campaign_id, player_id).await.is_some(),
+            fresh_invite,
+            "case {case}: membership"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SEC11 — persisted instance id
 // ---------------------------------------------------------------------------

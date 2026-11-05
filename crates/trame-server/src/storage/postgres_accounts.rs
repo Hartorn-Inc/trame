@@ -473,6 +473,17 @@ impl AccountStore for SqlxPostgresStore {
                         already_member: true,
                     });
                 }
+                let redeemed_before = sqlx::query(
+                    "SELECT 1 FROM invite_redemptions WHERE invite_id = $1 AND user_id = $2",
+                )
+                .bind(invite.id)
+                .bind(user_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(fail)?;
+                if redeemed_before.is_some() {
+                    return Err(InviteRedeemError::MemberRemoved);
+                }
             }
             let status = invite.status(now);
             if status != InviteStatus::Active {
