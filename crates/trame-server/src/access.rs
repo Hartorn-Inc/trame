@@ -444,7 +444,7 @@ fn redeem_error(err: InviteRedeemError) -> Response {
 
 /// Validates the credentials of an unauthenticated redemption into a `Member` account;
 /// errors are `(status, code, message)`.
-fn new_member_redeemer(
+async fn new_member_redeemer(
     req: &RedeemInviteRequest,
 ) -> Result<InviteRedeemer, (StatusCode, &'static str, String)> {
     let email = req
@@ -470,7 +470,8 @@ fn new_member_redeemer(
             )
         })?;
     let password_hash = PasswordService::new()
-        .hash_password(req.password.as_deref().unwrap_or(""))
+        .hash_password_blocking(req.password.clone().unwrap_or_default())
+        .await
         .map_err(|err| match err {
             PasswordError::WeakPassword(msg) => (StatusCode::BAD_REQUEST, "WEAK_PASSWORD", msg),
             other => (
@@ -508,7 +509,7 @@ pub async fn redeem_invite_handler(
                 Ok(None) => return redeem_error(InviteRedeemError::NotFound),
                 Err(err) => return storage_error(err),
             }
-            match new_member_redeemer(&req) {
+            match new_member_redeemer(&req).await {
                 Ok(redeemer) => redeemer,
                 Err((status, code, message)) => return error_response(status, code, &message),
             }

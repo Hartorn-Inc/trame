@@ -323,10 +323,14 @@ pub async fn owner_bootstrap_handler(
     let passwords = PasswordService::new();
     let claim = match state.session_store.get_user_by_email(&email).await {
         Ok(Some(existing)) => {
-            let verified = existing
-                .password_hash
-                .as_deref()
-                .is_some_and(|hash| passwords.verify_password(&req.password, hash));
+            let verified = match existing.password_hash.clone() {
+                Some(hash) => {
+                    passwords
+                        .verify_password_blocking(req.password.clone(), hash)
+                        .await
+                }
+                None => false,
+            };
             if !verified {
                 return error(
                     StatusCode::UNAUTHORIZED,
@@ -344,7 +348,7 @@ pub async fn owner_bootstrap_handler(
                     "display_name must be between 2 and 100 characters",
                 );
             };
-            let password_hash = match passwords.hash_password(&req.password) {
+            let password_hash = match passwords.hash_password_blocking(req.password.clone()).await {
                 Ok(h) => h,
                 Err(PasswordError::WeakPassword(msg)) => {
                     return error(StatusCode::BAD_REQUEST, "WEAK_PASSWORD", &msg);

@@ -836,9 +836,15 @@ async fn sec4_route_families_keep_separate_buckets() {
             false,
         ),
         (
-            "magic_link_unaffected",
-            "/api/v1/auth/magic-link",
+            "invite_redemption_unaffected",
+            "/api/v1/invites/redeem",
             serde_json::json!({ "token": "bogus" }),
+            false,
+        ),
+        (
+            "owner_bootstrap_unaffected",
+            "/api/v1/instance/bootstrap",
+            serde_json::json!({ "token": "bogus", "email": "z@example.com", "password": "a" }),
             false,
         ),
         (

@@ -15,9 +15,10 @@
 //! INVARIANTS & SAFETY BOUNDARIES:
 //! -------------------------------
 //!   1. `Per-Route, Failure-Only Rate Limits (SEC4)`:
-//!      - `/auth/login`, `/auth/register`, `/auth/totp/*`, `/auth/magic-link*`
-//!        and `/auth/bind*` keep separate buckets per route family, keyed by
-//!        client IP (`per_ip`, default 30 failures per 60 s) and by account
+//!      - `/auth/login`, `/auth/register`, `/auth/totp/*`, `/auth/bind*`,
+//!        `/invites/*` and `/instance/bootstrap*` keep separate buckets per
+//!        route family, keyed by client IP (`per_ip`, default 30 failures per
+//!        60 s) and by account
 //!        (`per_account`, default 10 failures per 60 s). The account key is the
 //!        JSON `email`, else the session token digest, else the invite token
 //!        digest.
@@ -369,11 +370,15 @@ pub fn ip_bucket(ip: IpAddr) -> String {
 /// Route family sharing one set of buckets, so limits on one credential route never
 /// throttle another.
 fn route_family(path: &str) -> &'static str {
+    if path.starts_with("/api/v1/invites/") {
+        return "invite";
+    }
+    if path.starts_with("/api/v1/instance/bootstrap") {
+        return "bootstrap";
+    }
     let rest = path.trim_start_matches("/api/v1/auth/");
     if rest.starts_with("totp") {
         "totp"
-    } else if rest.starts_with("magic-link") {
-        "magic-link"
     } else if rest.starts_with("bind") {
         "bind"
     } else if rest.starts_with("register") {
