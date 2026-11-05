@@ -6,10 +6,11 @@
  * PURPOSE:
  * -----
  * Drives one full D&D 5e session through the real UI with two simultaneous
- * browser contexts (GM and player), each recording video: sign-up, campaign
- * and invite, character creation, map import and activation, tokens,
- * initiative, movement and reactions, damage/heal/undo, dice, sheet conflict,
- * documents and handouts, and the player projection rules.
+ * browser contexts (GM and player), each recording video: Owner setup,
+ * campaign invite and redemption, character creation, map import and
+ * activation, tokens, initiative, movement and reactions, damage/heal/undo,
+ * dice, sheet conflict, documents and handouts, and the player projection
+ * rules.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
@@ -33,10 +34,16 @@
  * 5. `Synchronized Recordings`:
  *    - Both contexts are created and closed together, so `gm.webm` and
  *      `player.webm` share one timeline for the side-by-side video.
+ * 6. `Invite-Only Accounts, No Backdoor`:
+ *    - The GM claims the fresh instance as `Owner` through the real setup URL
+ *      the server logged (`owner_bootstrap_url`), which `make e2e` passes in
+ *      as `E2E_SETUP_URL`; the player's account is created by redeeming the
+ *      `CampaignInvite` link. Both URLs are opened by path and query against
+ *      `baseURL`, so they work whatever origin `TRAME_PUBLIC_ORIGIN` names.
  *
  * EXECUTION LIFECYCLE:
  * -----
- * GM signs up -> campaign -> invite -> player redeems -> characters (both)
+ * GM claims Owner -> campaign -> invite -> player redeems -> characters (both)
  * -> sheet edit + version conflict -> UVTT import + background + secret door
  * + GM light + hidden goblin -> activate -> tokens -> WebGL renderer, fog,
  * GM vision preview, night + lights (pixel probes) -> projection checks -> combat ->
@@ -59,6 +66,9 @@ const RUN = Date.now().toString(36);
 const PASSWORD = 'Crypt-Lantern-Quill-2026!';
 
 const GM = { email: `gm-${RUN}@e2e.trame.test`, name: 'Game Master' };
+const PLAYER = { email: `player-${RUN}@e2e.trame.test`, name: 'Player One' };
+/** Owner setup URL from the server's `owner_bootstrap_url` log line (set by `make e2e`). */
+const SETUP_URL = process.env.E2E_SETUP_URL ?? '';
 const PC_NAME = 'Lyra Thornwood';
 const MONSTER_NAME = 'Grak the Goblin Boss';
 const CAMPAIGN = `Crypt of Embers ${RUN}`;
@@ -121,6 +131,12 @@ async function idFromTestId(locator: Locator, prefix: string): Promise<string> {
   const testId = await locator.getAttribute('data-testid');
   if (!testId?.startsWith(prefix)) throw new Error(`unexpected test id ${testId}`);
   return testId.slice(prefix.length);
+}
+
+/** Path and query of an absolute URL, so it is opened against `baseURL`. */
+function pathAndQuery(url: string): string {
+  const { pathname, search } = new URL(url);
+  return `${pathname}${search}`;
 }
 
 function hpOf(text: string): { hp: number; max: number } {
@@ -222,16 +238,21 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     return `bundle ${bundle} served by trame-server; app CSP: ${appCsp}`;
   });
 
-  await phase('GM signs up through the auth screen', async () => {
-    await gm.goto('/');
-    await expect(gm.getByTestId('auth-screen')).toBeVisible();
-    await gm.getByTestId('auth-mode-register').click();
-    await gm.getByTestId('auth-email').fill(GM.email);
-    await gm.getByTestId('auth-display-name').fill(GM.name);
-    await gm.getByTestId('auth-password').fill(PASSWORD);
-    await shot({ gm }, 'gm-register');
-    await gm.getByTestId('auth-submit').click();
+  await phase('GM claims the instance as Owner through the logged setup URL', async () => {
+    expect(SETUP_URL, 'E2E_SETUP_URL from the owner_bootstrap_url log line').toMatch(/\/setup\?token=/);
+    await gm.goto(pathAndQuery(SETUP_URL));
+    await expect(gm.getByTestId('owner-setup-screen')).toBeVisible();
+    await expect(gm).not.toHaveURL(/token=/);
+    await expect(gm.getByTestId('setup-form')).toBeVisible();
+    await gm.getByTestId('setup-email').fill(GM.email);
+    await gm.getByTestId('setup-display-name').fill(GM.name);
+    await gm.getByTestId('setup-password').fill(PASSWORD);
+    await shot({ gm }, 'gm-owner-setup');
+    await gm.getByTestId('setup-submit').click();
     await expect(gm.getByTestId('campaign-lobby')).toBeVisible();
+    const me = await (await gm.request.get('/api/v1/auth/me')).text();
+    expect(me, 'the GM session carries the Owner instance role').toMatch(/"instance_role":"OWNER"/);
+    return 'GM signed in as instance Owner';
   });
 
   await phase('GM creates a campaign', async () => {
@@ -244,21 +265,37 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
   });
 
   let inviteUrl = '';
-  await phase('GM mints an invite link', async () => {
+  await phase('GM mints a campaign invite link', async () => {
     await gm.getByTestId(`lobby-invite-${campaignId}`).click();
-    const field = gm.getByTestId(`lobby-invite-url-${campaignId}`);
+    await expect(gm.getByTestId('invite-dialog')).toBeVisible();
+    await expect(gm.getByTestId('invite-none')).toBeVisible();
+    await gm.getByTestId('invite-create').click();
+    const field = gm.getByTestId('invite-url');
     await expect(field).toHaveValue(/invite=/);
     inviteUrl = await field.inputValue();
+    await expect(gm.getByTestId('invite-status')).toBeVisible();
     await shot({ gm }, 'gm-invite');
-    return inviteUrl.replace(/invite=.*/, 'invite=<jwt>');
+    await gm.getByTestId('invite-dialog-close').click();
+    await expect(gm.getByTestId('invite-dialog')).toBeHidden();
+    return inviteUrl.replace(/invite=.*/, 'invite=<token>');
   });
 
-  await phase('Player redeems the invite and lands in the campaign', async () => {
-    const url = new URL(inviteUrl);
-    await pl.goto(`${url.pathname}${url.search}`);
-    await expect(pl.getByTestId('campaign-workspace')).toBeVisible();
+  await phase('Player creates an account from the invite link and lands in the campaign', async () => {
+    await pl.goto(pathAndQuery(inviteUrl));
+    await expect(pl.getByTestId('invite-redemption-screen')).toBeVisible();
     await expect(pl).not.toHaveURL(/invite=/);
+    await expect(pl.getByTestId('invite-campaign')).toContainText(CAMPAIGN);
+    await expect(pl.getByTestId('invite-mode-create')).toHaveAttribute('aria-pressed', 'true');
+    await pl.getByTestId('invite-display-name').fill(PLAYER.name);
+    await pl.getByTestId('invite-email').fill(PLAYER.email);
+    await pl.getByTestId('invite-password').fill(PASSWORD);
+    await shot({ player: pl }, 'player-invite');
+    await pl.getByTestId('invite-submit').click();
+    await expect(pl.getByTestId('campaign-workspace')).toBeVisible();
     await expect(pl.getByTestId('trame-status-badge')).toBeVisible();
+    await gm.getByTestId(`lobby-invite-${campaignId}`).click();
+    await expect(gm.getByTestId('redemptions-list')).toContainText(PLAYER.name);
+    await gm.getByTestId('invite-dialog-close').click();
     await gm.getByTestId(`lobby-open-${campaignId}`).click();
     await expect(gm.getByTestId('campaign-workspace')).toBeVisible();
     await shot(both, 'joined');
@@ -595,7 +632,7 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
       .waitFor({ timeout: 6_000 })
       .then(() => true)
       .catch(() => false);
-    const rejection = (await pl.getByTestId('table-rejection').innerText()).trim();
+    const rejection = (await pl.getByTestId('command-feedback-item').allInnerTexts()).join(' | ').trim();
     await shot(both, 'movement');
     if (!appeared) {
       note(`No opportunity-attack prompt after leaving reach (player rejection text: "${rejection}")`);
