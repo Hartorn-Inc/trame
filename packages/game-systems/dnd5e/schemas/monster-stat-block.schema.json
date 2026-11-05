@@ -1,0 +1,371 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trame.dev/schemas/dnd5e/monster-stat-block.schema.json",
+  "title": "MonsterStatBlock",
+  "description": "SRD 5.2.1 monster stat block copied into staged and spawned tokens (D7). Every numeric field has explicit bounds so the server can reject corrupt homebrew. Mirrors MONSTER_STAT_BLOCK_BOUNDS in src/monsterStatBlock.ts. Units: feet for distances and speeds.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "size",
+    "creatureType",
+    "alignment",
+    "armorClass",
+    "hitPoints",
+    "speed",
+    "abilities",
+    "savingThrows",
+    "skills",
+    "initiativeBonus",
+    "senses",
+    "languages",
+    "challengeRating",
+    "xp",
+    "proficiencyBonus",
+    "damageVulnerabilities",
+    "damageResistances",
+    "damageImmunities",
+    "conditionImmunities",
+    "traits",
+    "actions",
+    "bonusActions",
+    "reactions",
+    "source"
+  ],
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "size": { "enum": ["tiny", "small", "medium", "large", "huge", "gargantuan"] },
+    "creatureType": {
+      "enum": [
+        "aberration",
+        "beast",
+        "celestial",
+        "construct",
+        "dragon",
+        "elemental",
+        "fey",
+        "fiend",
+        "giant",
+        "humanoid",
+        "monstrosity",
+        "ooze",
+        "plant",
+        "undead"
+      ]
+    },
+    "alignment": { "type": "string", "minLength": 1, "maxLength": 60 },
+    "armorClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value"],
+      "properties": {
+        "value": { "type": "integer", "minimum": 1, "maximum": 30, "description": "Armor Class." },
+        "source": { "type": "string", "minLength": 1, "maxLength": 120, "description": "Optional armor note; SRD 5.2.1 stat blocks omit it." }
+      }
+    },
+    "hitPoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["average", "formula"],
+      "properties": {
+        "average": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "Average Hit Points." },
+        "formula": { "type": "string", "pattern": "^[1-9][0-9]{0,2}d(4|6|8|10|12|20)( [+-] [0-9]{1,3})?$", "description": "Hit dice as printed, e.g. 19d12 + 133." }
+      }
+    },
+    "speed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["walk"],
+      "properties": {
+        "walk": { "$ref": "#/$defs/speedFt" },
+        "fly": { "$ref": "#/$defs/speedFt" },
+        "swim": { "$ref": "#/$defs/speedFt" },
+        "climb": { "$ref": "#/$defs/speedFt" },
+        "burrow": { "$ref": "#/$defs/speedFt" },
+        "hover": { "type": "boolean" }
+      }
+    },
+    "abilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["str", "dex", "con", "int", "wis", "cha"],
+      "properties": {
+        "str": { "$ref": "#/$defs/abilityScore" },
+        "dex": { "$ref": "#/$defs/abilityScore" },
+        "con": { "$ref": "#/$defs/abilityScore" },
+        "int": { "$ref": "#/$defs/abilityScore" },
+        "wis": { "$ref": "#/$defs/abilityScore" },
+        "cha": { "$ref": "#/$defs/abilityScore" }
+      }
+    },
+    "savingThrows": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Saving throw totals that differ from the plain ability modifier.",
+      "properties": {
+        "str": { "$ref": "#/$defs/savingThrowBonus" },
+        "dex": { "$ref": "#/$defs/savingThrowBonus" },
+        "con": { "$ref": "#/$defs/savingThrowBonus" },
+        "int": { "$ref": "#/$defs/savingThrowBonus" },
+        "wis": { "$ref": "#/$defs/savingThrowBonus" },
+        "cha": { "$ref": "#/$defs/savingThrowBonus" }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Skill totals printed in the stat block.",
+      "properties": {
+        "acrobatics": { "$ref": "#/$defs/skillBonus" },
+        "animal_handling": { "$ref": "#/$defs/skillBonus" },
+        "arcana": { "$ref": "#/$defs/skillBonus" },
+        "athletics": { "$ref": "#/$defs/skillBonus" },
+        "deception": { "$ref": "#/$defs/skillBonus" },
+        "history": { "$ref": "#/$defs/skillBonus" },
+        "insight": { "$ref": "#/$defs/skillBonus" },
+        "intimidation": { "$ref": "#/$defs/skillBonus" },
+        "investigation": { "$ref": "#/$defs/skillBonus" },
+        "medicine": { "$ref": "#/$defs/skillBonus" },
+        "nature": { "$ref": "#/$defs/skillBonus" },
+        "perception": { "$ref": "#/$defs/skillBonus" },
+        "performance": { "$ref": "#/$defs/skillBonus" },
+        "persuasion": { "$ref": "#/$defs/skillBonus" },
+        "religion": { "$ref": "#/$defs/skillBonus" },
+        "sleight_of_hand": { "$ref": "#/$defs/skillBonus" },
+        "stealth": { "$ref": "#/$defs/skillBonus" },
+        "survival": { "$ref": "#/$defs/skillBonus" }
+      }
+    },
+    "initiativeBonus": { "type": "integer", "minimum": -10, "maximum": 20 },
+    "senses": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passivePerception"],
+      "properties": {
+        "darkvision": { "$ref": "#/$defs/senseRangeFt" },
+        "blindsight": { "$ref": "#/$defs/senseRangeFt" },
+        "tremorsense": { "$ref": "#/$defs/senseRangeFt" },
+        "truesight": { "$ref": "#/$defs/senseRangeFt" },
+        "passivePerception": { "type": "integer", "minimum": 1, "maximum": 40 }
+      }
+    },
+    "languages": { "type": "string", "maxLength": 300 },
+    "challengeRating": {
+      "enum": [0, 0.125, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
+      "minimum": 0,
+      "maximum": 30
+    },
+    "xp": { "type": "integer", "minimum": 0, "maximum": 155000 },
+    "proficiencyBonus": { "type": "integer", "minimum": 2, "maximum": 9 },
+    "damageVulnerabilities": { "$ref": "#/$defs/damageTypeList" },
+    "damageResistances": { "$ref": "#/$defs/damageTypeList" },
+    "damageImmunities": { "$ref": "#/$defs/damageTypeList" },
+    "conditionImmunities": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 15,
+      "items": { "$ref": "#/$defs/conditionId" }
+    },
+    "legendaryResistance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uses"],
+      "properties": {
+        "uses": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "lairUses": { "type": "integer", "minimum": 1, "maximum": 10 }
+      }
+    },
+    "traits": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/trait" }
+    },
+    "actions": { "$ref": "#/$defs/actionList" },
+    "bonusActions": { "$ref": "#/$defs/actionList" },
+    "reactions": { "$ref": "#/$defs/actionList" },
+    "legendaryActions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uses", "options"],
+      "properties": {
+        "uses": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "lairUses": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": { "$ref": "#/$defs/action" }
+        }
+      }
+    },
+    "source": { "enum": ["srd-5.2.1", "srd-5.1", "homebrew"] }
+  },
+  "$defs": {
+    "abilityScore": { "type": "integer", "minimum": 1, "maximum": 30 },
+    "speedFt": { "type": "integer", "minimum": 0, "maximum": 200, "description": "Speed in feet." },
+    "senseRangeFt": { "type": "integer", "minimum": 0, "maximum": 500, "description": "Sense range in feet." },
+    "savingThrowBonus": { "type": "integer", "minimum": -5, "maximum": 20 },
+    "skillBonus": { "type": "integer", "minimum": -5, "maximum": 30 },
+    "abilityId": { "enum": ["str", "dex", "con", "int", "wis", "cha"] },
+    "damageType": {
+      "enum": ["acid", "bludgeoning", "cold", "fire", "force", "lightning", "necrotic", "piercing", "poison", "psychic", "radiant", "slashing", "thunder"]
+    },
+    "damageTypeList": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 13,
+      "items": { "$ref": "#/$defs/damageType" }
+    },
+    "conditionId": {
+      "enum": [
+        "blinded",
+        "charmed",
+        "deafened",
+        "exhaustion",
+        "frightened",
+        "grappled",
+        "incapacitated",
+        "invisible",
+        "paralyzed",
+        "petrified",
+        "poisoned",
+        "prone",
+        "restrained",
+        "stunned",
+        "unconscious"
+      ]
+    },
+    "id": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" },
+    "description": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "trait": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "description"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": { "$ref": "#/$defs/description" }
+      }
+    },
+    "damagePart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dice", "average", "type"],
+      "properties": {
+        "dice": { "type": "string", "pattern": "^([1-9][0-9]?d(4|6|8|10|12|20)( [+-] [0-9]{1,3})?|[0-9]{1,3})$", "description": "Dice as printed (1d10 + 8) or a flat amount." },
+        "average": { "type": "integer", "minimum": 0, "maximum": 999 },
+        "type": { "$ref": "#/$defs/damageType" }
+      }
+    },
+    "savingThrow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ability", "dc"],
+      "properties": {
+        "ability": { "$ref": "#/$defs/abilityId" },
+        "dc": { "type": "integer", "minimum": 1, "maximum": 30 }
+      }
+    },
+    "area": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shape", "sizeFt"],
+      "properties": {
+        "shape": { "enum": ["cone", "cube", "cylinder", "emanation", "line", "sphere"] },
+        "sizeFt": { "type": "integer", "minimum": 1, "maximum": 500 },
+        "widthFt": { "type": "integer", "minimum": 1, "maximum": 500 },
+        "heightFt": { "type": "integer", "minimum": 1, "maximum": 500 }
+      }
+    },
+    "rider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trigger"],
+      "minProperties": 2,
+      "properties": {
+        "trigger": { "enum": ["onHit", "onFailedSave"] },
+        "when": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "damage": { "$ref": "#/$defs/damagePart" },
+        "condition": { "$ref": "#/$defs/conditionId" },
+        "escapeDc": { "type": "integer", "minimum": 1, "maximum": 30 },
+        "save": { "$ref": "#/$defs/savingThrow" }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "description", "automation"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": { "$ref": "#/$defs/description" },
+        "automation": { "enum": ["full", "partial", "text"] },
+        "attack": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "toHit"],
+          "properties": {
+            "kind": { "enum": ["melee", "ranged", "melee_or_ranged"] },
+            "toHit": { "type": "integer", "minimum": -5, "maximum": 30 },
+            "reachFt": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "rangeFt": { "type": "integer", "minimum": 1, "maximum": 1000 },
+            "longRangeFt": { "type": "integer", "minimum": 1, "maximum": 1000 }
+          }
+        },
+        "save": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ability", "dc", "onSuccess"],
+          "properties": {
+            "ability": { "$ref": "#/$defs/abilityId" },
+            "dc": { "type": "integer", "minimum": 1, "maximum": 30 },
+            "area": { "$ref": "#/$defs/area" },
+            "onSuccess": { "enum": ["half", "none"] }
+          }
+        },
+        "damage": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/damagePart" }
+        },
+        "riders": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": { "$ref": "#/$defs/rider" }
+        },
+        "multiattack": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["actionIds", "count"],
+            "properties": {
+              "actionIds": { "type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+              "count": { "type": "integer", "minimum": 1, "maximum": 10 }
+            }
+          }
+        },
+        "usage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["recharge", "per_day", "rest"] },
+            "minRoll": { "type": "integer", "minimum": 2, "maximum": 6 },
+            "uses": { "type": "integer", "minimum": 1, "maximum": 10 }
+          }
+        },
+        "legendaryCost": { "type": "integer", "minimum": 1, "maximum": 3 }
+      }
+    },
+    "actionList": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/action" }
+    }
+  }
+}

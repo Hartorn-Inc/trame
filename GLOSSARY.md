@@ -255,6 +255,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: `LongRest`, `long rest`.
 - **_Avoid_**: `extended rest`, `full rest`.
 
+### MonsterStatBlock
+
+- **Definition**: Complete SRD 5.2.1 monster record (size, speeds by mode, senses, AC, HP, CR, XP, proficiency bonus, traits, actions with Multiattack, typed damage with riders, bonus actions, reactions, legendary actions, damage and condition affinities) stored in `data.statBlock` of a monster compendium entry and copied into staged and spawned tokens. Each action declares an automation level (`full`, `partial`, `text`). Bounds live in `schemas/monster-stat-block.schema.json`.
+- **Allowed Context**: Monster compendium entries, `StagedToken` and `SyntheticToken` stat-block copies, server bounds validation, homebrew monster editing.
+- **_Avoid_**: MonsterTemplate, CreatureSheet, NpcStats.
+
 ### PadlockEditMode
 
 - **Definition**: Explicit boolean state toggle (`locked` read and roll play state vs. `unlocked` structural edit state) in the `DeclarativeSheetRenderer` header preventing accidental actor mutations during live sessions.
