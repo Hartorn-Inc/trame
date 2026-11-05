@@ -21,10 +21,16 @@
  *    - `409 VERSION_CONFLICT` returns `{ status: "conflict" }` with the
  *      server's `current_version`; the caller decides between reloading the
  *      latest sheet and overwriting it (retry with `current_version`).
- * 3. `Sheet Rolls Use REST`:
+ * 3. `Sheet Rolls Use REST, Initiative Uses The Room`:
  *    - `restDiceRollService` rolls via `POST .../dice/roll`, so rest and
  *      level-up rolls work without an open table socket; the server still fans
  *      them out to the live dice log.
+ *    - A `ROLL_DICE` whose reason starts with "initiative" (case-insensitive)
+ *      goes to the room socket as `RollDice`: only the room actor rolls
+ *      initiative (`1d20 + initiative bonus`, once per encounter) and counts
+ *      it for the encounter. The REST endpoint would roll the client's own
+ *      expression and never reach the initiative order. With the socket
+ *      closed nothing is sent and `notConnected` feedback is pushed.
  * 4. `Widget Edits Are Whole-Sheet Saves`:
  *    - `createSheetCommandDispatcher` turns a widget's `UPDATE_ACTOR_SHEET
  *      { path, value }` into a full-sheet PUT built from the stored sheet, so
@@ -89,6 +95,11 @@ function toRollVisibility(raw: unknown): WireRollVisibility | undefined {
   }
 }
 
+/** Mirrors the room actor's initiative check: reason starts with "initiative", case-insensitive. */
+function isInitiativeReason(reason: string): boolean {
+  return reason.trimStart().toLowerCase().startsWith('initiative');
+}
+
 /** Returns a deep copy of `data` with `value` written at a dotted path (`attributes.hp.current`). */
 export function setAtPath(data: unknown, path: string, value: unknown): unknown {
   const keys = path.replace(/^sheet\./, '').split('.').filter(Boolean);
@@ -131,12 +142,13 @@ export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (
     if (cmd.cmd === 'ROLL_DICE') {
       const expression = String(cmd.expression ?? cmd.formula ?? '');
       if (!expression) return;
-      client
-        .rollDiceRest(campaignId, expression, {
-          visibility: toRollVisibility(cmd.visibility),
-          reason: typeof cmd.reason === 'string' ? cmd.reason : undefined,
-        })
-        .catch(fail);
+      const reason = typeof cmd.reason === 'string' ? cmd.reason : undefined;
+      const visibility = toRollVisibility(cmd.visibility);
+      if (reason && isInitiativeReason(reason)) {
+        client.rollDice(expression, visibility ?? 'Public', reason);
+        return;
+      }
+      client.rollDiceRest(campaignId, expression, { visibility, reason }).catch(fail);
       return;
     }
     if (cmd.cmd === 'UPDATE_ACTOR_SHEET' && typeof cmd.path === 'string' && 'value' in cmd) {
