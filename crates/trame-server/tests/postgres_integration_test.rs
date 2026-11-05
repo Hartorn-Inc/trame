@@ -30,6 +30,7 @@ use trame_server::auth::session::{IdentityStore, SessionStore, UserRecord, hash_
 use trame_server::campaigns::LIVE_SESSION_NUM;
 use trame_server::config::ServerConfig;
 use trame_server::http::build_router_with_postgres_store;
+use trame_server::instance::resolve_instance_id;
 use trame_server::notes::{
     InMemoryPartyJournalStorage, MAX_HANDOUT_TITLE_CHARS, NotesError, PartyJournalEntry,
     PartyJournalStorage,
@@ -902,5 +903,203 @@ async fn pg_journal_and_timeline_failures_are_storage_errors() {
             matches!(err, Some(TimelineError::Storage(_))),
             "case {case}: expected TimelineError::Storage, got {err:?}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accounts: persisted instance id, invite redemption, campaign creation gate
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_instance_id_survives_restart() {
+    let Some((_, store)) = harness().await else {
+        return;
+    };
+    let persisted = resolve_instance_id(store.as_ref(), None).await.unwrap();
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let override_id = Uuid::new_v4();
+    // (case_id, TRAME_INSTANCE_ID override, expected id)
+    let cases = [
+        ("restart_reuses_persisted_id", None, persisted),
+        ("override_wins", Some(override_id), override_id),
+        ("override_does_not_rewrite_persisted_id", None, persisted),
+    ];
+    for (case, override_id, want) in cases {
+        let restarted = SqlxPostgresStore::connect_and_migrate(&url, "/assets/download")
+            .await
+            .expect("reconnect");
+        let got = resolve_instance_id(&restarted, override_id).await.unwrap();
+        assert_eq!(got, want, "case {case}");
+    }
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM instance_settings")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(rows, 1, "single settings row");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_member_cannot_create_campaign() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    // (case_id, instance role, expected status)
+    let cases = [
+        (
+            "member_forbidden",
+            InstanceRole::Member,
+            StatusCode::FORBIDDEN,
+        ),
+        ("host_allowed", InstanceRole::Host, StatusCode::CREATED),
+    ];
+    for (case, role, want) in cases {
+        let (_, cookie) = account_with_role(&store, role).await;
+        let (status, body) = call_json(
+            &app,
+            "POST",
+            "/api/v1/campaigns",
+            &cookie,
+            json!({ "name": "PG Gate" }),
+        )
+        .await;
+        assert_eq!(status, want, "case {case}: {body}");
+    }
+}
+
+async fn mint_invite(app: &Router, gm: &str, campaign_id: &str, body: Value) -> String {
+    let (status, body) = call_json(
+        app,
+        "POST",
+        &format!("/api/v1/campaigns/{campaign_id}/invites"),
+        gm,
+        body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["invite"]["token"].as_str().unwrap().to_string()
+}
+
+fn pg_visitor(token: &str) -> Value {
+    json!({
+        "token": token,
+        "email": format!("{}@example.com", Uuid::new_v4()),
+        "password": "correct-horse-battery-staple-42",
+        "display_name": "Sildar",
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_invite_redemption_is_bounded_and_listed() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    let gm = account(&store).await;
+    let (campaign_id, _) = create_campaign_with_actor(&app, &gm).await;
+    let token = mint_invite(&app, &gm, &campaign_id, json!({ "max_uses": 2 })).await;
+    let (member_id, member) = account_with_role(&store, InstanceRole::Member).await;
+
+    // (case_id, cookie of the redeemer ("" = visitor), expected status, expected code)
+    let cases = [
+        ("visitor_creates_account", "", StatusCode::CREATED, None),
+        (
+            "logged_in_member_joins",
+            member.as_str(),
+            StatusCode::OK,
+            None,
+        ),
+        (
+            "repeat_member_is_idempotent",
+            member.as_str(),
+            StatusCode::OK,
+            None,
+        ),
+        (
+            "third_account_exhausts_invite",
+            "",
+            StatusCode::GONE,
+            Some("INVITE_EXHAUSTED"),
+        ),
+    ];
+    for (case, cookie, want_status, want_code) in cases {
+        let body = if cookie.is_empty() {
+            pg_visitor(&token)
+        } else {
+            json!({ "token": token })
+        };
+        let (status, resp) = call_json(&app, "POST", "/api/v1/invites/redeem", cookie, body).await;
+        assert_eq!(status, want_status, "case {case}: {resp}");
+        assert_eq!(resp["code"].as_str(), want_code, "case {case}");
+    }
+    let role = store
+        .get_campaign_member(Uuid::parse_str(&campaign_id).unwrap(), member_id)
+        .await
+        .unwrap()
+        .map(|m| m.role);
+    assert_eq!(role.as_deref(), Some("PLAYER"));
+
+    let (status, body) = call_json(
+        &app,
+        "GET",
+        &format!("/api/v1/campaigns/{campaign_id}/invites/redemptions"),
+        &gm,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["redemptions"].as_array().unwrap().len(), 2, "{body}");
+
+    let (status, body) = call_json(
+        &app,
+        "DELETE",
+        &format!("/api/v1/campaigns/{campaign_id}/invites/active"),
+        &gm,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["invite"]["status"], json!("revoked"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_concurrent_redemptions_respect_max_uses() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    let gm = account(&store).await;
+    let (campaign_id, _) = create_campaign_with_actor(&app, &gm).await;
+    // (case_id, max_uses, concurrent visitors)
+    let cases = [
+        ("single_use_two_racers", 1, 2),
+        ("two_uses_four_racers", 2, 4),
+    ];
+    for (case, max_uses, racers) in cases {
+        let token = mint_invite(&app, &gm, &campaign_id, json!({ "max_uses": max_uses })).await;
+        let attempts = (0..racers).map(|_| {
+            let app = app.clone();
+            let body = pg_visitor(&token);
+            tokio::spawn(async move {
+                call_json(&app, "POST", "/api/v1/invites/redeem", "", body)
+                    .await
+                    .0
+            })
+        });
+        let mut statuses = Vec::new();
+        for attempt in attempts.collect::<Vec<_>>() {
+            statuses.push(attempt.await.unwrap());
+        }
+        let created = statuses
+            .iter()
+            .filter(|s| **s == StatusCode::CREATED)
+            .count();
+        let gone = statuses.iter().filter(|s| **s == StatusCode::GONE).count();
+        assert_eq!(created, max_uses, "case {case}: {statuses:?}");
+        assert_eq!(gone, racers - max_uses, "case {case}: {statuses:?}");
+        let use_count: i32 =
+            sqlx::query_scalar("SELECT use_count FROM campaign_invites WHERE token_hash = $1")
+                .bind(hash_session_token(&token))
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(use_count as usize, max_uses, "case {case}");
     }
 }
