@@ -51,8 +51,8 @@ use trame_server::security::SecurityPolicy;
 use trame_server::sync::{ClientEnvelope, CommandSubmission, ServerEnvelope};
 use trame_server::timeline::InMemoryTimelineStorage;
 use trame_server::wal::{
-    InMemoryWalStorage, QuarantinedWalEntry, TableStateSnapshot, WalEntry, WalError, WalRecord,
-    WalStorage,
+    InMemoryWalStorage, QuarantinedWalEntry, StoredWalRow, TableStateSnapshot,
+    UNDECODABLE_COMMAND_KIND, WalEntry, WalError, WalRecord, WalStorage,
 };
 use uuid::Uuid;
 
@@ -64,6 +64,9 @@ use uuid::Uuid;
 struct FaultyWal {
     inner: InMemoryWalStorage,
     fail_append: AtomicBool,
+    /// Stores the entry, then reports failure: an append whose commit outcome was lost.
+    ghost_append: AtomicBool,
+    fail_discard: AtomicBool,
     fail_snapshot: AtomicBool,
 }
 
@@ -78,7 +81,17 @@ impl WalStorage for FaultyWal {
         if self.fail_append.load(Ordering::SeqCst) {
             return Err(Self::injected("append"));
         }
+        if self.ghost_append.load(Ordering::SeqCst) {
+            self.inner.append_entry(entry)?;
+            return Err(Self::injected("append acknowledgement"));
+        }
         self.inner.append_entry(entry)
+    }
+    fn discard_entries_from(&self, id: Uuid, from: u64) -> Result<(), WalError> {
+        if self.fail_discard.load(Ordering::SeqCst) {
+            return Err(Self::injected("discard"));
+        }
+        self.inner.discard_entries_from(id, from)
     }
     fn save_snapshot(&self, snapshot: TableStateSnapshot) -> Result<(), WalError> {
         if self.fail_snapshot.load(Ordering::SeqCst) {
@@ -89,7 +102,7 @@ impl WalStorage for FaultyWal {
     fn load_latest_snapshot(&self, id: Uuid) -> Result<Option<TableStateSnapshot>, WalError> {
         self.inner.load_latest_snapshot(id)
     }
-    fn load_entries_after(&self, id: Uuid, after: u64) -> Result<Vec<WalEntry>, WalError> {
+    fn load_entries_after(&self, id: Uuid, after: u64) -> Result<Vec<StoredWalRow>, WalError> {
         self.inner.load_entries_after(id, after)
     }
     fn quarantine_entries(
@@ -667,6 +680,123 @@ async fn quarantine_payload_keeps_the_original_entry() {
     assert!(
         matches!(&original.command, WalRecord::Command(cmd) if matches!(**cmd, TrameCommand::UndoLastAction))
     );
+}
+
+#[tokio::test]
+async fn undecodable_rows_are_quarantined_and_the_room_opens() {
+    // (case_id, raw payload planted at seq 2 between two healthy damage entries)
+    let cases = [
+        (
+            "payload_not_a_wal_entry",
+            serde_json::json!({ "garbage": true }),
+        ),
+        ("payload_is_a_string", serde_json::json!("corrupted")),
+        (
+            "unknown_command_variant",
+            serde_json::json!({
+                "seq_id": 2, "campaign_id": Uuid::nil(), "timestamp_ms": 0,
+                "actor_user_id": Uuid::nil(), "role": "GM",
+                "command": { "type": "FROM_THE_FUTURE" }, "events": []
+            }),
+        ),
+    ];
+    for (case, payload) in cases {
+        let c = Campaign::seed();
+        c.wal.inner.append_entry(c.entry(1, c.damage(2))).unwrap();
+        c.wal
+            .inner
+            .append_raw_row(
+                c.id,
+                StoredWalRow {
+                    seq_id: 2,
+                    payload: payload.clone(),
+                },
+            )
+            .unwrap();
+        c.wal.inner.append_entry(c.entry(3, c.damage(4))).unwrap();
+
+        let room = c.boot(25).await;
+        assert_eq!(Campaign::hp(&room, c.token).await, MAX_HP - 2, "case {case}");
+        assert_eq!(room.metrics().await.unwrap().seq_id, 3, "case {case}");
+        let quarantined = c.wal.list_quarantined_entries(c.id).unwrap();
+        let seqs: Vec<u64> = quarantined.iter().map(|q| q.seq_id).collect();
+        assert_eq!(seqs, vec![2, 3], "case {case}");
+        assert_eq!(
+            quarantined[0].command_kind, UNDECODABLE_COMMAND_KIND,
+            "case {case}"
+        );
+        assert_eq!(quarantined[0].payload, payload, "case {case}: raw payload kept");
+        let (next_seq, _) = room
+            .dispatch_direct_command(c.gm_actor(), c.damage(1))
+            .await
+            .unwrap_or_else(|e| panic!("case {case}: room stays writable: {e}"));
+        assert_eq!(next_seq, 4, "case {case}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ambiguous appends: no ghost row survives a rejected command
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn ambiguous_append_leaves_no_ghost_row() {
+    // (case_id, compensation fails too, actor keeps running)
+    let cases = [
+        ("compensation_deletes_ghost_row", false, true),
+        ("failed_compensation_halts_actor", true, false),
+    ];
+    for (case, fail_discard, keeps_running) in cases {
+        let c = Campaign::seed();
+        let room = c.boot(25).await;
+        let (gm_session, mut gm_rx) = connect(&room, c.gm, CampaignRole::Gm).await;
+        drain(&mut gm_rx);
+        c.wal.ghost_append.store(true, Ordering::SeqCst);
+        c.wal.fail_discard.store(fail_discard, Ordering::SeqCst);
+
+        room.send_envelope(gm_session, submit(c.damage(5), "c-ghost"))
+            .await
+            .unwrap();
+        let mut frames = Vec::new();
+        let mut close_code = None;
+        while let Ok(frame) = gm_rx.try_recv() {
+            match frame {
+                OutboundClientFrame::Binary(bytes) => {
+                    frames.push(rmp_serde::from_slice(&bytes).unwrap());
+                }
+                OutboundClientFrame::Close { code, .. } => close_code = Some(code),
+            }
+        }
+        assert!(!accepted(&frames), "case {case}");
+        assert_eq!(
+            rejection(&frames).and_then(|r| r.1).as_deref(),
+            Some("c-ghost"),
+            "case {case}"
+        );
+        c.wal.ghost_append.store(false, Ordering::SeqCst);
+        c.wal.fail_discard.store(false, Ordering::SeqCst);
+
+        if keeps_running {
+            assert_eq!(close_code, None, "case {case}");
+            assert!(
+                c.wal.load_entries_after(c.id, 0).unwrap().is_empty(),
+                "case {case}: no entry above the room's seq"
+            );
+            let (seq, _) = room
+                .dispatch_direct_command(c.gm_actor(), c.damage(2))
+                .await
+                .unwrap();
+            assert_eq!(seq, 1, "case {case}: seq 1 reused by the next command");
+            let rebooted = c.boot(25).await;
+            assert_eq!(
+                Campaign::hp(&rebooted, c.token).await,
+                MAX_HP - 2,
+                "case {case}: the rejected command is never replayed"
+            );
+        } else {
+            assert_eq!(close_code, Some(1011), "case {case}");
+            assert!(room.metrics().await.is_err(), "case {case}: actor stopped");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

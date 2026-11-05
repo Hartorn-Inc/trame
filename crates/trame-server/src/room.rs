@@ -35,6 +35,13 @@
 //!      - Every failure path answers the sender with `CommandRejected` carrying
 //!        the client's `correlation_id` (RT10); storage errors are reported with
 //!        a generic reason.
+//!      - An append error is ambiguous: the store may have committed the row
+//!        before failing. The actor then deletes every stored entry after its
+//!        current `seq_id` (`WalStorage::discard_entries_from`), so recovery can
+//!        never replay a command the client was told was rejected. If that
+//!        cleanup fails too, the actor closes every socket with `1011` and
+//!        stops; supervision (RT9) re-wakes it from storage, whose state then
+//!        becomes the truth everyone reconnects to.
 //!   3. `Double-Checked Room Wake-Up`:
 //!      - `RoomLeaseManager::get_or_wake_room` uses a fast read-lock path
 //!        followed by a double-checked write-lock rehydration from `WalStorage`
@@ -111,6 +118,10 @@ pub const WS_CLOSE_CODE_GOING_AWAY: u16 = 1001;
 
 /// Standard reason string broadcast alongside close code 1001.
 pub const WS_CLOSE_REASON_GOING_AWAY: &str = "Server Hibernating";
+
+/// RFC 6455 close code `1011 Internal Error`: the room actor stopped (storage could not be
+/// made consistent) or did not answer in time; the client reconnects to a fresh actor.
+pub const WS_CLOSE_CODE_INTERNAL_ERROR: u16 = 1011;
 
 /// Application close code sent to the sockets of a user whose campaign membership was
 /// removed (SEC13); reconnecting fails the membership check with `403`.
@@ -567,6 +578,9 @@ pub struct TableRoomActor {
     sinks: RoomSinks,
     /// Entries quarantined when this actor recovered (empty on a clean replay); sent to GMs.
     quarantine_notice: Vec<QuarantinedWalSummary>,
+    /// Set when storage may hold a write memory does not (failed compensation); the run loop
+    /// then closes every socket with `WS_CLOSE_CODE_INTERNAL_ERROR` and ends the actor.
+    halted: bool,
 }
 
 /// Client-facing reason for a failed envelope. Storage failures get a generic message so
@@ -635,6 +649,7 @@ impl TableRoomActor {
                 .iter()
                 .map(QuarantinedWalSummary::from)
                 .collect(),
+            halted: false,
         };
         tokio::spawn(actor.run());
         Ok(TableRoomHandle { campaign_id, tx })
@@ -786,7 +801,13 @@ impl TableRoomActor {
                         events: Vec::new(),
                     };
                     if let Err(err) = self.wal.append_entry(entry) {
+                        tracing::error!(campaign_id = %self.campaign_id, error = %err, "WAL append failed; staging rejected");
+                        self.discard_ambiguous_append();
                         let _ = reply.send(Err(RoomError::Wal(err)));
+                        if self.halted {
+                            self.close_all_and_halt();
+                            break;
+                        }
                         continue;
                     }
                     self.seq_id += 1;
@@ -811,6 +832,36 @@ impl TableRoomActor {
                     let _ = reply.send((self.seq_id, self.state.clone()));
                 }
             }
+            if self.halted {
+                self.close_all_and_halt();
+                break;
+            }
+        }
+    }
+
+    /// Closes every socket with `WS_CLOSE_CODE_INTERNAL_ERROR` before the run loop ends, so
+    /// clients reconnect to the actor supervision wakes from storage (RT9).
+    fn close_all_and_halt(&mut self) {
+        tracing::error!(campaign_id = %self.campaign_id, seq_id = self.seq_id, "room actor halted: storage may hold an unacknowledged write; reloading from storage");
+        for client in self.clients.values() {
+            let _ = client.tx.send(OutboundClientFrame::Close {
+                code: WS_CLOSE_CODE_INTERNAL_ERROR,
+                reason: "Room Restarting".to_string(),
+            });
+        }
+        self.clients.clear();
+    }
+
+    /// Compensates an append whose outcome is unknown: deletes every stored entry after
+    /// `self.seq_id` (the one that may have been committed, and anything a retry left). When
+    /// the delete fails as well, storage may hold the rejected command, so the actor halts.
+    fn discard_ambiguous_append(&mut self) {
+        if let Err(err) = self
+            .wal
+            .discard_entries_from(self.campaign_id, self.seq_id + 1)
+        {
+            tracing::error!(campaign_id = %self.campaign_id, seq_id = self.seq_id, error = %err, "could not discard a possibly committed WAL entry");
+            self.halted = true;
         }
     }
 
@@ -935,6 +986,9 @@ impl TableRoomActor {
                 self.player_initiative_rolls = initiative_checkpoint;
                 if let RoomError::Wal(wal_err) = &err {
                     tracing::error!(campaign_id = %self.campaign_id, error = %wal_err, "WAL append failed; command rolled back");
+                    if !is_undo {
+                        self.discard_ambiguous_append();
+                    }
                 }
                 return Err(err);
             }

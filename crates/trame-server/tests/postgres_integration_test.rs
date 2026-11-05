@@ -33,7 +33,7 @@ use trame_server::assets::store::AssetStore;
 use trame_server::auth::accounts::InstanceRole;
 use trame_server::auth::session::{IdentityStore, SessionStore, UserRecord, hash_session_token};
 use trame_server::campaigns::LIVE_SESSION_NUM;
-use trame_server::config::ServerConfig;
+use trame_server::config::{DEV_HMAC_SECRET, ServerConfig};
 use trame_server::http::build_router_with_postgres_store;
 use trame_server::instance::resolve_instance_id;
 use trame_server::notes::{
@@ -44,7 +44,7 @@ use trame_server::room::RoomLeaseManager;
 use trame_server::storage::SqlxPostgresStore;
 use trame_server::storage::postgres::journal_row_id;
 use trame_server::timeline::{AppendEventInput, TimelineError, TimelineStorage};
-use trame_server::wal::{TableStateSnapshot, WalEntry, WalStorage};
+use trame_server::wal::{TableStateSnapshot, UNDECODABLE_COMMAND_KIND, WalEntry, WalStorage};
 use uuid::Uuid;
 
 async fn harness() -> Option<(Router, Arc<SqlxPostgresStore>)> {
@@ -56,7 +56,7 @@ async fn harness() -> Option<(Router, Arc<SqlxPostgresStore>)> {
         return None;
     };
     let store = Arc::new(
-        SqlxPostgresStore::connect_and_migrate(&url, "/assets/download")
+        SqlxPostgresStore::connect_and_migrate(&url, "/assets/download", DEV_HMAC_SECRET.to_vec())
             .await
             .expect("connect and migrate"),
     );
@@ -931,9 +931,10 @@ async fn pg_instance_id_survives_restart() {
         ("override_does_not_rewrite_persisted_id", None, persisted),
     ];
     for (case, override_id, want) in cases {
-        let restarted = SqlxPostgresStore::connect_and_migrate(&url, "/assets/download")
-            .await
-            .expect("reconnect");
+        let restarted =
+            SqlxPostgresStore::connect_and_migrate(&url, "/assets/download", DEV_HMAC_SECRET.to_vec())
+                .await
+                .expect("reconnect");
         let got = resolve_instance_id(&restarted, override_id).await.unwrap();
         assert_eq!(got, want, "case {case}");
     }
@@ -1238,6 +1239,80 @@ async fn pg_poisoned_entry_quarantined() {
             expected_seqs.len(),
             "case {case}"
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_undecodable_row_quarantined_and_room_opens() {
+    let Some((_app, store)) = harness().await else {
+        return;
+    };
+    // (case_id, raw JSONB payload planted at seq 2)
+    let cases = [
+        ("pg_payload_not_a_wal_entry", serde_json::json!({ "garbage": true })),
+        ("pg_payload_is_a_number", serde_json::json!(42)),
+    ];
+    for (case, payload) in cases {
+        let (campaign_id, token_id) = seed_wal_campaign(&store);
+        store
+            .append_entry(pg_wal_entry(campaign_id, 1, pg_damage(token_id, 2)))
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO wal_entries (campaign_id, sequence_num, event_type, payload)
+             VALUES ($1, 2, 'TrameCommand', $2)",
+        )
+        .bind(campaign_id)
+        .bind(&payload)
+        .execute(store.pool())
+        .await
+        .unwrap();
+        store
+            .append_entry(pg_wal_entry(campaign_id, 3, pg_damage(token_id, 4)))
+            .unwrap();
+
+        assert_eq!(pg_hp(&store, campaign_id, token_id).await, 18, "case {case}");
+        let quarantined = store.list_quarantined_entries(campaign_id).unwrap();
+        let seqs: Vec<u64> = quarantined.iter().map(|q| q.seq_id).collect();
+        assert_eq!(seqs, vec![2, 3], "case {case}");
+        assert_eq!(
+            quarantined[0].command_kind, UNDECODABLE_COMMAND_KIND,
+            "case {case}"
+        );
+        assert_eq!(quarantined[0].payload, payload, "case {case}: raw payload kept");
+        assert_eq!(
+            store.load_entries_after(campaign_id, 1).unwrap(),
+            Vec::new(),
+            "case {case}: quarantined rows left the WAL"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_discard_entries_from_removes_the_tail() {
+    let Some((_app, store)) = harness().await else {
+        return;
+    };
+    // (case_id, discard from seq, remaining seqs)
+    let cases = [
+        ("pg_discard_ghost_tail", 2u64, vec![1u64]),
+        ("pg_discard_past_end_is_noop", 4, vec![1, 2, 3]),
+        ("pg_discard_everything", 1, vec![]),
+    ];
+    for (case, from, remaining) in cases {
+        let (campaign_id, token_id) = seed_wal_campaign(&store);
+        for seq in 1..=3 {
+            store
+                .append_entry(pg_wal_entry(campaign_id, seq, pg_damage(token_id, 1)))
+                .unwrap();
+        }
+        store.discard_entries_from(campaign_id, from).unwrap();
+        let left: Vec<u64> = store
+            .load_entries_after(campaign_id, 0)
+            .unwrap()
+            .iter()
+            .map(|r| r.seq_id)
+            .collect();
+        assert_eq!(left, remaining, "case {case}");
     }
 }
 

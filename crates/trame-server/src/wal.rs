@@ -42,6 +42,17 @@
 //!        `WalRecord::McpStaging` re-inserts a staged MCP proposal (RT3). The
 //!        record is untagged on the wire so entries written before staging was
 //!        logged (`"command": {"cmd": ...}`) still deserialize.
+//!   6. `Decode During Recovery, Not In Storage`:
+//!      - Stores return raw `StoredWalRow`s (sequence number + JSON payload);
+//!        `recover_table_state` decodes them. A row that no longer decodes
+//!        (schema drift, manual edit, corruption) fails like a replay error: it
+//!        and every later row are quarantined with their raw payload kept, and
+//!        the room opens instead of failing to load.
+//!   7. `Undoing Ambiguous Appends`:
+//!      - `WalStorage::discard_entries_from` deletes rows at or after a sequence
+//!        number. The room calls it after an append error, because the store
+//!        may have committed the row before reporting the failure; without it,
+//!        recovery would replay a command the client was told was rejected.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -49,8 +60,8 @@
 //!     ├── 1. Load latest `TableStateSnapshot` (or `TableState::default()` at `seq_id = 0`).
 //!     ├── 2. Rebuild `Bvh2D` from snapshot wall segments.
 //!     ├── 3. Query `storage.load_entries_after(campaign_id, snapshot_seq_id)`.
-//!     ├── 4. Replay each `WalEntry.command` on a clone; commit the clone on success.
-//!     ├── 5. On the first failure: quarantine it and every later entry, then
+//!     ├── 4. Decode each row and replay it on a clone; commit the clone on success.
+//!     ├── 5. On the first decode or replay failure: quarantine it and every later entry, then
 //!     │      write a fresh snapshot at the highest quarantined `seq_id`.
 //!     └── 6. Return `RecoveredTable { state, seq_id, quarantined }`.
 //! ============================================================================
@@ -75,6 +86,9 @@ pub enum WalError {
     /// Snapshot or WAL entry serialization/deserialization failed.
     #[error("Serialization failure: {0}")]
     Serialization(String),
+    /// The storage call did not complete within its deadline (a stalled database).
+    #[error("Storage call timed out after {0:?}")]
+    TimedOut(std::time::Duration),
     /// Replaying a historical `WalEntry` onto `TableState` failed during recovery.
     #[error("Replay error at seq_id {seq_id}: {reason}")]
     ReplayFailed {
@@ -137,8 +151,39 @@ pub struct WalEntry {
     pub events: Vec<TrameEvent>,
 }
 
+/// One WAL row as stored, before decoding: its sequence number and the raw JSON payload
+/// (a serialized `WalEntry` when the row is healthy).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredWalRow {
+    /// Sequence number of the row (`>= 1`), read from the row itself, not from the payload.
+    pub seq_id: u64,
+    /// Raw JSON payload; kept verbatim in quarantine when it does not decode.
+    pub payload: serde_json::Value,
+}
+
+impl StoredWalRow {
+    /// Serializes `entry` into the row the stores persist.
+    pub fn encode(entry: &WalEntry) -> Result<Self, WalError> {
+        Ok(Self {
+            seq_id: entry.seq_id,
+            payload: serde_json::to_value(entry)
+                .map_err(|e| WalError::Serialization(e.to_string()))?,
+        })
+    }
+
+    /// Decodes the payload into a `WalEntry`; the error message names the failure.
+    pub fn decode(&self) -> Result<WalEntry, String> {
+        serde_json::from_value(self.payload.clone())
+            .map_err(|e| format!("undecodable WAL payload: {e}"))
+    }
+}
+
+/// `QuarantinedWalEntry::command_kind` of a row whose payload does not decode.
+pub const UNDECODABLE_COMMAND_KIND: &str = "UNDECODABLE";
+
 /// WAL entry set aside because it, or an earlier entry of the same recovery, failed to
-/// replay (`GLOSSARY.md`, ADR-0040). Kept for inspection and never replayed automatically.
+/// decode or replay (`GLOSSARY.md`, ADR-0040). Kept for inspection and never replayed
+/// automatically.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuarantinedWalEntry {
     /// Campaign the entry belonged to.
@@ -202,12 +247,16 @@ pub trait WalStorage: Send + Sync {
         &self,
         campaign_id: Uuid,
     ) -> Result<Option<TableStateSnapshot>, WalError>;
-    /// Loads all `WalEntry` records for `campaign_id` with `seq_id > after_seq_id` in ascending order.
+    /// Loads every stored row of `campaign_id` with `seq_id > after_seq_id` in ascending order,
+    /// undecoded (see invariant 6).
     fn load_entries_after(
         &self,
         campaign_id: Uuid,
         after_seq_id: u64,
-    ) -> Result<Vec<WalEntry>, WalError>;
+    ) -> Result<Vec<StoredWalRow>, WalError>;
+    /// Deletes every WAL entry of `campaign_id` with `seq_id >= from_seq_id` (invariant 7).
+    /// Deleting rows that do not exist is a success.
+    fn discard_entries_from(&self, campaign_id: Uuid, from_seq_id: u64) -> Result<(), WalError>;
     /// Atomically stores `entries` as quarantined and removes every WAL entry of
     /// `campaign_id` with `seq_id >= from_seq_id`. Either both happen or neither does.
     fn quarantine_entries(
@@ -227,7 +276,7 @@ pub trait WalStorage: Send + Sync {
 #[derive(Default, Clone)]
 pub struct InMemoryWalStorage {
     snapshots: Arc<RwLock<HashMap<Uuid, TableStateSnapshot>>>,
-    entries: Arc<RwLock<HashMap<Uuid, Vec<WalEntry>>>>,
+    entries: Arc<RwLock<HashMap<Uuid, Vec<StoredWalRow>>>>,
     quarantined: Arc<RwLock<HashMap<Uuid, Vec<QuarantinedWalEntry>>>>,
 }
 
@@ -236,12 +285,29 @@ impl InMemoryWalStorage {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Stores `row` verbatim, replacing any row with the same `seq_id`. Lets tests plant a
+    /// payload that does not decode, as a corrupted database row would.
+    pub fn append_raw_row(&self, campaign_id: Uuid, row: StoredWalRow) -> Result<(), WalError> {
+        let mut guard = self.entries.write().map_err(|_| WalError::LockPoisoned)?;
+        let rows = guard.entry(campaign_id).or_default();
+        rows.retain(|r| r.seq_id != row.seq_id);
+        rows.push(row);
+        rows.sort_by_key(|r| r.seq_id);
+        Ok(())
+    }
 }
 
 impl WalStorage for InMemoryWalStorage {
     fn append_entry(&self, entry: WalEntry) -> Result<(), WalError> {
+        self.append_raw_row(entry.campaign_id, StoredWalRow::encode(&entry)?)
+    }
+
+    fn discard_entries_from(&self, campaign_id: Uuid, from_seq_id: u64) -> Result<(), WalError> {
         let mut guard = self.entries.write().map_err(|_| WalError::LockPoisoned)?;
-        guard.entry(entry.campaign_id).or_default().push(entry);
+        if let Some(rows) = guard.get_mut(&campaign_id) {
+            rows.retain(|r| r.seq_id < from_seq_id);
+        }
         Ok(())
     }
 
@@ -263,7 +329,7 @@ impl WalStorage for InMemoryWalStorage {
         &self,
         campaign_id: Uuid,
         after_seq_id: u64,
-    ) -> Result<Vec<WalEntry>, WalError> {
+    ) -> Result<Vec<StoredWalRow>, WalError> {
         let guard = self.entries.read().map_err(|_| WalError::LockPoisoned)?;
         let list = guard
             .get(&campaign_id)
@@ -365,12 +431,15 @@ pub fn recover_table_state(
     };
 
     let trailing = storage.load_entries_after(campaign_id, seq_id)?;
-    for (index, entry) in trailing.iter().enumerate() {
-        let mut candidate = state.clone();
-        match replay_record(&mut candidate, entry) {
-            Ok(()) => {
+    for (index, row) in trailing.iter().enumerate() {
+        let replayed = row.decode().and_then(|entry| {
+            let mut candidate = state.clone();
+            replay_record(&mut candidate, &entry).map(|()| candidate)
+        });
+        match replayed {
+            Ok(candidate) => {
                 state = candidate;
-                seq_id = entry.seq_id;
+                seq_id = row.seq_id;
             }
             Err(reason) => {
                 let quarantined =
@@ -383,7 +452,7 @@ pub fn recover_table_state(
                 }
                 tracing::warn!(
                     %campaign_id,
-                    failed_seq_id = entry.seq_id,
+                    failed_seq_id = row.seq_id,
                     quarantined = quarantined.len(),
                     %reason,
                     "WAL replay failed; entries quarantined"
@@ -404,37 +473,36 @@ pub fn recover_table_state(
     })
 }
 
-/// Moves `tail` (the failing entry first) into quarantine and returns the stored records.
+/// Moves `tail` (the failing row first) into quarantine, payloads verbatim, and returns the
+/// stored records.
 fn quarantine_tail(
     storage: &dyn WalStorage,
     campaign_id: Uuid,
-    tail: &[WalEntry],
+    tail: &[StoredWalRow],
     reason: &str,
 ) -> Result<Vec<QuarantinedWalEntry>, WalError> {
     let Some(first) = tail.first() else {
         return Ok(Vec::new());
     };
     let now = crate::room::now_ms();
-    let records = tail
+    let records: Vec<QuarantinedWalEntry> = tail
         .iter()
-        .map(|entry| {
-            let payload =
-                serde_json::to_value(entry).map_err(|e| WalError::Serialization(e.to_string()))?;
-            let error = if entry.seq_id == first.seq_id {
+        .map(|row| QuarantinedWalEntry {
+            campaign_id,
+            seq_id: row.seq_id,
+            command_kind: row.decode().map_or_else(
+                |_| UNDECODABLE_COMMAND_KIND.to_string(),
+                |entry| entry.command.kind(),
+            ),
+            payload: row.payload.clone(),
+            error: if row.seq_id == first.seq_id {
                 reason.to_string()
             } else {
                 format!("follows failed entry {}", first.seq_id)
-            };
-            Ok(QuarantinedWalEntry {
-                campaign_id,
-                seq_id: entry.seq_id,
-                command_kind: entry.command.kind(),
-                payload,
-                error,
-                quarantined_at_ms: now,
-            })
+            },
+            quarantined_at_ms: now,
         })
-        .collect::<Result<Vec<_>, WalError>>()?;
+        .collect();
     storage.quarantine_entries(campaign_id, first.seq_id, records.clone())?;
     Ok(records)
 }

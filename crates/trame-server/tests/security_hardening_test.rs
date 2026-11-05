@@ -1404,7 +1404,10 @@ async fn sec15_healthz_pings_configured_postgres() {
         ("in_memory_storage_healthy", None, StatusCode::OK),
         (
             "unreachable_postgres_unavailable",
-            Some(Arc::new(SqlxPostgresStore::new(unreachable))),
+            Some(Arc::new(SqlxPostgresStore::new(
+                unreachable,
+                STRONG_SECRET.to_vec(),
+            ))),
             StatusCode::SERVICE_UNAVAILABLE,
         ),
     ];

@@ -175,10 +175,13 @@ async fn main() {
 
     let (app, lease_manager) = if let Some(db_url) = config.database_url.clone() {
         let store = Arc::new(
-            SqlxPostgresStore::connect_and_migrate(&db_url, "/assets/download")
-                .await
-                .expect("Failed to connect and migrate PostgreSQL store")
-                .with_signing_secret(config.secrets.asset_signing_secret.clone()),
+            SqlxPostgresStore::connect_and_migrate(
+                &db_url,
+                "/assets/download",
+                config.secrets.asset_signing_secret.clone(),
+            )
+            .await
+            .expect("Failed to connect and migrate PostgreSQL store"),
         );
         tracing::info!("connected to PostgreSQL and applied migrations");
         let instance_id = prepare_instance(store.as_ref(), &config).await;
