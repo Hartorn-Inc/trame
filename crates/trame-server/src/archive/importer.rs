@@ -31,6 +31,10 @@
 //!   - Legacy `assets/<uuid>.webp` entries with WebP magic bytes are also put in the
 //!     `AssetStore` under their content-addressed key (SHA-256 stem) when one is
 //!     configured (SEC16), so they survive restarts of the in-memory blob store.
+//!   - Every verified asset (legacy or `stored-assets/`) is written to the `AssetStore`
+//!     as soon as its entry is verified; nothing accumulates, so an import holds at most
+//!     one asset in memory. At most `MAX_CONCURRENT_IMPORTS` imports run at once
+//!     (`ARCHIVE_IMPORT_PERMITS`); later ones wait.
 //!   - Every persisted entity, note, and asset is attributed to the imported
 //!     campaign ID (`CampaignImportTarget` takes an explicit `campaign_id`).
 //!   - `stored-assets/<stem>.webp` entries (content-addressed `AssetStore` blobs, see
@@ -49,9 +53,9 @@
 //!      remapping all entity/note/asset UUIDs and rewriting `[[<uuid>]]` /
 //!      `[[<uuid>|<label>]]` wikilinks.
 //!   4. Rewrite content-addressed asset keys and collect missing ones.
-//!   5. Stream and verify each `assets/<uuid>.webp` entry into `BlobStore`, put the
-//!      `stored-assets/` blobs into the `AssetStore`, then persist the campaign
-//!      metadata, entities, and notes.
+//!   5. Stream and verify each `assets/<uuid>.webp` entry into `BlobStore` (and its
+//!      WebP copy into the `AssetStore`; `stored-assets/` blobs were stored in step 3
+//!      as each was verified), then persist the campaign metadata, entities, and notes.
 //! ============================================================================
 
 use super::exporter::{ExportEntity, NoteRecord};
@@ -114,6 +118,15 @@ pub const MAX_ASSET_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Maximum total uncompressed bytes across all entries of one archive (512 MiB).
 pub const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Archive imports allowed to run at once across the whole server.
+pub const MAX_CONCURRENT_IMPORTS: usize = 2;
+
+/// Global gate held for the whole of one import: each import may buffer a 32 MiB text
+/// entry and a 64 MiB asset at once, so bounding concurrency bounds their total memory.
+/// Further imports wait their turn.
+pub static ARCHIVE_IMPORT_PERMITS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(MAX_CONCURRENT_IMPORTS);
 
 fn entry_byte_cap(path: &str) -> u64 {
     if path.starts_with("assets/") {
@@ -386,11 +399,34 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
         self.execute_import(reader, remap_ids).await
     }
 
+    /// Stores one verified content-addressed WebP blob under `campaign_id` in the configured
+    /// asset store. Returns `false` (and stores nothing) when no asset store is configured.
+    async fn put_verified_asset(
+        &self,
+        campaign_id: Uuid,
+        stem: &str,
+        bytes: Bytes,
+    ) -> Result<bool, ArchiveError> {
+        let Some((asset_store, instance_id)) = &self.asset_store else {
+            return Ok(false);
+        };
+        let key = stored_assets::asset_key(*instance_id, campaign_id, stem);
+        asset_store
+            .put_asset(&key, bytes, "image/webp")
+            .await
+            .map_err(|err| ArchiveError::Io(std::io::Error::other(err.to_string())))?;
+        Ok(true)
+    }
+
     async fn execute_import<R: AsyncBufRead + AsyncSeek + Unpin + Send>(
         &self,
         reader: R,
         remap_ids: bool,
     ) -> Result<ImportResult, ArchiveError> {
+        let _permit = ARCHIVE_IMPORT_PERMITS
+            .acquire()
+            .await
+            .map_err(|e| ArchiveError::Io(std::io::Error::other(e.to_string())))?;
         let mut zip_reader = ZipFileReader::with_tokio(reader).await?;
         let entry_count = zip_reader.file().entries().len();
         if entry_count == 0 {
@@ -538,7 +574,8 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
         // Process non-asset entries (database.jsonl and notes/*.md)
         let mut entities = Vec::new();
         let mut notes = Vec::new();
-        let mut embedded_assets: Vec<(String, Bytes)> = Vec::new();
+        let mut embedded_stems: Vec<String> = Vec::new();
+        let mut assets_restored = 0usize;
         let mut owners: Vec<Option<serde_json::Value>> = Vec::new();
 
         for (idx, filename) in zip_entry_names.iter().enumerate() {
@@ -628,7 +665,13 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                         "stored asset '{filename}' is not a content-addressed WebP image"
                     )));
                 }
-                embedded_assets.push((stem.to_string(), Bytes::from(content)));
+                if self
+                    .put_verified_asset(new_campaign_id, stem, Bytes::from(content))
+                    .await?
+                {
+                    assets_restored += 1;
+                }
+                embedded_stems.push(stem.to_string());
             }
         }
 
@@ -669,9 +712,7 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                 ));
             }
             for (key, stem) in referenced {
-                if !embedded_assets.iter().any(|(s, _)| *s == stem)
-                    && !missing_asset_keys.contains(&key)
-                {
+                if !embedded_stems.contains(&stem) && !missing_asset_keys.contains(&key) {
                     missing_asset_keys.push(key);
                 }
             }
@@ -696,8 +737,6 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
         // Stream asset entries in bounded 64 KiB chunks
         let mut uploaded_asset_ids: Vec<String> = Vec::new();
         let mut uploaded_asset_uuids: Vec<Uuid> = Vec::new();
-        let mut legacy_assets: Vec<(String, Bytes)> = Vec::new();
-        let mut assets_restored = 0usize;
 
         for (idx, filename) in zip_entry_names.iter().enumerate() {
             if !filename.starts_with("assets/") || !filename.ends_with(".webp") {
@@ -822,13 +861,6 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                     return Err(err);
                 }
             };
-            // SEC16: legacy blobs also land in the persistent asset store, content-addressed
-            // by their verified SHA-256, so they survive a restart of the in-memory blob store.
-            if is_webp(&copy) && is_valid_stem(&digest) {
-                legacy_assets.push((digest, Bytes::from(copy)));
-            } else if keep_copy {
-                tracing::warn!(entry = %filename, "legacy asset is not WebP; kept in the blob store only");
-            }
             if let Err(err) = put_res {
                 let _ = self.blob_store.delete(&target_asset_id_str).await;
                 for aid in &uploaded_asset_ids {
@@ -836,31 +868,25 @@ impl<T: CampaignImportTarget, B: BlobStore> ArchiveImporter<T, B> {
                 }
                 return Err(ArchiveError::Storage(err));
             }
-
             uploaded_asset_ids.push(target_asset_id_str);
             uploaded_asset_uuids.push(target_asset_id);
             assets_restored += 1;
-        }
 
-        if let Some((asset_store, instance_id)) = &self.asset_store {
-            for (stem, bytes) in legacy_assets {
-                let key = stored_assets::asset_key(*instance_id, new_campaign_id, &stem);
-                if let Err(err) = asset_store.put_asset(&key, bytes, "image/webp").await {
+            // SEC16: legacy blobs also land in the persistent asset store, content-addressed
+            // by their verified SHA-256, so they survive a restart of the in-memory blob store.
+            // Written now, so at most one asset is held in memory at a time.
+            if is_webp(&copy) && is_valid_stem(&digest) {
+                if let Err(err) = self
+                    .put_verified_asset(new_campaign_id, &digest, Bytes::from(copy))
+                    .await
+                {
                     for aid in &uploaded_asset_ids {
                         let _ = self.blob_store.delete(aid.as_str()).await;
                     }
-                    return Err(ArchiveError::Io(std::io::Error::other(err.to_string())));
+                    return Err(err);
                 }
-            }
-            for (stem, bytes) in embedded_assets {
-                let key = stored_assets::asset_key(*instance_id, new_campaign_id, &stem);
-                if let Err(err) = asset_store.put_asset(&key, bytes, "image/webp").await {
-                    for aid in &uploaded_asset_ids {
-                        let _ = self.blob_store.delete(aid.as_str()).await;
-                    }
-                    return Err(ArchiveError::Io(std::io::Error::other(err.to_string())));
-                }
-                assets_restored += 1;
+            } else if keep_copy {
+                tracing::warn!(entry = %filename, "legacy asset is not WebP; kept in the blob store only");
             }
         }
 

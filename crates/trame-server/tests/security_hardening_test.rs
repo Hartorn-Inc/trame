@@ -35,9 +35,10 @@ use tokio::sync::mpsc;
 use tower::ServiceExt;
 use trame_engine::commands::{CampaignRole, TableState, TokenState, TrameCommand, TrameEvent};
 use trame_engine::geometry::{Point2D, WallKind, WallSegment};
+use trame_server::archive::importer::{ARCHIVE_IMPORT_PERMITS, MAX_CONCURRENT_IMPORTS};
 use trame_server::archive::stored_assets;
 use trame_server::archive::{
-    ArchiveEntryDescriptor, CampaignManifest, CampaignMetadata, ExportEntity,
+    ArchiveEntryDescriptor, ArchiveImporter, CampaignManifest, CampaignMetadata, ExportEntity,
     InMemoryCampaignStore, ManifestStats,
 };
 use trame_server::assets::store::{AssetStore, InMemoryAssetStore, PRESIGNED_URL_DEFAULT_TTL};
@@ -1307,7 +1308,13 @@ fn small_png() -> Vec<u8> {
 async fn sec14_upload_rejects_pixel_area_before_decoding() {
     // (case_id, uploader role, body, expected status, expected message fragment)
     let cases = [
-        ("small_image_accepted", "GM", small_png(), StatusCode::CREATED, ""),
+        (
+            "small_image_accepted",
+            "GM",
+            small_png(),
+            StatusCode::CREATED,
+            "",
+        ),
         (
             "area_over_cap_with_sides_in_range",
             "GM",
@@ -1375,7 +1382,11 @@ async fn sec14_uploads_are_rate_limited_per_account() {
             "third_upload_throttled",
             2,
             3,
-            vec![StatusCode::CREATED, StatusCode::CREATED, StatusCode::TOO_MANY_REQUESTS],
+            vec![
+                StatusCode::CREATED,
+                StatusCode::CREATED,
+                StatusCode::TOO_MANY_REQUESTS,
+            ],
         ),
         (
             "failed_decodes_count_too",
@@ -1748,6 +1759,107 @@ async fn sec6_imports_are_capped_per_account() {
     for (case, cookie, expected) in cases {
         let (status, _) = send(&app, import(cookie)).await;
         assert_eq!(status, expected, "case {case}");
+    }
+}
+
+/// Archive whose `assets/` entries are `(bytes, declared digest is correct)`, in order.
+async fn legacy_asset_archive(assets: &[(&[u8], bool)]) -> (Vec<u8>, Uuid) {
+    let campaign_id = Uuid::new_v4();
+    let named: Vec<(String, &[u8], bool)> = assets
+        .iter()
+        .map(|(bytes, ok)| (format!("assets/{}.webp", Uuid::new_v4()), *bytes, *ok))
+        .collect();
+    let manifest = CampaignManifest::new(
+        campaign_meta(campaign_id, "Legacy"),
+        "2026-01-01T00:00:00Z".to_string(),
+        ManifestStats::default(),
+        named
+            .iter()
+            .map(|(path, bytes, ok)| ArchiveEntryDescriptor {
+                path: path.clone(),
+                byte_size: bytes.len() as u64,
+                sha256: if *ok {
+                    Sha256Hasher::digest(bytes)
+                } else {
+                    Sha256Hasher::digest(b"tampered")
+                },
+            })
+            .collect(),
+    );
+    let mut out = Vec::new();
+    let mut writer = ZipFileWriter::with_tokio(Cursor::new(&mut out));
+    let m = serde_json::to_vec(&manifest).unwrap();
+    let all = std::iter::once(("manifest.json".to_string(), m.as_slice()))
+        .chain(named.iter().map(|(p, b, _)| (p.clone(), *b)));
+    for (name, data) in all {
+        let mut sink = writer
+            .write_entry_stream(ZipEntryBuilder::new(name.into(), Compression::Stored))
+            .await
+            .unwrap();
+        sink.write_all(data).await.unwrap();
+        sink.close().await.unwrap();
+    }
+    writer.close().await.unwrap();
+    (out, campaign_id)
+}
+
+#[tokio::test]
+async fn sec16_each_legacy_asset_is_stored_as_soon_as_it_is_verified() {
+    let first: &[u8] = b"RIFF\x10\x00\x00\x00WEBPVP8 first-map";
+    let second: &[u8] = b"RIFF\x10\x00\x00\x00WEBPVP8 second-map";
+    // (case_id, assets in archive order, import succeeds)
+    let cases: [(&str, Vec<(&[u8], bool)>, bool); 2] = [
+        ("all_verified", vec![(first, true), (second, true)], true),
+        (
+            "later_entry_tampered",
+            vec![(first, true), (second, false)],
+            false,
+        ),
+    ];
+    for (case, assets, succeeds) in cases {
+        let (archive, campaign_id) = legacy_asset_archive(&assets).await;
+        let asset_store = Arc::new(InMemoryAssetStore::new());
+        let instance_id = Uuid::new_v4();
+        let importer = ArchiveImporter::new(InMemoryCampaignStore::new(), InMemoryBlobStore::new())
+            .with_asset_store(asset_store.clone(), instance_id);
+        let result = importer.import_stream(Cursor::new(archive), false).await;
+        assert_eq!(result.is_ok(), succeeds, "case {case}: {result:?}");
+        // The first asset was written before the second was even read: nothing is held
+        // back until the end of the archive.
+        let key = stored_assets::asset_key(instance_id, campaign_id, &Sha256Hasher::digest(first));
+        assert!(
+            asset_store.get_asset(&key).await.unwrap().is_some(),
+            "case {case}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sec16_concurrent_imports_wait_for_a_free_slot() {
+    let webp: &[u8] = b"RIFF\x10\x00\x00\x00WEBPVP8 gated-map";
+    // (case_id, import slots held elsewhere, import finishes within the deadline)
+    let cases = [
+        ("all_slots_busy_import_waits", MAX_CONCURRENT_IMPORTS, false),
+        (
+            "one_slot_free_import_runs",
+            MAX_CONCURRENT_IMPORTS - 1,
+            true,
+        ),
+    ];
+    for (case, held, finishes) in cases {
+        let busy = ARCHIVE_IMPORT_PERMITS
+            .acquire_many(held as u32)
+            .await
+            .unwrap();
+        let (archive, _) = legacy_asset_archive(&[(webp, true)]).await;
+        let importer = ArchiveImporter::new(InMemoryCampaignStore::new(), InMemoryBlobStore::new());
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(500),
+            importer.import_stream(Cursor::new(archive), false),
+        )
+        .await;
+        assert_eq!(outcome.is_ok(), finishes, "case {case}");
+        drop(busy);
     }
 }
 
