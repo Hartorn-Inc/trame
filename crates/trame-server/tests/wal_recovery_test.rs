@@ -723,7 +723,11 @@ async fn undecodable_rows_are_quarantined_and_the_room_opens() {
         c.wal.inner.append_entry(c.entry(3, c.damage(4))).unwrap();
 
         let room = c.boot(25).await;
-        assert_eq!(Campaign::hp(&room, c.token).await, MAX_HP - 2, "case {case}");
+        assert_eq!(
+            Campaign::hp(&room, c.token).await,
+            MAX_HP - 2,
+            "case {case}"
+        );
         assert_eq!(room.metrics().await.unwrap().seq_id, 3, "case {case}");
         let quarantined = c.wal.list_quarantined_entries(c.id).unwrap();
         let seqs: Vec<u64> = quarantined.iter().map(|q| q.seq_id).collect();
@@ -732,7 +736,10 @@ async fn undecodable_rows_are_quarantined_and_the_room_opens() {
             quarantined[0].command_kind, UNDECODABLE_COMMAND_KIND,
             "case {case}"
         );
-        assert_eq!(quarantined[0].payload, payload, "case {case}: raw payload kept");
+        assert_eq!(
+            quarantined[0].payload, payload,
+            "case {case}: raw payload kept"
+        );
         let (next_seq, _) = room
             .dispatch_direct_command(c.gm_actor(), c.damage(1))
             .await
@@ -879,9 +886,9 @@ async fn player_initiative_cleared_on_turn_by_turn_transitions() {
         drain(&mut player_rx);
         room.send_envelope(player_session, roll()).await.unwrap();
         let frames = drain(&mut player_rx);
-        let rolled = frames.iter().any(
-            |f| matches!(f, ServerEnvelope::DiceRolled(r) if r.reason == "Initiative: Hero"),
-        );
+        let rolled = frames
+            .iter()
+            .any(|f| matches!(f, ServerEnvelope::DiceRolled(r) if r.reason == "Initiative: Hero"));
         assert_eq!(rolled, expect_roll, "case {case}");
         assert_eq!(rejection(&frames).is_some(), !expect_roll, "case {case}");
     }
@@ -1127,10 +1134,17 @@ async fn membership_removed_during_attach_closes_4403() {
                 matches!(ws_read(&mut ws).await, ServerEnvelope::StateSnapshot { .. }),
                 "case {case}"
             );
-            let ping = rmp_serde::to_vec_named(&ClientEnvelope::Ping { client_time_ms: 7 }).unwrap();
+            let ping =
+                rmp_serde::to_vec_named(&ClientEnvelope::Ping { client_time_ms: 7 }).unwrap();
             ws_write(&mut ws, &ping).await;
             assert!(
-                matches!(ws_read(&mut ws).await, ServerEnvelope::Pong { client_time_ms: 7, .. }),
+                matches!(
+                    ws_read(&mut ws).await,
+                    ServerEnvelope::Pong {
+                        client_time_ms: 7,
+                        ..
+                    }
+                ),
                 "case {case}"
             );
         }

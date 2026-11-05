@@ -472,7 +472,10 @@ fn decode_guarded_image(raw: &[u8], max_pixel_area: u64) -> Result<DynamicImage,
 /// Validates an uploaded raster with the same guards as map import, capped at
 /// `max_pixel_area` (`MAX_IMAGE_PIXEL_AREA` for GMs, `MAX_PLAYER_IMAGE_PIXEL_AREA` for
 /// players), and re-encodes it as WebP. Re-encoding strips polyglot trailers and metadata.
-pub fn transcode_upload_to_webp(raw: &[u8], max_pixel_area: u64) -> Result<Vec<u8>, UvttImportError> {
+pub fn transcode_upload_to_webp(
+    raw: &[u8],
+    max_pixel_area: u64,
+) -> Result<Vec<u8>, UvttImportError> {
     let decoded = decode_guarded_image(raw, max_pixel_area)?;
     encode_image(&decoded, ImageFormat::WebP)
 }
@@ -518,8 +521,16 @@ mod tests {
     async fn decode_waits_for_a_free_permit() {
         // (case_id, permits held by other decodes, decode finishes within the deadline)
         let cases = [
-            ("all_permits_busy_decode_waits", MAX_CONCURRENT_IMAGE_DECODES, false),
-            ("one_permit_free_decode_runs", MAX_CONCURRENT_IMAGE_DECODES - 1, true),
+            (
+                "all_permits_busy_decode_waits",
+                MAX_CONCURRENT_IMAGE_DECODES,
+                false,
+            ),
+            (
+                "one_permit_free_decode_runs",
+                MAX_CONCURRENT_IMAGE_DECODES - 1,
+                true,
+            ),
         ];
         for (case, held, finishes) in cases {
             let busy = IMAGE_DECODE_PERMITS

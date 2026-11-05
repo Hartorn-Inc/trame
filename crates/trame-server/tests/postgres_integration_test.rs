@@ -931,10 +931,13 @@ async fn pg_instance_id_survives_restart() {
         ("override_does_not_rewrite_persisted_id", None, persisted),
     ];
     for (case, override_id, want) in cases {
-        let restarted =
-            SqlxPostgresStore::connect_and_migrate(&url, "/assets/download", DEV_HMAC_SECRET.to_vec())
-                .await
-                .expect("reconnect");
+        let restarted = SqlxPostgresStore::connect_and_migrate(
+            &url,
+            "/assets/download",
+            DEV_HMAC_SECRET.to_vec(),
+        )
+        .await
+        .expect("reconnect");
         let got = resolve_instance_id(&restarted, override_id).await.unwrap();
         assert_eq!(got, want, "case {case}");
     }
@@ -1249,7 +1252,10 @@ async fn pg_undecodable_row_quarantined_and_room_opens() {
     };
     // (case_id, raw JSONB payload planted at seq 2)
     let cases = [
-        ("pg_payload_not_a_wal_entry", serde_json::json!({ "garbage": true })),
+        (
+            "pg_payload_not_a_wal_entry",
+            serde_json::json!({ "garbage": true }),
+        ),
         ("pg_payload_is_a_number", serde_json::json!(42)),
     ];
     for (case, payload) in cases {
@@ -1270,7 +1276,11 @@ async fn pg_undecodable_row_quarantined_and_room_opens() {
             .append_entry(pg_wal_entry(campaign_id, 3, pg_damage(token_id, 4)))
             .unwrap();
 
-        assert_eq!(pg_hp(&store, campaign_id, token_id).await, 18, "case {case}");
+        assert_eq!(
+            pg_hp(&store, campaign_id, token_id).await,
+            18,
+            "case {case}"
+        );
         let quarantined = store.list_quarantined_entries(campaign_id).unwrap();
         let seqs: Vec<u64> = quarantined.iter().map(|q| q.seq_id).collect();
         assert_eq!(seqs, vec![2, 3], "case {case}");
@@ -1278,7 +1288,10 @@ async fn pg_undecodable_row_quarantined_and_room_opens() {
             quarantined[0].command_kind, UNDECODABLE_COMMAND_KIND,
             "case {case}"
         );
-        assert_eq!(quarantined[0].payload, payload, "case {case}: raw payload kept");
+        assert_eq!(
+            quarantined[0].payload, payload,
+            "case {case}: raw payload kept"
+        );
         assert_eq!(
             store.load_entries_after(campaign_id, 1).unwrap(),
             Vec::new(),

@@ -1396,7 +1396,12 @@ async fn handle_ws_connection(
         .is_none()
     {
         let _ = room_handle.disconnect_client(session_id).await;
-        close_socket(socket, WS_CLOSE_CODE_MEMBERSHIP_REVOKED, "Membership Revoked").await;
+        close_socket(
+            socket,
+            WS_CLOSE_CODE_MEMBERSHIP_REVOKED,
+            "Membership Revoked",
+        )
+        .await;
         return;
     }
 
@@ -1431,8 +1436,11 @@ async fn handle_ws_connection(
             continue;
         };
         let envelope = resolve_client_envelope(&state, campaign_id, envelope).await;
-        match tokio::time::timeout(room_timeout, room_handle.send_envelope(session_id, envelope))
-            .await
+        match tokio::time::timeout(
+            room_timeout,
+            room_handle.send_envelope(session_id, envelope),
+        )
+        .await
         {
             // The actor died (RT9): closing the socket makes the client reconnect, which
             // wakes a fresh actor from storage.

@@ -839,9 +839,8 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
             }
             (resist, immune, vuln)
         });
-    let dex_mod = i32_at(data, &["abilities", "dex", "score"]).map(|s| {
-        (s.clamp(*ABILITY_SCORES.start(), *ABILITY_SCORES.end()) - 10).div_euclid(2)
-    });
+    let dex_mod = i32_at(data, &["abilities", "dex", "score"])
+        .map(|s| (s.clamp(*ABILITY_SCORES.start(), *ABILITY_SCORES.end()) - 10).div_euclid(2));
     ActorTacticalSync {
         name: name.map(str::to_string),
         hp_current: i32_at(data, &["attributes", "hp", "current"]),
