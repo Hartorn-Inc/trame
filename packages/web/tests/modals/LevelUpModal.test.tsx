@@ -127,7 +127,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
   });
 
   it("WHEN LevelUpModal Step 2 is set to 'Fixed average', LevelUpModal displays deterministic HP gain floor(hitDieSize / 2) + 1 + conMod (AC2)", async () => {
-    const actor = createDefaultActorData("actor-fighter", "Valeros");
+    const actor = createDefaultActorData("actor-fighter", "Kael");
     actor.classId = "fighter";
     actor.attributes.level = 1;
     actor.attributes.hitDieSize = 10; // Fighter d10
@@ -331,7 +331,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
   });
 
   it("WHEN user clicks 'Confirm and Apply', LevelUpModal invokes applyLevelUp with compiled LevelUpOptions, calls onSave with mutated actor, and triggers onClose (AC6)", async () => {
-    const actor = createDefaultActorData("actor-fighter", "Valeros");
+    const actor = createDefaultActorData("actor-fighter", "Kael");
     actor.classId = "fighter";
     actor.attributes.level = 1;
     actor.attributes.hp.max = 12;

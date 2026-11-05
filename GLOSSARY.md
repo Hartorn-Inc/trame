@@ -143,7 +143,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ConcentrationCheckPrompt
 
-- **Definition**: Interactive prompt emitted by the damage pipeline when a concentrating actor takes damage, with a Difficulty Class equal to `Math.max(10, Math.floor(damageTaken / 2))`.
+- **Definition**: Interactive prompt emitted by the damage pipeline when a concentrating actor takes damage, with a Difficulty Class equal to `Math.min(30, Math.max(10, Math.floor(damageTaken / 2)))` (minimum 10, capped at 30).
 - **Allowed Context**: `ConcentrationCheckPrompt`, `concentration check prompt`.
 - **_Avoid_**: `concentration check`, `concentration save prompt`, `concentration DC`.
 
@@ -251,7 +251,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### LongRest
 
-- **Definition**: Extended rest period of at least 8 hours restoring all HP, resetting temporary HP to 0, restoring `Math.max(1, Math.floor(hitDiceMax / 2))` hit dice, reducing exhaustion by 1 level, and resetting all spell slots and long-rest resource pools.
+- **Definition**: Extended rest period of at least 8 hours restoring all HP, resetting temporary HP to 0, restoring all spent hit dice (`hitDiceCurrent = hitDiceMax`), reducing exhaustion by 1 level, and resetting all spell slots and long-rest resource pools.
 - **Allowed Context**: `LongRest`, `long rest`.
 - **_Avoid_**: `extended rest`, `full rest`.
 

@@ -17,22 +17,22 @@ import { assertAbsent } from "./helpers/domAssert.ts";
 describe("[E5-T1] Wiki Markdown Parser & Zero-Trust Role Filtering", () => {
   it("extracts [[Entity]] and [[Entity|Custom Label]] wikilinks cleanly", () => {
     const text =
-      "The rogue [[Valeros]] visited [[Cragmaw Castle|the fortress]] and retrieved the [[Sunblade]].";
+      "The rogue [[Kael]] visited [[Thornwall Keep|the fortress]] and retrieved the [[Sunblade]].";
     const links = extractWikilinks(text);
 
     assert.equal(links.length, 3);
-    assert.equal(links[0].target, "Valeros");
-    assert.equal(links[0].label, "Valeros");
+    assert.equal(links[0].target, "Kael");
+    assert.equal(links[0].label, "Kael");
 
-    assert.equal(links[1].target, "Cragmaw Castle");
+    assert.equal(links[1].target, "Thornwall Keep");
     assert.equal(links[1].label, "the fortress");
 
     assert.equal(links[2].target, "Sunblade");
     assert.equal(links[2].label, "Sunblade");
 
     const html = renderWikiLinksToHtml(text);
-    assert.ok(html.includes('<a class="wiki-entity-link" href="#entity/Valeros" data-entity="Valeros">Valeros</a>'));
-    assert.ok(html.includes('<a class="wiki-entity-link" href="#entity/Cragmaw Castle" data-entity="Cragmaw Castle">the fortress</a>'));
+    assert.ok(html.includes('<a class="wiki-entity-link" href="#entity/Kael" data-entity="Kael">Kael</a>'));
+    assert.ok(html.includes('<a class="wiki-entity-link" href="#entity/Thornwall Keep" data-entity="Thornwall Keep">the fortress</a>'));
   });
 
   it("parses :::dm and :::handout directive blocks into typed AST", () => {

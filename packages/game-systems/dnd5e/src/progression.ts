@@ -67,7 +67,13 @@ import type {
   TurnTrigger,
 } from "./types.ts";
 import { calculateProficiencyBonus, computeDnd5eSheetDerived } from "./manifest.ts";
-import { getSpeciesRules, validateFeatSelection } from "./origins.ts";
+import {
+  getFeatSlotOptions,
+  getSpeciesRules,
+  validateFeatSelection,
+  type FeatSelectionContext,
+  type SrdFeatId,
+} from "./origins.ts";
 
 export type {
   AsiOrFeatSelection,
@@ -647,6 +653,48 @@ export const PACT_MAGIC_SPELL_SLOTS: Record<number, PactMagicProgression> = {
 };
 
 /**
+ * Whether `classId` has gained the class feature named `featureName`
+ * (canonical English name, e.g. `"Fighting Style"`) by `characterLevel`.
+ */
+export function hasClassFeature(classId: string | undefined, characterLevel: number, featureName: string): boolean {
+  const features = getClassProgression(classId)?.features ?? {};
+  return Object.entries(features).some(
+    ([level, names]) => Number(level) <= characterLevel && names.includes(featureName)
+  );
+}
+
+function actorClassId(actor: Dnd5eActorData): string | undefined {
+  return (actor.classId ?? actor.class ?? actor.attributes.classId ?? actor.attributes.class)?.toString();
+}
+
+function featSelectionContext(
+  actor: Dnd5eActorData,
+  classId: string | undefined,
+  targetLevel: number
+): FeatSelectionContext {
+  return {
+    targetLevel,
+    abilities: Object.fromEntries(
+      Object.entries(actor.abilities).map(([ab, { score }]) => [ab, score])
+    ) as Record<AbilityId, number>,
+    heldFeatIds: actor.features ?? [],
+    hasSpellcasting: getCasterTypeForClass(classId) !== "none",
+    hasFightingStyle: hasClassFeature(classId, targetLevel, "Fighting Style"),
+  };
+}
+
+/**
+ * SRD feats `actor` may take at the feat slot of `targetLevel` (defaults to
+ * the next level), including Fighting Style feats for classes with the
+ * Fighting Style feature. Returns `[]` when that level has no feat slot.
+ */
+export function getLevelUpFeatOptions(actor: Dnd5eActorData, targetLevel = actor.attributes.level + 1): SrdFeatId[] {
+  const classId = actorClassId(actor);
+  if (!isAsiLevel(targetLevel, classId)) return [];
+  return getFeatSlotOptions(featSelectionContext(actor, classId, targetLevel));
+}
+
+/**
  * Advances `actor` by one character level (up to level 20), validating level increment,
  * subclass tiers, HP progression mode, ASI/Feat selection, and reconciling spell slots.
  */
@@ -740,12 +788,7 @@ export function applyLevelUp(
         throw new Error("Invalid featId value");
       }
       featIncrease = validateFeatSelection(options.asiOrFeat.featId, {
-        targetLevel,
-        abilities: Object.fromEntries(
-          Object.entries(actor.abilities).map(([ab, { score }]) => [ab, score])
-        ) as Record<AbilityId, number>,
-        heldFeatIds: actor.features ?? [],
-        hasSpellcasting: getCasterTypeForClass(classId) !== "none",
+        ...featSelectionContext(actor, classId, targetLevel),
         abilityIncrease: options.asiOrFeat.abilityIncrease,
       });
     }

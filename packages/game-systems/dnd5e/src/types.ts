@@ -296,6 +296,74 @@ export interface SpellSlotsState {
   pact?: SpellSlotTier;
 }
 
+/** Armor training category (SRD 5.2.1 class "Armor Training"). */
+export type ArmorTraining = "light" | "medium" | "heavy" | "shield";
+
+/**
+ * Weapon proficiency token:
+ * - `"simple"` / `"martial"`: every weapon of that category.
+ * - `"martial_light"`: Martial weapons with the Light property (Monk).
+ * - `"martial_finesse_or_light"`: Martial weapons with Finesse or Light (Rogue).
+ * - any other string: one weapon by compendium id (e.g. `"srd:item:longbow"`).
+ */
+export type WeaponProficiency = "simple" | "martial" | "martial_light" | "martial_finesse_or_light" | (string & {});
+
+/** Armor, weapon and tool proficiencies held by an actor. */
+export interface ProficiencyLists {
+  /** Armor categories the actor is trained with. */
+  armor: ArmorTraining[];
+  /** Weapon proficiency tokens. */
+  weapons: WeaponProficiency[];
+  /** Tool names (see `SRD_TOOLS`). */
+  tools: string[];
+}
+
+/** Picks made for one feat that has choices (Magic Initiate, Skilled). */
+export interface FeatChoiceRecord {
+  /** SRD feat id (`"srd:feat:magic_initiate"`). */
+  featId: string;
+  /** Selected option ids keyed by choice id (see `FEAT_CHOICE_SPECS`). */
+  selections: Record<string, string[]>;
+}
+
+/** One selectable value of a `BuilderChoice`. */
+export interface BuilderChoiceOption {
+  /** Value stored in the selection (ability id, skill id, `tool:<name>`, compendium id, ...). */
+  id: string;
+  /** English display label. */
+  label: string;
+}
+
+/**
+ * A pick the character builder must render and collect. Selections are
+ * `Record<choiceId, optionId[]>` with exactly `count` distinct option ids.
+ * When `dependsOn` is set, `options` depend on that choice's selection and
+ * are empty until it is made.
+ */
+export interface BuilderChoice {
+  /** Stable selection key (e.g. `"skills"`, `"cantrips"`). */
+  id: string;
+  /** Kind of value picked. */
+  kind:
+    | "ability"
+    | "skill"
+    | "skill_or_tool"
+    | "spell_list"
+    | "spell"
+    | "equipment_option";
+  /** English label. */
+  label: string;
+  /** Exact number of picks. */
+  count: number;
+  /** Allowed values. */
+  options: BuilderChoiceOption[];
+  /** Id of the choice whose selection filters `options`. */
+  dependsOn?: string;
+}
+
+/** Builder selections: option ids keyed by `BuilderChoice.id`. */
+export type BuilderSelections = Readonly<Record<string, readonly string[]>>;
+
 /**
  * Authoritative D&D 5e actor state record used by the damage, rest, and progression pipelines.
  */
@@ -332,6 +400,10 @@ export interface Dnd5eActorData {
   features?: string[];
   /** Learned and prepared spell identifiers. */
   spellIds?: string[];
+  /** Picks made for feats with choices (Magic Initiate, Skilled). */
+  featChoices?: FeatChoiceRecord[];
+  /** Armor, weapon and tool proficiencies (class, background, feats). */
+  proficiencies?: ProficiencyLists;
   /** Recalculated proficiency bonus (+2 to +6). */
   proficiencyBonus?: number;
   /** Recalculated derived sheet statistics snapshot. */

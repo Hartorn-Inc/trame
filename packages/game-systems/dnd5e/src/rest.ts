@@ -11,8 +11,9 @@
  *   modifier floor of 1 HP per spent die, Short Rest resource pool replenishment,
  *   and Warlock Pact Magic slot recovery.
  * - Long Rest recovery (`applyLongRest`) with full HP and spell slot restoration,
- *   Temporary HP clearing, half-max Hit Dice recovery (minimum 1), Short and
- *   Long Rest resource pool replenishment, and single-level exhaustion decrement.
+ *   Temporary HP clearing, recovery of every spent Hit Die (SRD 5.2.1), Short
+ *   and Long Rest resource pool replenishment, and single-level exhaustion
+ *   decrement.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -------------------------------
@@ -23,9 +24,9 @@
  *      - Each spent Hit Die restores `Math.max(1, roll + conMod)` HP up to `hp.max`,
  *        guaranteeing that severe negative Constitution modifiers never reduce or
  *        zero out healing.
- *   3. `Half-Max Hit Dice Long Rest Recovery`:
- *      - `applyLongRest` increments `hitDiceCurrent` by `Math.max(1, Math.floor(hitDiceMax / 2))`
- *        without exceeding `hitDiceMax`.
+ *   3. `Full Hit Dice Long Rest Recovery`:
+ *      - SRD 5.2.1 Long Rest: "You regain all spent Hit Dice". `applyLongRest`
+ *        sets `hitDiceCurrent` to `hitDiceMax` (the SRD 5.1 half-max rule is gone).
  *   4. `Deterministic Rest Boundary Replenishment`:
  *      - Short rests reset only `"SHORT_REST"` pools and Pact Magic slots.
  *      - Long rests reset all standard spell slots (levels 1-9), Pact Magic, and
@@ -49,7 +50,7 @@
  *     ├── 0. Return immediately (no recovery) when the actor is dead.
  *     ├── 1. Deep-clone actor state and restore current HP to hp.max.
  *     ├── 2. Clear temp HP to 0 and reset death save counters.
- *     ├── 3. Recover max(1, floor(hitDiceMax / 2)) hit dice up to hitDiceMax.
+ *     ├── 3. Recover every spent Hit Die (hitDiceCurrent = hitDiceMax).
  *     ├── 4. Decrement exhaustion by 1 if greater than 0.
  *     ├── 5. Replenish tiers 1-9 spell slots, Pact Magic, and SHORT/LONG_REST pools.
  *     └── 6. Clear concentratingOnSpellId and return updated actor state.
@@ -94,11 +95,11 @@ export interface RestRecoverySummary {
 }
 
 /**
- * Computes the number of Hit Dice recovered during a Long Rest:
- * `Math.max(1, Math.floor(hitDiceMax / 2))`.
+ * Number of Hit Dice a Long Rest restores (SRD 5.2.1): all of them, so the
+ * pool always ends at `hitDiceMax` (`>= 1`).
  */
 export function calculateHitDieRecovery(hitDiceMax: number): number {
-  return Math.max(1, Math.floor(Math.max(1, Math.trunc(hitDiceMax)) / 2));
+  return Math.max(1, Math.trunc(hitDiceMax));
 }
 
 /**
@@ -223,7 +224,7 @@ export function applyShortRest(
 
 /**
  * Applies a D&D 5e Long Rest: restores Hit Points to `max`, clears Temporary HP,
- * recovers `max(1, floor(hitDiceMax / 2))` Hit Dice (capped at `hitDiceMax`),
+ * recovers every spent Hit Die,
  * restores all standard and Pact Magic spell slots, replenishes Short and Long Rest
  * resource pools, decrements exhaustion by 1 if greater than 0, and resets death saves.
  */
@@ -243,11 +244,7 @@ export function applyLongRest(
     clone.attributes.hp.current = clone.attributes.hp.max;
     clone.attributes.hp.temp = 0;
 
-    const recoveredDice = Math.max(1, Math.floor(clone.attributes.hitDiceMax / 2));
-    clone.attributes.hitDiceCurrent = Math.min(
-      clone.attributes.hitDiceMax,
-      clone.attributes.hitDiceCurrent + recoveredDice
-    );
+    clone.attributes.hitDiceCurrent = clone.attributes.hitDiceMax;
 
     if (clone.attributes.exhaustion > 0) {
       clone.attributes.exhaustion -= 1;
@@ -306,10 +303,8 @@ export function applyLongRest(
     sheet.hpCurrent = sheet.hpMax;
     sheet.tempHp = 0;
 
-    const regainHd = Math.max(1, Math.floor(sheet.hitDiceMax / 2));
-    const beforeHd = sheet.hitDiceCurrent;
-    sheet.hitDiceCurrent = Math.min(sheet.hitDiceMax, sheet.hitDiceCurrent + regainHd);
-    const hitDiceRecovered = sheet.hitDiceCurrent - beforeHd;
+    const hitDiceRecovered = Math.max(0, sheet.hitDiceMax - sheet.hitDiceCurrent);
+    sheet.hitDiceCurrent = sheet.hitDiceMax;
 
     if (sheet.exhaustionLevel > 0) {
       sheet.exhaustionLevel -= 1;
