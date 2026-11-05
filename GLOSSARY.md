@@ -93,9 +93,15 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: `CampaignHomebrew`, `campaign homebrew`.
 - **_Avoid_**: `local homebrew`, `custom campaign data`.
 
+### CampaignInvite
+
+- **Definition**: The single active, revocable invite link of a `Campaign`, minted by its Game Master. It accepts a bounded number of redemptions (default 8), expires after at most 7 days, and records every `InviteRedemption` so the Game Master can see who joined and when. Minting a new one revokes the previous one. Its URL is built from the instance's public origin (`TRAME_PUBLIC_ORIGIN`).
+- **Allowed Context**: Campaign invite management, invite links shared with players, and redemption review.
+- **_Avoid_**: Magic Link invite, InviteToken, JoinCode.
+
 ### CampaignLobby
 
-- **Definition**: Top-level authenticated Preact view where users create campaigns, inspect campaign rosters, generate 1-click Magic Link invites, and import/export `.trame` Archives before entering a live table room.
+- **Definition**: Top-level authenticated Preact view where users create campaigns (`Host` or `Owner` only), inspect campaign rosters, manage each campaign's `CampaignInvite`, and import/export `.trame` Archives before entering a live table room.
 - **Allowed Context**: Browser navigation, campaign selection, and archive management.
 - **_Avoid_**: DashboardPage, HomePortal, GameBrowser.
 
@@ -110,6 +116,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Typed WebGL and PixiJS v8 color and stroke-pattern registry bridging active ATLAS theme tokens (`dark`, `light`, `system`) to `SceneGraph` layers while keeping uploaded battlemap textures invariant.
 - **Allowed Context**: PixiJS v8 `SceneGraph` rendering, tactical overlays, wall segment geometry, and theme synchronization.
 - **_Avoid_**: PixiColorMap, ShaderThemeConfig, CanvasStyleSheet.
+
+### ClassFeature
+
+- **Definition**: Class or subclass feature unlocked at a given class level (1 to 20), made of an optional `ResourcePool` and zero or more `ActiveEffect`s. It is automated when it changes a number or a roll rule (for example Rage, Extra Attack, Sneak Attack). Features that replace the actor's profile (for example Wild Shape) stay manual, with a use counter.
+- **Allowed Context**: Class progression, character sheet feature lists, and limited-use feature tracking.
+- **_Avoid_**: ClassAbility, ClassPerk, FeatureCharge.
 
 ### CombatTracker
 
@@ -140,6 +152,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Standardized state affecting an actor (e.g., `blinded`, `charmed`, `unconscious`) paired with a duration in rounds and an expiration trigger.
 - **Allowed Context**: `Condition`, `condition`.
 - **_Avoid_**: `status`, `affliction`.
+
+### ConditionOverride
+
+- **Definition**: Game Master-only `TrameCommand` that forces or removes any `Condition` or `ActiveEffect` on a `LinkedActorToken` or `SyntheticToken`. It always wins over automated condition effects and pushes an `UndoEntry`.
+- **Allowed Context**: Game Master rulings on condition edge cases and the condition picker override control.
+- **_Avoid_**: ForceCondition, ManualStatus, ConditionHack.
 
 ### CRDTDocument
 
@@ -219,6 +237,18 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: `InstanceLibrary`, `instance library`.
 - **_Avoid_**: `instance compendium`, `shared library`.
 
+### InstanceRole
+
+- **Definition**: Instance-wide account role (`Owner`, `Host`, `Member`), independent of the per-campaign `UserRole`. Exactly one `Owner` exists per instance, and only the `Owner` changes `InstanceRole`s. Only a `Host` or the `Owner` can create a campaign. New accounts start as `Member`.
+- **Allowed Context**: Instance administration, campaign creation permission, and owner bootstrap.
+- **_Avoid_**: Admin, Superuser, GlobalRole, SiteRole.
+
+### InviteRedemption
+
+- **Definition**: Redeeming a valid `CampaignInvite`. A visitor without an account gets a new `Member` account and a `Player` membership in one step; a logged-in user only gets the campaign attached to the existing account. Apart from owner bootstrap, it is the only way to create an account, and it replaces guest-session onboarding.
+- **Allowed Context**: Invite links, player onboarding, and campaign membership creation.
+- **_Avoid_**: GuestSession, GuestSessionUpgrade, open registration, SignUp.
+
 ### LongRest
 
 - **Definition**: Extended rest period of at least 8 hours restoring all HP, resetting temporary HP to 0, restoring `Math.max(1, Math.floor(hitDiceMax / 2))` hit dice, reducing exhaustion by 1 level, and resetting all spell slots and long-rest resource pools.
@@ -254,6 +284,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Integer multiplier of `0` (unproficient), `1` (proficient), or `2` (expertise) applied to the proficiency bonus for a skill or saving throw.
 - **Allowed Context**: `ProficiencyRank`, `proficiency rank`.
 - **_Avoid_**: `proficiency level`, `mastery rank`.
+
+### QuarantinedWalEntry
+
+- **Definition**: WAL entry that failed to replay when a room loaded, set aside together with every later entry of the same campaign. The room opens at the last good state and the Game Master sees a banner describing what was set aside. A quarantined entry is kept for inspection and is never replayed automatically.
+- **Allowed Context**: Room recovery after a crash, the Game Master recovery banner, and WAL inspection.
+- **_Avoid_**: PoisonedEntry, DeadLetterCommand, CorruptWal, SkippedCommand.
 
 ### ReactionBanner
 
@@ -458,12 +494,6 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Server-side `ChaCha20Rng` `1d20 + dex_mod` roll executed by `TableRoomActor` for every active combatant without a pre-supplied initiative score when transitioning to `Turn-by-Turn Mode`, sorted descending with ties broken by `dex_mod` then `token_id`.
 - **Allowed Context**: `StartTurnByTurn` execution, `CombatTracker` initialization, and encounter startup.
 - **_Avoid_**: ClientInitiativeBatch, ManualOrderPrompt.
-
-### GuestSessionUpgrade
-
-- **Definition**: Automatic onboarding flow where a player opening a Magic Link invite URL (`?invite=<jwt>`) receives an immediate authenticated guest `trame_session` cookie bound to the invited `Campaign`, with optional later credential binding via `POST /api/v1/auth/bind`.
-- **Allowed Context**: Magic Link invite redemption, 1-click player onboarding, and guest-to-account binding.
-- **_Avoid_**: ForcedSignupRedirect, AnonymousSpectatorToken.
 
 ### LinkedActorToken
 
