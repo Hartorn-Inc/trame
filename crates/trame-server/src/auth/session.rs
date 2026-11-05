@@ -185,6 +185,9 @@ impl<T: SessionStore + IdentityStore + PatStore + OAuthStore + AccountStore + ?S
 
 /// In-memory implementation of `SessionStore`, `IdentityStore`, and `AccountStore`.
 #[derive(Default, Clone)]
+/// Nested locks follow `accounts` -> `campaign_members` -> `users` -> `emails` ->
+/// `oauth_identities` (see `accounts.rs`, invariant 7); taking them in another order can
+/// deadlock against a queued writer.
 pub struct InMemorySessionStore {
     pub(super) users: Arc<RwLock<HashMap<Uuid, UserRecord>>>,
     pub(super) emails: Arc<RwLock<HashMap<String, Uuid>>>,
@@ -356,13 +359,17 @@ impl IdentityStore for InMemorySessionStore {
     ) -> BoxFuture<'a, Result<Option<UserRecord>, SessionError>> {
         Box::pin(async move {
             let normalized = email.trim().to_lowercase();
-            let emails = self.emails.read().await;
-            if let Some(user_id) = emails.get(&normalized).or_else(|| emails.get(email)) {
-                let users = self.users.read().await;
-                Ok(users.get(user_id).cloned())
-            } else {
-                Ok(None)
-            }
+            let user_id = {
+                let emails = self.emails.read().await;
+                emails
+                    .get(&normalized)
+                    .or_else(|| emails.get(email))
+                    .copied()
+            };
+            let Some(user_id) = user_id else {
+                return Ok(None);
+            };
+            Ok(self.users.read().await.get(&user_id).cloned())
         })
     }
 
@@ -532,13 +539,16 @@ impl OAuthStore for InMemorySessionStore {
         provider_user_id: &'a str,
     ) -> BoxFuture<'a, Result<Option<UserRecord>, SessionError>> {
         Box::pin(async move {
-            let identities = self.oauth_identities.read().await;
-            if let Some(user_id) = identities.get(&(provider, provider_user_id.to_string())) {
-                let users = self.users.read().await;
-                Ok(users.get(user_id).cloned())
-            } else {
-                Ok(None)
-            }
+            let user_id = self
+                .oauth_identities
+                .read()
+                .await
+                .get(&(provider, provider_user_id.to_string()))
+                .copied();
+            let Some(user_id) = user_id else {
+                return Ok(None);
+            };
+            Ok(self.users.read().await.get(&user_id).cloned())
         })
     }
 

@@ -1447,6 +1447,115 @@ async fn sec13_removed_member_cannot_replay_the_invite_they_redeemed() {
 }
 
 // ---------------------------------------------------------------------------
+// In-memory store lock order
+// ---------------------------------------------------------------------------
+
+/// One store operation that nests the `users`, `emails`, or `oauth_identities` locks.
+#[derive(Clone, Copy, Debug)]
+enum LockingOp {
+    LookupByEmail,
+    BindGuestEmail,
+    LookupByOAuth,
+    BindOAuth,
+    RedeemAsNewAccount,
+}
+
+async fn run_locking_op(store: &InMemorySessionStore, op: LockingOp, token_hash: &str) {
+    use trame_server::auth::accounts::{AccountStore, InviteRedeemer, new_account};
+    use trame_server::auth::session::{OAuthProvider, OAuthStore};
+    let email = format!("{}@example.com", Uuid::new_v4());
+    match op {
+        LockingOp::LookupByEmail => {
+            store.get_user_by_email("racer@example.com").await.unwrap();
+        }
+        LockingOp::LookupByOAuth => {
+            store
+                .find_user_by_oauth_identity(OAuthProvider::Discord, "racer")
+                .await
+                .unwrap();
+        }
+        LockingOp::BindGuestEmail | LockingOp::BindOAuth => {
+            let guest = store.create_guest_user("PLAYER").await.unwrap();
+            if matches!(op, LockingOp::BindGuestEmail) {
+                store
+                    .bind_guest_credentials(guest.id, &email, "hash")
+                    .await
+                    .unwrap();
+            } else {
+                store
+                    .bind_oauth_identity(guest.id, OAuthProvider::Discord, "racer", Some(&email))
+                    .await
+                    .unwrap();
+            }
+        }
+        LockingOp::RedeemAsNewAccount => {
+            let user = new_account(email, "Racer".into(), "hash".into(), InstanceRole::Member);
+            let _ = store
+                .redeem_campaign_invite(token_hash, InviteRedeemer::NewAccount(user), 0)
+                .await;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn in_memory_store_operations_never_deadlock_each_other() {
+    use trame_server::auth::accounts::AccountStore;
+    // (case_id, operation racing against the other, the other)
+    let cases = [
+        (
+            "email_lookup_vs_guest_bind",
+            LockingOp::LookupByEmail,
+            LockingOp::BindGuestEmail,
+        ),
+        (
+            "email_lookup_vs_invite_signup",
+            LockingOp::LookupByEmail,
+            LockingOp::RedeemAsNewAccount,
+        ),
+        (
+            "invite_signup_vs_guest_bind",
+            LockingOp::RedeemAsNewAccount,
+            LockingOp::BindGuestEmail,
+        ),
+        (
+            "oauth_lookup_vs_oauth_bind",
+            LockingOp::LookupByOAuth,
+            LockingOp::BindOAuth,
+        ),
+    ];
+    for (case, a, b) in cases {
+        let store = Arc::new(InMemorySessionStore::new());
+        let token_hash = hash_session_token("race-invite");
+        store
+            .create_campaign_invite(CampaignInviteRecord {
+                id: Uuid::new_v4(),
+                campaign_id: Uuid::new_v4(),
+                token_hash: token_hash.clone(),
+                created_by: Uuid::new_v4(),
+                created_at: 0,
+                expires_at: u64::MAX,
+                max_uses: u32::MAX,
+                use_count: 0,
+                revoked_at: None,
+            })
+            .await
+            .unwrap();
+        let racers = [a, b, a, b].map(|op| {
+            let store = store.clone();
+            let token_hash = token_hash.clone();
+            tokio::spawn(async move {
+                for _ in 0..300 {
+                    run_locking_op(&store, op, &token_hash).await;
+                }
+            })
+        });
+        let all = futures_util::future::join_all(racers);
+        let finished = tokio::time::timeout(Duration::from_secs(20), all).await;
+        assert!(finished.is_ok(), "case {case}: store operations deadlocked");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SEC11 — persisted instance id
 // ---------------------------------------------------------------------------
 

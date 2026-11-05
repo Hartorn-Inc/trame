@@ -41,6 +41,11 @@
 //!      - An account that already redeemed an invite and is no longer a member
 //!        (removed by the GM) gets `MemberRemoved`; only a new invite lets it
 //!        back in, so removal is not undone by replaying the same link.
+//!   7. `Lock Order` (in memory):
+//!      - Nested locks are taken in one order everywhere:
+//!        `accounts` -> `campaign_members` -> `users` -> `emails` ->
+//!        `oauth_identities`. Lookups copy an id and release the first guard
+//!        instead of nesting against that order.
 //! ============================================================================
 
 use super::magic_link::now_epoch_seconds;
@@ -606,12 +611,13 @@ impl AccountStore for InMemorySessionStore {
                 InviteRedeemer::ExistingUser(user_id) => user_id,
                 InviteRedeemer::NewAccount(user) => {
                     let email = user.email.clone().unwrap_or_default().to_lowercase();
+                    let mut users = self.users.write().await;
                     let mut emails = self.emails.write().await;
                     if emails.contains_key(&email) {
                         return Err(InviteRedeemError::EmailTaken);
                     }
                     emails.insert(email, user.id);
-                    self.users.write().await.insert(user.id, user.clone());
+                    users.insert(user.id, user.clone());
                     user.id
                 }
             };
