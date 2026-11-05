@@ -21,8 +21,12 @@
 //! 3. `Pre-Decode Dimension Ceiling`:
 //!    - Inspects raster image headers via `image_dimensions` before allocating
 //!      a full-resolution pixel buffer, rejecting images exceeding
-//!      `MAX_IMAGE_DIMENSION_PX` so malicious decompression bombs cannot exhaust
-//!      server RAM.
+//!      `MAX_IMAGE_DIMENSION_PX` per side or `MAX_IMAGE_PIXEL_AREA` in total, so
+//!      malicious decompression bombs cannot exhaust server RAM (SEC14).
+//! 4. `Blocking-Pool Transcoding`:
+//!    - JSON/base64 parsing, decoding, resizing and WebP encoding run inside
+//!      `spawn_blocking`, so a large map never stalls the async runtime that
+//!      drives every live table (SEC14).
 //! ============================================================================
 
 use crate::assets::store::{AssetStore, AssetStoreError};
@@ -41,6 +45,8 @@ use uuid::Uuid;
 pub const MAX_PAYLOAD_SIZE_BYTES: usize = 67_108_864; // 64 MiB
 pub const MAX_IMAGE_DIMENSION_PX: u32 = 16_384;
 pub const MAX_IMAGE_DIMENSION: u32 = MAX_IMAGE_DIMENSION_PX;
+/// Maximum decoded pixel count (width x height): 64 Mpx, i.e. 256 MiB as RGBA8.
+pub const MAX_IMAGE_PIXEL_AREA: u64 = 64 * 1024 * 1024;
 pub const THUMBNAIL_MAX_DIMENSION_PX: u32 = 256;
 
 /// Reads raster header dimensions without allocating the full pixel buffer.
@@ -67,6 +73,8 @@ pub enum UvttImportError {
     ImageDecodeFailure(String),
     #[error("Image dimension {width}x{height} exceeds max 16384x16384 limit")]
     ImageDimensionExceeded { width: u32, height: u32 },
+    #[error("Image {width}x{height} exceeds the {MAX_IMAGE_PIXEL_AREA} pixel area limit")]
+    ImagePixelAreaExceeded { width: u32, height: u32 },
     #[error("Failed to encode WebP image: {0}")]
     ImageEncodeFailure(String),
     #[error("Storage failure: {0}")]
@@ -300,7 +308,7 @@ pub fn parse_uvtt_geometry(doc: &UvttDocument) -> (Vec<WallSegment>, Vec<Importe
 /// Ingests a raw Universal VTT (.uvtt / .dd2vtt) byte stream, enforces security limits,
 /// converts raster graphics to canonical WebP + thumbnail, persists assets, and maps geometry.
 pub async fn import_uvtt_map<S: AssetStore + ?Sized>(
-    payload: &[u8],
+    payload: Bytes,
     instance_id: Uuid,
     campaign_id: Uuid,
     store: &S,
@@ -309,31 +317,16 @@ pub async fn import_uvtt_map<S: AssetStore + ?Sized>(
         return Err(UvttImportError::PayloadTooLarge(payload.len()));
     }
 
-    let doc: UvttDocument =
-        serde_json::from_slice(payload).map_err(|e| UvttImportError::InvalidJson(e.to_string()))?;
-
-    let cleaned_base64: String = doc.image.chars().filter(|c| !c.is_whitespace()).collect();
-
-    let raw_image_bytes = BASE64
-        .decode(&cleaned_base64)
-        .map_err(|e| UvttImportError::InvalidBase64(e.to_string()))?;
-
-    let decoded_img = decode_guarded_image(&raw_image_bytes)?;
-    let (width, height) = decoded_img.dimensions();
-
-    // Encode primary map image as WebP (or fallback to PNG if WebP writer unsupported)
-    let primary_bytes = encode_image(&decoded_img, ImageFormat::WebP)?;
-
-    // Compute SHA-256 content address digest
-    let hash_hex = Sha256Hasher::digest(&primary_bytes);
-
-    // Generate 256px maximum dimension thumbnail preserving aspect ratio
-    let thumb_img = decoded_img.resize(
-        THUMBNAIL_MAX_DIMENSION_PX,
-        THUMBNAIL_MAX_DIMENSION_PX,
-        FilterType::Lanczos3,
-    );
-    let thumb_bytes = encode_image(&thumb_img, ImageFormat::WebP)?;
+    let TranscodedMap {
+        doc,
+        primary_bytes,
+        thumb_bytes,
+        hash_hex,
+        width,
+        height,
+    } = tokio::task::spawn_blocking(move || transcode_uvtt(&payload))
+        .await
+        .map_err(|e| UvttImportError::ImageDecodeFailure(e.to_string()))??;
 
     let primary_key =
         format!("instances/{instance_id}/campaigns/{campaign_id}/assets/{hash_hex}.webp");
@@ -366,6 +359,51 @@ pub async fn import_uvtt_map<S: AssetStore + ?Sized>(
     })
 }
 
+/// CPU-bound half of `import_uvtt_map`, run on the blocking pool.
+struct TranscodedMap {
+    /// Parsed document with `image` emptied (the raster lives in `primary_bytes`).
+    doc: UvttDocument,
+    primary_bytes: Vec<u8>,
+    thumb_bytes: Vec<u8>,
+    /// Lowercase hex SHA-256 of `primary_bytes` (content address).
+    hash_hex: String,
+    width: u32,
+    height: u32,
+}
+
+/// Parses the document, decodes the guarded raster, and encodes the WebP map and its
+/// `THUMBNAIL_MAX_DIMENSION_PX` thumbnail (PNG fallback when the WebP writer refuses).
+fn transcode_uvtt(payload: &[u8]) -> Result<TranscodedMap, UvttImportError> {
+    let mut doc: UvttDocument =
+        serde_json::from_slice(payload).map_err(|e| UvttImportError::InvalidJson(e.to_string()))?;
+    let cleaned_base64: String = std::mem::take(&mut doc.image)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let raw_image_bytes = BASE64
+        .decode(&cleaned_base64)
+        .map_err(|e| UvttImportError::InvalidBase64(e.to_string()))?;
+
+    let decoded_img = decode_guarded_image(&raw_image_bytes)?;
+    let (width, height) = decoded_img.dimensions();
+    let primary_bytes = encode_image(&decoded_img, ImageFormat::WebP)?;
+    let hash_hex = Sha256Hasher::digest(&primary_bytes);
+    let thumb_img = decoded_img.resize(
+        THUMBNAIL_MAX_DIMENSION_PX,
+        THUMBNAIL_MAX_DIMENSION_PX,
+        FilterType::Lanczos3,
+    );
+    let thumb_bytes = encode_image(&thumb_img, ImageFormat::WebP)?;
+    Ok(TranscodedMap {
+        doc,
+        primary_bytes,
+        thumb_bytes,
+        hash_hex,
+        width,
+        height,
+    })
+}
+
 /// Magic-byte check (PNG/JPEG/WebP), header-only dimension guard, then full decode. The
 /// header check runs first so a decompression bomb is rejected before any pixel allocation.
 fn decode_guarded_image(raw: &[u8]) -> Result<DynamicImage, UvttImportError> {
@@ -373,6 +411,12 @@ fn decode_guarded_image(raw: &[u8]) -> Result<DynamicImage, UvttImportError> {
     let (hdr_width, hdr_height) = image_dimensions(raw)?;
     if hdr_width > MAX_IMAGE_DIMENSION || hdr_height > MAX_IMAGE_DIMENSION {
         return Err(UvttImportError::ImageDimensionExceeded {
+            width: hdr_width,
+            height: hdr_height,
+        });
+    }
+    if u64::from(hdr_width) * u64::from(hdr_height) > MAX_IMAGE_PIXEL_AREA {
+        return Err(UvttImportError::ImagePixelAreaExceeded {
             width: hdr_width,
             height: hdr_height,
         });
@@ -391,6 +435,13 @@ fn decode_guarded_image(raw: &[u8]) -> Result<DynamicImage, UvttImportError> {
 pub fn transcode_upload_to_webp(raw: &[u8]) -> Result<Vec<u8>, UvttImportError> {
     let decoded = decode_guarded_image(raw)?;
     encode_image(&decoded, ImageFormat::WebP)
+}
+
+/// `transcode_upload_to_webp` on the blocking pool so decoding never stalls live tables (SEC14).
+pub async fn transcode_upload_to_webp_blocking(raw: Bytes) -> Result<Vec<u8>, UvttImportError> {
+    tokio::task::spawn_blocking(move || transcode_upload_to_webp(&raw))
+        .await
+        .map_err(|e| UvttImportError::ImageDecodeFailure(e.to_string()))?
 }
 
 fn encode_image(img: &DynamicImage, format: ImageFormat) -> Result<Vec<u8>, UvttImportError> {

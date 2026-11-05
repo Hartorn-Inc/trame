@@ -197,16 +197,13 @@ pub struct SqlxPostgresStore {
 }
 
 impl SqlxPostgresStore {
-    /// Creates a new `SqlxPostgresStore` bound to an active `PgPool`.
+    /// Creates a new `SqlxPostgresStore` bound to an active `PgPool`. Presigned URLs are signed
+    /// with a per-instance random key (SEC5) until `with_signing_secret` installs the configured one.
     pub fn new(pool: PgPool) -> Self {
-        let signing_secret = std::env::var("TRAME_JWT_SECRET")
-            .or_else(|_| std::env::var("JWT_SECRET"))
-            .map(|s| s.into_bytes())
-            .unwrap_or_else(|_| b"trame-default-hmac-sha256-signing-secret-key".to_vec());
         Self {
             pool,
             pending_oauth: Arc::new(RwLock::new(HashMap::new())),
-            signing_secret,
+            signing_secret: crate::security::ephemeral_secret().to_vec(),
             base_url: "/assets/download".to_string(),
         }
     }
@@ -2355,6 +2352,22 @@ impl AssetStore for SqlxPostgresStore {
                 .try_get("payload")
                 .map_err(|e| AssetStoreError::Io(e.to_string()))?;
             Ok(Some(Bytes::from(bytes)))
+        })
+    }
+
+    fn campaign_usage_bytes(
+        &self,
+        campaign_id: Uuid,
+    ) -> crate::assets::store::BoxFuture<'_, Result<u64, AssetStoreError>> {
+        Box::pin(async move {
+            let total: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(byte_size), 0)::BIGINT FROM campaign_assets WHERE campaign_id = $1",
+            )
+            .bind(campaign_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| AssetStoreError::Io(e.to_string()))?;
+            Ok(total.max(0) as u64)
         })
     }
 

@@ -46,7 +46,7 @@
 //! ============================================================================
 
 use crate::auth::pat::PatMiddleware;
-use crate::http::{AppState, is_authorized_campaign_gm, resolve_authenticated_user};
+use crate::http::{AppState, resolve_authenticated_user, resolve_campaign_role};
 use crate::sync::McpStagingProposal;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -174,7 +174,7 @@ async fn authorize_campaign_gm(
     {
         return Err(StatusCode::FORBIDDEN);
     }
-    if !is_authorized_campaign_gm(state, campaign_id, caller.user_id).await {
+    if resolve_campaign_role(state, campaign_id, caller.user_id).await != Some(CampaignRole::Gm) {
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(())

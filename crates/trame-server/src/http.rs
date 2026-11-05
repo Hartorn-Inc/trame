@@ -25,10 +25,11 @@
 //!   2. `Campaign Membership & Hash Validation`:
 //!      - `presign_asset_handler` validates hexadecimal asset hashes (`_thumb` optional suffix)
 //!        and checks membership in the authoritative store before minting presigned GET URLs.
-//!      - `export_campaign_handler` verifies membership and exports only entities, notes, and
-//!        assets registered to the requested campaign.
-//!      - `timeline_handler` requires membership, hides GM-only events from non-GMs, and clamps
-//!        `limit` to `1..=MAX_TIMELINE_LIMIT`.
+//!      - `export_campaign_handler` requires the `GameMaster` role (players and spectators get
+//!        `403`) and exports only entities, notes, and assets registered to the campaign.
+//!      - `timeline_handler` requires membership, shows non-GMs only the allow-listed
+//!        `PLAYER_TIMELINE_EVENT_KINDS` minus GM-only events, and clamps `limit` to
+//!        `1..=MAX_TIMELINE_LIMIT`.
 //!   3. `Import Creates, Never Overwrites`:
 //!      - `import_campaign_handler` requires a `Host` or `Owner` account, always remaps IDs,
 //!        and makes the caller the GM of the new campaign.
@@ -40,18 +41,25 @@
 //!   6. `Deterministic Session Cleanup & Sub-5ms Healthz`:
 //!      - When a WebSocket disconnects, `disconnect_client(session_id)` and `send_task.abort()` execute
 //!        unconditionally so `RoomLeaseManager` tracks active connections accurately.
-//!      - `healthz_handler` verifies database/storage connectivity in memory in under 5 ms without
-//!        requiring credentials.
+//!      - `healthz_handler` verifies storage connectivity without credentials; when PostgreSQL
+//!        is configured it pings it with `SELECT 1` (2 s deadline, `503` on failure) (SEC15).
+//!   7. `Opaque Server Errors (SEC15)`:
+//!      - `opaque_server_errors_middleware` logs the detail of every `500` JSON body and
+//!        replaces its message with a generic one, so database text never reaches clients.
+//!   8. `Role Checks (SEC2, SEC9)`:
+//!      - Every campaign role decision goes through `resolve_campaign_role`; export is
+//!        GM-only and the timeline returns only the event kinds allowed for the caller's role.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
 //!   `HTTP / WebSocket Request`
 //!     ├── 1. `GET /healthz` -> verify database connectivity & return `200 OK` `{"status":"ok"}` (< 5 ms).
-//!     ├── 2. `GET /api/v1/campaigns/{id}/export` -> verify member auth -> stream `.trame` ZIP archive.
+//!     ├── 2. `GET /api/v1/campaigns/{id}/export` -> verify GM role -> stream `.trame` ZIP archive.
 //!     ├── 3. `POST /api/v1/campaigns/import` -> Host/Owner auth -> remapped import -> `201 Created`.
 //!     └── 4. `GET /ws/campaigns/{id}` -> auth + Origin + membership -> capped upgrade -> `TableRoomActor`.
 //! ============================================================================
 
+use crate::archive::spool::{SpoolError, SpooledArchive};
 use crate::archive::{
     ArchiveError, ArchiveExporter, ArchiveImporter, CampaignExportSource, CampaignImportTarget,
     CampaignMetadata, ExportEntity, InMemoryCampaignStore, NoteRecord, stored_assets,
@@ -72,7 +80,7 @@ pub use crate::maps::{InMemoryMapStorage, get_campaign_maps_handler, put_campaig
 use crate::room::{
     ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomError, RoomLeaseManager,
 };
-use crate::security::security_headers_middleware;
+use crate::security::{opaque_server_errors_middleware, security_headers_middleware};
 use crate::storage::SqlxPostgresStore;
 use crate::storage::blob::{
     AssetDescriptor, BlobStore, BlobStoreError, BlobStream, Sha256Hasher, slice_to_stream,
@@ -93,7 +101,6 @@ use axum::routing::{get, post};
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
@@ -105,6 +112,9 @@ pub const MAX_ARCHIVE_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 /// Upper bound for `TimelineQuery::limit` (entries per page).
 pub const MAX_TIMELINE_LIMIT: usize = 200;
+
+/// Deadline for the `/healthz` PostgreSQL `SELECT 1` ping; a slower database reports `503`.
+const HEALTHZ_DB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// JSON payload returned by the `GET /healthz` liveness and database connectivity endpoint.
 #[derive(Debug, Serialize, Deserialize)]
@@ -379,6 +389,11 @@ impl AppState {
         if !self.db_healthy.load(Ordering::Acquire) {
             return false;
         }
+        if let Some(pg) = &self.postgres_store {
+            return tokio::time::timeout(HEALTHZ_DB_TIMEOUT, pg.check_health())
+                .await
+                .unwrap_or(false);
+        }
         self.campaign_store.campaigns.read().is_ok()
     }
 }
@@ -645,7 +660,9 @@ pub fn build_router_with_state(state: AppState) -> Router {
         Some(dir) => router.fallback(spa_fallback(dir)),
         None => router,
     };
-    router.layer(axum::middleware::from_fn(security_headers_middleware))
+    router
+        .layer(axum::middleware::from_fn(opaque_server_errors_middleware))
+        .layer(axum::middleware::from_fn(security_headers_middleware))
 }
 
 /// Resolves an authenticated user ID from a session cookie, Bearer session token, or Bearer PAT.
@@ -730,41 +747,6 @@ pub(crate) fn error_response(status: StatusCode, code: &str, error: &str) -> Res
         .into_response()
 }
 
-/// Checks whether `user_id` is an authorized member of `campaign_id` via `membership` or `session_store`.
-pub async fn is_authorized_campaign_member(
-    state: &AppState,
-    campaign_id: Uuid,
-    user_id: Uuid,
-) -> bool {
-    if state.membership.is_member(campaign_id, user_id) {
-        return true;
-    }
-    state
-        .auth_state
-        .session_store
-        .get_campaign_member(campaign_id, user_id)
-        .await
-        .ok()
-        .flatten()
-        .is_some()
-}
-
-/// Checks whether `user_id` holds Game Master (`"GM"`) privileges for `campaign_id`.
-pub async fn is_authorized_campaign_gm(state: &AppState, campaign_id: Uuid, user_id: Uuid) -> bool {
-    if state.membership.is_gm(campaign_id, user_id) {
-        return true;
-    }
-    if let Ok(Some(member)) = state
-        .auth_state
-        .session_store
-        .get_campaign_member(campaign_id, user_id)
-        .await
-    {
-        return member.role.eq_ignore_ascii_case("GM");
-    }
-    false
-}
-
 /// Unauthenticated `GET /healthz` probe verifying database connectivity and returning `{"status":"ok"}` in under 5 ms.
 pub async fn healthz_handler(State(state): State<AppState>) -> Response {
     if IS_SHUTTING_DOWN.load(Ordering::Acquire) {
@@ -820,15 +802,22 @@ pub async fn export_campaign_handler(
         }
     };
 
-    if !is_authorized_campaign_member(&state, campaign_id, user_id).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                code: Some("FORBIDDEN".to_string()),
-                error: "user is not an active member of this campaign".to_string(),
-            }),
-        )
-            .into_response();
+    match resolve_campaign_role(&state, campaign_id, user_id).await {
+        Some(CampaignRole::Gm) => {}
+        Some(_) => {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "FORBIDDEN",
+                "only a campaign GM may export the campaign",
+            );
+        }
+        None => {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "FORBIDDEN",
+                "user is not an active member of this campaign",
+            );
+        }
     }
 
     let fallback_metadata = || CampaignMetadata {
@@ -969,7 +958,9 @@ fn is_client_archive_error(err: &ArchiveError) -> bool {
 /// Imports a `.trame` archive stream at `POST /api/v1/campaigns/import` as a brand-new campaign
 /// (IDs always remapped, G8) whose GM is the caller. Requires a `Host` or `Owner` account
 /// (`401` when unauthenticated, `403 HOST_REQUIRED` otherwise); returns `201 Created` with
-/// restoration counters.
+/// restoration counters. Each account gets `AuthRateLimiter::imports_per_account` imports per
+/// window (`429` past it); the body is spooled to a temporary file instead of being buffered in
+/// memory (SEC6).
 pub async fn import_campaign_handler(
     headers: HeaderMap,
     State(state): State<AppState>,
@@ -986,22 +977,40 @@ pub async fn import_campaign_handler(
         return *resp;
     }
 
-    let body = request.into_body();
-    let body_bytes = match axum::body::to_bytes(body, MAX_ARCHIVE_UPLOAD_BYTES).await {
-        Ok(b) => b,
-        Err(err) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    code: Some("INVALID_ARCHIVE_STREAM".to_string()),
-                    error: err.to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
+    if let Err(wait) = state
+        .auth_state
+        .security
+        .rate_limiter
+        .take_import(caller_user_id)
+    {
+        return crate::security::too_many_requests(wait);
+    }
 
-    let reader = Cursor::new(body_bytes.to_vec());
+    let mut spool =
+        match SpooledArchive::from_body(request.into_body(), MAX_ARCHIVE_UPLOAD_BYTES).await {
+            Ok(spool) => spool,
+            Err(SpoolError::Io(err)) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "IMPORT_ERROR",
+                    &err.to_string(),
+                );
+            }
+            Err(err) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "INVALID_ARCHIVE_STREAM",
+                    &err.to_string(),
+                );
+            }
+        };
+    let Some(reader) = spool.reader() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "IMPORT_ERROR",
+            "archive spool unavailable",
+        );
+    };
     let imported = match &state.postgres_store {
         Some(pg) => {
             ArchiveImporter::new((**pg).clone(), state.blob_store.clone())
@@ -1139,10 +1148,20 @@ async fn timeline_handler(
             has_more: false,
         });
     resp.events.truncate(limit);
-    if role != CampaignRole::Gm {
-        resp.events.retain(|e| !is_gm_only_timeline_event(e));
-    }
+    resp.events.retain(|e| is_timeline_event_visible(role, e));
     Json(resp).into_response()
+}
+
+/// Timeline event kinds a non-GM member may read (SEC9). Any other kind, including kinds
+/// added later, stays GM-only until it is listed here.
+pub const PLAYER_TIMELINE_EVENT_KINDS: [&str; 3] = ["dice_roll", "initiative", "handout_revealed"];
+
+/// GMs read every event; players and spectators read only `PLAYER_TIMELINE_EVENT_KINDS`
+/// that are not marked GM-only (`is_gm_only_timeline_event`).
+pub fn is_timeline_event_visible(role: CampaignRole, event: &SessionTimelineEvent) -> bool {
+    role == CampaignRole::Gm
+        || (PLAYER_TIMELINE_EVENT_KINDS.contains(&event.event_type.as_str())
+            && !is_gm_only_timeline_event(event))
 }
 
 /// WebSocket endpoint attaching an authenticated campaign member to the `TableRoomActor`.
@@ -1226,7 +1245,10 @@ pub async fn presign_asset_handler(
             .into_response();
     }
 
-    if !is_authorized_campaign_member(&state, campaign_id, user_id).await {
+    if resolve_campaign_role(&state, campaign_id, user_id)
+        .await
+        .is_none()
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {

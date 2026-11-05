@@ -19,6 +19,8 @@
 //!        refuses to start. No key is ever generated or defaulted.
 //!      - `TRAME_ENV=dev` substitutes the public `DEV_*` constants below for
 //!        missing values only. Provided values are still validated.
+//!      - Outside dev, a secret equal to any `KNOWN_DEV_SECRETS` value is
+//!        rejected as invalid (SEC5): a copied dev `.env` cannot reach production.
 //!   2. `Key Strength`:
 //!      - `MASTER_ENCRYPTION_KEY` must be exactly 64 hex characters (AES-256).
 //!      - HMAC secrets (`TRAME_JWT_SECRET`, `TRAME_INVITE_JWT_SECRET`) must be at
@@ -30,6 +32,8 @@
 //!      - WebSocket `Origin` allow-list = `TRAME_PUBLIC_ORIGIN` plus the
 //!        comma-separated `TRAME_ALLOWED_ORIGINS`; `TRAME_PUBLIC_ORIGIN` is
 //!        required outside dev.
+//!      - `TRAME_TRUSTED_PROXY_HOPS` (default `0`, max `MAX_TRUSTED_PROXY_HOPS`)
+//!        selects which `X-Forwarded-For` entry is the client IP (SEC4).
 //!   4. `Log Format Follows TRAME_ENV`:
 //!      - `TRAME_ENV=dev` logs pretty ANSI lines; every other value (including
 //!        unset) logs JSON without ANSI escapes, so production log collectors
@@ -75,9 +79,9 @@ pub const STATIC_DIR_VAR: &str = "TRAME_STATIC_DIR";
 pub const ALLOWED_ORIGINS_VAR: &str = "TRAME_ALLOWED_ORIGINS";
 /// `Secure` cookie attribute toggle (default `true`).
 pub const COOKIE_SECURE_VAR: &str = "TRAME_COOKIE_SECURE";
-/// When `true`, rate limiting keys on the right-most `X-Forwarded-For` hop
-/// (set only behind a trusted reverse proxy such as Cloud Run).
-pub const TRUST_FORWARDED_FOR_VAR: &str = "TRAME_TRUST_FORWARDED_FOR";
+/// Number of trusted reverse proxies in front of the server (default `0`). With `N > 0`, the
+/// client IP is the `N`-th `X-Forwarded-For` entry from the right (SEC4).
+pub const TRUSTED_PROXY_HOPS_VAR: &str = "TRAME_TRUSTED_PROXY_HOPS";
 /// PostgreSQL connection URL; required outside dev (alias: `TRAME_DATABASE_URL`).
 pub const DATABASE_URL_VAR: &str = "DATABASE_URL";
 /// Alias accepted for `DATABASE_URL`.
@@ -86,6 +90,18 @@ pub const DATABASE_URL_ALIAS_VAR: &str = "TRAME_DATABASE_URL";
 pub const INSTANCE_ID_VAR: &str = "TRAME_INSTANCE_ID";
 /// Optional email the owner bootstrap is locked to.
 pub const BOOTSTRAP_OWNER_EMAIL_VAR: &str = "TRAME_BOOTSTRAP_OWNER_EMAIL";
+
+/// Upper bound accepted for `TRAME_TRUSTED_PROXY_HOPS`.
+pub const MAX_TRUSTED_PROXY_HOPS: usize = 8;
+
+/// Publicly known secret values (dev constants, the dev compose default, and the former
+/// hard-coded fallback). Rejected outside `TRAME_ENV=dev` (SEC5).
+pub const KNOWN_DEV_SECRETS: [&str; 4] = [
+    DEV_MASTER_ENCRYPTION_KEY_HEX,
+    "trame-dev-only-hmac-sha256-secret-key-0001",
+    "dev_only_secret_at_least_32_characters_long_trame",
+    "trame-default-hmac-sha256-signing-secret-key",
+];
 
 /// Minimum HMAC secret length in bytes (256 bits).
 pub const MIN_SECRET_BYTES: usize = 32;
@@ -219,7 +235,18 @@ impl ServerConfig {
         let mut missing = Vec::new();
         let mut invalid = Vec::new();
 
+        let is_known_dev_secret = |value: &str| {
+            KNOWN_DEV_SECRETS
+                .iter()
+                .any(|k| k.eq_ignore_ascii_case(value.trim()))
+        };
         let master_encryption_key = match get(MASTER_ENCRYPTION_KEY_VAR) {
+            Some(hex) if !dev && is_known_dev_secret(&hex) => {
+                invalid.push(format!(
+                    "{MASTER_ENCRYPTION_KEY_VAR} (publicly known development value)"
+                ));
+                [0u8; 32]
+            }
             Some(hex) => parse_master_key(&hex).unwrap_or_else(|| {
                 invalid.push(format!(
                     "{MASTER_ENCRYPTION_KEY_VAR} (expected 64 hex characters)"
@@ -238,6 +265,10 @@ impl ServerConfig {
                 .or_else(|| alias.and_then(get))
                 .or_else(|| get(LEGACY_JWT_SECRET_VAR));
             match value {
+                Some(secret) if !dev && is_known_dev_secret(&secret) => {
+                    invalid.push(format!("{primary} (publicly known development value)"));
+                    Vec::new()
+                }
                 Some(secret) if secret.len() >= MIN_SECRET_BYTES => secret.into_bytes(),
                 Some(_) => {
                     invalid.push(format!(
@@ -273,7 +304,18 @@ impl ServerConfig {
         }
 
         let cookie_secure = !get(COOKIE_SECURE_VAR).is_some_and(|v| is_falsy(&v));
-        let trust_forwarded_for = get(TRUST_FORWARDED_FOR_VAR).is_some_and(|v| !is_falsy(&v));
+        let trusted_proxy_hops = match get(TRUSTED_PROXY_HOPS_VAR) {
+            None => 0,
+            Some(v) => match v.trim().parse::<usize>() {
+                Ok(hops) if hops <= MAX_TRUSTED_PROXY_HOPS => hops,
+                _ => {
+                    invalid.push(format!(
+                        "{TRUSTED_PROXY_HOPS_VAR} (expected an integer in 0..={MAX_TRUSTED_PROXY_HOPS})"
+                    ));
+                    0
+                }
+            },
+        };
 
         let database_url = get(DATABASE_URL_VAR).or_else(|| get(DATABASE_URL_ALIAS_VAR));
         if database_url.is_none() && !dev {
@@ -307,7 +349,7 @@ impl ServerConfig {
             security: Arc::new(SecurityPolicy {
                 cookie_secure,
                 allowed_origins,
-                trust_forwarded_for,
+                trusted_proxy_hops,
                 rate_limiter: AuthRateLimiter::default(),
                 public_origin: public_origin.clone(),
                 registration_open: dev,

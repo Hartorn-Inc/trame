@@ -22,6 +22,7 @@
 pub mod exporter;
 pub mod importer;
 pub mod manifest;
+pub mod spool;
 pub mod stored_assets;
 
 pub use exporter::{

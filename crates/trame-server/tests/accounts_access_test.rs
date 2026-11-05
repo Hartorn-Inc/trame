@@ -38,7 +38,7 @@ use trame_server::auth::session::{
 use trame_server::auth::totp::TotpService;
 use trame_server::http::{
     AppState, InMemoryBlobStore, InMemoryMembershipValidator, build_router_with_state,
-    is_authorized_campaign_member,
+    resolve_campaign_role,
 };
 use trame_server::instance::{prepare_owner_bootstrap, resolve_instance_id};
 use trame_server::maps::InMemoryMapStorage;
@@ -1360,7 +1360,9 @@ async fn sec13_removing_member_closes_their_sockets() {
                 "case {case}"
             );
             assert!(
-                !is_authorized_campaign_member(&h.state, campaign_id, player_id).await,
+                resolve_campaign_role(&h.state, campaign_id, player_id)
+                    .await
+                    .is_none(),
                 "case {case}: reconnect refused"
             );
         }

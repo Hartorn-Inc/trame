@@ -256,7 +256,7 @@ mod tests {
         };
 
         let json_payload = serde_json::to_vec(&doc).unwrap();
-        let imported = import_uvtt_map(&json_payload, instance_id, campaign_id, &store)
+        let imported = import_uvtt_map(json_payload.into(), instance_id, campaign_id, &store)
             .await
             .expect("UVTT import should succeed");
 
@@ -360,7 +360,7 @@ mod tests {
         };
 
         let json_payload = serde_json::to_vec(&doc).unwrap();
-        let imported = import_uvtt_map(&json_payload, instance_id, campaign_id, &store)
+        let imported = import_uvtt_map(json_payload.into(), instance_id, campaign_id, &store)
             .await
             .expect("UVTT import with offset should succeed");
 
@@ -394,7 +394,7 @@ mod tests {
 
         // 1. Payload > 64 MiB rejected
         let oversized = vec![0u8; MAX_PAYLOAD_SIZE_BYTES + 1];
-        let err = import_uvtt_map(&oversized, inst, camp, &store)
+        let err = import_uvtt_map(oversized.into(), inst, camp, &store)
             .await
             .unwrap_err();
         assert!(matches!(err, UvttImportError::PayloadTooLarge(_)));
@@ -414,7 +414,7 @@ mod tests {
             lights: Vec::new(),
         };
         let payload = serde_json::to_vec(&corrupt_doc).unwrap();
-        let err = import_uvtt_map(&payload, inst, camp, &store)
+        let err = import_uvtt_map(payload.into(), inst, camp, &store)
             .await
             .unwrap_err();
         assert_eq!(err, UvttImportError::InvalidMagicBytes);

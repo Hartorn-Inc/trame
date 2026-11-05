@@ -1290,3 +1290,78 @@ async fn pg_undo_and_staging_survive_crash() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_export_is_gm_only() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    let gm = account(&store).await;
+    let (campaign_id, _) = create_campaign_with_actor(&app, &gm).await;
+    let campaign_uuid: Uuid = campaign_id.parse().unwrap();
+    // (case_id, membership role, expected status)
+    let cases = [
+        ("game_master", None, StatusCode::OK),
+        ("player", Some("PLAYER"), StatusCode::FORBIDDEN),
+        ("spectator", Some("SPECTATOR"), StatusCode::FORBIDDEN),
+        ("non_member", Some(""), StatusCode::FORBIDDEN),
+    ];
+    for (case, role, expected) in cases {
+        let cookie = match role {
+            None => gm.clone(),
+            Some(role) => {
+                let (user_id, cookie) = account_with_id(&store).await;
+                if !role.is_empty() {
+                    store
+                        .assign_campaign_member(campaign_uuid, user_id, None, role)
+                        .await
+                        .unwrap();
+                }
+                cookie
+            }
+        };
+        let (status, _) = call(
+            &app,
+            "GET",
+            &format!("/api/v1/campaigns/{campaign_id}/export"),
+            &cookie,
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, expected, "case {case}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_healthz_and_campaign_asset_usage() {
+    let Some((app, store)) = harness().await else {
+        return;
+    };
+    let (status, body) = call(&app, "GET", "/healthz", "", Body::empty()).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+
+    let gm = account(&store).await;
+    let (campaign_id, _) = create_campaign_with_actor(&app, &gm).await;
+    let (other_id, _) = create_campaign_with_actor(&app, &gm).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/campaigns/{campaign_id}/assets"),
+        &gm,
+        Body::from(png_bytes()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // (case_id, campaign, has stored bytes)
+    let cases = [
+        ("uploading_campaign_counts_bytes", &campaign_id, true),
+        ("other_campaign_stays_empty", &other_id, false),
+    ];
+    for (case, id, has_bytes) in cases {
+        let used = store
+            .campaign_usage_bytes(id.parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(used > 0, has_bytes, "case {case}: {used}");
+    }
+}

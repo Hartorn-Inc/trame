@@ -37,6 +37,8 @@
 //!      - Uploads are capped at `MAX_ASSET_UPLOAD_BYTES`, checked for PNG/JPEG/WebP
 //!        magic bytes and header dimensions before decoding, and re-encoded as WebP
 //!        under a content-addressed key. Downloads require a valid HMAC signature.
+//!      - Uploads and map imports first check the per-campaign storage quota
+//!        (`413 STORAGE_QUOTA_EXCEEDED`), then decode/encode on the blocking pool (SEC14).
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -54,7 +56,7 @@ use crate::dice::{RollVisibility, SeededDiceRoller, project_roll_for_recipient};
 use crate::http::{AppState, error_response, resolve_authenticated_user, resolve_campaign_role};
 use crate::importers::uvtt::{
     ImportedMapResult, MAX_PAYLOAD_SIZE_BYTES, UvttImportError, import_uvtt_map,
-    transcode_upload_to_webp,
+    transcode_upload_to_webp_blocking,
 };
 use crate::maps::{
     CampaignMapScene, LightSource, SceneSaveError, load_campaign_scene_set, save_campaign_scenes,
@@ -1402,7 +1404,10 @@ pub async fn upload_asset_handler(
             &format!("asset uploads are limited to {MAX_ASSET_UPLOAD_BYTES} bytes"),
         );
     };
-    let webp = match transcode_upload_to_webp(&bytes) {
+    if let Err(resp) = ensure_asset_quota(&state, campaign_id, bytes.len()).await {
+        return *resp;
+    }
+    let webp = match transcode_upload_to_webp_blocking(bytes).await {
         Ok(w) => w,
         Err(err) => return bad_request("INVALID_IMAGE", &err.to_string()),
     };
@@ -1432,6 +1437,30 @@ pub async fn upload_asset_handler(
             .into_response(),
         Err(err) => storage_error(err),
     }
+}
+
+/// Refuses with `413 STORAGE_QUOTA_EXCEEDED` when the campaign's stored asset bytes plus
+/// `incoming_bytes` (the raw upload, an estimate of the re-encoded size) would exceed
+/// `SecurityPolicy::campaign_asset_quota_bytes`. Runs before any decode (SEC14).
+async fn ensure_asset_quota(
+    state: &AppState,
+    campaign_id: Uuid,
+    incoming_bytes: usize,
+) -> Result<(), Box<Response>> {
+    let quota = state.auth_state.security.campaign_asset_quota_bytes;
+    let used = state
+        .asset_store
+        .campaign_usage_bytes(campaign_id)
+        .await
+        .map_err(|err| Box::new(storage_error(err)))?;
+    if used.saturating_add(incoming_bytes as u64) > quota {
+        return Err(Box::new(error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "STORAGE_QUOTA_EXCEEDED",
+            &format!("campaign asset storage is limited to {quota} bytes"),
+        )));
+    }
+    Ok(())
 }
 
 /// `GET /assets/download/{*key}?exp=&sig=` -> asset bytes when the HMAC signature is valid
@@ -1529,8 +1558,11 @@ pub async fn import_map_handler(
             "map imports are limited to 64 MiB",
         );
     };
+    if let Err(resp) = ensure_asset_quota(&state, campaign_id, bytes.len()).await {
+        return *resp;
+    }
     let map = match import_uvtt_map(
-        &bytes,
+        bytes,
         state.instance_id,
         campaign_id,
         state.asset_store.as_ref(),

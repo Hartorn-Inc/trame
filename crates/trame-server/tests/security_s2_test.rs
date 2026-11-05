@@ -13,7 +13,7 @@
 //! INVARIANTS & SAFETY BOUNDARIES:
 //!   - Each rule is a parametrized table of `(case_id, input, expected)`.
 //!   - No test relies on `?user_id=`: identity comes only from session cookies.
-//!   - Rate-limit cases use `X-Forwarded-For` with `trust_forwarded_for` so IP
+//!   - Rate-limit cases use `X-Forwarded-For` with `trusted_proxy_hops = 1` so IP
 //!     buckets can be exercised through `oneshot`.
 //!
 //! COVERAGE:
@@ -811,7 +811,7 @@ async fn a62_timeline_requires_membership_filters_gm_events_and_caps_limit() {
                 &key,
                 1,
                 AppendEventInput {
-                    event_type: "DiceRolled".to_string(),
+                    event_type: "dice_roll".to_string(),
                     actor_id: None,
                     payload: serde_json::json!({ "n": i }),
                     timestamp: Some(2 + i),
@@ -1103,7 +1103,7 @@ async fn a60_import_rejects_zip_bombs_with_400() {
 
 fn limited_policy() -> SecurityPolicy {
     SecurityPolicy {
-        trust_forwarded_for: true,
+        trusted_proxy_hops: 1,
         rate_limiter: AuthRateLimiter::new(
             RateLimit {
                 max_attempts: 3,

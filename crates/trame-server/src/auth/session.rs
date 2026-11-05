@@ -892,7 +892,10 @@ pub async fn register_handler(
     }
 
     let pw_service = PasswordService::new();
-    let password_hash = match pw_service.hash_password(&payload.password) {
+    let password_hash = match pw_service
+        .hash_password_blocking(payload.password.clone())
+        .await
+    {
         Ok(h) => h,
         Err(PasswordError::WeakPassword(msg)) => {
             return (
@@ -1006,7 +1009,10 @@ pub async fn login_handler(
     };
 
     let pw_service = PasswordService::new();
-    if !pw_service.verify_password(&payload.password, stored_hash) {
+    if !pw_service
+        .verify_password_blocking(payload.password.clone(), stored_hash.clone())
+        .await
+    {
         return (
             StatusCode::UNAUTHORIZED,
             Json(AuthErrorResponse {
@@ -1222,7 +1228,7 @@ pub async fn me_handler(State(state): State<AuthState>, headers: HeaderMap) -> R
 }
 
 /// Builds the Axum router for authentication endpoints plus owner bootstrap and instance
-/// administration (`instance.rs`). Credential endpoints (`login`, `register`, `totp/*`,
+/// administration (`instance.rs`). Credential endpoints (`login`, `register`, `totp/*`, `bind*`,
 /// bootstrap) sit behind `auth_rate_limit_middleware`. Invites live in `access.rs`.
 pub fn build_auth_router(state: AuthState) -> Router {
     let rate_limited = Router::new()
@@ -1231,6 +1237,8 @@ pub fn build_auth_router(state: AuthState) -> Router {
         .route("/api/v1/auth/totp/setup", post(totp_setup_handler))
         .route("/api/v1/auth/totp/enable", post(totp_enable_handler))
         .route("/api/v1/auth/totp/verify", post(totp_verify_handler))
+        .route("/api/v1/auth/bind", post(bind_account_handler))
+        .route("/api/v1/auth/bind-account", post(bind_account_handler))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_rate_limit_middleware,
@@ -1239,8 +1247,6 @@ pub fn build_auth_router(state: AuthState) -> Router {
     Router::new()
         .route("/api/v1/auth/logout", post(logout_handler))
         .route("/api/v1/auth/me", get(me_handler))
-        .route("/api/v1/auth/bind", post(bind_account_handler))
-        .route("/api/v1/auth/bind-account", post(bind_account_handler))
         .route(
             "/api/v1/auth/pat",
             post(create_pat_handler).get(list_pats_handler),

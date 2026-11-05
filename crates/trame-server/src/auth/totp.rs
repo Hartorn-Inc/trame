@@ -48,10 +48,6 @@ pub const TOTP_DIGITS: u32 = 6;
 /// Environment variable holding the 32-byte hex-encoded master encryption key.
 pub const MASTER_ENCRYPTION_KEY_ENV: &str = "MASTER_ENCRYPTION_KEY";
 
-/// Fallback master key for testing and dev environments (32 bytes = 64 hex chars).
-const DEFAULT_DEV_MASTER_KEY_HEX: &str =
-    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-
 /// Errors occurring during TOTP generation, encryption, or verification.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TotpError {
@@ -85,8 +81,12 @@ pub struct TotpService {
 }
 
 impl Default for TotpService {
+    /// Per-instance random master key (SEC5): secrets it encrypts are only readable by this
+    /// instance. Production wires `ServerSecrets::master_encryption_key` through `new`.
     fn default() -> Self {
-        Self::from_env_or_default()
+        let mut key = [0u8; 32];
+        rand::rng().fill(&mut key);
+        Self::new(key, "TRAME")
     }
 }
 
@@ -97,15 +97,6 @@ impl TotpService {
             master_key,
             issuer: issuer.into(),
         }
-    }
-
-    /// Loads `MASTER_ENCRYPTION_KEY` (64 hex characters) from the environment, falling back to dev key.
-    pub fn from_env_or_default() -> Self {
-        let hex_str = std::env::var(MASTER_ENCRYPTION_KEY_ENV)
-            .unwrap_or_else(|_| DEFAULT_DEV_MASTER_KEY_HEX.to_string());
-        let key = Self::parse_master_key(&hex_str)
-            .unwrap_or_else(|_| Self::parse_master_key(DEFAULT_DEV_MASTER_KEY_HEX).unwrap());
-        Self::new(key, "TRAME")
     }
 
     /// Parses a 32-byte master key from a 64-character lowercase or uppercase hex string.
