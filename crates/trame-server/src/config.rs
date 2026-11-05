@@ -33,7 +33,8 @@
 //!        comma-separated `TRAME_ALLOWED_ORIGINS`; `TRAME_PUBLIC_ORIGIN` is
 //!        required outside dev.
 //!      - `TRAME_TRUSTED_PROXY_HOPS` (default `0`, max `MAX_TRUSTED_PROXY_HOPS`)
-//!        selects which `X-Forwarded-For` entry is the client IP (SEC4).
+//!        selects which `X-Forwarded-For` entry is the client IP (SEC4). The
+//!        removed `TRAME_TRUST_FORWARDED_FOR` is rejected in every environment.
 //!   4. `Log Format Follows TRAME_ENV`:
 //!      - `TRAME_ENV=dev` logs pretty ANSI lines; every other value (including
 //!        unset) logs JSON without ANSI escapes, so production log collectors
@@ -82,6 +83,9 @@ pub const COOKIE_SECURE_VAR: &str = "TRAME_COOKIE_SECURE";
 /// Number of trusted reverse proxies in front of the server (default `0`). With `N > 0`, the
 /// client IP is the `N`-th `X-Forwarded-For` entry from the right (SEC4).
 pub const TRUSTED_PROXY_HOPS_VAR: &str = "TRAME_TRUSTED_PROXY_HOPS";
+/// Former boolean proxy toggle replaced by `TRAME_TRUSTED_PROXY_HOPS`. Setting it aborts
+/// startup, so a deployment relying on it does not silently key rate limits on the proxy IP.
+pub const REMOVED_TRUST_FORWARDED_FOR_VAR: &str = "TRAME_TRUST_FORWARDED_FOR";
 /// PostgreSQL connection URL; required outside dev (alias: `TRAME_DATABASE_URL`).
 pub const DATABASE_URL_VAR: &str = "DATABASE_URL";
 /// Alias accepted for `DATABASE_URL`.
@@ -316,6 +320,11 @@ impl ServerConfig {
                 }
             },
         };
+        if get(REMOVED_TRUST_FORWARDED_FOR_VAR).is_some() {
+            invalid.push(format!(
+                "{REMOVED_TRUST_FORWARDED_FOR_VAR} (removed; set {TRUSTED_PROXY_HOPS_VAR} to the number of trusted reverse proxies instead)"
+            ));
+        }
 
         let database_url = get(DATABASE_URL_VAR).or_else(|| get(DATABASE_URL_ALIAS_VAR));
         if database_url.is_none() && !dev {

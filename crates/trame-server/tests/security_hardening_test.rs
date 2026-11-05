@@ -51,7 +51,8 @@ use trame_server::auth::totp::TotpService;
 use trame_server::campaigns::tactical_sync_from_sheet;
 use trame_server::config::{
     DATABASE_URL_VAR, INVITE_JWT_SECRET_VAR, JWT_SECRET_VAR, KNOWN_DEV_SECRETS,
-    MASTER_ENCRYPTION_KEY_VAR, PUBLIC_ORIGIN_VAR, ServerConfig, TRAME_ENV_VAR,
+    MASTER_ENCRYPTION_KEY_VAR, PUBLIC_ORIGIN_VAR, REMOVED_TRUST_FORWARDED_FOR_VAR, ServerConfig,
+    TRAME_ENV_VAR, TRUSTED_PROXY_HOPS_VAR,
 };
 use trame_server::dice::RollVisibility;
 use trame_server::http::{
@@ -1213,6 +1214,56 @@ fn sec5_known_dev_secrets_rejected_outside_dev() {
                     .iter()
                     .any(|m| m.contains("publicly known development value")),
                 "case {case}: {err:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn sec4_removed_trust_forwarded_for_aborts_startup() {
+    let prod = vec![
+        (MASTER_ENCRYPTION_KEY_VAR, "cd".repeat(32)),
+        (JWT_SECRET_VAR, "y".repeat(40)),
+        (INVITE_JWT_SECRET_VAR, "y".repeat(40)),
+        (PUBLIC_ORIGIN_VAR, "https://table.example.com".to_string()),
+        (DATABASE_URL_VAR, "postgresql://trame@db/trame".to_string()),
+    ];
+    let dev = vec![(TRAME_ENV_VAR, "dev".to_string())];
+    let with_old = |mut vars: Vec<(&'static str, String)>, value: &str| {
+        vars.push((REMOVED_TRUST_FORWARDED_FOR_VAR, value.to_string()));
+        vars
+    };
+    // (case_id, vars, accepted)
+    let cases = [
+        ("production_without_old_variable", prod.clone(), true),
+        (
+            "production_old_variable_true",
+            with_old(prod.clone(), "true"),
+            false,
+        ),
+        (
+            "production_old_variable_false",
+            with_old(prod, "false"),
+            false,
+        ),
+        ("dev_old_variable_true", with_old(dev, "1"), false),
+    ];
+    for (case, vars, accepted) in cases {
+        let result = ServerConfig::from_lookup(|key| {
+            vars.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone())
+        });
+        assert_eq!(
+            result.is_ok(),
+            accepted,
+            "case {case}: {:?}",
+            result.as_ref().err()
+        );
+        if let Err(err) = result {
+            let message = err.to_string();
+            assert!(
+                message.contains(REMOVED_TRUST_FORWARDED_FOR_VAR)
+                    && message.contains(TRUSTED_PROXY_HOPS_VAR),
+                "case {case}: {message}"
             );
         }
     }
