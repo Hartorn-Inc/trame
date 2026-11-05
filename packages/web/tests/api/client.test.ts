@@ -109,13 +109,13 @@ describe("ApiClient: server frame reconciliation", () => {
     },
     {
       id: "CommandRejected records the reason",
-      frames: [{ type: "CommandRejected", reason: "Not your turn" }],
+      frames: [{ type: "CommandRejected", reason: "Not your turn", correlationId: null }],
       check: (s) => assert.equal(s.lastRejection.value, "Not your turn"),
     },
     {
       id: "an accepted command clears the previous rejection",
       frames: [
-        { type: "CommandRejected", reason: "Not your turn" },
+        { type: "CommandRejected", reason: "Not your turn", correlationId: null },
         { type: "CommandAccepted", seqId: 1, events: [], state: table() },
       ],
       check: (s) => assert.equal(s.lastRejection.value, null),
@@ -406,11 +406,14 @@ describe("table command builders", () => {
     it(c.id, () => assert.deepEqual(c.command, c.expected));
   }
 
-  it("submitCommand wraps the command in the external SubmitCommand tag", () => {
+  it("submitCommand wraps the command in the external SubmitCommand tag with a UUID correlation_id", () => {
     const { client, transport } = newClient();
     client.connect(CAMPAIGN_ID);
     transport.sockets[0].open();
     client.submitCommand(commands.advanceTurn());
-    assert.deepEqual(decode(transport.sockets[0].sent[0]), { SubmitCommand: { cmd: "ADVANCE_TURN" } });
+    const { SubmitCommand } = decode(transport.sockets[0].sent[0]) as { SubmitCommand: Record<string, unknown> };
+    const { correlation_id, ...command } = SubmitCommand;
+    assert.deepEqual(command, { cmd: "ADVANCE_TURN" });
+    assert.match(String(correlation_id), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 });

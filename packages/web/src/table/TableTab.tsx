@@ -8,13 +8,14 @@
  * Composes the live table: GM toolbar, combat tracker, reaction prompts,
  * board, selected-token vitals, and dice tray (the sheet/compendium drawers
  * are mounted by the workspace). Each child reads the session signals itself;
- * this module only lays them out and reports command rejections.
+ * this module only lays them out.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
  * 1. `Rejections Are Visible`:
- *    - `session.lastRejection` (engine `CommandRejected` reason) is shown in
- *      an alert region, so a blocked move or an illegal command is explained.
+ *    - Every `CommandRejected` is shown by the app-level
+ *      `CommandFeedbackToasts` (named after the refused action), so a blocked
+ *      move or an illegal command is explained on every tab.
  * 2. `Connection Gate`:
  *    - Before the first snapshot the tab shows a busy state instead of an
  *      empty board, so nobody acts on a table that is not loaded yet.
@@ -37,7 +38,6 @@ export interface TableTabProps {
 }
 
 export function TableTab({ campaignId, client, isGm }: TableTabProps) {
-  const rejection = client.state.lastRejection.value;
   if (!client.state.table.value) {
     return (
       <p class="ds-hint" aria-busy="true" data-testid="table-loading">
@@ -51,9 +51,6 @@ export function TableTab({ campaignId, client, isGm }: TableTabProps) {
         <GmOverrideToolbar client={client} isGm={isGm} />
         <CombatTrackerBar client={client} isGm={isGm} />
         <ReactionBanner client={client} isGm={isGm} />
-        <p class="ds-field-error" role="alert" data-testid="table-rejection">
-          {rejection ? t('table.rejected', { reason: rejection }) : ''}
-        </p>
         <TableCanvas campaignId={campaignId} client={client} isGm={isGm} />
       </div>
       <aside class="ds-stack-sm ds-table-side" aria-label={t('table.sidebar')}>

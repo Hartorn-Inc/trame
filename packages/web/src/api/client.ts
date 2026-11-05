@@ -40,11 +40,24 @@
  * 6. `Injectable Transport`:
  *    - `fetch` and the socket factory are constructor inputs so the app seam
  *      tests run against a mocked transport.
+ * 7. `Reconnect And Resync (RT11)`:
+ *    - `ConnectionManager` (`connection.ts`) reconnects with backoff and a
+ *      heartbeat. Across a reconnect the stale `table` stays visible under
+ *      the connection banner; the first `StateSnapshot` on the new socket
+ *      replaces it and resets every derived signal (initiative totals,
+ *      events, prompt closures, pings), so nothing from before the drop is
+ *      merged into the fresh state.
+ * 8. `Every Failed Action Is Reported (RT10 / UA16)`:
+ *    - Each `SubmitCommand` / `RollDice` carries a fresh `correlation_id`;
+ *      `CommandRejected` is matched back to the action (`PendingCommands`)
+ *      and pushed to `commandFeedback`. Submitting while the socket is not
+ *      open sends nothing, queues nothing, and pushes `notConnected`.
  *
  * EXECUTION LIFECYCLE:
  * -----
  * `connect(campaignId)`
- * ├── 1. Reset table signals, open `/api/v1/campaigns/{id}/ws` (binary).
+ * ├── 1. Reset table signals, start the room connection (binary socket on
+ * │      `/api/v1/campaigns/{id}/ws`, reconnecting on its own).
  * ├── 2. Each frame -> `decodeServerEnvelope` -> `applyServerEnvelope`.
  * └── 3. `submitCommand` / `rollDice` / `sendPointerPing` / `ping` encode
  *        externally tagged `ClientEnvelope`s while the socket is open.
@@ -66,28 +79,23 @@ import {
   type WireTrameEvent,
 } from "./wire.ts";
 import {
+  COMMAND_FEEDBACK_LIMIT,
   DICE_LOG_LIMIT,
   POINTER_PING_LIMIT,
   session as defaultSession,
   type AuthUser,
   type Campaign,
   type CampaignMember,
+  type CommandFeedback,
   type SessionState,
 } from "./session.ts";
+import { ConnectionManager, type AccessProbeResult, type NetworkWatcher, type SocketLike } from "./connection.ts";
+import { PendingCommands, newCorrelationId } from "./pendingCommands.ts";
 
-/** `WebSocket.OPEN` without depending on a global `WebSocket` in tests. */
-const SOCKET_OPEN = 1;
+export type { SocketLike } from "./connection.ts";
 
-/** Minimal socket surface used by the client (satisfied by `WebSocket`). */
-export interface SocketLike {
-  binaryType: string;
-  readonly readyState: number;
-  send(data: Uint8Array): void;
-  close(): void;
-  onopen: ((ev: unknown) => void) | null;
-  onclose: ((ev: unknown) => void) | null;
-  onmessage: ((ev: { data: unknown }) => void) | null;
-}
+/** `CommandFeedback.action` for table dice rolls (`RollDice` is not a `TrameCommand`). */
+export const ROLL_DICE_ACTION = "ROLL_DICE";
 
 /** Network seam: REST `fetch` and the WebSocket factory. */
 export interface Transport {
@@ -105,6 +113,10 @@ export interface ApiClientOptions {
   baseUrl?: string;
   /** WebSocket origin (`ws(s)://host`); defaults to the page origin. */
   wsOrigin?: string;
+  /** Connectivity hints for reconnects; defaults to the browser's `online`/`offline`/visibility. */
+  network?: NetworkWatcher;
+  /** Uniform random source in `[0, 1)` for reconnect jitter; defaults to `Math.random`. */
+  random?: () => number;
 }
 
 /** REST failure carrying the HTTP status and the server's `{ code, error }` body. */
@@ -339,13 +351,36 @@ export class ApiClient {
   private readonly transport: Transport;
   private readonly baseUrl: string;
   private readonly wsOrigin: string;
-  private socket: SocketLike | null = null;
+  private readonly room: ConnectionManager;
+  private readonly pending = new PendingCommands();
+  /** Campaign of the room connection, used by the access probe. */
+  private roomCampaignId: Uuid | null = null;
+  /** `true` from a socket opening until its `StateSnapshot` (invariant 7). */
+  private awaitingSnapshot = false;
+  private nextFeedbackId = 1;
 
   constructor(options: ApiClientOptions = {}) {
     this.transport = options.transport ?? browserTransport();
     this.state = options.state ?? defaultSession;
     this.baseUrl = options.baseUrl ?? "";
     this.wsOrigin = options.wsOrigin ?? defaultWsOrigin();
+    this.room = new ConnectionManager({
+      state: this.state,
+      openSocket: (url) => this.transport.openSocket(url),
+      onFrame: (data) => {
+        const bytes = frameBytes(data);
+        const envelope = bytes ? decodeServerEnvelope(bytes) : null;
+        if (envelope) this.applyServerEnvelope(envelope);
+      },
+      onOpen: () => {
+        this.awaitingSnapshot = true;
+        this.pending.clear();
+      },
+      probeAccess: () => this.probeRoomAccess(),
+      encodePing: (nowMs) => encodeClientEnvelope({ type: "Ping", clientTimeMs: nowMs }),
+      network: options.network,
+      random: options.random,
+    });
   }
 
   private request(method: string, path: string, body?: unknown): Promise<Json> {
@@ -687,7 +722,7 @@ export class ApiClient {
     return res.scene as Record<string, unknown>;
   }
 
-  /** Opens the campaign room socket, replacing any previous connection. */
+  /** Opens the campaign room connection (reconnecting on its own), replacing any previous one. */
   connect(campaignId: Uuid): void {
     this.disconnect();
     const s = this.state;
@@ -697,53 +732,90 @@ export class ApiClient {
     s.mcpProposals.value = {};
     s.initiativeTotals.value = {};
     s.lastClosedPrompt.value = null;
-    s.connection.value = "connecting";
-
-    const socket = this.transport.openSocket(
-      `${this.wsOrigin}/api/v1/campaigns/${encodeURIComponent(campaignId)}/ws`,
-    );
-    socket.binaryType = "arraybuffer";
-    socket.onopen = () => {
-      if (this.socket === socket) s.connection.value = "open";
-    };
-    socket.onclose = () => {
-      if (this.socket === socket) {
-        this.socket = null;
-        s.connection.value = "closed";
-      }
-    };
-    socket.onmessage = (ev) => {
-      const bytes = frameBytes(ev.data);
-      const envelope = bytes ? decodeServerEnvelope(bytes) : null;
-      if (envelope) this.applyServerEnvelope(envelope);
-    };
-    this.socket = socket;
+    s.commandFeedback.value = [];
+    this.roomCampaignId = campaignId;
+    this.room.start(`${this.wsOrigin}/api/v1/campaigns/${encodeURIComponent(campaignId)}/ws`);
   }
 
-  /** Closes the room socket, if any. */
+  /** Closes the room connection for good, if any. */
   disconnect(): void {
-    const socket = this.socket;
-    this.socket = null;
-    if (socket) {
-      socket.close();
-      this.state.connection.value = "closed";
+    this.room.stop();
+    this.roomCampaignId = null;
+    this.pending.clear();
+  }
+
+  /** Retries the room connection now instead of waiting for the backoff delay. */
+  reconnectNow(): void {
+    this.room.reconnectNow();
+  }
+
+  /**
+   * Leaves the expired session for the sign-in screen (connection banner,
+   * `signedOut`). The active campaign is kept so signing in returns to it.
+   */
+  signInAgain(): void {
+    this.disconnect();
+    this.setUser(null);
+  }
+
+  /** Removes one toast from `commandFeedback`. */
+  dismissFeedback(id: number): void {
+    this.state.commandFeedback.value = this.state.commandFeedback.value.filter((f) => f.id !== id);
+  }
+
+  /** Classifies a refused room handshake through the member-only campaign route. */
+  private async probeRoomAccess(): Promise<AccessProbeResult> {
+    if (this.roomCampaignId === null) return "unreachable";
+    try {
+      await this.request("GET", campaignPath(this.roomCampaignId));
+      return "ok";
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) return "signedOut";
+      if (err instanceof ApiError && err.status === 403) return "forbidden";
+      return "unreachable";
     }
   }
 
+  private pushFeedback(feedback: Omit<CommandFeedback, "id">): void {
+    this.state.commandFeedback.value = [
+      ...this.state.commandFeedback.value,
+      { id: this.nextFeedbackId++, ...feedback },
+    ].slice(-COMMAND_FEEDBACK_LIMIT);
+  }
+
   private send(envelope: ClientEnvelope): boolean {
-    if (!this.socket || this.socket.readyState !== SOCKET_OPEN) return false;
-    this.socket.send(encodeClientEnvelope(envelope));
+    return this.room.send(encodeClientEnvelope(envelope));
+  }
+
+  /**
+   * Sends a tracked action with a fresh `correlation_id` (invariant 8).
+   * Returns `false`, sends nothing, and reports `notConnected` when the socket is not open.
+   */
+  private sendTracked(action: string, build: (correlationId: string) => ClientEnvelope): boolean {
+    const correlationId = newCorrelationId();
+    if (!this.send(build(correlationId))) {
+      this.pushFeedback({ kind: "notConnected", action, reason: null });
+      return false;
+    }
+    this.pending.add(correlationId, action);
     return true;
   }
 
   /** Submits an externally tagged `TrameCommand`; `false` when the socket is not open. */
   submitCommand(command: WireTrameCommand): boolean {
-    return this.send({ type: "SubmitCommand", command });
+    const action = typeof command.cmd === "string" ? command.cmd : "";
+    return this.sendTracked(action, (correlationId) => ({ type: "SubmitCommand", command, correlationId }));
   }
 
-  /** Requests a server-side table roll (`RollDice`). */
+  /** Requests a server-side table roll (`RollDice`); `false` when the socket is not open. */
   rollDice(expression: string, visibility: WireRollVisibility, reason: string): boolean {
-    return this.send({ type: "RollDice", expression, visibility, reason });
+    return this.sendTracked(ROLL_DICE_ACTION, (correlationId) => ({
+      type: "RollDice",
+      expression,
+      visibility,
+      reason,
+      correlationId,
+    }));
   }
 
   /** Broadcasts an ephemeral pointer ping at a canvas position (`px`). */
@@ -761,6 +833,15 @@ export class ApiClient {
     const s = this.state;
     switch (envelope.type) {
       case "StateSnapshot":
+        if (this.awaitingSnapshot) {
+          this.awaitingSnapshot = false;
+          s.initiativeTotals.value = {};
+          s.lastEvents.value = [];
+          s.lastClosedPrompt.value = null;
+          s.pointerPings.value = [];
+          s.lastRejection.value = null;
+          this.room.markHealthy();
+        }
         s.seqId.value = envelope.seqId;
         s.table.value = envelope.state;
         s.mcpProposals.value = envelope.state.mcp_staging_proposals ?? {};
@@ -778,6 +859,11 @@ export class ApiClient {
         return;
       case "CommandRejected":
         s.lastRejection.value = envelope.reason;
+        this.pushFeedback({
+          kind: "rejected",
+          action: this.pending.take(envelope.correlationId, nowMs),
+          reason: envelope.reason,
+        });
         return;
       case "DiceRolled":
         s.diceLog.value = [...s.diceLog.value, envelope.roll].slice(-DICE_LOG_LIMIT);
@@ -791,6 +877,7 @@ export class ApiClient {
         return;
       case "Pong":
         s.rttMs.value = Math.max(0, nowMs - envelope.clientTimeMs);
+        this.room.notePong();
         return;
       case "ActorUpdated": {
         const known = s.actors.value[envelope.actorId];

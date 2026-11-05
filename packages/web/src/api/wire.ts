@@ -18,13 +18,20 @@
  *    - Outbound envelopes are encoded as a single-key map
  *      `{ Variant: payload }` with snake_case field names
  *      (`SubmitCommand` is a newtype variant: `{ SubmitCommand: <command> }`).
- * 2. `UUID Normalization`:
+ * 2. `Optional Correlation Id (RT10)`:
+ *    - `SubmitCommand` adds `correlation_id` as an extra key of the command
+ *      map itself (`{ SubmitCommand: { cmd, ..., correlation_id } }`, the
+ *      server's `#[serde(flatten)]` `CommandSubmission`); `RollDice` adds it
+ *      as a field. Serde ignores unknown keys here, so an older server that
+ *      does not know the field still accepts the frame. `CommandRejected`
+ *      echoes it back, or omits it when the frame could not be decoded.
+ * 3. `UUID Normalization`:
  *    - `rmp_serde` is not human-readable, so `Uuid` values (including
  *      `BTreeMap<Uuid, _>` keys) arrive as 16-byte binaries. Every 16-byte
  *      `Uint8Array` is rewritten to its canonical hyphenated string before the
  *      payload reaches application code. No other 16-byte binary field exists
  *      in `ServerEnvelope`.
- * 3. `Forward-Compatible Decoding`:
+ * 4. `Forward-Compatible Decoding`:
  *    - Unknown or malformed frames decode to `null` instead of throwing, so a
  *      newer server variant never tears down the socket handler.
  *
@@ -265,8 +272,8 @@ export interface HandoutRevealedBroadcast {
 
 /** Outbound frames, discriminated by `type` on the client side only. */
 export type ClientEnvelope =
-  | { type: "SubmitCommand"; command: WireTrameCommand }
-  | { type: "RollDice"; expression: string; visibility: WireRollVisibility; reason: string }
+  | { type: "SubmitCommand"; command: WireTrameCommand; correlationId?: string }
+  | { type: "RollDice"; expression: string; visibility: WireRollVisibility; reason: string; correlationId?: string }
   | { type: "PointerPing"; pos: WirePoint2D; colorHex: string }
   | { type: "Ping"; clientTimeMs: number };
 
@@ -274,7 +281,7 @@ export type ClientEnvelope =
 export type ServerEnvelope =
   | { type: "StateSnapshot"; seqId: number; state: ProjectedTableState }
   | { type: "CommandAccepted"; seqId: number; events: WireTrameEvent[]; state: ProjectedTableState }
-  | { type: "CommandRejected"; reason: string }
+  | { type: "CommandRejected"; reason: string; correlationId: string | null }
   | { type: "DiceRolled"; roll: ProjectedDiceRoll }
   | { type: "PointerPingBroadcast"; senderUserId: Uuid; pos: WirePoint2D; colorHex: string }
   | { type: "Pong"; clientTimeMs: number; serverTimeMs: number }
@@ -286,13 +293,18 @@ export type ServerEnvelope =
 export function toWireClientEnvelope(envelope: ClientEnvelope): Record<string, unknown> {
   switch (envelope.type) {
     case "SubmitCommand":
-      return { SubmitCommand: envelope.command };
+      return {
+        SubmitCommand: envelope.correlationId
+          ? { ...envelope.command, correlation_id: envelope.correlationId }
+          : envelope.command,
+      };
     case "RollDice":
       return {
         RollDice: {
           expression: envelope.expression,
           visibility: envelope.visibility,
           reason: envelope.reason,
+          ...(envelope.correlationId ? { correlation_id: envelope.correlationId } : {}),
         },
       };
     case "PointerPing":
@@ -369,7 +381,11 @@ export function parseServerEnvelope(raw: unknown): ServerEnvelope | null {
         state: p.state as ProjectedTableState,
       };
     case "CommandRejected":
-      return { type: "CommandRejected", reason: String(p.reason ?? "") };
+      return {
+        type: "CommandRejected",
+        reason: String(p.reason ?? ""),
+        correlationId: typeof p.correlation_id === "string" ? p.correlation_id : null,
+      };
     case "DiceRolled":
       return { type: "DiceRolled", roll: p as unknown as ProjectedDiceRoll };
     case "PointerPingBroadcast":

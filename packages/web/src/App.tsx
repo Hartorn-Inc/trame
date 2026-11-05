@@ -22,6 +22,10 @@
  *      campaign is selected and closed when leaving it or unmounting.
  * 4. `PreactSignalState`:
  *    - Signals drive view transitions without full-tree re-renders.
+ * 5. `Connection Feedback On Every Campaign Layout`:
+ *    - Desktop and mobile companion layouts both mount `ConnectionBanner`
+ *      and `CommandFeedbackToasts`, which own the only connection and
+ *      action-failure live regions (the header badge is plain text).
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -38,6 +42,7 @@ import { useEffect } from 'preact/hooks';
 import { bootstrapSession, type BootLocation } from './api/bootstrap.ts';
 import { apiClient, type ApiClient } from './api/client.ts';
 import { AuthScreen } from './auth/AuthScreen.tsx';
+import { CommandFeedbackToasts, ConnectionBanner } from './components/RoomConnectionFeedback.tsx';
 import { LocaleToggle, UnitsToggle } from './components/ShellToggles.tsx';
 import { mobileCompanionOverrideSignal, t } from './i18n/index.ts';
 import { CampaignLobby } from './lobby/CampaignLobby.tsx';
@@ -96,9 +101,7 @@ function ShellHeader({ client, inCampaign }: { client: ApiClient; inCampaign: bo
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--atlas-space-sm)' }}>
         <strong class="ds-brand-title">{t('shell.brand')}</strong>
         {inCampaign && (
-          <span data-testid="trame-status-badge" role="status">
-            {t(`shell.connection.${connection}`)}
-          </span>
+          <span data-testid="trame-status-badge">{t(`shell.connection.${connection}`)}</span>
         )}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--atlas-space-sm)', flexWrap: 'wrap' }}>
@@ -162,15 +165,23 @@ function CampaignView({ client, campaignId }: { client: ApiClient; campaignId: s
   }, [client, campaignId]);
 
   if (!shouldMountCanvas.value) {
-    return <MobileCompanionView campaignId={campaignId} client={client} isGm={campaign?.role === 'GM'} />;
+    return (
+      <>
+        <ConnectionBanner client={client} />
+        <MobileCompanionView campaignId={campaignId} client={client} isGm={campaign?.role === 'GM'} />
+        <CommandFeedbackToasts client={client} />
+      </>
+    );
   }
 
   return (
     <div class="ds-app-shell" data-testid="trame-app-root">
       <ShellHeader client={client} inCampaign />
+      <ConnectionBanner client={client} />
       <main style={{ flex: 1, overflowY: 'auto' }}>
         <CampaignWorkspace campaignId={campaignId} userRole={toUserRole(campaign?.role)} client={client} />
       </main>
+      <CommandFeedbackToasts client={client} />
     </div>
   );
 }

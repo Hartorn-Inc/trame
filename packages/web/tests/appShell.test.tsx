@@ -288,6 +288,25 @@ describe("App shell rendered against a mocked transport", () => {
     assert.ok(byTestId("campaign-lobby"));
   });
 
+  it("the campaign view shows refused-action toasts and the reconnecting banner after a deploy close", async () => {
+    const { client, transport } = newClient({
+      "POST /api/v1/auth/magic-link/redeem": INVITE_REPLY,
+      "GET /api/v1/campaigns": { status: 200, body: { campaigns: [campaignDto({ role: "PLAYER" })] } },
+    });
+    await mount(client, "?invite=jwt-ok");
+    transport.sockets[0].open();
+    transport.sockets[0].receive({ CommandRejected: { reason: "Not your turn" } });
+    await flush();
+    assert.match(byTestId("command-feedback-item").textContent, /^Action was refused: Not your turn/);
+
+    transport.sockets[0].serverClose(1001);
+    await flush();
+    assert.equal(byTestId("connection-banner").getAttribute("data-state"), "reconnecting");
+    assert.match(byTestId("connection-banner-message").textContent, /Connection lost\. Reconnecting, attempt 1\./);
+    assert.equal(byTestId("trame-status-badge").textContent, "Reconnecting...");
+    client.disconnect();
+  });
+
   /** Holds requests whose URL ends with `suffix` until `release()` is called. */
   function gateRequests(transport: { fetch: (url: string, init: RequestInit) => Promise<Response> }, suffix: string) {
     let release: () => void = () => undefined;
