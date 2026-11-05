@@ -8,7 +8,7 @@
  * Aggregates and re-exports the complete public surface of `@trame/game-system-dnd5e`
  * (`types`, `formulaEvaluator`, `manifest`, `pipeline`, `progression`, `origins`,
  * `classRules`, `derivations`, `builderChoices`, `compendium`, `monsterStatBlock`,
- * `sheetLayout`, and `rest`) behind a
+ * `srdPacks`, `sheetLayout`, and `rest`) behind a
  * single deterministic entry point for both the server authority and web client.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
@@ -16,7 +16,8 @@
  *   1. `Side-Effect-Free Barrel`:
  *      - Contains strictly declarative module re-exports with zero top-level
  *        mutable state or runtime I/O, preserving tree-shaking and deterministic
- *        bundle initialization.
+ *        bundle initialization. The generated SRD packs are only fetched when
+ *        `loadSrdPacks()` is called (dynamic `import()`).
  * ============================================================================
  */
 
@@ -31,6 +32,7 @@ export * from "./derivations.ts";
 export * from "./builderChoices.ts";
 export * from "./compendium.ts";
 export * from "./monsterStatBlock.ts";
+export * from "./srdPacks.ts";
 export * from "./sheetLayout.ts";
 export * from "./rest.ts";
 export { computeDnd5eSheetDerived } from "./manifest.ts";

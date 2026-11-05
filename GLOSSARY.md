@@ -339,6 +339,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: Server persistence, SQL migrations, and production runtime wiring.
 - **_Avoid_**: InMemoryProdStore, OrmAdapter, PrismaStore.
 
+### SrdPack
+
+- **Definition**: Generated, committed JSON file of `SystemSRD` compendium entries (`packs/spells.json`, `packs/monsters.json`, `packs/magic-items.json`) written by `make srd-content` from the pinned Open5e SRD 5.2.1 snapshot and never edited by hand. `loadSrdPacks()` loads the packs lazily and `loadFullSystemSrd()` merges them by id over the curated catalog, keeping curated French metadata. `packs/manifest.json` records the source pin, checksums and the CC-BY-4.0 attribution.
+- **Allowed Context**: `SrdPack`, `SRD pack`, `generated pack`, `make srd-content`.
+- **_Avoid_**: `content dump`, `data bundle`, `seed file`.
+
 ### SystemSRD
 
 - **Definition**: Read-only baseline game reference data from the CC-BY-4.0 System Reference Document 5.2.1 (2024 rules) bundled with the game system pack; SRD 5.1 (also CC-BY-4.0) fills only the entries SRD 5.2.1 lacks (ADR-0038).
