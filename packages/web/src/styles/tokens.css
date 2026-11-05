@@ -568,6 +568,19 @@ select.ds-input {
   font-size: var(--atlas-font-size-xs);
 }
 
+/* Passive text badge (InstanceRole, invite status): the label carries the meaning, never amber */
+.ds-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5rem;
+  padding: 0 var(--atlas-space-sm);
+  color: var(--atlas-text);
+  font-size: var(--atlas-font-size-xs);
+  font-weight: 600;
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-sm);
+}
+
 .ds-field-error {
   margin: 0;
   color: var(--atlas-danger);

@@ -43,16 +43,27 @@ export const DICE_LOG_LIMIT = 200;
 /** Maximum retained pointer pings (they fade client-side within 1.5 s). */
 export const POINTER_PING_LIMIT = 32;
 
+/**
+ * Instance-wide account role (ADR-0039), independent of the campaign role:
+ * `OWNER` administers accounts, `HOST` and `OWNER` may create campaigns,
+ * `MEMBER` joins campaigns through invites only.
+ */
+export type InstanceRole = "OWNER" | "HOST" | "MEMBER";
+
 /** Authenticated user as returned by `AuthUserDto` (`/api/v1/auth/*`). */
 export interface AuthUser {
   id: Uuid;
   email: string;
   displayName: string;
   username: string;
-  /** `true` for ephemeral users created by an invite redemption. */
+  /** `true` for a legacy guest session without credentials; the lobby shows the bind prompt. */
   isGuest: boolean;
   /** Global role; grants nothing by itself (campaign membership decides). */
   role: string;
+  /** Instance-wide role; unknown server values fall back to `MEMBER` (least privilege). */
+  instanceRole: InstanceRole;
+  /** `true` once TOTP is enabled; account settings recommend it otherwise. */
+  totpEnabled: boolean;
 }
 
 /** Campaign summary (`CampaignDto`) with the caller's membership role. */
@@ -155,8 +166,6 @@ export interface PointerPing {
 export interface SessionState {
   status: Signal<SessionStatus>;
   user: Signal<AuthUser | null>;
-  /** Error message from a failed `?invite=` redemption, shown on the auth screen. */
-  inviteError: Signal<string | null>;
   campaigns: Signal<Campaign[]>;
   activeCampaignId: Signal<Uuid | null>;
   connection: Signal<ConnectionStatus>;
@@ -188,7 +197,6 @@ export function createSessionState(): SessionState {
   return {
     status: signal<SessionStatus>("restoring"),
     user: signal<AuthUser | null>(null),
-    inviteError: signal<string | null>(null),
     campaigns: signal<Campaign[]>([]),
     activeCampaignId: signal<Uuid | null>(null),
     connection: signal<ConnectionStatus>("idle"),

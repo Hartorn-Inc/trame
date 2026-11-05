@@ -5,23 +5,26 @@
  *
  * PURPOSE:
  * -----
- * Rendered by the auth guard when no session exists. Lets a user sign in or
- * create an account through `ApiClient`, which sets `session.user` and moves
- * the shell to the campaign lobby.
+ * Rendered by the auth guard when no session exists. Lets a user sign in
+ * through `ApiClient`, which sets `session.user` and moves the shell to the
+ * campaign lobby. Public registration exists only where the server accepts
+ * it (`TRAME_ENV=dev`); elsewhere accounts come from owner setup or an
+ * invite link (ADR-0039).
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
- * 1. `Server-Side Validation Is Authoritative`:
+ * 1. `Registration Follows The Server`:
+ *    - `GET /api/v1/instance` decides: the "Create account" mode renders only
+ *      when `registration_open` is true. Until it answers, or when it fails,
+ *      the screen fails closed to sign-in only plus an invite explanation.
+ * 2. `Server-Side Validation Is Authoritative`:
  *    - Server error codes (`EMAIL_ALREADY_EXISTS`, `INVALID_EMAIL`, ...) map to
  *      localized messages; the form does no duplicate validation beyond the
  *      native `required` / `type="email"` hints.
- * 2. `Errors Point At Their Field`:
+ * 3. `Errors Point At Their Field`:
  *    - The field an error refers to gets `aria-invalid` and `aria-describedby`
  *      pointing at the `role="alert"` message, so the error is read again when
  *      the user returns to that field.
- * 3. `Live Region Exists Before Its Message`:
- *    - The invite-failure region is mounted empty and filled after mount;
- *      screen readers ignore live regions inserted together with their text.
  * 4. `Focusable While Busy`:
  *    - Submit uses `aria-disabled` + `aria-busy` instead of `disabled`, so
  *      focus is not dropped to `<body>` while the request is in flight.
@@ -49,6 +52,8 @@ const ERROR_KEYS: Record<string, MessageKey> = {
   EMAIL_ALREADY_EXISTS: "auth.error.emailTaken",
   INVALID_EMAIL: "auth.error.invalidEmail",
   INVALID_DISPLAY_NAME: "auth.error.invalidDisplayName",
+  WEAK_PASSWORD: "auth.error.weakPassword",
+  REGISTRATION_CLOSED: "auth.error.registrationClosed",
 };
 
 /** Fields each error message describes; `auth.error.generic` points at none. */
@@ -56,6 +61,7 @@ const ERROR_FIELDS: Partial<Record<MessageKey, readonly AuthField[]>> = {
   "auth.error.emailTaken": ["email"],
   "auth.error.invalidEmail": ["email"],
   "auth.error.invalidDisplayName": ["displayName"],
+  "auth.error.weakPassword": ["password"],
   "auth.error.invalidCredentials": ["email", "password"],
 };
 
@@ -63,25 +69,31 @@ function errorKey(err: unknown): MessageKey {
   if (err instanceof ApiError) {
     if (err.code && ERROR_KEYS[err.code]) return ERROR_KEYS[err.code];
     if (err.status === 401) return "auth.error.invalidCredentials";
+    if (err.status === 429) return "auth.error.rateLimited";
   }
   return "auth.error.generic";
 }
 
-/** Sign-in and registration form shown to anonymous users. */
+/** Sign-in form (plus registration where the server allows it) shown to anonymous users. */
 export function AuthScreen({ client }: AuthScreenProps) {
   const [mode, setMode] = useState<AuthMode>("login");
+  const [registrationOpen, setRegistrationOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<MessageKey | null>(null);
-  const [showInviteError, setShowInviteError] = useState(false);
   const titleRef = useRef<HTMLHeadingElement | null>(null);
-  const inviteFailed = client.state.inviteError.value !== null;
 
   useFocusOnMount(titleRef);
-  useEffect(() => setShowInviteError(inviteFailed), [inviteFailed]);
+  useEffect(() => {
+    client.getInstanceInfo().then(
+      (info) => setRegistrationOpen(info.registrationOpen),
+      () => setRegistrationOpen(false),
+    );
+  }, [client]);
 
+  const activeMode: AuthMode = registrationOpen ? mode : "login";
   const invalidFields = error ? (ERROR_FIELDS[error] ?? []) : [];
   const fieldErrorProps = (field: AuthField) =>
     invalidFields.includes(field) ? { "aria-invalid": "true" as const, "aria-describedby": ERROR_ID } : {};
@@ -92,7 +104,7 @@ export function AuthScreen({ client }: AuthScreenProps) {
     setSubmitting(true);
     setError(null);
     try {
-      if (mode === "login") {
+      if (activeMode === "login") {
         await client.login({ email, password });
       } else {
         await client.register({ email, displayName, password });
@@ -108,14 +120,14 @@ export function AuthScreen({ client }: AuthScreenProps) {
       type="button"
       class="ds-btn ds-btn-secondary"
       data-testid={`auth-mode-${value}`}
-      aria-pressed={mode === value ? "true" : "false"}
+      aria-pressed={activeMode === value ? "true" : "false"}
       disabled={submitting}
       onClick={() => {
         setMode(value);
         setError(null);
       }}
     >
-      {mode === value && <span aria-hidden="true">✓</span>}
+      {activeMode === value && <span aria-hidden="true">✓</span>}
       {t(label)}
     </button>
   );
@@ -130,18 +142,16 @@ export function AuthScreen({ client }: AuthScreenProps) {
           <LocaleToggle />
         </div>
 
-        <div role="alert" data-testid="auth-invite-region">
-          {showInviteError && (
-            <p data-testid="auth-invite-error" class="ds-field-error">
-              {t("auth.inviteFailed")}
-            </p>
-          )}
-        </div>
-
-        <div role="group" aria-label={t("auth.modeLabel")} class="ds-cluster">
-          {modeButton("login", "auth.mode.login")}
-          {modeButton("register", "auth.mode.register")}
-        </div>
+        {registrationOpen ? (
+          <div role="group" aria-label={t("auth.modeLabel")} class="ds-cluster">
+            {modeButton("login", "auth.mode.login")}
+            {modeButton("register", "auth.mode.register")}
+          </div>
+        ) : (
+          <p class="ds-hint" data-testid="auth-invite-only">
+            {t("auth.inviteOnly")}
+          </p>
+        )}
 
         <form data-testid="auth-form" onSubmit={onSubmit} class="ds-stack">
           <label class="ds-field" for="auth-email">
@@ -159,7 +169,7 @@ export function AuthScreen({ client }: AuthScreenProps) {
             />
           </label>
 
-          {mode === "register" && (
+          {activeMode === "register" && (
             <label class="ds-field" for="auth-display-name">
               <span class="ds-field-label">{t("auth.displayName")}</span>
               <input
@@ -183,7 +193,7 @@ export function AuthScreen({ client }: AuthScreenProps) {
               data-testid="auth-password"
               class="ds-input"
               type="password"
-              autocomplete={mode === "login" ? "current-password" : "new-password"}
+              autocomplete={activeMode === "login" ? "current-password" : "new-password"}
               required
               value={password}
               onInput={(e) => setPassword((e.currentTarget as HTMLInputElement).value)}
@@ -204,7 +214,7 @@ export function AuthScreen({ client }: AuthScreenProps) {
             aria-disabled={submitting ? "true" : undefined}
             aria-busy={submitting ? "true" : undefined}
           >
-            {submitting ? t("auth.submitting") : t(mode === "login" ? "auth.submit.login" : "auth.submit.register")}
+            {submitting ? t("auth.submitting") : t(activeMode === "login" ? "auth.submit.login" : "auth.submit.register")}
           </button>
         </form>
       </section>

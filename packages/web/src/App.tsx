@@ -6,14 +6,16 @@
  * PURPOSE:
  * -----
  * Root Preact shell: boots the session, guards every screen behind
- * authentication, and routes between the sign-in screen, the campaign lobby,
- * and the live campaign workspace.
+ * authentication, and routes between the owner setup page, the
+ * `InviteRedemption` screen, the sign-in screen, the campaign lobby (with the
+ * Owner's account administration), and the live campaign workspace.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
- * 1. `GuestSessionUpgrade Before The Guard`:
- *    - `bootstrapSession` redeems `?invite=` before the guard decides, so an
- *      invited player lands in the workspace instead of the sign-in form.
+ * 1. `Entry Route Before The Guard`:
+ *    - Nothing renders until `bootstrapSession` returns the entry route, so
+ *      `/setup?token=` and `?invite=` reach their screens (signed in or not)
+ *      instead of flashing the sign-in form or the lobby.
  * 2. `Server-Owned Identity`:
  *    - Screens render from `session.status` / `session.user`, which only
  *      `ApiClient` writes after the server answers.
@@ -30,22 +32,27 @@
  * EXECUTION LIFECYCLE:
  * -----
  * `App` mount
- * ├── 1. `bootstrapSession` -> status `authenticated` | `anonymous`.
- * ├── 2. `restoring` -> busy message; `anonymous` -> `AuthScreen`.
- * ├── 3. `authenticated`, no campaign -> `CampaignLobby`.
- * └── 4. campaign selected -> `client.connect(id)` + `CampaignWorkspace`.
+ * ├── 1. `bootstrapSession` -> entry route + status `authenticated` | `anonymous`.
+ * ├── 2. route `setup` -> `OwnerSetupScreen`; route `invite` -> `InviteRedemptionScreen`.
+ * ├── 3. `anonymous` -> `AuthScreen`.
+ * ├── 4. `authenticated`, no campaign -> `CampaignLobby` | `InstanceAdminPanel` (Owner).
+ * └── 5. campaign selected -> `client.connect(id)` + `CampaignWorkspace`.
  * ============================================================================
  */
 
 import { computed, signal } from '@preact/signals';
-import { useEffect } from 'preact/hooks';
-import { bootstrapSession, type BootLocation } from './api/bootstrap.ts';
+import { useEffect, useState } from 'preact/hooks';
+import { APP_ROUTE, bootstrapSession, type BootLocation, type BootRoute } from './api/bootstrap.ts';
 import { apiClient, type ApiClient } from './api/client.ts';
+import { AccountSettingsDialog } from './auth/AccountSettingsDialog.tsx';
 import { AuthScreen } from './auth/AuthScreen.tsx';
+import { InviteRedemptionScreen } from './auth/InviteRedemptionScreen.tsx';
+import { OwnerSetupScreen } from './auth/OwnerSetupScreen.tsx';
 import { CommandFeedbackToasts, ConnectionBanner } from './components/RoomConnectionFeedback.tsx';
 import { LocaleToggle, UnitsToggle } from './components/ShellToggles.tsx';
 import { mobileCompanionOverrideSignal, t } from './i18n/index.ts';
 import { CampaignLobby } from './lobby/CampaignLobby.tsx';
+import { InstanceAdminPanel } from './lobby/InstanceAdminPanel.tsx';
 import type { UserRole } from './maps/types.ts';
 import { MobileCompanionView } from './mobile/MobileCompanionView.tsx';
 import { CampaignWorkspace } from './workspace/CampaignWorkspace.tsx';
@@ -80,9 +87,9 @@ apiClient.onHandoutRevealed = (handout) => {
 /** Props for `App`; defaults bind to the browser. Tests inject a mocked client. */
 export interface AppProps {
   client?: ApiClient;
-  /** Location read by the bootstrap (`?invite=`). */
+  /** Location read by the bootstrap (`/setup?token=`, `?invite=`). */
   location?: BootLocation;
-  /** Rewrites the address bar without navigation (strips a consumed invite). */
+  /** Rewrites the address bar without navigation (strips invite and setup tokens). */
   replaceUrl?: (url: string) => void;
 }
 
@@ -94,7 +101,16 @@ function toUserRole(role: string | undefined): UserRole {
   return role === 'GM' || role === 'SPECTATOR' ? role : 'PLAYER';
 }
 
-function ShellHeader({ client, inCampaign }: { client: ApiClient; inCampaign: boolean }) {
+interface ShellHeaderProps {
+  client: ApiClient;
+  inCampaign: boolean;
+  /** Opens the account settings dialog (lobby only). */
+  onOpenAccount?: () => void;
+  /** Opens the Owner's account administration (lobby, Owner only). */
+  onOpenAdmin?: () => void;
+}
+
+function ShellHeader({ client, inCampaign, onOpenAccount, onOpenAdmin }: ShellHeaderProps) {
   const connection = client.state.connection.value;
   return (
     <header class="ds-topbar" style={{ flexWrap: 'wrap' }}>
@@ -134,6 +150,22 @@ function ShellHeader({ client, inCampaign }: { client: ApiClient; inCampaign: bo
               {t('shell.companionMode')}
             </button>
           </>
+        )}
+        {onOpenAdmin && (
+          <button type="button" class="ds-btn ds-btn-secondary" data-testid="header-instance-admin" onClick={onOpenAdmin}>
+            {t('shell.instanceAdmin')}
+          </button>
+        )}
+        {onOpenAccount && (
+          <button
+            type="button"
+            class="ds-btn ds-btn-secondary"
+            data-testid="header-account"
+            aria-haspopup="dialog"
+            onClick={onOpenAccount}
+          >
+            {t('shell.account')}
+          </button>
         )}
         <button
           type="button"
@@ -186,22 +218,58 @@ function CampaignView({ client, campaignId }: { client: ApiClient; campaignId: s
   );
 }
 
-/** Root shell: session bootstrap, auth guard, lobby, and campaign workspace. */
+/** Lobby shell: campaign list or, for the Owner, account administration, plus the account dialog. */
+function LobbyView({ client }: { client: ApiClient }) {
+  const [view, setView] = useState<'lobby' | 'admin'>('lobby');
+  const [accountOpen, setAccountOpen] = useState(false);
+  const user = client.state.user.value;
+  const isOwner = user?.instanceRole === 'OWNER';
+
+  return (
+    <div class="ds-app-shell">
+      <ShellHeader
+        client={client}
+        inCampaign={false}
+        onOpenAccount={() => setAccountOpen(true)}
+        onOpenAdmin={isOwner && view === 'lobby' ? () => setView('admin') : undefined}
+      />
+      {isOwner && view === 'admin' ? (
+        <InstanceAdminPanel client={client} onBack={() => setView('lobby')} />
+      ) : (
+        <CampaignLobby client={client} />
+      )}
+      {accountOpen && user && <AccountSettingsDialog user={user} onClose={() => setAccountOpen(false)} />}
+    </div>
+  );
+}
+
+/** Root shell: session bootstrap, entry routes, auth guard, lobby, and campaign workspace. */
 export function App({ client = apiClient, location, replaceUrl = browserReplaceUrl }: AppProps = {}) {
+  const [route, setRoute] = useState<BootRoute | null>(null);
+
   useEffect(() => {
     const loc = location ?? (typeof window !== 'undefined' ? window.location : { pathname: '/', search: '', hash: '' });
-    void bootstrapSession(client, loc, replaceUrl);
+    void bootstrapSession(client, loc, replaceUrl).then(setRoute);
   }, [client]);
 
   const status = client.state.status.value;
   const campaignId = client.state.activeCampaignId.value;
+  const leaveEntryRoute = () => setRoute(APP_ROUTE);
 
-  if (status === 'restoring') {
+  if (status === 'restoring' || route === null) {
     return (
       <main class="ds-app-shell" data-testid="app-restoring" aria-busy="true" style={{ alignItems: 'center', justifyContent: 'center' }}>
         <p>{t('shell.loading')}</p>
       </main>
     );
+  }
+
+  if (route.kind === 'setup') {
+    return <OwnerSetupScreen client={client} token={route.token} onDone={leaveEntryRoute} />;
+  }
+
+  if (route.kind === 'invite') {
+    return <InviteRedemptionScreen client={client} token={route.token} onDone={leaveEntryRoute} />;
   }
 
   if (status === 'anonymous') {
@@ -210,14 +278,7 @@ export function App({ client = apiClient, location, replaceUrl = browserReplaceU
 
   return (
     <>
-      {campaignId ? (
-        <CampaignView client={client} campaignId={campaignId} />
-      ) : (
-        <div class="ds-app-shell">
-          <ShellHeader client={client} inCampaign={false} />
-          <CampaignLobby client={client} />
-        </div>
-      )}
+      {campaignId ? <CampaignView client={client} campaignId={campaignId} /> : <LobbyView client={client} />}
       <HandoutRevealModal />
     </>
   );

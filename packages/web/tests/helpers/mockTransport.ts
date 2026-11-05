@@ -105,6 +105,8 @@ export function authUserDto(overrides: Record<string, unknown> = {}): Record<str
     is_guest: false,
     is_ephemeral: false,
     role: "PLAYER",
+    instance_role: "HOST",
+    totp_enabled: false,
     ...overrides,
   };
 }

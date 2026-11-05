@@ -74,7 +74,7 @@ export interface LiveTable {
 export function liveTable(userId: string, state: ProjectedTableState | null, routes: Record<string, RouteReply> = {}): LiveTable {
   const transport = createMockTransport(routes);
   const client = new ApiClient({ transport, state: createSessionState() });
-  client.state.user.value = { id: userId, email: "", displayName: "User", username: "user", isGuest: false, role: "PLAYER" };
+  client.state.user.value = { id: userId, email: "", displayName: "User", username: "user", isGuest: false, role: "PLAYER", instanceRole: "MEMBER", totpEnabled: false };
   client.state.status.value = "authenticated";
   client.connect(CAMPAIGN);
   const socket = transport.sockets[0];
