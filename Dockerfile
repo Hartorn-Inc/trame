@@ -15,7 +15,7 @@
 # The Rust tag must match `channel` in `rust-toolchain.toml`; the Node tag must
 # match the `web-dev` service in `docker-compose.dev.yml`.
 
-FROM rust:1.99.1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS rust-source
+FROM rust:1.99.1-bookworm@sha256:7085845219c18e7c5b1f34ed9ce89b84f822f2e3d54a02774cedc996ac0f304f AS rust-source
 # rust-toolchain.toml stays outside /build so rustup never auto-installs from it;
 # the build fails instead when this image tag drifts from the pinned channel.
 COPY rust-toolchain.toml /tmp/rust-toolchain.toml
@@ -45,7 +45,7 @@ RUN wasm-pack build crates/trame-engine --release --target web --out-dir ../../p
 FROM rust-source AS rust-builder
 RUN cargo build --release --locked --bin trame-server
 
-FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS web-builder
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS web-builder
 WORKDIR /build/packages/web
 COPY packages/web/package.json packages/web/package-lock.json ./
 RUN npm ci
