@@ -695,7 +695,8 @@ pub struct DamageResolution {
     /// `true` when `new_hp == 0` and the target is not dead (`dead == false`).
     pub unconscious: bool,
     /// If the target is concentrating on a spell, survived (`new_hp > 0`), and took damage
-    /// (`final_damage > 0`), equals `Some(max(10, floor(final_damage / 2)))`.
+    /// (`final_damage > 0`), equals `Some(min(30, max(10, floor(final_damage / 2))))`
+    /// (SRD 5.2.1 caps the DC at `MAX_CONCENTRATION_DC`).
     pub concentration_check_dc: Option<i32>,
     /// `DeathSavingThrow` failures added by this hit (`0`, `1`, or `2` on a critical hit). Only a
     /// target already at 0 HP that loses HP-bound damage (after Temp HP) gains failures.
@@ -708,6 +709,12 @@ pub struct DamageResolution {
 
 /// Number of failed `DeathSavingThrow`s at which a creature dies.
 pub const DEATH_SAVE_FAILURES_TO_DIE: u8 = 3;
+
+/// Lowest `ConcentrationCheckPrompt` DC (`10`), used when half the damage is smaller.
+pub const MIN_CONCENTRATION_DC: i32 = 10;
+
+/// Highest `ConcentrationCheckPrompt` DC (`30`, SRD 5.2.1), reached at 60+ damage.
+pub const MAX_CONCENTRATION_DC: i32 = 30;
 
 /// Resolves D&D 5e / generic damage mitigation (`IMMUNE -> RESISTANT -> VULNERABLE`),
 /// Temporary HP absorption, `InstantDeath`, death saving throw failures at 0 HP, and
@@ -756,7 +763,7 @@ pub fn resolve_damage_application(
     let unconscious = new_hp == 0 && !dead;
 
     let concentration_check_dc = if is_concentrating && final_damage > 0 && new_hp > 0 {
-        Some(10.max(final_damage / 2))
+        Some((final_damage / 2).clamp(MIN_CONCENTRATION_DC, MAX_CONCENTRATION_DC))
     } else {
         None
     };
