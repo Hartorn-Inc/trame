@@ -910,17 +910,55 @@ async fn sec4_bind_routes_are_rate_limited() {
 
 #[tokio::test]
 async fn sec4_totp_failures_add_an_exponential_lockout() {
-    // (case_id, carries a TOTP code, fifth attempt throttled)
+    let password = "Correct-Horse-Battery-9";
+    // (case_id, login password, carries a TOTP code, fifth attempt throttled)
     let cases = [
-        ("password_only_failures_not_locked", false, false),
-        ("totp_failures_locked_after_free_tries", true, true),
+        (
+            "password_only_failures_not_locked",
+            "wrong-password",
+            false,
+            false,
+        ),
+        (
+            "wrong_password_with_totp_code_not_locked",
+            "wrong-password",
+            true,
+            false,
+        ),
+        (
+            "wrong_totp_after_correct_password_locked",
+            password,
+            true,
+            true,
+        ),
     ];
-    for (case, with_totp, throttled) in cases {
+    for (case, attempt_password, with_totp, throttled) in cases {
         let h = Harness::with(policy(1, 100, 100));
         let app = h.app();
-        let mut body = serde_json::json!({ "email": "mfa@example.com", "password": "x" });
+        let email = format!("{}@example.com", Uuid::new_v4());
+        let (status, body) = send(
+            &app,
+            auth_request(
+                "/api/v1/auth/register",
+                "10.5.0.1",
+                serde_json::json!({ "email": email, "password": password, "display_name": "Mfa" }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "case {case}: {}", text(&body));
+        let store = &h.state.auth_state.session_store;
+        let user = store.get_user_by_email(&email).await.unwrap().unwrap();
+        let secret = h
+            .state
+            .auth_state
+            .totp_service
+            .encrypt_secret(b"12345678901234567890")
+            .unwrap();
+        store.enable_totp_for_user(user.id, &secret).await.unwrap();
+
+        let mut body = serde_json::json!({ "email": email, "password": attempt_password });
         if with_totp {
-            body["totp_code"] = "000000".into();
+            body["totp_code"] = "XXXXXX".into();
         }
         let mut last = StatusCode::OK;
         for _ in 0..5 {
@@ -934,6 +972,82 @@ async fn sec4_totp_failures_add_an_exponential_lockout() {
             last == StatusCode::TOO_MANY_REQUESTS,
             throttled,
             "case {case}: {last}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sec4_parallel_failures_cannot_exceed_the_allowance() {
+    // (case_id, per-IP allowance, per-account allowance, parallel failing logins, admitted)
+    let cases = [
+        ("account_limit_holds_under_burst", 100, 3, 12, 3),
+        ("ip_limit_holds_under_burst", 2, 100, 12, 2),
+    ];
+    for (case, per_ip, per_account, racers, admitted) in cases {
+        let h = Harness::with(policy(1, per_ip, per_account));
+        let app = h.app();
+        let password = "Correct-Horse-Battery-9";
+        let email = format!("{}@example.com", Uuid::new_v4());
+        send(
+            &app,
+            auth_request(
+                "/api/v1/auth/register",
+                "10.6.0.9",
+                serde_json::json!({ "email": email, "password": password, "display_name": "Racer" }),
+            ),
+        )
+        .await;
+        let attempts: Vec<_> = (0..racers)
+            .map(|_| {
+                let app = app.clone();
+                let body = serde_json::json!({ "email": email, "password": "wrong-password" });
+                tokio::spawn(async move {
+                    send(&app, auth_request("/api/v1/auth/login", "10.6.0.1", body))
+                        .await
+                        .0
+                })
+            })
+            .collect();
+        let mut statuses = Vec::new();
+        for attempt in attempts {
+            statuses.push(attempt.await.unwrap());
+        }
+        let passed = statuses
+            .iter()
+            .filter(|s| **s != StatusCode::TOO_MANY_REQUESTS)
+            .count();
+        assert_eq!(passed, admitted, "case {case}: {statuses:?}");
+    }
+}
+
+#[test]
+fn sec4_import_quota_survives_auth_bucket_pruning() {
+    let limiter = AuthRateLimiter::new(
+        RateLimit {
+            max_attempts: 1,
+            window: Duration::from_millis(1),
+        },
+        RateLimit {
+            max_attempts: 1,
+            window: Duration::from_millis(1),
+        },
+    );
+    let user = Uuid::new_v4();
+    for _ in 0..limiter.imports_per_account.max_attempts {
+        limiter.take_import(user).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(5));
+    // (case_id, credential keys sprayed past MAX_TRACKED_KEYS before the next import)
+    let cases = [("no_pruning", 0usize), ("pruning_triggered", 10_005)];
+    for (case, sprayed) in cases {
+        for i in 0..sprayed {
+            let _ = limiter.try_reserve(&format!("ip:login:{case}-{i}"), limiter.per_ip);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+        let _ = limiter.try_reserve("ip:login:trigger", limiter.per_ip);
+        assert!(
+            limiter.take_import(user).is_err(),
+            "case {case}: import quota keeps its 1 h window"
         );
     }
 }

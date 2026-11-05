@@ -437,13 +437,15 @@ pub async fn totp_enable_handler(
         .totp_service
         .verify_code(&secret_bytes, &payload.code, now)
     {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(TotpErrorResponse {
-                error: "invalid totp verification code".to_string(),
-            }),
-        )
-            .into_response();
+        return crate::security::totp_rejected(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(TotpErrorResponse {
+                    error: "invalid totp verification code".to_string(),
+                }),
+            )
+                .into_response(),
+        );
     }
 
     if let Err(e) = state
@@ -534,7 +536,7 @@ pub async fn totp_verify_handler(
         .totp_service
         .verify_code(&secret_bytes, &payload.code, now)
     {
-        return unauthorized("invalid or expired totp code");
+        return crate::security::totp_rejected(unauthorized("invalid or expired totp code"));
     }
 
     (

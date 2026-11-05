@@ -26,10 +26,17 @@
 //!        normal use is never blocked; a key over its allowance gets
 //!        `429 Too Many Requests` with `Retry-After` before the handler (and
 //!        Argon2 / TOTP work) runs.
+//!      - The check and the count are one atomic step (`try_reserve`) taken
+//!        before the handler; a response that is not a counted failure returns
+//!        the attempt (`release`). Checking first and counting after the
+//!        handler would let N parallel failures all pass the same check.
 //!      - TOTP attempts (`/auth/totp/*`, or a login carrying `totp_code`) add an
 //!        exponential per-account lockout (`TotpBackoff`) cleared by a success.
-//!      - Bucket maps are pruned once they exceed `MAX_TRACKED_KEYS`, bounding
-//!        memory under key-spraying.
+//!        A failure counts only when the handler marks its response
+//!        `TotpCodeRejected`, i.e. after the password or session was verified.
+//!      - Bucket maps are pruned once they exceed `MAX_TRACKED_KEYS`; each
+//!        bucket expires on its own window, so pruning on a credential route
+//!        never resets an hour-long import or upload quota.
 //!   2. `Client IP Resolution`:
 //!      - Uses the socket peer address (`ConnectInfo`) unless
 //!        `trusted_proxy_hops = N > 0`, in which case the `N`-th
@@ -156,8 +163,28 @@ pub struct AuthRateLimiter {
     pub totp_backoff: TotpBackoff,
     /// Archive imports allowed per account, successful or not (SEC6); default 10 per hour.
     pub imports_per_account: RateLimit,
-    buckets: Mutex<HashMap<String, (Instant, u32)>>,
+    /// Asset uploads (image decodes) allowed per account, successful or not; default 60 per
+    /// 10 minutes.
+    pub uploads_per_account: RateLimit,
+    buckets: Mutex<HashMap<String, Bucket>>,
     backoffs: Mutex<HashMap<String, (u32, Instant)>>,
+}
+
+/// One fixed window: when it started, how many attempts it holds, and its own length, so
+/// pruning never drops a live window of a longer-lived limit (an import's hour) early.
+#[derive(Debug, Clone, Copy)]
+struct Bucket {
+    start: Instant,
+    count: u32,
+    window: Duration,
+}
+
+/// An attempt counted by `AuthRateLimiter::try_reserve`; hand it to `release` when the
+/// attempt turned out not to count (a success), so only failures keep consuming allowance.
+#[derive(Debug)]
+pub struct Reservation {
+    key: String,
+    window_start: Instant,
 }
 
 impl Default for AuthRateLimiter {
@@ -186,6 +213,10 @@ impl AuthRateLimiter {
                 max_attempts: 10,
                 window: Duration::from_secs(3600),
             },
+            uploads_per_account: RateLimit {
+                max_attempts: 60,
+                window: Duration::from_secs(600),
+            },
             buckets: Mutex::new(HashMap::new()),
             backoffs: Mutex::new(HashMap::new()),
         }
@@ -193,43 +224,66 @@ impl AuthRateLimiter {
 
     /// Consumes one archive import from `user_id`'s quota, or returns the remaining wait.
     pub fn take_import(&self, user_id: uuid::Uuid) -> Result<(), Duration> {
-        let key = format!("import:{user_id}");
-        self.blocked(&key, self.imports_per_account)?;
-        self.record(&key, self.imports_per_account);
-        Ok(())
+        self.try_reserve(&format!("import:{user_id}"), self.imports_per_account)
+            .map(drop)
     }
 
-    /// Returns the remaining wait when `key` already used up its failure allowance.
-    pub fn blocked(&self, key: &str, limit: RateLimit) -> Result<(), Duration> {
+    /// Consumes one asset upload from `user_id`'s quota, or returns the remaining wait.
+    pub fn take_upload(&self, user_id: uuid::Uuid) -> Result<(), Duration> {
+        self.try_reserve(&format!("upload:{user_id}"), self.uploads_per_account)
+            .map(drop)
+    }
+
+    /// Atomically checks and counts one attempt against `key`: returns the remaining wait
+    /// when the window is full, otherwise counts the attempt before returning. Checking and
+    /// counting under one lock is what stops N parallel requests from all passing a check
+    /// made before any of them was counted.
+    pub fn try_reserve(&self, key: &str, limit: RateLimit) -> Result<Reservation, Duration> {
         let now = Instant::now();
-        let Ok(buckets) = self.buckets.lock() else {
-            return Ok(());
+        let Ok(mut buckets) = self.buckets.lock() else {
+            return Ok(Reservation {
+                key: key.to_string(),
+                window_start: now,
+            });
         };
-        match buckets.get(key) {
-            Some((start, count))
-                if now.duration_since(*start) < limit.window && *count >= limit.max_attempts =>
-            {
-                Err(limit.window.saturating_sub(now.duration_since(*start)))
-            }
-            _ => Ok(()),
+        if buckets.len() > MAX_TRACKED_KEYS {
+            buckets.retain(|_, b| now.duration_since(b.start) < b.window);
         }
+        let bucket = buckets.entry(key.to_string()).or_insert(Bucket {
+            start: now,
+            count: 0,
+            window: limit.window,
+        });
+        if now.duration_since(bucket.start) >= bucket.window {
+            *bucket = Bucket {
+                start: now,
+                count: 0,
+                window: limit.window,
+            };
+        }
+        if bucket.count >= limit.max_attempts {
+            return Err(bucket
+                .window
+                .saturating_sub(now.duration_since(bucket.start)));
+        }
+        bucket.count += 1;
+        Ok(Reservation {
+            key: key.to_string(),
+            window_start: bucket.start,
+        })
     }
 
-    /// Counts one attempt against `key` (a failure for credential routes, any import for the
-    /// import quota).
-    pub fn record(&self, key: &str, limit: RateLimit) {
-        let now = Instant::now();
+    /// Returns a reserved attempt that did not count. Ignored once its window has rolled over,
+    /// so it never refunds an attempt of a later window.
+    pub fn release(&self, reservation: Reservation) {
         let Ok(mut buckets) = self.buckets.lock() else {
             return;
         };
-        if buckets.len() > MAX_TRACKED_KEYS {
-            buckets.retain(|_, (start, _)| now.duration_since(*start) < limit.window);
+        if let Some(bucket) = buckets.get_mut(&reservation.key)
+            && bucket.start == reservation.window_start
+        {
+            bucket.count = bucket.count.saturating_sub(1);
         }
-        let entry = buckets.entry(key.to_string()).or_insert((now, 0));
-        if now.duration_since(entry.0) >= limit.window {
-            *entry = (now, 0);
-        }
-        entry.1 = entry.1.saturating_add(1);
     }
 
     /// Returns the remaining TOTP lockout for `key`, if any.
@@ -452,12 +506,20 @@ pub async fn auth_rate_limit_middleware(
     let limiter = &policy.rate_limiter;
     let family = route_family(request.uri().path());
     let ip_key = format!("ip:{family}:{}", policy.client_ip(&request));
-    if let Err(wait) = limiter.blocked(&ip_key, limiter.per_ip) {
-        return too_many_requests(wait);
+    let mut reservations = Vec::with_capacity(2);
+    match limiter.try_reserve(&ip_key, limiter.per_ip) {
+        Ok(r) => reservations.push(r),
+        Err(wait) => return too_many_requests(wait),
     }
+    let release_all = |reservations: Vec<Reservation>| {
+        for r in reservations {
+            limiter.release(r);
+        }
+    };
 
     let (parts, body) = request.into_parts();
     let Ok(bytes) = to_bytes(body, MAX_AUTH_BODY_BYTES).await else {
+        release_all(reservations);
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(serde_json::json!({
@@ -468,37 +530,52 @@ pub async fn auth_rate_limit_middleware(
             .into_response();
     };
     let account = account_key(&parts.headers, &bytes);
-    let acct_key = account.as_ref().map(|key| format!("acct:{family}:{key}"));
     let totp_key = account
         .as_ref()
         .filter(|_| family == "totp" || carries_totp_code(&bytes))
         .map(|key| format!("totp:{key}"));
-    if let Some(key) = &acct_key
-        && let Err(wait) = limiter.blocked(key, limiter.per_account)
-    {
-        return too_many_requests(wait);
+    if let Some(key) = &account {
+        match limiter.try_reserve(&format!("acct:{family}:{key}"), limiter.per_account) {
+            Ok(r) => reservations.push(r),
+            Err(wait) => {
+                release_all(reservations);
+                return too_many_requests(wait);
+            }
+        }
     }
     if let Some(key) = &totp_key
         && let Err(wait) = limiter.totp_locked(key)
     {
+        release_all(reservations);
         return too_many_requests(wait);
     }
 
     let response = next
         .run(Request::from_parts(parts, Body::from(bytes)))
         .await;
-    let failed = is_counted_failure(response.status());
-    if failed {
-        limiter.record(&ip_key, limiter.per_ip);
-        if let Some(key) = &acct_key {
-            limiter.record(key, limiter.per_account);
+    if !is_counted_failure(response.status()) {
+        release_all(reservations);
+    }
+    if let Some(key) = &totp_key {
+        if response.extensions().get::<TotpCodeRejected>().is_some() {
+            limiter.record_totp(key, true);
+        } else if response.status().is_success() {
+            limiter.record_totp(key, false);
         }
     }
-    if let Some(key) = &totp_key
-        && (failed || response.status().is_success())
-    {
-        limiter.record_totp(key, failed);
-    }
+    response
+}
+
+/// Response extension a handler sets when it rejected a TOTP code *after* authenticating
+/// the caller (password checked, or session resolved). Only these responses extend the
+/// TOTP lockout, so a stranger sending wrong passwords with a `totp_code` cannot lock the
+/// account owner out.
+#[derive(Debug, Clone, Copy)]
+pub struct TotpCodeRejected;
+
+/// Marks `response` as a TOTP rejection for `auth_rate_limit_middleware`.
+pub fn totp_rejected(mut response: Response) -> Response {
+    response.extensions_mut().insert(TotpCodeRejected);
     response
 }
 

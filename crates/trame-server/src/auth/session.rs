@@ -1063,14 +1063,16 @@ pub async fn login_handler(
             .totp_service
             .verify_code(&secret_bytes, provided_code, now)
         {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(AuthErrorResponse {
-                    code: Some("INVALID_TOTP_CODE".to_string()),
-                    error: "invalid or expired TOTP code".to_string(),
-                }),
-            )
-                .into_response();
+            return crate::security::totp_rejected(
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(AuthErrorResponse {
+                        code: Some("INVALID_TOTP_CODE".to_string()),
+                        error: "invalid or expired TOTP code".to_string(),
+                    }),
+                )
+                    .into_response(),
+            );
         }
     }
 
