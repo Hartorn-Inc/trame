@@ -1,5 +1,5 @@
 -- ============================================================================
--- QUARANTINED WAL ENTRIES (0010_quarantined_wal_entries.sql)
+-- QUARANTINED WAL ENTRIES (0006_quarantined_wal_entries.sql)
 -- ============================================================================
 --
 -- PURPOSE:
