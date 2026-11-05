@@ -800,6 +800,87 @@ async fn ambiguous_append_leaves_no_ghost_row() {
 }
 
 // ---------------------------------------------------------------------------
+// Player initiative rolls never outlive a TurnByTurn transition
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn player_initiative_cleared_on_turn_by_turn_transitions() {
+    #[derive(Clone, Copy)]
+    enum Step {
+        PlayerRolls,
+        StartWithExplicitOrder,
+        End,
+    }
+    use Step::*;
+    // (case_id, steps before the final player roll, final roll accepted)
+    let cases: [(&str, Vec<Step>, bool); 3] = [
+        ("no_transition_keeps_roll", vec![PlayerRolls], false),
+        (
+            "explicit_order_start_clears",
+            vec![PlayerRolls, StartWithExplicitOrder],
+            true,
+        ),
+        (
+            "end_of_encounter_clears",
+            vec![StartWithExplicitOrder, PlayerRolls, End],
+            true,
+        ),
+    ];
+    for (case, steps, expect_roll) in cases {
+        let c = Campaign::seed();
+        let player = Uuid::new_v4();
+        let hero = Uuid::new_v4();
+        let mut state = TableState::new(100.0, 5.0, Vec::new());
+        let goblin = TokenState::new_default(c.token, "Goblin", Point2D::new(0.0, 0.0));
+        let mut hero_token = TokenState::new_default(hero, "Hero", Point2D::new(10.0, 0.0));
+        hero_token.owner_user_id = Some(player);
+        state.data.tokens.insert(c.token, goblin);
+        state.data.tokens.insert(hero, hero_token);
+        c.wal
+            .inner
+            .save_snapshot(TableStateSnapshot::capture(c.id, 0, 0, &state))
+            .unwrap();
+        let room = c.boot(25).await;
+        let (player_session, mut player_rx) = connect(&room, player, CampaignRole::Player).await;
+        let roll = || ClientEnvelope::RollDice {
+            expression: "1d20".to_string(),
+            visibility: trame_server::dice::RollVisibility::Public,
+            reason: "Initiative".to_string(),
+            correlation_id: Some("c-init".to_string()),
+        };
+        for step in steps {
+            match step {
+                PlayerRolls => room.send_envelope(player_session, roll()).await.unwrap(),
+                StartWithExplicitOrder => {
+                    room.dispatch_direct_command(
+                        c.gm_actor(),
+                        TrameCommand::StartTurnByTurn {
+                            initiative_order: vec![c.token],
+                            initiative_totals: Default::default(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                }
+                End => {
+                    room.dispatch_direct_command(c.gm_actor(), TrameCommand::EndTurnByTurn)
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+        drain(&mut player_rx);
+        room.send_envelope(player_session, roll()).await.unwrap();
+        let frames = drain(&mut player_rx);
+        let rolled = frames.iter().any(
+            |f| matches!(f, ServerEnvelope::DiceRolled(r) if r.reason == "Initiative: Hero"),
+        );
+        assert_eq!(rolled, expect_roll, "case {case}");
+        assert_eq!(rejection(&frames).is_some(), !expect_roll, "case {case}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RT9: a dead actor is replaced
 // ---------------------------------------------------------------------------
 

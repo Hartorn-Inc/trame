@@ -78,6 +78,9 @@
 //!        server rolls `1d20 + TokenState::initiative_modifier()` for their token,
 //!        once per encounter. Encounter-start rolls are broadcast only after the
 //!        command commits, so a rejected start leaks no hidden combatant.
+//!      - Stored player rolls are dropped on every committed transition into or
+//!        out of `TurnByTurn`, whatever supplied the initiative order, so a roll
+//!        made for one encounter never carries over to the next.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -958,6 +961,7 @@ impl TableRoomActor {
             .map_err(RoomError::CommandRejected)?;
         let checkpoint = self.state.clone();
         let initiative_checkpoint = self.player_initiative_rolls.clone();
+        let prior_mode = self.state.data.mode;
         let (resolved_cmd, initiative_rolls) = self.resolve_authoritative_initiative(&actor, cmd);
         let prior_prompts = self.state.data.active_reaction_prompts.clone();
         let prior_vitals = self.linked_vitals();
@@ -994,6 +998,7 @@ impl TableRoomActor {
             }
         };
         self.seq_id += 1;
+        self.forget_initiative_on_mode_change(prior_mode);
         if !is_undo {
             self.maybe_periodic_snapshot();
         }
@@ -1019,6 +1024,7 @@ impl TableRoomActor {
                 .map_err(RoomError::CommandRejected)?;
         }
         let checkpoint = self.state.clone();
+        let prior_mode = self.state.data.mode;
         let prior_prompts = self.state.data.active_reaction_prompts.clone();
         let prior_vitals = self.linked_vitals();
         let persisted = match self.state.apply_batch(&actor, commands, description) {
@@ -1033,8 +1039,20 @@ impl TableRoomActor {
             }
         };
         self.seq_id += 1;
+        self.forget_initiative_on_mode_change(prior_mode);
         self.after_accepted(&events, &prior_prompts, &prior_vitals);
         Ok((self.seq_id, events))
+    }
+
+    /// Drops every stored player initiative roll when a committed change moved the table into
+    /// or out of `TurnByTurn`, whichever path supplied the order (auto-roll, explicit order,
+    /// batch, undo), so a roll never leaks into a later encounter.
+    fn forget_initiative_on_mode_change(&mut self, prior_mode: TableMode) {
+        let was_turn_by_turn = prior_mode == TableMode::TurnByTurn;
+        let is_turn_by_turn = self.state.data.mode == TableMode::TurnByTurn;
+        if was_turn_by_turn != is_turn_by_turn {
+            self.player_initiative_rolls.clear();
+        }
     }
 
     /// Writes the current state as the snapshot for `seq_id` (the durability step of undo and
