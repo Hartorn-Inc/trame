@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trame.dev/schemas/dnd5e/spell.schema.json",
+  "title": "SrdSpellData",
+  "description": "`data` payload of a generated SRD 5.2.1 spell compendium entry (packs/spells.json). Structured fields (attackType, saveAbility, damage, healDice, area) are present only when the rules text states them; the description stays authoritative. Units: feet for areas, GP for material costs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["level", "school", "classes", "castingTime", "range", "components", "duration", "concentration", "ritual", "description", "source"],
+  "properties": {
+    "level": { "type": "integer", "minimum": 0, "maximum": 9, "description": "Spell level; 0 is a cantrip." },
+    "school": { "enum": ["abjuration", "conjuration", "divination", "enchantment", "evocation", "illusion", "necromancy", "transmutation"] },
+    "classes": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 8,
+      "items": { "enum": ["bard", "cleric", "druid", "paladin", "ranger", "sorcerer", "warlock", "wizard"] },
+      "description": "Class spell lists, sorted. Empty for spells no class learns directly."
+    },
+    "castingTime": { "type": "string", "minLength": 1, "maxLength": 40, "description": "1 action, 1 bonus action, 1 reaction, 1 minute, 10 minutes or 1 hour." },
+    "reactionTrigger": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "range": { "type": "string", "minLength": 1, "maxLength": 40, "description": "Range as printed (Self, Touch, 60 feet, 1 mile, Sight, Unlimited)." },
+    "components": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 3,
+      "items": { "enum": ["V", "S", "M"] }
+    },
+    "material": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "materialCostGp": { "type": "number", "minimum": 0, "maximum": 100000 },
+    "materialConsumed": { "type": "boolean" },
+    "duration": { "type": "string", "minLength": 1, "maxLength": 60, "description": "Duration as printed; concentration spells read 'Concentration, up to <duration>'." },
+    "concentration": { "type": "boolean" },
+    "ritual": { "type": "boolean" },
+    "attackType": { "enum": ["melee", "ranged"], "description": "Kind of spell attack roll the spell makes; absent when it makes none." },
+    "saveAbility": { "$ref": "#/$defs/abilityId", "description": "First saving throw named by the rules text." },
+    "halfDamageOnSave": { "type": "boolean" },
+    "damageDice": { "$ref": "#/$defs/dice", "description": "First damage roll; legacy single-roll field kept for the curated spell shape." },
+    "damageType": { "$ref": "#/$defs/damageType" },
+    "damage": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "description": "Every distinct typed damage roll named by the rules text, in order (may include alternatives such as Spirit Guardians' Radiant or Necrotic).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dice", "type"],
+        "properties": {
+          "dice": { "$ref": "#/$defs/dice" },
+          "type": { "$ref": "#/$defs/damageType" }
+        }
+      }
+    },
+    "healDice": { "$ref": "#/$defs/dice" },
+    "area": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shape", "sizeFt"],
+      "properties": {
+        "shape": { "enum": ["cone", "cube", "cylinder", "emanation", "line", "sphere"] },
+        "sizeFt": { "type": "integer", "minimum": 1, "maximum": 500 },
+        "widthFt": { "type": "integer", "minimum": 1, "maximum": 500 },
+        "heightFt": { "type": "integer", "minimum": 1, "maximum": 500 }
+      }
+    },
+    "description": { "type": "string", "minLength": 1, "maxLength": 12000 },
+    "higherLevel": { "type": "string", "minLength": 1, "maxLength": 2000, "description": "Using a Higher-Level Spell Slot or Cantrip Upgrade text." },
+    "source": { "enum": ["srd-5.2.1"] }
+  },
+  "$defs": {
+    "abilityId": { "enum": ["str", "dex", "con", "int", "wis", "cha"] },
+    "damageType": {
+      "enum": ["acid", "bludgeoning", "cold", "fire", "force", "lightning", "necrotic", "piercing", "poison", "psychic", "radiant", "slashing", "thunder"]
+    },
+    "dice": { "type": "string", "pattern": "^[1-9][0-9]?d(4|6|8|10|12|20|100)( [+-] [0-9]{1,3})?$" }
+  }
+}

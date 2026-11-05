@@ -11,7 +11,7 @@ DC ?= docker compose
 DEV_COMPOSE := $(DC) --project-name $(DEV_PROJECT) --project-directory "$(REPO_DIR)" $(COMPOSE_ENV_FILE) -f "$(COMPOSE_FILE)"
 E2E_COMPOSE := E2E_UID=$$(id -u) E2E_GID=$$(id -g) $(DC) --project-name trame-e2e-$(PROJECT_HASH) --project-directory "$(REPO_DIR)" --env-file "$(REPO_DIR)/e2e/e2e.env" -f "$(REPO_DIR)/deploy/compose/docker-compose.prod.yml" -f "$(REPO_DIR)/e2e/docker-compose.e2e.yml"
 
-.PHONY: help up down logs ps build wasm test test-rust test-web test-game-systems lint lint-rust lint-web lint-design fmt check shell-rust shell-web db-psql clean e2e-image e2e e2e-video
+.PHONY: help up down logs ps build wasm test test-rust test-web test-game-systems srd-content lint lint-rust lint-web lint-design fmt check shell-rust shell-web db-psql clean e2e-image e2e e2e-video
 
 help: ## Display available Docker-based development commands
 	@awk 'BEGIN {FS = ":.*##"; printf "TRAME Docker Development Workflow\nUsage: make <target>\n\nTargets:\n"} /^[a-zA-Z][a-zA-Z0-9_-]*:.*##/ {printf "  %-20s %s\n", $$1, $$2}' "$(MAKEFILE_PATH)"
@@ -49,6 +49,9 @@ test-web: wasm test-game-systems ## Run Web frontend (incl. WASM parity) and gam
 
 test-game-systems: wasm ## Run packages/game-systems/dnd5e tests inside the Node Docker container
 	$(DEV_COMPOSE) run --rm --no-deps web-dev node --test "../game-systems/dnd5e/tests/**/*.test.ts"
+
+srd-content: ## Regenerate the dnd5e SRD 5.2.1 packs from the pinned Open5e snapshot (ARGS="--check" verifies them)
+	$(DEV_COMPOSE) run --rm --no-deps web-dev node ../game-systems/dnd5e/scripts/generate-srd-content.ts $(ARGS)
 
 lint: lint-rust lint-web lint-design ## Run all linters and format checks (glossary/ADR integrity, Impeccable design audit, rustfmt, clippy, eslint, tsc) inside Docker
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev python3 scripts/check-glossary-and-adrs.py

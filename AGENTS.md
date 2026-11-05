@@ -16,6 +16,7 @@ Always use the root `Makefile` (which wraps `docker-compose.dev.yml`) for local 
 - Server configuration (secrets, `TRAME_ENV=dev`, `TRAME_PUBLIC_ORIGIN`, `TRAME_STATIC_DIR`, `RUST_LOG`, ...) is listed in `README.md` under "Server Configuration". The dev stack sets `TRAME_ENV=dev`; outside dev the server fails closed on missing secrets.
 - `make lint` (`make lint-rust`, `make lint-web`, `make lint-design`) — Run `scripts/check-glossary-and-adrs.py`, the impeccable design check, `cargo fmt --check`, `cargo clippy -- -D warnings`, ESLint, and `tsc --noEmit` inside Docker.
 - `make wasm` — Build `crates/trame-engine` to WebAssembly via `wasm-pack` inside Docker.
+- `make srd-content` — Regenerate `packages/game-systems/dnd5e/packs/*.json` from the pinned Open5e SRD 5.2.1 snapshot (sha256-checked). Never hand-edit the packs; fix `scripts/open5eCorrections.ts` and regenerate. `ARGS="--check"` proves the committed packs match the source.
 
 ## Agent Skills
 
