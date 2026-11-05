@@ -3,6 +3,8 @@
 ## Status
 Accepted. Amendment (2026-11-01): the dev stack's S3 service is Silo (`pgsty/silo`), an S3-compatible MinIO fork, replacing the `minio/minio` image that left Docker Hub. `S3Store` is not wired yet: the server does not read `S3_*` and stores assets in PostgreSQL (or in memory without a database).
 
+Amended by [ADR-0039](./0039-invite-only-registration-and-instance-role.md) (Decision 1: invite-only registration, `InstanceRole`, no new guest sessions) and [ADR-0041](./0041-s3-asset-storage-signed-downloads-and-free-hosting.md) (Decision 2: S3-compatible asset storage with signed direct downloads, Neon instead of Cloud SQL, and the two hosting targets).
+
 ## Context
 To make TRAME playable end-to-end across local Docker, single-VPS (`e2-micro`), and Cloud Run + Neon + R2 deployments, three architectural seams must be unified:
 1. **Frictionless Onboarding & Hybrid Authentication**: Players invited to a tabletop session need 1-click entry via Magic Link URLs (`?invite=<jwt>`), while Game Masters need email + Argon2id password accounts, optional TOTP Multi-Factor Authentication (RFC 6238), and scoped Personal Access Tokens (`trame_pat_`) for MCP tools.

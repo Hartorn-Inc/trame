@@ -16,7 +16,7 @@ This document is the entry point to the architectural and functional specificati
 | [**`03-MCP-AND-NOTES-SPEC.md`**](./docs/specs/03-MCP-AND-NOTES-SPEC.md) | **Native MCP server, wiki notes & external skills**: 100% UI $\leftrightarrow$ MCP parity through the `TrameCommand` bus, *Staging Proposal* mode (`McpStagingProposal`) and atomic batches undoable in 1 click, 3-tier Markdown wiki (`PRIVATE`, `PARTY`, `DM_ONLY`) with secret `:::dm` blocks and `:::handout` reveals, `LineAnchorNoteMerge` for player edits on `PARTY` notes, and the structured session event stream (`SessionTimelineEvent`). |
 | [**`04-RUNTIME-AND-DEDICATED-HOSTING.md`**](./docs/specs/04-RUNTIME-AND-DEDICATED-HOSTING.md) | **Real-time architecture (command handler, in-RAM actors) & dedicated hosting**: `TrameCommand` handler with a snapshot-based 50-entry `UndoEntry` ring buffer (GM undo), in-RAM `TableRoomActor` with dual persistence (*1 s write-behind* + *immediate WAL commit*), server-side cryptographic dice (`ChaCha20Rng`), R2/S3 image security through presigned URLs and pure-Rust WebP conversion (`image-rs`), portable `.trame` archive, on-demand dedicated hosting model (Cloud Run + Neon Postgres + Cloudflare R2 at near-zero idle cost thanks to the `Idle-Lease`, or an `e2-micro` VM), mobile/tablet companion mode and accessibility. |
 
-Feature specifications (`e1`-`e5`, `spec-*`) live next to these four documents in [`docs/specs/`](./docs/specs/). The current whole-application convergence spec is [`spec-playable-dnd5e-campaign-convergence.md`](./docs/specs/spec-playable-dnd5e-campaign-convergence.md).
+Feature specifications (`e1`-`e5`, `spec-*`) live next to these four documents in [`docs/specs/`](./docs/specs/). The current whole-application spec is [`spec-internet-ready-playable-trame.md`](./docs/specs/spec-internet-ready-playable-trame.md) (v4: invite-only access, crash-safe WAL recovery, full SRD 5.2.1 play, free hosting). It builds on the delivered convergence baseline [`spec-playable-dnd5e-campaign-convergence.md`](./docs/specs/spec-playable-dnd5e-campaign-convergence.md) (v3).
 
 ---
 
@@ -71,13 +71,17 @@ graph TB
 | [0007](./docs/adr/0007-client-side-character-builder-and-drag-drop.md) | Client-side character builder and drag-and-drop |
 | [0008](./docs/adr/0008-portable-trame-campaign-archive-format.md) | Portable `.trame` campaign archive |
 | [0009](./docs/adr/0009-mobile-companion-and-session-timeline.md) | Mobile companion and session timeline |
-| [0010](./docs/adr/0010-hybrid-auth-preact-signals-and-postgres-runtime.md) | Hybrid auth, Preact signals, and Postgres runtime |
+| [0010](./docs/adr/0010-hybrid-auth-preact-signals-and-postgres-runtime.md) | Hybrid auth, Preact signals, and Postgres runtime (amended by ADR-0039 and ADR-0041) |
 | [0011](./docs/adr/0011-atlas-design-system-and-impeccable-gate.md) | ATLAS design system and impeccable gate |
 | [0012](./docs/adr/0012-dnd5e-levelup-rest-architecture.md) | D&D 5e level-up and rests — **superseded by ADR-0036** |
 | [0034](./docs/adr/0034-campaign-map-scene-persistence-and-table-activation.md) | Campaign map scene persistence and `ActivateScene` |
 | [0035](./docs/adr/0035-scene-atlas-zero-trust-rbac-and-secret-masking.md) | `SceneAtlas` zero-trust RBAC and secret masking |
 | [0036](./docs/adr/0036-dnd5e-levelup-rest-architecture.md) | D&D 5e level-up and rests (supersedes ADR-0012; Decision 3 superseded by ADR-0037) |
 | [0037](./docs/adr/0037-actor-rest-vs-token-trame-command-boundary.md) | REST `Actor` sheet boundary vs tactical `TrameCommand` state |
+| [0038](./docs/adr/0038-srd-521-rules-baseline.md) | SRD 5.2.1 rules baseline for the built-in D&D 5e pack (amends ADR-0001) |
+| [0039](./docs/adr/0039-invite-only-registration-and-instance-role.md) | Invite-only registration and `InstanceRole` (amends ADR-0010 Decision 1) |
+| [0040](./docs/adr/0040-wal-recovery-with-quarantine.md) | WAL recovery with `QuarantinedWalEntry` quarantine |
+| [0041](./docs/adr/0041-s3-asset-storage-signed-downloads-and-free-hosting.md) | S3-compatible asset storage, signed direct downloads, and free hosting targets (amends ADR-0010) |
 
 **Numbering gap (0013-0033):** this repository has no ADRs numbered 0013 to 0033, and none are missing. Those numbers belong to the upstream EPURE governance framework (`Giskard-AI/epure`): references such as `ADR-0017`, `ADR-0023` or `ADR-0031` in `.github/`, `.agents/skills/`, or spec compliance lines point to EPURE ADRs, not to `docs/adr/`. Local ADRs resumed at 0034 to avoid colliding with those upstream numbers. ADR-0036 restates ADR-0012 under a non-colliding number for the same reason.
 

@@ -1,12 +1,13 @@
 # Managed by Giskard-AI/epure@e88a04514ffdb76f004b21148aea70640e9c51c7 # v1.8.0
-# Continuous Integration: Zizmor workflow security audit + Rust/WASM/Node Format, Lint, Typecheck, Tests & Build.
+# Continuous Integration: Zizmor workflow security audit + Rust/WASM/Node Format, Lint, Typecheck, Tests & Build
+# + browser E2E journey against the production image.
 name: "CI"
 
 on:
   push:
     branches: [dev, main]
   pull_request:
-    branches: [dev, main, 'feature/**']
+    branches: [dev, main, 'feature/**', 'stack/**']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -95,6 +96,70 @@ jobs:
           persist-credentials: false
       - name: Build production Dockerfile (WASM + SPA + server)
         run: docker build --tag trame-server:ci .
+      # Hands the built image to the `e2e` job so it is not rebuilt there.
+      - name: Export production image for E2E
+        run: docker save --output "${RUNNER_TEMP}/trame-server-image.tar" trame-server:ci
+      - name: Upload production image for E2E
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: trame-server-image
+          path: ${{ runner.temp }}/trame-server-image.tar
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true # re-running the job reuses the artifact name within the run
+
+  e2e:
+    name: "Browser E2E (GM + Player Journey)"
+    needs: [image]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download production image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: trame-server-image
+          path: ${{ runner.temp }}/trame-server-image
+      - name: Load production image as trame-server:e2e
+        run: |
+          docker load --input "${RUNNER_TEMP}/trame-server-image/trame-server-image.tar"
+          docker tag trame-server:ci trame-server:e2e
+      - name: GM + player Playwright journey (make e2e)
+        run: make e2e
+      # Recordings exist even when the journey fails part-way; the MP4 is the evidence to review.
+      - name: Side-by-side GM/player video (make e2e-video)
+        if: ${{ !cancelled() && hashFiles('e2e/artifacts/gm.webm') != '' && hashFiles('e2e/artifacts/player.webm') != '' }}
+        run: make e2e-video
+      - name: E2E job summary
+        if: ${{ !cancelled() }}
+        run: |
+          results=e2e/artifacts/results.json
+          {
+            echo "### Browser E2E (GM + Player Journey)"
+            if [ -f "$results" ]; then
+              jq -r '.stats | "| Passed | Failed | Flaky | Skipped | Duration |",
+                "|---|---|---|---|---|",
+                "| \(.expected // 0) | \(.unexpected // 0) | \(.flaky // 0) | \(.skipped // 0) | \((.duration // 0) / 1000 | floor)s |"' "$results"
+            else
+              echo "No \`results.json\`: the Playwright suite did not run (see the job log)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload E2E evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-evidence
+          path: |
+            e2e/artifacts/gm-player-side-by-side.mp4
+            e2e/artifacts/report
+            e2e/artifacts/results.json
+            e2e/artifacts/server.log
+            e2e/artifacts/postgres.log
+          if-no-files-found: warn
+          retention-days: 90
+          overwrite: true # re-running the job reuses the artifact name within the run
 
   zizmor:
     name: "Zizmor"
