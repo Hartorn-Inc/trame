@@ -729,7 +729,7 @@
     "expected": {
       "ok": {
         "collision": null,
-        "costFt": 26.92582403567252
+        "costFt": 20.0
       }
     },
     "export": "previewMove",
@@ -833,7 +833,7 @@
     "expected": {
       "ok": {
         "collision": null,
-        "costFt": 22.360679774997898
+        "costFt": 20.0
       }
     },
     "export": "previewMove",
@@ -850,6 +850,66 @@
         "gridW": 2,
         "heightFt": 10,
         "isSqueezing": true,
+        "topLeft": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      "walls": []
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "collision": null,
+        "costFt": 15.0
+      }
+    },
+    "export": "previewMove",
+    "id": "move_diagonal_costs_5ft_per_square",
+    "request": {
+      "cellSizePx": 100,
+      "feetPerCell": 5,
+      "toTopLeft": {
+        "x": 300,
+        "y": 300
+      },
+      "token": {
+        "topLeft": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      "walls": []
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "collision": null,
+        "costFt": 25.0
+      }
+    },
+    "export": "previewMove",
+    "id": "move_difficult_terrain_doubles_cost",
+    "request": {
+      "cellSizePx": 100,
+      "difficultTerrain": [
+        {
+          "col": 1,
+          "row": 0
+        },
+        {
+          "col": 2,
+          "row": 0
+        }
+      ],
+      "feetPerCell": 5,
+      "toTopLeft": {
+        "x": 300,
+        "y": 0
+      },
+      "token": {
         "topLeft": {
           "x": 0,
           "y": 0

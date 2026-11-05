@@ -32,13 +32,13 @@
 //!        `AoeTemplate` and `ActiveEffect` are snake_case).
 //! ============================================================================
 
-use crate::aoe::AoeTemplate;
+use crate::aoe::{AoeTemplate, GridCell};
 use crate::commands::{MovePreview, TableState, TokenState};
 use crate::geometry::{Bvh2D, CHANNEL_ETHEREAL, Point2D, WallSegment, count_sound_occluding_walls};
 use crate::rules::{ActiveEffect, evaluate_actor_attributes};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 fn parse<T: DeserializeOwned>(request_json: &str) -> Result<T, String> {
@@ -155,13 +155,18 @@ struct MoveRequest {
     cell_size_px: f64,
     /// Feet per grid cell (`ft`, typically `5`).
     feet_per_cell: f64,
+    /// Difficult terrain cells of the map (`{col, row}`, default none).
+    #[serde(default)]
+    difficult_terrain: BTreeSet<GridCell>,
 }
 
-/// Move preview: `{ walls, token, toTopLeft, toElevationFt?, cellSizePx, feetPerCell }` ->
-/// `{ collision: {x, y} | null, costFt }`, using the server's `MoveToken` rules.
+/// Move preview: `{ walls, token, toTopLeft, toElevationFt?, cellSizePx, feetPerCell,
+/// difficultTerrain? }` -> `{ collision: {x, y} | null, costFt }`, using the server's
+/// `MoveToken` rules (Chebyshev squares, difficult terrain doubled).
 pub fn preview_move_json(request_json: &str) -> Result<String, String> {
     let req: MoveRequest = parse(request_json)?;
-    let table = TableState::new(req.cell_size_px, req.feet_per_cell, req.walls);
+    let mut table = TableState::new(req.cell_size_px, req.feet_per_cell, req.walls);
+    table.data.difficult_terrain = req.difficult_terrain;
     let mut token = TokenState::new_default(Uuid::nil(), "preview", req.token.top_left);
     token.grid_w = req.token.grid_w;
     token.grid_h = req.token.grid_h;

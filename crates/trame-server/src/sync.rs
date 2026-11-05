@@ -772,6 +772,7 @@ pub fn filter_events_for_recipient(
             | TrameEvent::TokenRemoved { .. }
             | TrameEvent::LightAdded { .. }
             | TrameEvent::FogOverrideChanged { .. }
+            | TrameEvent::DifficultTerrainChanged { .. }
             | TrameEvent::MapConfigChanged { .. } => Some(ev.clone()),
         })
         .collect()

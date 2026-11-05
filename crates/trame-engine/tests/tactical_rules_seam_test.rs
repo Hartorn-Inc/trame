@@ -2,9 +2,14 @@
 //! `TrameCommand`s to `TableState` and assert state, events, and the undo stack. Every test is
 //! table-driven and each case carries a descriptive ID printed on failure.
 
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use trame_engine::aoe::GridCell;
 use trame_engine::rules::DamageAffinity;
+use trame_engine::wasm_api::call_export;
 use trame_engine::{
-    CampaignRole, CommandActor, Point2D, TableState, TokenState, TrameCommand, TrameEvent,
+    CampaignRole, CommandActor, CommandError, Point2D, TableSnapshotData, TableState, TokenState,
+    TrameCommand, TrameEvent,
 };
 use uuid::Uuid;
 
@@ -16,6 +21,31 @@ fn gm() -> CommandActor {
         user_id: Uuid::from_u128(0xF0),
         role: CampaignRole::Gm,
     }
+}
+
+fn player() -> CommandActor {
+    CommandActor {
+        user_id: PLAYER_ID,
+        role: CampaignRole::Player,
+    }
+}
+
+fn cell(col: i32, row: i32) -> GridCell {
+    GridCell { col, row }
+}
+
+/// Starts Turn-by-Turn combat with `order` (first entry active) and clears the undo stack.
+fn start_combat(state: &mut TableState, order: Vec<Uuid>) {
+    state
+        .apply_command(
+            &gm(),
+            TrameCommand::StartTurnByTurn {
+                initiative_order: order,
+                initiative_totals: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+    state.undo_stack.clear();
 }
 
 fn token(id: Uuid, name: &str, x: f64, y: f64, owner: Option<Uuid>) -> TokenState {
@@ -96,7 +126,283 @@ fn concentration_check_dc_is_half_damage_between_10_and_30() {
         let Some(TrameEvent::DamageApplied { resolution, .. }) = events.first() else {
             panic!("case {}: expected DamageApplied, got {events:?}", c.id);
         };
-        assert_eq!(resolution.concentration_check_dc, c.expect_dc, "case {}", c.id);
+        assert_eq!(
+            resolution.concentration_check_dc, c.expect_dc,
+            "case {}",
+            c.id
+        );
         assert_eq!(state.undo_stack.len(), 1, "case {} undo entry", c.id);
     }
+}
+
+#[test]
+fn move_token_costs_chebyshev_squares_and_doubles_difficult_terrain() {
+    #[derive(Clone, Copy)]
+    struct Case {
+        id: &'static str,
+        to: (f64, f64),
+        to_elevation_ft: f64,
+        difficult: &'static [(i32, i32)],
+        start_on_difficult: bool,
+        squeezing: bool,
+        expect_cost_ft: f64,
+    }
+    let base = Case {
+        id: "",
+        to: (300.0, 0.0),
+        to_elevation_ft: 0.0,
+        difficult: &[],
+        start_on_difficult: false,
+        squeezing: false,
+        expect_cost_ft: 15.0,
+    };
+    let cases = [
+        Case {
+            id: "straight_costs_5ft_per_square",
+            ..base
+        },
+        Case {
+            id: "diagonal_costs_5ft",
+            to: (300.0, 300.0),
+            ..base
+        },
+        Case {
+            id: "mixed_move_costs_the_longer_axis",
+            to: (200.0, 100.0),
+            expect_cost_ft: 10.0,
+            ..base
+        },
+        Case {
+            id: "difficult_terrain_doubles_cost",
+            difficult: &[(1, 0), (2, 0)],
+            expect_cost_ft: 25.0,
+            ..base
+        },
+        Case {
+            id: "difficult_diagonal_square_costs_10ft",
+            to: (100.0, 100.0),
+            difficult: &[(1, 1)],
+            expect_cost_ft: 10.0,
+            ..base
+        },
+        Case {
+            id: "leaving_difficult_terrain_costs_normal",
+            to: (100.0, 0.0),
+            difficult: &[(0, 0)],
+            start_on_difficult: true,
+            expect_cost_ft: 5.0,
+            ..base
+        },
+        Case {
+            id: "climbing_costs_the_longer_of_horizontal_and_vertical",
+            to: (100.0, 0.0),
+            to_elevation_ft: 10.0,
+            expect_cost_ft: 10.0,
+            ..base
+        },
+        Case {
+            id: "squeezing_doubles_the_difficult_cost",
+            to: (100.0, 0.0),
+            difficult: &[(1, 0)],
+            squeezing: true,
+            expect_cost_ft: 20.0,
+            ..base
+        },
+        Case {
+            id: "diagonal_over_budget_is_rejected",
+            to: (700.0, 700.0),
+            expect_cost_ft: 35.0,
+            ..base
+        },
+    ];
+
+    for c in cases {
+        let mut hero = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+        hero.is_squeezing = c.squeezing;
+        let mut state = table(vec![hero]);
+        state.data.difficult_terrain = c.difficult.iter().map(|&(x, y)| cell(x, y)).collect();
+        assert_eq!(
+            state.data.difficult_terrain.contains(&cell(0, 0)),
+            c.start_on_difficult,
+            "case {} setup",
+            c.id
+        );
+        start_combat(&mut state, vec![HERO_ID]);
+        let to = Point2D::new(c.to.0, c.to.1);
+
+        let wasm_preview: Value = serde_json::from_str(
+            &call_export(
+                "previewMove",
+                &json!({
+                    "walls": [],
+                    "token": { "topLeft": {"x": 0.0, "y": 0.0}, "isSqueezing": c.squeezing },
+                    "toTopLeft": to,
+                    "toElevationFt": c.to_elevation_ft,
+                    "cellSizePx": 100.0,
+                    "feetPerCell": 5.0,
+                    "difficultTerrain": state.data.difficult_terrain,
+                })
+                .to_string(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            wasm_preview["costFt"],
+            json!(c.expect_cost_ft),
+            "case {} WASM preview",
+            c.id
+        );
+        let native_preview =
+            state.preview_move(&state.data.tokens[&HERO_ID], to, c.to_elevation_ft);
+        assert_eq!(
+            native_preview.cost_ft, c.expect_cost_ft,
+            "case {} native preview",
+            c.id
+        );
+
+        let result = state.apply_command(
+            &player(),
+            TrameCommand::MoveToken {
+                token_id: HERO_ID,
+                to_top_left: to,
+                to_elevation_ft: Some(c.to_elevation_ft),
+                gm_teleport: false,
+            },
+        );
+        if c.expect_cost_ft <= 30.0 {
+            result.unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+            assert_eq!(
+                state.data.tokens[&HERO_ID].speed_remaining_ft,
+                30.0 - c.expect_cost_ft,
+                "case {} remaining speed",
+                c.id
+            );
+            assert_eq!(state.undo_stack.len(), 1, "case {} undo entry", c.id);
+        } else {
+            assert_eq!(
+                result.unwrap_err(),
+                CommandError::InsufficientMovement {
+                    needed_ft: c.expect_cost_ft,
+                    remaining_ft: 30.0,
+                },
+                "case {}",
+                c.id
+            );
+            assert!(state.undo_stack.is_empty(), "case {} no undo", c.id);
+        }
+    }
+}
+
+#[test]
+fn set_difficult_terrain_is_gm_only_on_map_and_undoable() {
+    struct Case {
+        id: &'static str,
+        actor: CommandActor,
+        cells: Vec<GridCell>,
+        difficult: bool,
+        expect_err: Option<&'static str>,
+        expect_cells: Vec<GridCell>,
+    }
+    let painted = vec![cell(1, 1), cell(2, 1)];
+    let cases = [
+        Case {
+            id: "gm_paints_difficult_cells",
+            actor: gm(),
+            cells: vec![cell(3, 3), cell(4, 3)],
+            difficult: true,
+            expect_err: None,
+            expect_cells: vec![cell(1, 1), cell(2, 1), cell(3, 3), cell(4, 3)],
+        },
+        Case {
+            id: "gm_erases_difficult_cells",
+            actor: gm(),
+            cells: vec![cell(1, 1)],
+            difficult: false,
+            expect_err: None,
+            expect_cells: vec![cell(2, 1)],
+        },
+        Case {
+            id: "player_cannot_paint_difficult_terrain",
+            actor: player(),
+            cells: vec![cell(3, 3)],
+            difficult: true,
+            expect_err: Some("permission denied"),
+            expect_cells: painted.clone(),
+        },
+        Case {
+            id: "off_map_cell_is_rejected",
+            actor: gm(),
+            cells: vec![cell(3, 3), cell(20, 0)],
+            difficult: true,
+            expect_err: Some("outside the 20x20 map grid"),
+            expect_cells: painted.clone(),
+        },
+        Case {
+            id: "negative_cell_is_rejected",
+            actor: gm(),
+            cells: vec![cell(-1, 0)],
+            difficult: true,
+            expect_err: Some("outside"),
+            expect_cells: painted.clone(),
+        },
+        Case {
+            id: "empty_cell_list_is_rejected",
+            actor: gm(),
+            cells: vec![],
+            difficult: true,
+            expect_err: Some("must not be empty"),
+            expect_cells: painted.clone(),
+        },
+    ];
+
+    for c in cases {
+        let mut state = table(vec![]);
+        state.data.difficult_terrain = painted.iter().copied().collect();
+        let result = state.apply_command(
+            &c.actor,
+            TrameCommand::SetDifficultTerrain {
+                cells: c.cells.clone(),
+                difficult: c.difficult,
+            },
+        );
+        let actual: Vec<GridCell> = state.data.difficult_terrain.iter().copied().collect();
+        assert_eq!(actual, c.expect_cells, "case {} cells", c.id);
+        match c.expect_err {
+            Some(fragment) => {
+                let message = result.unwrap_err().to_string();
+                assert!(message.contains(fragment), "case {}: {message}", c.id);
+                assert!(state.undo_stack.is_empty(), "case {} no undo", c.id);
+            }
+            None => {
+                let events = result.unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+                assert_eq!(
+                    events,
+                    vec![TrameEvent::DifficultTerrainChanged {
+                        cells: c.cells.clone(),
+                        difficult: c.difficult,
+                    }],
+                    "case {} events",
+                    c.id
+                );
+                state
+                    .apply_command(&gm(), TrameCommand::UndoLastAction)
+                    .unwrap();
+                let restored: Vec<GridCell> =
+                    state.data.difficult_terrain.iter().copied().collect();
+                assert_eq!(restored, painted, "case {} undo restores", c.id);
+            }
+        }
+    }
+}
+
+#[test]
+fn snapshots_written_before_the_tactical_fields_still_load() {
+    let mut state = table(vec![token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID))]);
+    state.data.difficult_terrain.insert(cell(1, 1));
+    let mut legacy = serde_json::to_value(&state.data).unwrap();
+    legacy.as_object_mut().unwrap().remove("difficult_terrain");
+    let loaded: TableSnapshotData = serde_json::from_value(legacy).unwrap();
+    assert!(loaded.difficult_terrain.is_empty());
+    assert_eq!(loaded.tokens[&HERO_ID].name, "Kyra");
 }

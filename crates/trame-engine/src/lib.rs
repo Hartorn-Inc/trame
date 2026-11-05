@@ -42,6 +42,7 @@
 pub mod aoe;
 pub mod commands;
 pub mod geometry;
+pub mod movement;
 pub mod rules;
 pub mod wasm_api;
 

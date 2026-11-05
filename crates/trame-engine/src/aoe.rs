@@ -118,8 +118,9 @@ pub struct AoeTemplate {
     pub concentration_caster_id: Option<Uuid>,
 }
 
-/// Discrete 2D grid coordinate `(col, row)` indexing a single tabletop square.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Discrete 2D grid coordinate `(col, row)` indexing a single tabletop square. Ordered by
+/// column, then row, so cell sets (`TableSnapshotData::difficult_terrain`) serialize stably.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GridCell {
     /// Zero-based horizontal column index (can be negative off-canvas).

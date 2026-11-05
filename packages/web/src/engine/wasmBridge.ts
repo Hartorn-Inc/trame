@@ -124,7 +124,10 @@ export interface MoverFootprint {
 export interface MovePreview {
   /** First blocking wall crossing in canvas pixels, or `null` when the path is clear. */
   collision: Point2D | null;
-  /** Movement cost in feet (3D distance, doubled while squeezing). */
+  /**
+   * Movement cost in feet: Chebyshev squares (diagonals cost one cell), difficult squares
+   * doubled, elevation change as a third axis (`max`), doubled while squeezing.
+   */
   costFt: number;
 }
 
@@ -263,7 +266,10 @@ export function previewSphereAoeCells(
   );
 }
 
-/** Previews a straight move with the server's `MoveToken` wall-collision and cost rules. */
+/**
+ * Previews a straight move with the server's `MoveToken` wall-collision and cost rules.
+ * `difficultTerrain` is the map's `difficult_terrain` cell list; entering one costs double.
+ */
 export function previewMove(
   token: MoverFootprint,
   toTopLeft: Point2D,
@@ -271,6 +277,7 @@ export function previewMove(
   cellSizePx: number,
   feetPerCell: number,
   toElevationFt?: number,
+  difficultTerrain: GridCell[] = [],
 ): MovePreview {
   return callEngine(wasmPreviewMove, {
     walls: toEngineWalls(walls),
@@ -279,6 +286,7 @@ export function previewMove(
     toElevationFt,
     cellSizePx,
     feetPerCell,
+    difficultTerrain,
   });
 }
 

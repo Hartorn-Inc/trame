@@ -66,6 +66,11 @@
 //!        and undo stack are restored exactly and the error carries the failing
 //!        index. On success the sub-commands' own undo entries are discarded in
 //!        favor of one composite `UndoEntry`.
+//!   8. `Shared Movement Pricing`:
+//!      - `MoveToken` budgets, `preview_move`, and the `previewMove` WASM export
+//!        all price moves with `MovementGrid::movement_cost_ft` (Chebyshev
+//!        squares, `difficult_terrain` doubled), so previews never disagree
+//!        with server validation.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -89,6 +94,7 @@ use crate::geometry::{
     Bvh2D, CHANNEL_ETHEREAL, CHANNEL_GM_HIDDEN, CHANNEL_MATERIAL, SenseProfile, WallKind,
     WallSegment, can_token_see_target, segment_intersection, segment_intersects_segment,
 };
+use crate::movement::MovementGrid;
 use crate::rules::{ActiveEffect, DamageAffinity, DamageResolution, resolve_damage_application};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -246,7 +252,9 @@ pub struct MovePreview {
     /// First movement-blocking wall crossing in pixels (`px`) between the token centers, or
     /// `None` when the straight path is clear.
     pub collision: Option<Point2D>,
-    /// Movement cost in feet (`ft`): 3D distance, doubled while squeezing.
+    /// Movement cost in feet (`ft`) from `MovementGrid::movement_cost_ft`: Chebyshev squares
+    /// (diagonals cost 5 ft), difficult squares doubled, elevation as a third axis, doubled
+    /// while squeezing.
     pub cost_ft: f64,
 }
 
@@ -723,7 +731,8 @@ pub enum TrameCommand {
     },
     /// Activates a persisted map scene (GM only): replaces walls, lights, map, and grid; keeps
     /// `HeroToken`s (moved onto spawn points); removes every other token; spawns the scene's
-    /// `StagedToken`s; clears AoEs, fog overrides, reaction prompts; and returns to `Exploration`.
+    /// `StagedToken`s; clears AoEs, fog overrides, difficult terrain, reaction prompts; and
+    /// returns to `Exploration`.
     ActivateScene {
         /// Unique identifier of the persisted scene.
         scene_id: Uuid,
@@ -759,6 +768,14 @@ pub enum TrameCommand {
         cell_x: i32,
         /// Discrete vertical grid row index (`cell_y`).
         cell_y: i32,
+    },
+    /// Marks (`difficult: true`) or clears (`false`) difficult terrain on grid cells of the
+    /// active map (GM only). Every cell must lie on the map; the list must not be empty.
+    SetDifficultTerrain {
+        /// Grid cells to paint or erase.
+        cells: Vec<GridCell>,
+        /// `true` adds the cells to `difficult_terrain`, `false` removes them.
+        difficult: bool,
     },
     /// Configures the active battlemap background URL/hash and physical dimensions in feet (GM only).
     SetMapConfig {
@@ -976,6 +993,13 @@ pub enum TrameEvent {
         /// Discrete vertical grid row index (`cell_y`).
         cell_y: i32,
     },
+    /// Emitted when the GM paints or erases difficult terrain.
+    DifficultTerrainChanged {
+        /// Cells named by the command.
+        cells: Vec<GridCell>,
+        /// `true` when the cells became difficult, `false` when they were cleared.
+        difficult: bool,
+    },
     /// Emitted when the battlemap background URL or physical dimensions are updated.
     MapConfigChanged {
         /// Updated background image URL or asset hash.
@@ -1169,6 +1193,10 @@ pub struct TableSnapshotData {
     /// `prompt_id`. Survives undo so an undone prompt's ID is never reissued to another prompt.
     #[serde(default)]
     pub reaction_prompt_seq: u64,
+    /// Grid cells of difficult terrain on the active map (entering one costs double movement).
+    /// Painted with `SetDifficultTerrain`; cleared when another map is loaded or activated.
+    #[serde(default)]
+    pub difficult_terrain: BTreeSet<GridCell>,
 }
 
 /// Authoritative in-memory tabletop state machine combining serializable `TableSnapshotData`,
@@ -1277,6 +1305,7 @@ impl TableState {
                 map_height_px: default_map_dimension_px(),
                 revealed_handout_ids: BTreeSet::new(),
                 reaction_prompt_seq: 0,
+                difficult_terrain: BTreeSet::new(),
             },
             bvh,
             undo_stack: VecDeque::with_capacity(MAX_UNDO_HISTORY),
@@ -1610,18 +1639,19 @@ impl TableState {
     }
 
     /// Movement cost in feet (`ft`) of moving `token` from its position to `to_top_left` at
-    /// `new_elev` (3D distance, doubled while squeezing).
+    /// `new_elev` on this table's grid and difficult terrain (`MovementGrid::movement_cost_ft`).
     fn movement_cost_ft(&self, token: &TokenState, to_top_left: Point2D, new_elev: f64) -> f64 {
-        let px_per_ft = self.cell_size_px / self.feet_per_cell.max(1.0);
-        let dist_ft =
-            token
-                .top_left
-                .distance_3d(token.elevation_ft, to_top_left, new_elev, px_per_ft);
-        if token.is_squeezing {
-            dist_ft * 2.0
-        } else {
-            dist_ft
+        MovementGrid {
+            cell_size_px: self.cell_size_px,
+            feet_per_cell: self.feet_per_cell,
+            difficult_terrain: &self.data.difficult_terrain,
         }
+        .movement_cost_ft(
+            &token.spatial_ref(),
+            to_top_left,
+            new_elev,
+            token.is_squeezing,
+        )
     }
 
     /// Moves `token_id` toward `to_top_left`, stopping on the first hostile `ThreatReach` exit
@@ -2387,6 +2417,7 @@ impl TableState {
                 self.data.map_height_px = height_px;
                 self.data.walls = walls;
                 self.data.persistent_aoes.clear();
+                self.data.difficult_terrain.clear();
                 self.bvh = Bvh2D::build(self.data.walls.clone());
 
                 Ok(vec![TrameEvent::SceneLoaded {
@@ -2450,6 +2481,7 @@ impl TableState {
                 self.data.walls = scene.walls;
                 self.data.lights = scene.lights;
                 self.data.fog_overrides.clear();
+                self.data.difficult_terrain.clear();
                 self.data.persistent_aoes.clear();
                 self.data.active_reaction_prompts.clear();
                 self.data.mode = TableMode::Exploration;
@@ -2566,6 +2598,43 @@ impl TableState {
                     mode,
                     cell_x,
                     cell_y,
+                }])
+            }
+
+            TrameCommand::SetDifficultTerrain { cells, difficult } => {
+                Self::require_gm(actor)?;
+                if cells.is_empty() {
+                    return Err(CommandError::InvalidConfiguration(
+                        "difficult terrain cells must not be empty".to_string(),
+                    ));
+                }
+                let cell_px = self.cell_size_px.max(1e-9);
+                let cols = (f64::from(self.data.map_width_px) / cell_px).ceil() as i32;
+                let rows = (f64::from(self.data.map_height_px) / cell_px).ceil() as i32;
+                if let Some(off_map) = cells
+                    .iter()
+                    .find(|c| !(0..cols).contains(&c.col) || !(0..rows).contains(&c.row))
+                {
+                    return Err(CommandError::InvalidConfiguration(format!(
+                        "cell ({}, {}) is outside the {cols}x{rows} map grid",
+                        off_map.col, off_map.row
+                    )));
+                }
+                self.push_undo(if difficult {
+                    "Paint difficult terrain"
+                } else {
+                    "Erase difficult terrain"
+                });
+                for cell in &cells {
+                    if difficult {
+                        self.data.difficult_terrain.insert(*cell);
+                    } else {
+                        self.data.difficult_terrain.remove(cell);
+                    }
+                }
+                Ok(vec![TrameEvent::DifficultTerrainChanged {
+                    cells,
+                    difficult,
                 }])
             }
 
