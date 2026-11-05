@@ -92,6 +92,9 @@ pub const MAX_ASSET_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum campaign name length in characters.
 pub const MAX_CAMPAIGN_NAME_CHARS: usize = 120;
 
+/// D&D 5e ability score range accepted on actor sheets (`abilities.<ability>.score`).
+pub const ABILITY_SCORES: std::ops::RangeInclusive<i32> = 1..=30;
+
 /// Session number used for room-originated timeline records (dice, initiative, handouts);
 /// sessions are not tracked separately yet, so the live table writes to session `1`.
 pub const LIVE_SESSION_NUM: u32 = 1;
@@ -736,6 +739,30 @@ async fn delete_actor(state: &AppState, campaign_id: Uuid, actor_id: Uuid) -> Re
         .is_some())
 }
 
+/// `400 INVALID_ABILITY_SCORE` when a numeric `abilities.<ability>.score` of `data` lies
+/// outside `ABILITY_SCORES`; non-numeric scores are ignored by every derivation.
+fn check_ability_scores(data: &Value) -> Result<(), Response> {
+    let Some(abilities) = data.get("abilities").and_then(Value::as_object) else {
+        return Ok(());
+    };
+    for (ability, entry) in abilities {
+        let Some(score) = entry.get("score").and_then(Value::as_f64) else {
+            continue;
+        };
+        if score.fract() != 0.0 || !ABILITY_SCORES.contains(&(score as i32)) {
+            return Err(bad_request(
+                "INVALID_ABILITY_SCORE",
+                &format!(
+                    "abilities.{ability}.score must be an integer within {}..={}",
+                    ABILITY_SCORES.start(),
+                    ABILITY_SCORES.end()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn can_read_actor(role: CampaignRole, user_id: Uuid, actor: &ActorRecord) -> bool {
     role == CampaignRole::Gm || actor.owner_user_id == Some(user_id)
 }
@@ -800,7 +827,9 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
             }
             (resist, immune, vuln)
         });
-    let dex_mod = i32_at(data, &["abilities", "dex", "score"]).map(|s| (s - 10).div_euclid(2));
+    let dex_mod = i32_at(data, &["abilities", "dex", "score"]).map(|s| {
+        (s.clamp(*ABILITY_SCORES.start(), *ABILITY_SCORES.end()) - 10).div_euclid(2)
+    });
     ActorTacticalSync {
         name: name.map(str::to_string),
         hp_current: i32_at(data, &["attributes", "hp", "current"]),
@@ -905,6 +934,9 @@ pub async fn create_actor_handler(
     if name.is_empty() {
         return bad_request("INVALID_NAME", "actor name must not be empty");
     }
+    if let Err(resp) = check_ability_scores(&req.data) {
+        return resp;
+    }
     let actor_id = req.id.unwrap_or_else(Uuid::new_v4);
     if let Ok(Some(_)) = get_actor(&state, campaign_id, actor_id).await {
         return error_response(StatusCode::CONFLICT, "ACTOR_EXISTS", "actor already exists");
@@ -963,6 +995,9 @@ pub async fn update_actor_handler(
     }
     if role == CampaignRole::Spectator {
         return forbidden("spectators cannot edit actors");
+    }
+    if let Err(resp) = check_ability_scores(&req.data) {
+        return resp;
     }
     let name = req.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
     match update_actor(
@@ -1291,6 +1326,18 @@ pub async fn roll_dice_handler(
     };
     if role == CampaignRole::Spectator {
         return forbidden("spectators cannot roll dice");
+    }
+    if role != CampaignRole::Gm
+        && req.reason.as_deref().is_some_and(|r| {
+            r.trim_start()
+                .get(..10)
+                .is_some_and(|p| p.eq_ignore_ascii_case("initiative"))
+        })
+    {
+        return bad_request(
+            "INITIATIVE_ROLL_REQUIRES_ROOM",
+            "initiative is rolled by the live table: send it through the room WebSocket",
+        );
     }
     let outcome = match SeededDiceRoller::from_os_csprng().roll(
         user_id,
