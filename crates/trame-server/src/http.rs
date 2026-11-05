@@ -36,6 +36,12 @@
 //!   4. `WebSocket Hardening`:
 //!      - Upgrades require credentials, campaign membership, and an allow-listed `Origin`;
 //!        messages and frames are capped at `SecurityPolicy::ws_max_message_bytes`.
+//!      - Membership is checked again once the client is attached to the room: a removal
+//!        that ran between the upgrade and the attach finds no socket to evict, so the
+//!        handler itself closes with `4403`.
+//!      - Waking/attaching to the room and handing it each frame are bounded by
+//!        `SecurityPolicy::ws_room_call_timeout`; on expiry the socket closes with `1011`
+//!        instead of hanging on a stalled actor.
 //!   5. `Hardening Headers`:
 //!      - `security_headers_middleware` wraps the whole router (CSP, `nosniff`, frame denial).
 //!   6. `Deterministic Session Cleanup & Sub-5ms Healthz`:
@@ -79,6 +85,7 @@ use crate::config::ServerConfig;
 pub use crate::maps::{InMemoryMapStorage, get_campaign_maps_handler, put_campaign_maps_handler};
 use crate::room::{
     ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomError, RoomLeaseManager,
+    WS_CLOSE_CODE_INTERNAL_ERROR, WS_CLOSE_CODE_MEMBERSHIP_REVOKED,
 };
 use crate::security::{opaque_server_errors_middleware, security_headers_middleware};
 use crate::storage::SqlxPostgresStore;
@@ -1336,6 +1343,15 @@ fn reject_frame(tx: &mpsc::UnboundedSender<OutboundClientFrame>, reason: &str) {
     }
 }
 
+/// Sends a Close frame with `code` and drops the socket (best effort: the peer may be gone).
+async fn close_socket(mut socket: WebSocket, code: u16, reason: &str) {
+    let close_frame = axum::extract::ws::CloseFrame {
+        code,
+        reason: reason.to_string().into(),
+    };
+    let _ = socket.send(Message::Close(Some(close_frame))).await;
+}
+
 async fn handle_ws_connection(
     socket: WebSocket,
     state: AppState,
@@ -1343,10 +1359,7 @@ async fn handle_ws_connection(
     user_id: Uuid,
     role: CampaignRole,
 ) {
-    let Ok(room_handle) = state.lease_manager.get_or_wake_room(campaign_id).await else {
-        return;
-    };
-
+    let room_timeout = state.auth_state.security.ws_room_call_timeout;
     let session_id = Uuid::new_v4();
     let (tx, mut rx) = mpsc::unbounded_channel::<OutboundClientFrame>();
     let reject_tx = tx.clone();
@@ -1357,13 +1370,39 @@ async fn handle_ws_connection(
         tx,
     };
 
-    if room_handle.connect_client(client).await.is_err() {
+    let attach = async {
+        let room_handle = state.lease_manager.get_or_wake_room(campaign_id).await?;
+        room_handle.connect_client(client).await?;
+        Ok::<_, RoomError>(room_handle)
+    };
+    let room_handle = match tokio::time::timeout(room_timeout, attach).await {
+        Ok(Ok(handle)) => handle,
+        Ok(Err(err)) => {
+            tracing::warn!(%campaign_id, error = %err, "room attach failed");
+            close_socket(socket, WS_CLOSE_CODE_INTERNAL_ERROR, "Room Unavailable").await;
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(%campaign_id, "room attach timed out");
+            close_socket(socket, WS_CLOSE_CODE_INTERNAL_ERROR, "Room Unavailable").await;
+            return;
+        }
+    };
+
+    // The role was resolved before the upgrade; a removal that ran in between evicted
+    // nobody, so membership is checked again now that the client is attached.
+    if resolve_campaign_role(&state, campaign_id, user_id)
+        .await
+        .is_none()
+    {
+        let _ = room_handle.disconnect_client(session_id).await;
+        close_socket(socket, WS_CLOSE_CODE_MEMBERSHIP_REVOKED, "Membership Revoked").await;
         return;
     }
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    let send_task = tokio::spawn(async move {
+    let mut send_task = tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
             match frame {
                 OutboundClientFrame::Binary(bytes) => {
@@ -1392,15 +1431,34 @@ async fn handle_ws_connection(
             continue;
         };
         let envelope = resolve_client_envelope(&state, campaign_id, envelope).await;
-        if let Err(RoomError::ActorClosed) = room_handle.send_envelope(session_id, envelope).await {
+        match tokio::time::timeout(room_timeout, room_handle.send_envelope(session_id, envelope))
+            .await
+        {
             // The actor died (RT9): closing the socket makes the client reconnect, which
             // wakes a fresh actor from storage.
-            break;
+            Ok(Err(RoomError::ActorClosed)) => break,
+            Ok(_) => {}
+            Err(_) => {
+                tracing::warn!(%campaign_id, "room actor did not accept a frame in time");
+                let _ = reject_tx.send(OutboundClientFrame::Close {
+                    code: WS_CLOSE_CODE_INTERNAL_ERROR,
+                    reason: "Room Unavailable".to_string(),
+                });
+                break;
+            }
         }
     }
 
-    let _ = room_handle.disconnect_client(session_id).await;
-    send_task.abort();
+    // The mailbox is bounded, so even the disconnect notice can wait on a stalled actor.
+    let _ = tokio::time::timeout(room_timeout, room_handle.disconnect_client(session_id)).await;
+    drop(reject_tx);
+    // Lets a queued Close frame reach the peer before the writer is torn down.
+    if tokio::time::timeout(std::time::Duration::from_secs(1), &mut send_task)
+        .await
+        .is_err()
+    {
+        send_task.abort();
+    }
 }
 
 /// Seeds a campaign with sample entities, notes, and assets in `AppState` for testing or bootstrapping.

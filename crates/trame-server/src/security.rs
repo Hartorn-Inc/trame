@@ -297,10 +297,18 @@ pub struct SecurityPolicy {
     /// refused with `413 STORAGE_QUOTA_EXCEEDED` before decoding once stored + incoming bytes
     /// would exceed it (SEC14).
     pub campaign_asset_quota_bytes: u64,
+    /// Longest a WebSocket waits for its room actor to attach it or accept one frame
+    /// (default `DEFAULT_WS_ROOM_CALL_TIMEOUT`). On expiry the socket is closed with `1011`,
+    /// so a stalled actor cannot hold connections and their reconnect storm forever.
+    pub ws_room_call_timeout: Duration,
 }
 
 /// Default `SecurityPolicy::campaign_asset_quota_bytes` (1 GiB).
 pub const DEFAULT_CAMPAIGN_ASSET_QUOTA_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Default `SecurityPolicy::ws_room_call_timeout` (10 s): above the 6 s Postgres WAL call
+/// bound, so a single slow append is not enough to drop a socket.
+pub const DEFAULT_WS_ROOM_CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Default for SecurityPolicy {
     /// Development policy: secure cookies, Vite dev origins, 1 MiB frames, default limits.
@@ -315,6 +323,7 @@ impl Default for SecurityPolicy {
             registration_open: true,
             bootstrap_owner_email: None,
             campaign_asset_quota_bytes: DEFAULT_CAMPAIGN_ASSET_QUOTA_BYTES,
+            ws_room_call_timeout: DEFAULT_WS_ROOM_CALL_TIMEOUT,
         }
     }
 }

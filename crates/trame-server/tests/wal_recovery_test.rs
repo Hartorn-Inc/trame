@@ -35,7 +35,7 @@ use trame_engine::geometry::Point2D;
 use trame_engine::rules::DamageAffinity;
 use trame_server::archive::InMemoryCampaignStore;
 use trame_server::assets::store::InMemoryAssetStore;
-use trame_server::auth::accounts::InstanceRole;
+use trame_server::auth::accounts::{AccountStore, InstanceRole};
 use trame_server::auth::magic_link::MagicLinkService;
 use trame_server::auth::session::{
     AuthState, IdentityStore, InMemorySessionStore, SessionStore, UserRecord, hash_session_token,
@@ -66,9 +66,13 @@ struct FaultyWal {
     fail_append: AtomicBool,
     /// Stores the entry, then reports failure: an append whose commit outcome was lost.
     ghost_append: AtomicBool,
+    /// Blocks the append for `STALL`, like a database that stopped answering.
+    stall_append: AtomicBool,
     fail_discard: AtomicBool,
     fail_snapshot: AtomicBool,
 }
+
+const STALL: Duration = Duration::from_millis(1500);
 
 impl FaultyWal {
     fn injected(what: &str) -> WalError {
@@ -80,6 +84,9 @@ impl WalStorage for FaultyWal {
     fn append_entry(&self, entry: WalEntry) -> Result<(), WalError> {
         if self.fail_append.load(Ordering::SeqCst) {
             return Err(Self::injected("append"));
+        }
+        if self.stall_append.load(Ordering::SeqCst) {
+            std::thread::sleep(STALL);
         }
         if self.ghost_append.load(Ordering::SeqCst) {
             self.inner.append_entry(entry)?;
@@ -940,6 +947,22 @@ async fn ws_open(addr: SocketAddr, path: &str, cookie: &str) -> TcpStream {
 }
 
 async fn ws_read(stream: &mut TcpStream) -> ServerEnvelope {
+    let (_, payload) = ws_read_frame(stream).await;
+    rmp_serde::from_slice(&payload).unwrap()
+}
+
+/// Reads frames until a Close frame and returns its status code.
+async fn ws_read_close_code(stream: &mut TcpStream) -> u16 {
+    loop {
+        let (opcode, payload) = ws_read_frame(stream).await;
+        if opcode == 0x8 {
+            return u16::from_be_bytes([payload[0], payload[1]]);
+        }
+    }
+}
+
+/// Reads one unmasked server frame and returns `(opcode, payload)`.
+async fn ws_read_frame(stream: &mut TcpStream) -> (u8, Vec<u8>) {
     let mut hdr = [0u8; 2];
     stream.read_exact(&mut hdr).await.unwrap();
     let len = match hdr[1] & 0x7f {
@@ -957,7 +980,7 @@ async fn ws_read(stream: &mut TcpStream) -> ServerEnvelope {
     };
     let mut payload = vec![0u8; len];
     stream.read_exact(&mut payload).await.unwrap();
-    rmp_serde::from_slice(&payload).unwrap()
+    (hdr[0] & 0x0f, payload)
 }
 
 /// Writes one masked binary frame (zero mask key, so the payload is sent as is).
@@ -1013,7 +1036,112 @@ async fn websocket_rejections_echo_the_wire_correlation_id() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Stalled actors and late membership removal over a real WebSocket
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stalled_room_actor_closes_sockets_with_1011() {
+    // (case_id, a second socket attaches while the actor is stalled (else the first one's
+    // frame is what waits))
+    let cases = [
+        ("frame_to_stalled_actor", false),
+        ("attach_to_stalled_actor", true),
+    ];
+    for (case, attach) in cases {
+        let c = Campaign::seed();
+        let policy = SecurityPolicy {
+            ws_room_call_timeout: Duration::from_millis(200),
+            ..SecurityPolicy::default()
+        };
+        let state = app_state_with(c.wal.clone(), policy);
+        let (user_id, cookie) = session(&state).await;
+        state
+            .auth_state
+            .session_store
+            .assign_campaign_member(c.id, user_id, None, "GM")
+            .await
+            .unwrap();
+        let addr = serve(build_router_with_state(state)).await;
+        let path = format!("/ws/campaigns/{}", c.id);
+        let mut ws = ws_open(addr, &path, &cookie).await;
+        assert!(
+            matches!(ws_read(&mut ws).await, ServerEnvelope::StateSnapshot { .. }),
+            "case {case}"
+        );
+
+        c.wal.stall_append.store(true, Ordering::SeqCst);
+        let frame = rmp_serde::to_vec_named(&submit(c.damage(1), "c-stall")).unwrap();
+        ws_write(&mut ws, &frame).await;
+        let mut target = if attach {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            ws_open(addr, &path, &cookie).await
+        } else {
+            ws
+        };
+        let code = tokio::time::timeout(Duration::from_secs(1), ws_read_close_code(&mut target))
+            .await
+            .unwrap_or_else(|_| panic!("case {case}: socket left hanging"));
+        assert_eq!(code, 1011, "case {case}");
+        c.wal.stall_append.store(false, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn membership_removed_during_attach_closes_4403() {
+    // (case_id, membership removed while the attach is still queued)
+    let cases = [
+        ("removed_mid_attach_closes_4403", true),
+        ("still_member_stays_attached", false),
+    ];
+    for (case, remove) in cases {
+        let c = Campaign::seed();
+        let state = app_state_with(c.wal.clone(), SecurityPolicy::default());
+        let (user_id, cookie) = session(&state).await;
+        let store = state.auth_state.session_store.clone();
+        store
+            .assign_campaign_member(c.id, user_id, None, "PLAYER")
+            .await
+            .unwrap();
+        let room = state.lease_manager.get_or_wake_room(c.id).await.unwrap();
+        let addr = serve(build_router_with_state(state)).await;
+
+        // Keeps the actor busy so the socket's attach waits in the mailbox.
+        c.wal.stall_append.store(true, Ordering::SeqCst);
+        let busy = tokio::spawn({
+            let (room, actor, cmd) = (room.clone(), c.gm_actor(), c.damage(1));
+            async move { room.dispatch_direct_command(actor, cmd).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut ws = ws_open(addr, &format!("/ws/campaigns/{}", c.id), &cookie).await;
+        if remove {
+            assert!(store.remove_campaign_member(c.id, user_id).await.unwrap());
+        }
+        c.wal.stall_append.store(false, Ordering::SeqCst);
+        busy.await.unwrap().unwrap();
+
+        if remove {
+            assert_eq!(ws_read_close_code(&mut ws).await, 4403, "case {case}");
+        } else {
+            assert!(
+                matches!(ws_read(&mut ws).await, ServerEnvelope::StateSnapshot { .. }),
+                "case {case}"
+            );
+            let ping = rmp_serde::to_vec_named(&ClientEnvelope::Ping { client_time_ms: 7 }).unwrap();
+            ws_write(&mut ws, &ping).await;
+            assert!(
+                matches!(ws_read(&mut ws).await, ServerEnvelope::Pong { client_time_ms: 7, .. }),
+                "case {case}"
+            );
+        }
+    }
+}
+
 fn app_state(wal: Arc<InMemoryWalStorage>) -> AppState {
+    app_state_with(wal, SecurityPolicy::default())
+}
+
+fn app_state_with(wal: Arc<dyn WalStorage>, policy: SecurityPolicy) -> AppState {
     AppState {
         lease_manager: Arc::new(RoomLeaseManager::new(wal, 25, 900_000)),
         asset_store: Arc::new(InMemoryAssetStore::new()),
@@ -1032,7 +1160,7 @@ fn app_state(wal: Arc<InMemoryWalStorage>) -> AppState {
                 ServerSecrets::dev().master_encryption_key,
                 "TRAME",
             )),
-            Arc::new(SecurityPolicy::default()),
+            Arc::new(policy),
         ),
         db_healthy: Arc::new(AtomicBool::new(true)),
         map_storage: InMemoryMapStorage::new(),
