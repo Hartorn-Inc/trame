@@ -53,8 +53,8 @@ make test-rust TEST_DATABASE_URL=postgresql://trame:trame_dev_password@postgres:
 | `TRAME_ENV` | No | `dev` substitutes public development keys and Vite origins for missing values and logs pretty coloured lines. Any other value (or unset) logs one JSON object per line without ANSI colour, and refuses the publicly known development secret values. Never set it to `dev` in production. |
 | `MASTER_ENCRYPTION_KEY` | Yes | 64 hex characters (AES-256-GCM) encrypting TOTP secrets at rest. |
 | `TRAME_JWT_SECRET` | Yes | At least 32 bytes; signs presigned asset URLs (legacy alias: `JWT_SECRET`). |
-| `TRAME_INVITE_JWT_SECRET` | Yes, unless a fallback is set | At least 32 bytes; signs Magic Link invite JWTs. Falls back to `TRAME_SESSION_SECRET`, then `JWT_SECRET`. |
-| `TRAME_SESSION_SECRET` | No | Fallback key for invite JWTs (see above). |
+| `TRAME_INVITE_JWT_SECRET` | Yes, unless a fallback is set | At least 32 bytes. Reserved HMAC key: no route signs with it since Magic Link invites were removed (campaign invites are random tokens stored as SHA-256 digests), but startup still validates it. Falls back to `TRAME_SESSION_SECRET`, then `JWT_SECRET`. |
+| `TRAME_SESSION_SECRET` | No | Fallback for `TRAME_INVITE_JWT_SECRET` (see above). |
 | `TRAME_PUBLIC_ORIGIN` | Yes | Public browser origin (for example `https://table.example.com`); used for invite URLs and the WebSocket `Origin` allow-list. |
 | `TRAME_ALLOWED_ORIGINS` | No | Extra comma-separated WebSocket origins. |
 | `TRAME_COOKIE_SECURE` | No | Session cookies carry `Secure` unless set to `false`/`0`/`no`/`off` (plain-HTTP LAN tables). |

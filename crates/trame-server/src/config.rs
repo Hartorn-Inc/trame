@@ -66,11 +66,12 @@ pub const TRAME_ENV_VAR: &str = "TRAME_ENV";
 pub const MASTER_ENCRYPTION_KEY_VAR: &str = "MASTER_ENCRYPTION_KEY";
 /// HMAC-SHA256 key signing presigned asset URLs (legacy alias: `JWT_SECRET`).
 pub const JWT_SECRET_VAR: &str = "TRAME_JWT_SECRET";
-/// HMAC-SHA256 key signing Magic Link invite JWTs (legacy alias: `JWT_SECRET`).
+/// Reserved HMAC-SHA256 key (legacy alias: `JWT_SECRET`). Validated at startup, but no route
+/// signs with it since Magic Link invites were removed (campaign invites are hashed tokens).
 pub const INVITE_JWT_SECRET_VAR: &str = "TRAME_INVITE_JWT_SECRET";
 /// Legacy shared alias accepted for both HMAC secrets.
 pub const LEGACY_JWT_SECRET_VAR: &str = "JWT_SECRET";
-/// Session bootstrap key: signs Magic Link invite JWTs when `TRAME_INVITE_JWT_SECRET` is unset.
+/// Fallback for `TRAME_INVITE_JWT_SECRET` when it is unset.
 pub const SESSION_SECRET_VAR: &str = "TRAME_SESSION_SECRET";
 /// Public browser origin of the web client (e.g. `https://table.example.com`).
 pub const PUBLIC_ORIGIN_VAR: &str = "TRAME_PUBLIC_ORIGIN";
@@ -167,7 +168,8 @@ pub struct ServerSecrets {
     pub master_encryption_key: [u8; 32],
     /// HMAC-SHA256 key (>= 32 bytes) signing presigned asset URLs.
     pub asset_signing_secret: Vec<u8>,
-    /// HMAC-SHA256 key (>= 32 bytes) signing Magic Link invite JWTs.
+    /// Reserved HMAC-SHA256 key (>= 32 bytes); unused by any route since Magic Link
+    /// invites were removed.
     pub invite_jwt_secret: Vec<u8>,
 }
 
