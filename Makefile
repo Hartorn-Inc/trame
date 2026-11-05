@@ -85,7 +85,7 @@ e2e-image: ## Build the production Dockerfile image used by the browser E2E suit
 
 e2e: ## Run the GM + player Playwright journey (with videos) against the production image and Postgres, then tear down
 	mkdir -p "$(REPO_DIR)/e2e/artifacts"
-	$(E2E_COMPOSE) up -d --wait postgres trame-server
+	$(E2E_COMPOSE) up -d --wait postgres trame-server && \
 	$(E2E_COMPOSE) run --rm playwright; rc=$$?; \
 	$(E2E_COMPOSE) logs --no-color --no-log-prefix trame-server > "$(REPO_DIR)/e2e/artifacts/server.log" 2>&1; \
 	$(E2E_COMPOSE) logs --no-color --no-log-prefix postgres > "$(REPO_DIR)/e2e/artifacts/postgres.log" 2>&1; \

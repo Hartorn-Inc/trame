@@ -15,7 +15,7 @@ on:
     branches: [dev, main]
   pull_request:
     types: [opened, synchronize, reopened, edited]
-    branches: [dev, main, 'feature/**']
+    branches: [dev, main, 'feature/**', 'stack/**']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

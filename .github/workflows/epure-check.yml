@@ -1,7 +1,7 @@
 name: "EPURE Contract Verification"
 on:
   pull_request:
-    branches: [dev, main, 'feature/**']
+    branches: [dev, main, 'feature/**', 'stack/**']
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
