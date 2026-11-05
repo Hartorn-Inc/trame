@@ -58,7 +58,7 @@ use crate::notes::{NotesError, PartyJournalEntry, PartyJournalStorage};
 use crate::timeline::{
     AppendEventInput, SessionTimelineEvent, SessionTimelineResponse, TimelineError, TimelineStorage,
 };
-use crate::wal::{TableStateSnapshot, WalEntry, WalError, WalStorage};
+use crate::wal::{QuarantinedWalEntry, TableStateSnapshot, WalEntry, WalError, WalStorage};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
@@ -1174,6 +1174,77 @@ impl WalStorage for SqlxPostgresStore {
                 out.push(entry);
             }
             Ok(out)
+        })
+    }
+
+    fn quarantine_entries(
+        &self,
+        campaign_id: Uuid,
+        from_seq_id: u64,
+        entries: Vec<QuarantinedWalEntry>,
+    ) -> Result<(), WalError> {
+        let pool = self.pool.clone();
+        let db_err = |e: sqlx::Error| WalError::Serialization(e.to_string());
+        run_pg_blocking(async move {
+            let mut tx = pool.begin().await.map_err(db_err)?;
+            for entry in &entries {
+                sqlx::query(
+                    "INSERT INTO quarantined_wal_entries
+                       (campaign_id, sequence_num, command_kind, payload, error, quarantined_at)
+                     VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0))",
+                )
+                .bind(campaign_id)
+                .bind(entry.seq_id as i64)
+                .bind(&entry.command_kind)
+                .bind(&entry.payload)
+                .bind(&entry.error)
+                .bind(entry.quarantined_at_ms as f64)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
+            }
+            sqlx::query("DELETE FROM wal_entries WHERE campaign_id = $1 AND sequence_num >= $2")
+                .bind(campaign_id)
+                .bind(from_seq_id as i64)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
+            tx.commit().await.map_err(db_err)
+        })
+    }
+
+    fn list_quarantined_entries(
+        &self,
+        campaign_id: Uuid,
+    ) -> Result<Vec<QuarantinedWalEntry>, WalError> {
+        let pool = self.pool.clone();
+        run_pg_blocking(async move {
+            let rows = sqlx::query(
+                "SELECT sequence_num, command_kind, payload, error,
+                        (EXTRACT(EPOCH FROM quarantined_at) * 1000)::BIGINT AS quarantined_at_ms
+                 FROM quarantined_wal_entries
+                 WHERE campaign_id = $1
+                 ORDER BY sequence_num ASC, quarantined_at ASC",
+            )
+            .bind(campaign_id)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| WalError::Serialization(e.to_string()))?;
+            rows.into_iter()
+                .map(|row| {
+                    let get_err = |e: sqlx::Error| WalError::Serialization(e.to_string());
+                    Ok(QuarantinedWalEntry {
+                        campaign_id,
+                        seq_id: row.try_get::<i64, _>("sequence_num").map_err(get_err)? as u64,
+                        command_kind: row.try_get("command_kind").map_err(get_err)?,
+                        payload: row.try_get("payload").map_err(get_err)?,
+                        error: row.try_get("error").map_err(get_err)?,
+                        quarantined_at_ms: row
+                            .try_get::<i64, _>("quarantined_at_ms")
+                            .map_err(get_err)? as u64,
+                    })
+                })
+                .collect()
         })
     }
 }

@@ -1668,13 +1668,16 @@ async fn a24_a68_damage_authority_and_bounds() {
         table
             .submit(
                 as_gm,
-                ClientEnvelope::SubmitCommand(Box::new(TrameCommand::ApplyDamage {
-                    token_id: target,
-                    raw_damage,
-                    affinity,
-                    is_critical: false,
-                    damage_type: None,
-                })),
+                ClientEnvelope::SubmitCommand(Box::new(
+                    TrameCommand::ApplyDamage {
+                        token_id: target,
+                        raw_damage,
+                        affinity,
+                        is_critical: false,
+                        damage_type: None,
+                    }
+                    .into(),
+                )),
             )
             .await;
         let sender = if as_gm {
@@ -1738,6 +1741,7 @@ async fn a23_dice_expression_caps_and_checked_math() {
                     expression,
                     visibility: RollVisibility::Public,
                     reason,
+                    correlation_id: None,
                 },
             )
             .await;
@@ -1866,10 +1870,13 @@ async fn a64_initiative_totals_shared_except_hidden_combatants() {
         table
             .submit(
                 true,
-                ClientEnvelope::SubmitCommand(Box::new(TrameCommand::SetInitiativeTotal {
-                    token_id: goblin,
-                    total: 15,
-                })),
+                ClientEnvelope::SubmitCommand(Box::new(
+                    TrameCommand::SetInitiativeTotal {
+                        token_id: goblin,
+                        total: 15,
+                    }
+                    .into(),
+                )),
             )
             .await;
         let rx = if as_gm {
@@ -1947,13 +1954,16 @@ async fn a65_vitality_events_reach_only_the_controller() {
         table
             .submit(
                 true,
-                ClientEnvelope::SubmitCommand(Box::new(TrameCommand::ApplyDamage {
-                    token_id: target,
-                    raw_damage: 1,
-                    affinity: DamageAffinity::Normal,
-                    is_critical: false,
-                    damage_type: None,
-                })),
+                ClientEnvelope::SubmitCommand(Box::new(
+                    TrameCommand::ApplyDamage {
+                        token_id: target,
+                        raw_damage: 1,
+                        affinity: DamageAffinity::Normal,
+                        is_critical: false,
+                        damage_type: None,
+                    }
+                    .into(),
+                )),
             )
             .await;
         let frames = Table::drain(&mut table.player.1);
@@ -1999,6 +2009,7 @@ async fn a67_initiative_hides_hidden_tokens_and_keeps_player_self_rolls() {
                 expression: "1d20+2".to_string(),
                 visibility: RollVisibility::Public,
                 reason: "Initiative".to_string(),
+                correlation_id: None,
             },
         )
         .await;
@@ -2008,10 +2019,13 @@ async fn a67_initiative_hides_hidden_tokens_and_keeps_player_self_rolls() {
     table
         .submit(
             true,
-            ClientEnvelope::SubmitCommand(Box::new(TrameCommand::StartTurnByTurn {
-                initiative_order: Vec::new(),
-                initiative_totals: Default::default(),
-            })),
+            ClientEnvelope::SubmitCommand(Box::new(
+                TrameCommand::StartTurnByTurn {
+                    initiative_order: Vec::new(),
+                    initiative_totals: Default::default(),
+                }
+                .into(),
+            )),
         )
         .await;
 

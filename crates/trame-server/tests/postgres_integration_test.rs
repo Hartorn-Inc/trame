@@ -24,6 +24,11 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tower::ServiceExt;
+use trame_engine::commands::{
+    CampaignRole, CommandActor, McpStagingProposal, TableState, TokenState, TrameCommand,
+};
+use trame_engine::geometry::Point2D;
+use trame_engine::rules::DamageAffinity;
 use trame_server::assets::store::AssetStore;
 use trame_server::auth::accounts::InstanceRole;
 use trame_server::auth::session::{IdentityStore, SessionStore, UserRecord, hash_session_token};
@@ -39,6 +44,7 @@ use trame_server::room::RoomLeaseManager;
 use trame_server::storage::SqlxPostgresStore;
 use trame_server::storage::postgres::journal_row_id;
 use trame_server::timeline::{AppendEventInput, TimelineError, TimelineStorage};
+use trame_server::wal::{TableStateSnapshot, WalEntry, WalStorage};
 use uuid::Uuid;
 
 async fn harness() -> Option<(Router, Arc<SqlxPostgresStore>)> {
@@ -1101,5 +1107,186 @@ async fn pg_concurrent_redemptions_respect_max_uses() {
                 .await
                 .unwrap();
         assert_eq!(use_count as usize, max_uses, "case {case}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0040 (D4, RT3): crash recovery and quarantine on the real WAL tables
+// ---------------------------------------------------------------------------
+
+/// Seeds a snapshot at `seq 0` holding one 20 HP token and returns `(campaign_id, token_id)`.
+fn seed_wal_campaign(store: &SqlxPostgresStore) -> (Uuid, Uuid) {
+    let campaign_id = Uuid::new_v4();
+    let token_id = Uuid::new_v4();
+    let mut state = TableState::new(100.0, 5.0, Vec::new());
+    let mut token = TokenState::new_default(token_id, "Goblin", Point2D::new(0.0, 0.0));
+    token.hp = 20;
+    token.max_hp = 20;
+    state.data.tokens.insert(token_id, token);
+    store
+        .save_snapshot(TableStateSnapshot::capture(campaign_id, 0, 0, &state))
+        .unwrap();
+    (campaign_id, token_id)
+}
+
+fn pg_damage(token_id: Uuid, raw_damage: i32) -> TrameCommand {
+    TrameCommand::ApplyDamage {
+        token_id,
+        raw_damage,
+        affinity: DamageAffinity::Normal,
+        is_critical: false,
+        damage_type: None,
+    }
+}
+
+fn pg_wal_entry(campaign_id: Uuid, seq_id: u64, command: TrameCommand) -> WalEntry {
+    WalEntry {
+        seq_id,
+        campaign_id,
+        timestamp_ms: 0,
+        actor_user_id: Uuid::new_v4(),
+        role: CampaignRole::Gm,
+        command: command.into(),
+        events: Vec::new(),
+    }
+}
+
+async fn pg_hp(store: &Arc<SqlxPostgresStore>, campaign_id: Uuid, token_id: Uuid) -> i32 {
+    let room = RoomLeaseManager::new(store.clone(), 25, 900_000)
+        .get_or_wake_room(campaign_id)
+        .await
+        .unwrap();
+    room.get_table_snapshot().await.unwrap().1.data.tokens[&token_id].hp
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_poisoned_entry_quarantined() {
+    let Some((_app, store)) = harness().await else {
+        return;
+    };
+    let missing = Uuid::new_v4();
+    // (case_id, tail commands for seq 1.., expected hp, expected quarantined seqs)
+    type Tail = fn(Uuid, Uuid) -> Vec<TrameCommand>;
+    let cases: [(&str, Tail, i32, Vec<u64>); 2] = [
+        (
+            "pg_poisoned_middle_entry_and_tail",
+            |token, missing| {
+                vec![
+                    pg_damage(token, 2),
+                    pg_damage(missing, 3),
+                    pg_damage(token, 4),
+                ]
+            },
+            18,
+            vec![2, 3],
+        ),
+        (
+            "pg_legacy_undo_after_snapshot",
+            |_, _| vec![TrameCommand::UndoLastAction],
+            20,
+            vec![1],
+        ),
+    ];
+    for (case, tail, expected_hp, expected_seqs) in cases {
+        let (campaign_id, token_id) = seed_wal_campaign(&store);
+        let commands = tail(token_id, missing);
+        let last_seq = commands.len() as u64;
+        for (i, cmd) in commands.into_iter().enumerate() {
+            store
+                .append_entry(pg_wal_entry(campaign_id, i as u64 + 1, cmd))
+                .unwrap();
+        }
+
+        assert_eq!(
+            pg_hp(&store, campaign_id, token_id).await,
+            expected_hp,
+            "case {case}"
+        );
+        let quarantined = store.list_quarantined_entries(campaign_id).unwrap();
+        let seqs: Vec<u64> = quarantined.iter().map(|q| q.seq_id).collect();
+        assert_eq!(seqs, expected_seqs, "case {case}");
+        assert!(
+            quarantined
+                .iter()
+                .all(|q| q.quarantined_at_ms > 0 && !q.error.is_empty()),
+            "case {case}: {quarantined:?}"
+        );
+        let remaining: Vec<u64> = store
+            .load_entries_after(campaign_id, 0)
+            .unwrap()
+            .iter()
+            .map(|e| e.seq_id)
+            .collect();
+        assert!(
+            remaining.iter().all(|s| !expected_seqs.contains(s)),
+            "case {case}: {remaining:?}"
+        );
+        let snapshot = store.load_latest_snapshot(campaign_id).unwrap().unwrap();
+        assert_eq!(
+            snapshot.snapshot_seq_id, last_seq,
+            "case {case}: fresh snapshot"
+        );
+
+        // A second wake replays nothing quarantined and quarantines nothing new.
+        assert_eq!(
+            pg_hp(&store, campaign_id, token_id).await,
+            expected_hp,
+            "case {case}"
+        );
+        assert_eq!(
+            store.list_quarantined_entries(campaign_id).unwrap().len(),
+            expected_seqs.len(),
+            "case {case}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_undo_and_staging_survive_crash() {
+    let Some((_app, store)) = harness().await else {
+        return;
+    };
+    // (case_id, snapshot_interval)
+    for (case, interval) in [("pg_interval_1", 1u64), ("pg_interval_25", 25)] {
+        let (campaign_id, token_id) = seed_wal_campaign(&store);
+        let gm = CommandActor {
+            user_id: Uuid::new_v4(),
+            role: CampaignRole::Gm,
+        };
+        let room = RoomLeaseManager::new(store.clone(), interval, 900_000)
+            .get_or_wake_room(campaign_id)
+            .await
+            .unwrap();
+        room.dispatch_direct_command(gm.clone(), pg_damage(token_id, 5))
+            .await
+            .unwrap();
+        room.dispatch_direct_command(gm, TrameCommand::UndoLastAction)
+            .await
+            .unwrap();
+        let proposal = McpStagingProposal {
+            proposal_id: Uuid::new_v4(),
+            summary: "Goblin takes 6".to_string(),
+            commands: vec![pg_damage(token_id, 6)],
+        };
+        room.stage_mcp_proposal(proposal.clone()).await.unwrap();
+
+        let rebooted = RoomLeaseManager::new(store.clone(), interval, 900_000)
+            .get_or_wake_room(campaign_id)
+            .await
+            .unwrap();
+        let (_, state) = rebooted.get_table_snapshot().await.unwrap();
+        assert_eq!(state.data.tokens[&token_id].hp, 20, "case {case}");
+        assert_eq!(
+            state.data.mcp_staging_proposals.get(&proposal.proposal_id),
+            Some(&proposal),
+            "case {case}"
+        );
+        assert!(
+            store
+                .list_quarantined_entries(campaign_id)
+                .unwrap()
+                .is_empty(),
+            "case {case}"
+        );
     }
 }

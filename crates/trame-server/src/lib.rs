@@ -975,12 +975,15 @@ Hidden Text
         handle
             .send_envelope(
                 session_id,
-                ClientEnvelope::SubmitCommand(Box::new(TrameCommand::MoveToken {
-                    token_id,
-                    to_top_left: Point2D::new(200.0, 0.0),
-                    to_elevation_ft: None,
-                    gm_teleport: false,
-                })),
+                ClientEnvelope::SubmitCommand(Box::new(
+                    TrameCommand::MoveToken {
+                        token_id,
+                        to_top_left: Point2D::new(200.0, 0.0),
+                        to_elevation_ft: None,
+                        gm_teleport: false,
+                    }
+                    .into(),
+                )),
             )
             .await
             .unwrap();
@@ -1001,11 +1004,10 @@ Hidden Text
             other => panic!("Expected CommandAccepted, got {other:?}"),
         }
 
-        let (recovered_state, recovered_seq) =
-            recover_table_state(wal.as_ref(), campaign_id).unwrap();
-        assert_eq!(recovered_seq, 1);
+        let recovered = recover_table_state(wal.as_ref(), campaign_id).unwrap();
+        assert_eq!(recovered.seq_id, 1);
         assert_eq!(
-            recovered_state.data.tokens[&token_id].top_left,
+            recovered.state.data.tokens[&token_id].top_left,
             Point2D::new(200.0, 0.0)
         );
 

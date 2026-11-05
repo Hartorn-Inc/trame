@@ -18,16 +18,35 @@
 //!      - `TableState`, `seq_id`, and `SeededDiceRoller` are owned exclusively
 //!        by `TableRoomActor` (zero shared mutable locks on table state),
 //!        preventing race conditions between simultaneous player commands.
-//!   2. `Write-Ahead Log Before Fan-Out`:
+//!   2. `Write-Ahead Log Before Fan-Out, With Rollback (RT5)`:
 //!      - On every valid `ClientEnvelope::SubmitCommand`, `TableRoomActor`
-//!        increments `seq_id` and persists the `WalEntry` (plus periodic
-//!        write-behind `TableStateSnapshot` every `snapshot_interval` commands)
-//!        *before* broadcasting `ServerEnvelope::CommandAccepted` to clients.
+//!        clones `TableState`, applies the command, and persists the `WalEntry`
+//!        *before* broadcasting `ServerEnvelope::CommandAccepted`. If the
+//!        append fails, the clone and the previous `seq_id` are restored and the
+//!        command is rejected, so memory never runs ahead of storage.
+//!      - `UndoLastAction` and composite batches are persisted by a snapshot at
+//!        the new `seq_id` instead of a `WalEntry` (the undo ring is not stored,
+//!        so an undo can never be replayed; RT3). A failure there also rolls back.
+//!      - The periodic write-behind snapshot (every `snapshot_interval`
+//!        commands) is best effort: its failure is logged, and the command,
+//!        already durable in the WAL, still commits and broadcasts.
+//!      - MCP staging proposals are appended as `WalRecord::McpStaging` so they
+//!        survive a crash (RT3).
+//!      - Every failure path answers the sender with `CommandRejected` carrying
+//!        the client's `correlation_id` (RT10); storage errors are reported with
+//!        a generic reason.
 //!   3. `Double-Checked Room Wake-Up`:
 //!      - `RoomLeaseManager::get_or_wake_room` uses a fast read-lock path
 //!        followed by a double-checked write-lock rehydration from `WalStorage`
 //!        so concurrent connection bursts never spawn duplicate actors for the
 //!        same `campaign_id`.
+//!      - Actor supervision (RT9): a watcher removes the handle as soon as the
+//!        actor task ends (hibernation, panic), and a closed handle found in the
+//!        registry is replaced, so the next connection always gets a live actor.
+//!   3b. `Quarantine Notice (D4)`:
+//!      - When recovery quarantined WAL entries, the actor keeps their summaries
+//!        and unicasts `ServerEnvelope::WalEntriesQuarantined` to every GM that
+//!        connects during its lifetime. Players never receive it.
 //!   4. `Zero-Data-Loss Idle-Lease Hibernation`:
 //!      - `sweep_idle_rooms` evicts only rooms with `active_connections == 0`
 //!        whose idle duration (`current_time_ms - last_activity_ms`) meets or
@@ -60,10 +79,12 @@
 
 use crate::dice::{RollVisibility, SeededDiceRoller, project_roll_for_recipient};
 use crate::sync::{
-    ClientEnvelope, McpStagingProposal, ServerEnvelope, encode_server_envelope,
-    filter_events_for_recipient, project_state_for_recipient,
+    ClientEnvelope, McpStagingProposal, QuarantinedWalSummary, ServerEnvelope,
+    encode_server_envelope, filter_events_for_recipient, project_state_for_recipient,
 };
-use crate::wal::{TableStateSnapshot, WalEntry, WalError, WalStorage, recover_table_state};
+use crate::wal::{
+    TableStateSnapshot, WalEntry, WalError, WalRecord, WalStorage, recover_table_state,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -528,6 +549,35 @@ pub struct TableRoomActor {
     /// tokens keep the player's own result instead of being re-rolled.
     player_initiative_rolls: HashMap<Uuid, i32>,
     sinks: RoomSinks,
+    /// Entries quarantined when this actor recovered (empty on a clean replay); sent to GMs.
+    quarantine_notice: Vec<QuarantinedWalSummary>,
+}
+
+/// Client-facing reason for a failed envelope. Storage failures get a generic message so
+/// database details never reach the wire (SEC15).
+fn rejection_reason(err: &RoomError) -> String {
+    match err {
+        RoomError::CommandRejected(reason) => reason.clone(),
+        RoomError::Wal(_) => {
+            "storage unavailable: the action was not saved and has not been applied".to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
+/// Unicasts `CommandRejected` to one client.
+fn send_rejection(
+    tx: &mpsc::UnboundedSender<OutboundClientFrame>,
+    reason: String,
+    correlation_id: Option<String>,
+) {
+    let out = ServerEnvelope::CommandRejected {
+        reason,
+        correlation_id,
+    };
+    if let Ok(bytes) = encode_server_envelope(&out) {
+        let _ = tx.send(OutboundClientFrame::Binary(bytes));
+    }
 }
 
 impl TableRoomActor {
@@ -548,11 +598,12 @@ impl TableRoomActor {
         snapshot_interval: u64,
         sinks: RoomSinks,
     ) -> Result<TableRoomHandle, RoomError> {
-        let (state, seq_id) = recover_table_state(wal.as_ref(), campaign_id)?;
+        let recovered = recover_table_state(wal.as_ref(), campaign_id)?;
+        let seq_id = recovered.seq_id;
         let (tx, rx) = mpsc::channel(256);
         let actor = Self {
             campaign_id,
-            state,
+            state: recovered.state,
             seq_id,
             snapshot_interval: snapshot_interval.max(1),
             last_snapshot_seq: seq_id,
@@ -563,6 +614,11 @@ impl TableRoomActor {
             rx,
             player_initiative_rolls: HashMap::new(),
             sinks,
+            quarantine_notice: recovered
+                .quarantined
+                .iter()
+                .map(QuarantinedWalSummary::from)
+                .collect(),
         };
         tokio::spawn(actor.run());
         Ok(TableRoomHandle { campaign_id, tx })
@@ -585,6 +641,14 @@ impl TableRoomActor {
                     };
                     if let Ok(bytes) = encode_server_envelope(&snapshot_env) {
                         let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
+                    }
+                    if client.role == CampaignRole::Gm && !self.quarantine_notice.is_empty() {
+                        let notice = ServerEnvelope::WalEntriesQuarantined {
+                            entries: self.quarantine_notice.clone(),
+                        };
+                        if let Ok(bytes) = encode_server_envelope(&notice) {
+                            let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
+                        }
                     }
                     self.clients.insert(client.session_id, client);
                     let _ = reply.send(Ok(()));
@@ -661,15 +725,12 @@ impl TableRoomActor {
                     let updated_tokens =
                         self.apply_actor_tactical_sync(actor_id, version, data, tactical_sync);
                     // Tactical sync bypasses the WAL command stream, so persist it as a
-                    // snapshot or a restart would resurrect the stale token fields.
-                    let res = if updated_tokens > 0 {
-                        self.flush_snapshot()
-                            .map(|()| updated_tokens)
-                            .map_err(RoomError::Wal)
-                    } else {
-                        Ok(0)
-                    };
-                    let _ = reply.send(res);
+                    // snapshot or a restart would resurrect the stale token fields. The
+                    // sheet itself is already stored, so a failed snapshot is only logged.
+                    if updated_tokens > 0 {
+                        self.flush_snapshot_best_effort();
+                    }
+                    let _ = reply.send(Ok(updated_tokens));
                 }
                 RoomActorMessage::DispatchBatch {
                     actor,
@@ -697,18 +758,27 @@ impl TableRoomActor {
                 }
                 RoomActorMessage::StageMcpProposal { proposal, reply } => {
                     self.last_activity_ms = now_ms();
+                    let entry = WalEntry {
+                        seq_id: self.seq_id + 1,
+                        campaign_id: self.campaign_id,
+                        timestamp_ms: self.last_activity_ms,
+                        actor_user_id: Uuid::nil(),
+                        role: CampaignRole::Gm,
+                        command: WalRecord::McpStaging {
+                            mcp_staging_proposal: proposal.clone(),
+                        },
+                        events: Vec::new(),
+                    };
+                    if let Err(err) = self.wal.append_entry(entry) {
+                        let _ = reply.send(Err(RoomError::Wal(err)));
+                        continue;
+                    }
+                    self.seq_id += 1;
                     self.state
                         .data
                         .mcp_staging_proposals
                         .insert(proposal.proposal_id, proposal.clone());
-                    if let Err(err) = self.flush_snapshot() {
-                        self.state
-                            .data
-                            .mcp_staging_proposals
-                            .remove(&proposal.proposal_id);
-                        let _ = reply.send(Err(RoomError::Wal(err)));
-                        continue;
-                    }
+                    self.maybe_periodic_snapshot();
                     let out = ServerEnvelope::McpStagingProposed {
                         proposal: proposal.clone(),
                     };
@@ -741,25 +811,25 @@ impl TableRoomActor {
         let sender_tx = sender.tx.clone();
 
         match envelope {
-            ClientEnvelope::SubmitCommand(cmd) => {
+            ClientEnvelope::SubmitCommand(submission) => {
                 self.last_activity_ms = now_ms();
                 let actor = CommandActor {
                     user_id: actor_user_id,
                     role: actor_role,
                 };
-                if let Err(RoomError::CommandRejected(reason)) =
-                    self.execute_and_broadcast_command(actor, *cmd)
-                {
-                    let out = ServerEnvelope::CommandRejected { reason };
-                    if let Ok(bytes) = encode_server_envelope(&out) {
-                        let _ = sender_tx.send(OutboundClientFrame::Binary(bytes));
-                    }
+                let crate::sync::CommandSubmission {
+                    command,
+                    correlation_id,
+                } = *submission;
+                if let Err(err) = self.execute_and_broadcast_command(actor, command) {
+                    send_rejection(&sender_tx, rejection_reason(&err), correlation_id);
                 }
             }
             ClientEnvelope::RollDice {
                 expression,
                 visibility,
                 reason,
+                correlation_id,
             } => {
                 self.last_activity_ms = now_ms();
                 let is_player_initiative = actor_role != CampaignRole::Gm
@@ -779,14 +849,7 @@ impl TableRoomActor {
                         self.fan_out_roll(&outcome);
                         self.note_timeline(roll_timeline_note(self.campaign_id, &outcome));
                     }
-                    Err(err) => {
-                        let out = ServerEnvelope::CommandRejected {
-                            reason: err.to_string(),
-                        };
-                        if let Ok(bytes) = encode_server_envelope(&out) {
-                            let _ = sender_tx.send(OutboundClientFrame::Binary(bytes));
-                        }
-                    }
+                    Err(err) => send_rejection(&sender_tx, err.to_string(), correlation_id),
                 }
             }
             ClientEnvelope::PointerPing { pos, color_hex } => {
@@ -826,33 +889,51 @@ impl TableRoomActor {
     ) -> Result<(u64, Vec<TrameEvent>), RoomError> {
         self.authorize_command(&actor, &cmd)
             .map_err(RoomError::CommandRejected)?;
+        let checkpoint = self.state.clone();
+        let initiative_checkpoint = self.player_initiative_rolls.clone();
         let resolved_cmd = self.resolve_authoritative_initiative(&actor, cmd);
         let prior_prompts = self.state.data.active_reaction_prompts.clone();
         let prior_vitals = self.linked_vitals();
-        let events = self
-            .state
-            .apply_command(&actor, resolved_cmd.clone())
-            .map_err(|err| RoomError::CommandRejected(err.to_string()))?;
-        self.seq_id += 1;
-        let entry = WalEntry {
-            seq_id: self.seq_id,
-            campaign_id: self.campaign_id,
-            timestamp_ms: self.last_activity_ms,
-            actor_user_id: actor.user_id,
-            role: actor.role,
-            command: resolved_cmd,
-            events: events.clone(),
+        let is_undo = matches!(resolved_cmd, TrameCommand::UndoLastAction);
+        let persisted = match self.state.apply_command(&actor, resolved_cmd.clone()) {
+            Err(err) => Err(RoomError::CommandRejected(err.to_string())),
+            Ok(events) if is_undo => self.persist_snapshot_at(self.seq_id + 1).map(|()| events),
+            Ok(events) => self
+                .wal
+                .append_entry(WalEntry {
+                    seq_id: self.seq_id + 1,
+                    campaign_id: self.campaign_id,
+                    timestamp_ms: self.last_activity_ms,
+                    actor_user_id: actor.user_id,
+                    role: actor.role,
+                    command: resolved_cmd.into(),
+                    events: events.clone(),
+                })
+                .map(|()| events)
+                .map_err(RoomError::Wal),
         };
-        self.wal.append_entry(entry)?;
-        if self.seq_id - self.last_snapshot_seq >= self.snapshot_interval {
-            self.flush_snapshot()?;
+        let events = match persisted {
+            Ok(events) => events,
+            Err(err) => {
+                self.state = checkpoint;
+                self.player_initiative_rolls = initiative_checkpoint;
+                if let RoomError::Wal(wal_err) = &err {
+                    tracing::error!(campaign_id = %self.campaign_id, error = %wal_err, "WAL append failed; command rolled back");
+                }
+                return Err(err);
+            }
+        };
+        self.seq_id += 1;
+        if !is_undo {
+            self.maybe_periodic_snapshot();
         }
         self.after_accepted(&events, &prior_prompts, &prior_vitals);
         Ok((self.seq_id, events))
     }
 
     /// Applies an atomic batch (`TableState::apply_batch`). Durability comes from a snapshot at
-    /// the bumped `seq_id` instead of a `WalEntry`, because the WAL replays single commands.
+    /// the bumped `seq_id` instead of a `WalEntry`, because the WAL replays single commands; if
+    /// that snapshot fails, the batch is rolled back and rejected.
     fn execute_and_broadcast_batch(
         &mut self,
         actor: CommandActor,
@@ -863,16 +944,58 @@ impl TableRoomActor {
             self.authorize_command(&actor, cmd)
                 .map_err(RoomError::CommandRejected)?;
         }
+        let checkpoint = self.state.clone();
         let prior_prompts = self.state.data.active_reaction_prompts.clone();
         let prior_vitals = self.linked_vitals();
-        let events = self
-            .state
-            .apply_batch(&actor, commands, description)
-            .map_err(|err| RoomError::CommandRejected(err.to_string()))?;
+        let persisted = match self.state.apply_batch(&actor, commands, description) {
+            Err(err) => Err(RoomError::CommandRejected(err.to_string())),
+            Ok(events) => self.persist_snapshot_at(self.seq_id + 1).map(|()| events),
+        };
+        let events = match persisted {
+            Ok(events) => events,
+            Err(err) => {
+                self.state = checkpoint;
+                return Err(err);
+            }
+        };
         self.seq_id += 1;
-        self.flush_snapshot()?;
         self.after_accepted(&events, &prior_prompts, &prior_vitals);
         Ok((self.seq_id, events))
+    }
+
+    /// Writes the current state as the snapshot for `seq_id` (the durability step of undo and
+    /// batches). Does not advance `self.seq_id`; the caller does once this succeeds.
+    fn persist_snapshot_at(&mut self, seq_id: u64) -> Result<(), RoomError> {
+        let snap = TableStateSnapshot::capture(
+            self.campaign_id,
+            seq_id,
+            self.last_activity_ms,
+            &self.state,
+        );
+        match self.wal.save_snapshot(snap) {
+            Ok(()) => {
+                self.last_snapshot_seq = seq_id;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!(campaign_id = %self.campaign_id, seq_id, error = %err, "durability snapshot failed; command rolled back");
+                Err(RoomError::Wal(err))
+            }
+        }
+    }
+
+    /// Write-behind snapshot every `snapshot_interval` commands. Best effort (RT5): the
+    /// command is already durable in the WAL.
+    fn maybe_periodic_snapshot(&mut self) {
+        if self.seq_id - self.last_snapshot_seq >= self.snapshot_interval {
+            self.flush_snapshot_best_effort();
+        }
+    }
+
+    fn flush_snapshot_best_effort(&mut self) {
+        if let Err(err) = self.flush_snapshot() {
+            tracing::warn!(campaign_id = %self.campaign_id, seq_id = self.seq_id, error = %err, "write-behind snapshot failed; WAL still holds the commands");
+        }
     }
 
     /// Post-commit fan-out shared by single commands and batches: per-recipient
@@ -1246,14 +1369,12 @@ impl TableRoomActor {
     }
 
     fn flush_snapshot(&mut self) -> Result<(), WalError> {
-        let snap = TableStateSnapshot {
-            campaign_id: self.campaign_id,
-            snapshot_seq_id: self.seq_id,
-            captured_at_ms: self.last_activity_ms,
-            cell_size_px: self.state.cell_size_px,
-            feet_per_cell: self.state.feet_per_cell,
-            data: self.state.data.clone(),
-        };
+        let snap = TableStateSnapshot::capture(
+            self.campaign_id,
+            self.seq_id,
+            self.last_activity_ms,
+            &self.state,
+        );
         self.wal.save_snapshot(snap)?;
         self.last_snapshot_seq = self.seq_id;
         Ok(())
@@ -1262,7 +1383,7 @@ impl TableRoomActor {
 
 /// Manages active `TableRoomActor` instances and enforces the `Idle-Lease` and scale-to-zero hibernation policy.
 pub struct RoomLeaseManager {
-    rooms: RwLock<HashMap<Uuid, TableRoomHandle>>,
+    rooms: Arc<RwLock<HashMap<Uuid, TableRoomHandle>>>,
     wal: Arc<dyn WalStorage>,
     snapshot_interval: u64,
     idle_timeout_ms: u64,
@@ -1277,7 +1398,7 @@ impl RoomLeaseManager {
     /// `snapshot_interval` commands and hibernating zero-connection rooms after `idle_timeout_ms` (`ms`).
     pub fn new(wal: Arc<dyn WalStorage>, snapshot_interval: u64, idle_timeout_ms: u64) -> Self {
         Self {
-            rooms: RwLock::new(HashMap::new()),
+            rooms: Arc::new(RwLock::new(HashMap::new())),
             wal,
             snapshot_interval,
             idle_timeout_ms,
@@ -1318,13 +1439,17 @@ impl RoomLeaseManager {
 
         {
             let guard = self.rooms.read().await;
-            if let Some(handle) = guard.get(&campaign_id) {
+            if let Some(handle) = guard.get(&campaign_id)
+                && !handle.tx.is_closed()
+            {
                 return Ok(handle.clone());
             }
         }
 
         let mut guard = self.rooms.write().await;
-        if let Some(handle) = guard.get(&campaign_id) {
+        if let Some(handle) = guard.get(&campaign_id)
+            && !handle.tx.is_closed()
+        {
             return Ok(handle.clone());
         }
 
@@ -1340,7 +1465,25 @@ impl RoomLeaseManager {
             sinks,
         )?;
         guard.insert(campaign_id, handle.clone());
+        self.supervise(handle.clone());
         Ok(handle)
+    }
+
+    /// Removes `handle` from the registry once its actor task ends (RT9). A newer handle
+    /// registered for the same campaign in the meantime is left alone.
+    fn supervise(&self, handle: TableRoomHandle) {
+        let rooms = Arc::clone(&self.rooms);
+        tokio::spawn(async move {
+            handle.tx.closed().await;
+            let mut guard = rooms.write().await;
+            if guard
+                .get(&handle.campaign_id)
+                .is_some_and(|current| current.tx.same_channel(&handle.tx))
+            {
+                guard.remove(&handle.campaign_id);
+                tracing::info!(campaign_id = %handle.campaign_id, "room actor ended; handle removed");
+            }
+        });
     }
 
     /// Returns the active room handle for `campaign_id` if currently awake in memory without waking it.

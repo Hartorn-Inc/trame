@@ -69,7 +69,9 @@ use crate::auth::session::{
 use crate::auth::totp::TotpService;
 use crate::config::ServerConfig;
 pub use crate::maps::{InMemoryMapStorage, get_campaign_maps_handler, put_campaign_maps_handler};
-use crate::room::{ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomLeaseManager};
+use crate::room::{
+    ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomError, RoomLeaseManager,
+};
 use crate::security::security_headers_middleware;
 use crate::storage::SqlxPostgresStore;
 use crate::storage::blob::{
@@ -1279,13 +1281,13 @@ async fn resolve_client_envelope(
     campaign_id: Uuid,
     envelope: ClientEnvelope,
 ) -> ClientEnvelope {
-    let ClientEnvelope::SubmitCommand(cmd) = envelope else {
+    let ClientEnvelope::SubmitCommand(mut submission) = envelope else {
         return envelope;
     };
-    let TrameCommand::ActivateScene { scene_id, .. } = *cmd else {
-        return ClientEnvelope::SubmitCommand(cmd);
+    let TrameCommand::ActivateScene { scene_id, .. } = submission.command else {
+        return ClientEnvelope::SubmitCommand(submission);
     };
-    let resolved = crate::maps::resolve_scene_command(
+    submission.command = crate::maps::resolve_scene_command(
         state,
         campaign_id,
         TrameCommand::ActivateScene {
@@ -1298,7 +1300,18 @@ async fn resolve_client_envelope(
         scene_id,
         scene: None,
     });
-    ClientEnvelope::SubmitCommand(Box::new(resolved))
+    ClientEnvelope::SubmitCommand(submission)
+}
+
+/// Answers an undecodable frame with `CommandRejected` (no correlation id can be read, RT10).
+fn reject_frame(tx: &mpsc::UnboundedSender<OutboundClientFrame>, reason: &str) {
+    let out = crate::sync::ServerEnvelope::CommandRejected {
+        reason: reason.to_string(),
+        correlation_id: None,
+    };
+    if let Ok(bytes) = crate::sync::encode_server_envelope(&out) {
+        let _ = tx.send(OutboundClientFrame::Binary(bytes));
+    }
 }
 
 async fn handle_ws_connection(
@@ -1314,6 +1327,7 @@ async fn handle_ws_connection(
 
     let session_id = Uuid::new_v4();
     let (tx, mut rx) = mpsc::unbounded_channel::<OutboundClientFrame>();
+    let reject_tx = tx.clone();
     let client = ConnectedClient {
         session_id,
         user_id,
@@ -1348,11 +1362,18 @@ async fn handle_ws_connection(
     });
 
     while let Some(Ok(msg)) = ws_receiver.next().await {
-        if let Message::Binary(bin) = msg
-            && let Ok(envelope) = decode_client_envelope(&bin)
-        {
-            let envelope = resolve_client_envelope(&state, campaign_id, envelope).await;
-            let _ = room_handle.send_envelope(session_id, envelope).await;
+        let Message::Binary(bin) = msg else {
+            continue;
+        };
+        let Ok(envelope) = decode_client_envelope(&bin) else {
+            reject_frame(&reject_tx, "malformed frame: not a valid client envelope");
+            continue;
+        };
+        let envelope = resolve_client_envelope(&state, campaign_id, envelope).await;
+        if let Err(RoomError::ActorClosed) = room_handle.send_envelope(session_id, envelope).await {
+            // The actor died (RT9): closing the socket makes the client reconnect, which
+            // wakes a fresh actor from storage.
+            break;
         }
     }
 
