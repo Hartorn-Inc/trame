@@ -1305,26 +1305,49 @@ fn small_png() -> Vec<u8> {
 
 #[tokio::test]
 async fn sec14_upload_rejects_pixel_area_before_decoding() {
-    // (case_id, body, expected status, expected message fragment)
+    // (case_id, uploader role, body, expected status, expected message fragment)
     let cases = [
-        ("small_image_accepted", small_png(), StatusCode::CREATED, ""),
+        ("small_image_accepted", "GM", small_png(), StatusCode::CREATED, ""),
         (
             "area_over_cap_with_sides_in_range",
+            "GM",
             png_header_only(8193, 8193),
             StatusCode::BAD_REQUEST,
             "pixel area",
         ),
         (
             "side_over_limit",
+            "GM",
             png_header_only(16_385, 1),
             StatusCode::BAD_REQUEST,
             "16384",
         ),
+        (
+            "player_small_image_accepted",
+            "PLAYER",
+            small_png(),
+            StatusCode::CREATED,
+            "",
+        ),
+        (
+            "player_over_16_mpx_refused_before_decode",
+            "PLAYER",
+            png_header_only(4097, 4097),
+            StatusCode::BAD_REQUEST,
+            "16777216 pixel area",
+        ),
+        (
+            "gm_same_canvas_passes_the_area_guard",
+            "GM",
+            png_header_only(4097, 4097),
+            StatusCode::BAD_REQUEST,
+            "decode",
+        ),
     ];
-    for (case, body, expected, fragment) in cases {
+    for (case, role, body, expected, fragment) in cases {
         let h = Harness::new();
         let campaign_id = Uuid::new_v4();
-        let cookie = h.member(campaign_id, Some("GM")).await;
+        let cookie = h.member(campaign_id, Some(role)).await;
         let (status, resp) = send(
             &h.app(),
             request(
@@ -1341,6 +1364,58 @@ async fn sec14_upload_rejects_pixel_area_before_decoding() {
             "case {case}: {}",
             text(&resp)
         );
+    }
+}
+
+#[tokio::test]
+async fn sec14_uploads_are_rate_limited_per_account() {
+    // (case_id, uploads per window, uploads sent, statuses expected in order)
+    let cases = [
+        (
+            "third_upload_throttled",
+            2,
+            3,
+            vec![StatusCode::CREATED, StatusCode::CREATED, StatusCode::TOO_MANY_REQUESTS],
+        ),
+        (
+            "failed_decodes_count_too",
+            1,
+            2,
+            vec![StatusCode::BAD_REQUEST, StatusCode::TOO_MANY_REQUESTS],
+        ),
+    ];
+    for (case, allowed, sent, want) in cases {
+        let mut limiter = AuthRateLimiter::default();
+        limiter.uploads_per_account = RateLimit {
+            max_attempts: allowed,
+            window: Duration::from_secs(600),
+        };
+        let h = Harness::with(SecurityPolicy {
+            rate_limiter: limiter,
+            ..SecurityPolicy::default()
+        });
+        let campaign_id = Uuid::new_v4();
+        let cookie = h.member(campaign_id, Some("PLAYER")).await;
+        let body = if want[0] == StatusCode::CREATED {
+            small_png()
+        } else {
+            png_header_only(4097, 4097)
+        };
+        let mut statuses = Vec::new();
+        for _ in 0..sent {
+            let (status, _) = send(
+                &h.app(),
+                request(
+                    "POST",
+                    &format!("/api/v1/campaigns/{campaign_id}/assets"),
+                    Some(&cookie),
+                    Body::from(body.clone()),
+                ),
+            )
+            .await;
+            statuses.push(status);
+        }
+        assert_eq!(statuses, want, "case {case}");
     }
 }
 

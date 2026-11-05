@@ -37,8 +37,20 @@
 //!      - Uploads are capped at `MAX_ASSET_UPLOAD_BYTES`, checked for PNG/JPEG/WebP
 //!        magic bytes and header dimensions before decoding, and re-encoded as WebP
 //!        under a content-addressed key. Downloads require a valid HMAC signature.
-//!      - Uploads and map imports first check the per-campaign storage quota
-//!        (`413 STORAGE_QUOTA_EXCEEDED`), then decode/encode on the blocking pool (SEC14).
+//!      - Uploads and map imports first take one slot of the caller's upload quota
+//!        (`AuthRateLimiter::uploads_per_account`, `429 RATE_LIMITED`), then check the
+//!        per-campaign storage quota (`413 STORAGE_QUOTA_EXCEEDED`), then decode/encode
+//!        on the blocking pool behind the global decode gate (SEC14). Player uploads
+//!        are capped at `MAX_PLAYER_IMAGE_PIXEL_AREA`, GM uploads at
+//!        `MAX_IMAGE_PIXEL_AREA`.
+//!   7. `Sheet Values Feeding Server Rolls`:
+//!      - Actor create/update rejects any `abilities.<ability>.score` outside
+//!        `ABILITY_SCORES` (`400 INVALID_ABILITY_SCORE`), and the tactical sync
+//!        clamps the Dexterity score again before deriving the initiative modifier,
+//!        so no stored sheet can hand a player a +495 initiative bonus.
+//!      - `POST /dice/roll` refuses non-GM reasons starting with "initiative"
+//!        (`400 INITIATIVE_ROLL_REQUIRES_ROOM`): player initiative is rolled by the
+//!        room from the token's server-side bonus, never from a client expression.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -55,8 +67,8 @@ use crate::archive::importer::OWNER_USER_ID_FIELD;
 use crate::dice::{RollVisibility, SeededDiceRoller, project_roll_for_recipient};
 use crate::http::{AppState, error_response, resolve_authenticated_user, resolve_campaign_role};
 use crate::importers::uvtt::{
-    ImportedMapResult, MAX_PAYLOAD_SIZE_BYTES, UvttImportError, import_uvtt_map,
-    transcode_upload_to_webp_blocking,
+    ImportedMapResult, MAX_IMAGE_PIXEL_AREA, MAX_PAYLOAD_SIZE_BYTES, MAX_PLAYER_IMAGE_PIXEL_AREA,
+    UvttImportError, import_uvtt_map, transcode_upload_to_webp_blocking,
 };
 use crate::maps::{
     CampaignMapScene, LightSource, SceneSaveError, load_campaign_scene_set, save_campaign_scenes,
@@ -1439,11 +1451,20 @@ pub async fn upload_asset_handler(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response {
-    match caller_role(&state, &headers, campaign_id).await {
+    let max_pixel_area = match caller_role(&state, &headers, campaign_id).await {
         Ok((_, CampaignRole::Spectator)) => return forbidden("spectators cannot upload assets"),
-        Ok(_) => {}
+        Ok((user_id, role)) => {
+            if let Err(wait) = state.auth_state.security.rate_limiter.take_upload(user_id) {
+                return crate::security::too_many_requests(wait);
+            }
+            if role == CampaignRole::Gm {
+                MAX_IMAGE_PIXEL_AREA
+            } else {
+                MAX_PLAYER_IMAGE_PIXEL_AREA
+            }
+        }
         Err(resp) => return *resp,
-    }
+    };
     let Ok(bytes) = axum::body::to_bytes(request.into_body(), MAX_ASSET_UPLOAD_BYTES).await else {
         return error_response(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -1454,7 +1475,7 @@ pub async fn upload_asset_handler(
     if let Err(resp) = ensure_asset_quota(&state, campaign_id, bytes.len()).await {
         return *resp;
     }
-    let webp = match transcode_upload_to_webp_blocking(bytes).await {
+    let webp = match transcode_upload_to_webp_blocking(bytes, max_pixel_area).await {
         Ok(w) => w,
         Err(err) => return bad_request("INVALID_IMAGE", &err.to_string()),
     };
@@ -1594,7 +1615,11 @@ pub async fn import_map_handler(
     request: Request<Body>,
 ) -> Response {
     match caller_role(&state, &headers, campaign_id).await {
-        Ok((_, CampaignRole::Gm)) => {}
+        Ok((user_id, CampaignRole::Gm)) => {
+            if let Err(wait) = state.auth_state.security.rate_limiter.take_upload(user_id) {
+                return crate::security::too_many_requests(wait);
+            }
+        }
         Ok(_) => return forbidden("only the GM may import maps"),
         Err(resp) => return *resp,
     }
