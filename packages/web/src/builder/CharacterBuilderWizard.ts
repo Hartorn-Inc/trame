@@ -265,12 +265,12 @@ export class CharacterBuilderWizard {
     actor.attributes.casterType = progression.casterType;
     if (progression.spellcastingAbility) actor.attributes.spellcastingAbility = progression.spellcastingAbility;
     actor.features = [...species.traits];
-    const finalized: Dnd5eActorData & { items?: SheetInventoryItem[] } = applyBackground(
+    const finalized: Dnd5eActorData = applyBackground(
       actor,
       draft.backgroundId!,
       draft.backgroundChoice!,
     );
-    finalized.items = draft.equipmentIds.map((name, i) => ({
+    finalized.items = draft.equipmentIds.map((name, i): SheetInventoryItem => ({
       id: `item-${i + 1}`,
       name,
       quantity: 1,

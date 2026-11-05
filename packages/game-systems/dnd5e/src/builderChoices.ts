@@ -1,16 +1,19 @@
 /**
  * ============================================================================
- * FEAT CHOICE DESCRIPTORS FOR THE CHARACTER BUILDER (builderChoices.ts)
+ * CHARACTER BUILDER CHOICE DESCRIPTORS (builderChoices.ts)
  * ============================================================================
  *
  * PURPOSE:
  * --------
- * Turns the picks an SRD 5.2.1 feat requires (Magic Initiate: spell list,
- * spellcasting ability, two cantrips and one level-1 spell; Skilled: three
- * skills or tools) into `BuilderChoice` descriptors the builder UI renders
- * without knowing any rule, then validates and applies the selections. Without
- * it, an actor could hold Magic Initiate with no spells or Skilled with no
- * proficiencies, which is an illegal build (GS10).
+ * Turns the picks SRD 5.2.1 requires into `BuilderChoice` descriptors the
+ * builder UI renders without knowing any rule, then validates and applies
+ * the selections:
+ * - Feats: Magic Initiate (spell list, spellcasting ability, two cantrips,
+ *   one level-1 spell) and Skilled (three skills or tools). Without them an
+ *   actor could hold Magic Initiate with no spells (GS10).
+ * - Classes at level 1: skills, tools, starting equipment, cantrips and
+ *   prepared (or spellbook) spells. Without them a level-1 caster has no
+ *   spells or slots and nobody has class skills or gear (GS5, GS12, UA13).
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -------------------------------
@@ -38,11 +41,29 @@
  *     ├── 3. Skilled: grant skill proficiency / record tools.
  *     ├── 4. Record a `FeatChoiceRecord` (Magic Initiate spells live there).
  *     └── 5. Recompute derived statistics.
+ *
+ *   `applyClassChoices(actor, classId, selections, options?)`
+ *     ├── 1. Build `getClassChoices` for the actor and validate the selections.
+ *     ├── 2. Record class, saves, hit die, caster type, spellcasting ability.
+ *     ├── 3. Grant skills; store armor/weapon/tool proficiencies.
+ *     ├── 4. Add the starting equipment option (weapons and armor equipped).
+ *     ├── 5. Learn cantrips and spells; fill slots for the actor's level.
+ *     └── 6. Recompute derived statistics.
  * ============================================================================
  */
 
+import {
+  getActorProficiencies,
+  getCantripsKnown,
+  getClassStartingRules,
+  getPreparedSpellCount,
+  type ClassStartingRules,
+  type StartingEquipmentOption,
+} from "./classRules.ts";
 import { CompendiumResolver } from "./compendium.ts";
+import { parseEquipmentLine } from "./derivations.ts";
 import { computeDnd5eSheetDerived, DND5E_SKILLS } from "./manifest.ts";
+import { getClassProgression, reconcileSlots } from "./progression.ts";
 import {
   FEAT_CHOICE_SPECS,
   MAGIC_INITIATE_ABILITIES,
@@ -56,6 +77,7 @@ import {
 } from "./origins.ts";
 import type {
   AbilityId,
+  ActorItem,
   BuilderChoice,
   BuilderChoiceOption,
   BuilderSelections,
@@ -213,13 +235,172 @@ export function applyFeatChoices(
   };
   for (const pick of record.selections.proficiencies ?? []) {
     if (pick.startsWith(TOOL_OPTION_PREFIX)) {
-      clone.proficiencies ??= { armor: [], weapons: [], tools: [] };
+      clone.proficiencies ??= getActorProficiencies(clone);
       clone.proficiencies.tools.push(pick.slice(TOOL_OPTION_PREFIX.length));
     } else {
       clone.skills[pick as SkillId].proficiencyRank = 1;
     }
   }
   clone.featChoices = [...(clone.featChoices ?? []), record];
+  clone.derived = computeDnd5eSheetDerived(clone);
+  return clone;
+}
+
+// ============================================================================
+// CLASS CHOICES (level-1 creation)
+// ============================================================================
+
+/** Options controlling `getClassChoices`. */
+export interface ClassChoiceOptions {
+  /** Actor being built; skills it already has are not offered. */
+  actor?: Dnd5eActorData;
+  /** Compendium used for spell options (defaults to `SYSTEM_SRD`). */
+  resolver?: CompendiumResolver;
+}
+
+function requireClassRules(classId: string): ClassStartingRules {
+  const rules = getClassStartingRules(classId);
+  if (!rules) throw new Error(`Unknown class: ${classId}`);
+  return rules;
+}
+
+function equipmentLabel(option: StartingEquipmentOption): string {
+  return [...option.items, ...(option.gp > 0 ? [`${option.gp} GP`] : [])].join(", ");
+}
+
+/**
+ * Level-1 builder choices of `classId`, in step order:
+ * - `"skills"` (`"skill"`): the class skill picks.
+ * - `"tools"` (`"tool"`): Bard instruments / Monk tool, when the class has one.
+ * - `"equipment"` (`"equipment_option"`): one starting equipment option id (`"A"`, `"B"`, ...).
+ * - `"cantrips"` (`"spell"`): class cantrips known at level 1, when any.
+ * - `"spells"` (`"spell"`): level-1 class spells prepared (Wizard: its 6
+ *   spellbook spells), when any. Spell counts are capped by the spells the
+ *   compendium offers.
+ * Throws on unknown classes.
+ */
+export function getClassChoices(classId: string, options: ClassChoiceOptions = {}): BuilderChoice[] {
+  const rules = requireClassRules(classId);
+  const list = classId.replace(/^srd:class:/, "").toLowerCase();
+  const owned = (skill: SkillId) => (options.actor?.skills[skill]?.proficiencyRank ?? 0) > 0;
+  const skillLabel = (skill: SkillId) => DND5E_SKILLS.find((s) => s.id === skill)?.label ?? skill;
+  const choices: BuilderChoice[] = [
+    {
+      id: "skills",
+      kind: "skill",
+      label: "Skill proficiencies",
+      count: rules.skillChoices.count,
+      options: rules.skillChoices.options.filter((skill) => !owned(skill)).map((skill) => ({ id: skill, label: skillLabel(skill) })),
+    },
+  ];
+  if (rules.toolChoices) {
+    choices.push({
+      id: "tools",
+      kind: "tool",
+      label: "Tool proficiencies",
+      count: rules.toolChoices.count,
+      options: rules.toolChoices.options.map((tool) => ({ id: tool, label: tool })),
+    });
+  }
+  choices.push({
+    id: "equipment",
+    kind: "equipment_option",
+    label: "Starting equipment",
+    count: 1,
+    options: rules.equipment.map((option) => ({ id: option.id, label: equipmentLabel(option) })),
+  });
+  const cantrips = getCantripsKnown(classId, 1);
+  if (cantrips > 0) {
+    const cantripOptions = spellOptions(list, 0, options.resolver);
+    choices.push({ id: "cantrips", kind: "spell", label: "Cantrips", count: Math.min(cantrips, cantripOptions.length), options: cantripOptions });
+  }
+  const spells = rules.spellbookAtLevel1 ?? getPreparedSpellCount(classId, 1);
+  if (spells > 0) {
+    const levelOneOptions = spellOptions(list, 1, options.resolver);
+    choices.push({
+      id: "spells",
+      kind: "spell",
+      label: rules.spellbookAtLevel1 ? "Spellbook spells" : "Prepared spells",
+      count: Math.min(spells, levelOneOptions.length),
+      options: levelOneOptions,
+    });
+  }
+  return choices;
+}
+
+/**
+ * Sheet items of starting equipment option `optionId` of `classId`: SRD
+ * names resolved to compendium items (quantity from a leading count),
+ * weapons, armor and shields equipped, plus a `"<n> GP"` entry. Ids are
+ * `item-<n>` numbered after `firstIndex`.
+ */
+export function startingEquipmentItems(classId: string, optionId: string, firstIndex = 0): ActorItem[] {
+  const option = requireClassRules(classId).equipment.find((candidate) => candidate.id === optionId);
+  if (!option) throw new Error(`Unknown equipment option: ${optionId}`);
+  const lines = [...option.items, ...(option.gp > 0 ? [`${option.gp} GP`] : [])];
+  return lines.map((line, i) => {
+    const { quantity, entry } = parseEquipmentLine(line);
+    const itemType = entry?.data.itemType;
+    return {
+      id: `item-${firstIndex + i + 1}`,
+      name: entry ? entry.name : line,
+      quantity: entry ? quantity : 1,
+      ...(entry ? { compendiumId: entry.id } : {}),
+      ...(itemType === "weapon" || itemType === "armor" ? { equipped: true } : {}),
+      isContainer: entry?.data.isContainer === true,
+      containerId: null,
+    };
+  });
+}
+
+/**
+ * Validates `selections` against `getClassChoices(classId, { actor })` and
+ * applies them to a copy of `actor`: records the class (ids, saving throws,
+ * hit die, caster type, spellcasting ability), grants the chosen skills,
+ * stores the class armor/weapon/tool proficiencies plus chosen tools, adds the
+ * chosen starting equipment (weapons and armor equipped), learns the chosen
+ * cantrips and spells, fills the spell slots of the actor's level and
+ * recomputes derived statistics. Hit points are left to the caller (species
+ * bonus, rolled or fixed).
+ */
+export function applyClassChoices(
+  actor: Dnd5eActorData,
+  classId: string,
+  selections: BuilderSelections,
+  options: Omit<ClassChoiceOptions, "actor"> = {}
+): Dnd5eActorData {
+  const rules = requireClassRules(classId);
+  validateSelections(getClassChoices(classId, { ...options, actor }), selections);
+  const progression = getClassProgression(classId)!;
+  const key = classId.replace(/^srd:class:/, "").toLowerCase();
+
+  const clone: Dnd5eActorData = structuredClone(actor);
+  clone.classId = key;
+  clone.attributes.classId = key;
+  clone.attributes.hitDieSize = progression.hitDie;
+  clone.attributes.casterType = progression.casterType;
+  if (progression.spellcastingAbility) clone.attributes.spellcastingAbility = progression.spellcastingAbility;
+  for (const ab of Object.keys(clone.abilities) as AbilityId[]) {
+    clone.abilities[ab].saveProficiency = progression.savingThrows.includes(ab);
+  }
+  for (const skill of selections.skills ?? []) clone.skills[skill as SkillId].proficiencyRank = 1;
+
+  const proficiencies = getActorProficiencies(clone);
+  const add = <T>(list: T[], values: readonly T[]) => values.forEach((value) => list.includes(value) || list.push(value));
+  add(proficiencies.armor, rules.armor);
+  add(proficiencies.weapons, rules.weapons);
+  add(proficiencies.tools, [...rules.tools, ...(selections.tools ?? [])]);
+  clone.proficiencies = proficiencies;
+
+  const items = clone.items ?? [];
+  clone.items = [...items, ...startingEquipmentItems(key, selections.equipment[0], items.length)];
+
+  const spellIds = clone.spellIds ?? [];
+  add(spellIds, [...(selections.cantrips ?? []), ...(selections.spells ?? [])]);
+  clone.spellIds = spellIds;
+  if (progression.casterType !== "none") {
+    clone.spellSlots = reconcileSlots(clone.spellSlots, progression.casterType, clone.attributes.level);
+  }
   clone.derived = computeDnd5eSheetDerived(clone);
   return clone;
 }

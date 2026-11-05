@@ -56,6 +56,9 @@ import type {
   AbilityId,
   ActiveConditionState,
   DamageType,
+  DerivedAttack,
+  DerivedFeature,
+  DerivedSpellcasting,
   Dnd5eActorData,
   ProficiencyRank,
   SkillId,
@@ -226,6 +229,12 @@ export interface Dnd5eDerivedStats {
     /** Weight threshold in pounds (`STR * 5 lb`) for standard encumbrance (`-10 ft` speed). */
     encumbered: number;
   };
+  /** Attacks from equipped weapons and damaging spells (`[]` for `Dnd5eActorSheet`). */
+  attacks?: DerivedAttack[];
+  /** Spellcasting summary; absent for actors without class spellcasting or spell feats. */
+  spells?: DerivedSpellcasting;
+  /** Class, subclass, species, background and feat features with their level. */
+  features?: DerivedFeature[];
 }
 
 /**

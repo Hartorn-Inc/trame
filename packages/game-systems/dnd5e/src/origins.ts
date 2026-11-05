@@ -55,6 +55,7 @@
 
 import type { AbilityId, Dnd5eActorData, SkillId } from "./types.ts";
 import { computeDnd5eSheetDerived } from "./manifest.ts";
+import { getActorProficiencies } from "./classRules.ts";
 
 // ============================================================================
 // SPECIES
@@ -597,7 +598,9 @@ export function backgroundAbilityIncreases(
 /**
  * Applies `backgroundId` to a new character: raises abilities per `choice`
  * (cap `20`, with the retroactive CON HP delta for every level), grants the
- * two skill proficiencies, records the background and its Origin feat, and
+ * two skill proficiencies and the tool proficiency (stored in
+ * `proficiencies`, seeded from the class), records the background and its
+ * Origin feat (taken at level 1), and
  * recomputes derived statistics. Throws on unknown backgrounds, a second
  * background, invalid choices or scores above 20.
  */
@@ -637,6 +640,10 @@ export function applyBackground(
   }
   clone.backgroundId = `srd:background:${backgroundId.replace(/^srd:background:/, "").toLowerCase()}`;
   clone.features = [...(clone.features ?? []), background.originFeat];
+  clone.featsTaken = [...(clone.featsTaken ?? []), { featId: background.originFeat, level: 1 }];
+  const proficiencies = getActorProficiencies(clone);
+  if (!proficiencies.tools.includes(background.toolProficiency)) proficiencies.tools.push(background.toolProficiency);
+  clone.proficiencies = proficiencies;
   clone.derived = computeDnd5eSheetDerived(clone);
   return clone;
 }

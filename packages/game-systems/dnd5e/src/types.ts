@@ -318,6 +318,40 @@ export interface ProficiencyLists {
   tools: string[];
 }
 
+/**
+ * Inventory entry on an actor sheet. `compendiumId` links it to a weapon,
+ * armor or shield entry so `computeDnd5eSheetDerived` can derive attacks and
+ * AC; without it the `name` (e.g. `"2 Daggers"`) is matched against the
+ * compendium after dropping a leading count.
+ */
+export interface ActorItem {
+  /** Unique item id on the sheet. */
+  id: string;
+  /** Display name. */
+  name: string;
+  /** Stack size (`>= 1`). */
+  quantity: number;
+  /** Compendium id of the item (e.g. `"srd:item:longsword"`). */
+  compendiumId?: string;
+  /**
+   * Whether the item is worn or wielded. Equipped weapons become attacks,
+   * equipped armor and shields feed AC. Absent means not equipped.
+   */
+  equipped?: boolean;
+  /** Whether the item can hold other items. */
+  isContainer?: boolean;
+  /** Id of the container holding this item, or `null` at the top level. */
+  containerId?: string | null;
+}
+
+/** Feat taken at a given character level (origin feats at level 1). */
+export interface FeatTaken {
+  /** Feat id as stored in `features` (e.g. `"srd:feat:alert"`). */
+  featId: string;
+  /** Character level at which the feat was gained (`1..=20`). */
+  level: number;
+}
+
 /** Picks made for one feat that has choices (Magic Initiate, Skilled). */
 export interface FeatChoiceRecord {
   /** SRD feat id (`"srd:feat:magic_initiate"`). */
@@ -348,6 +382,7 @@ export interface BuilderChoice {
     | "ability"
     | "skill"
     | "skill_or_tool"
+    | "tool"
     | "spell_list"
     | "spell"
     | "equipment_option";
@@ -359,6 +394,117 @@ export interface BuilderChoice {
   options: BuilderChoiceOption[];
   /** Id of the choice whose selection filters `options`. */
   dependsOn?: string;
+}
+
+/**
+ * Attack listed on the sheet, derived from an equipped weapon or a damaging
+ * spell the actor knows or prepared.
+ */
+export interface DerivedAttack {
+  /** Sheet item id (weapons) or spell compendium id (spells). */
+  id: string;
+  /** Display name. */
+  name: string;
+  /** Origin of the attack. */
+  source: "weapon" | "spell";
+  /**
+   * How the attack resolves:
+   * - `"melee"` / `"ranged"`: attack roll with `attackBonus`.
+   * - `"save"`: the target makes `save.ability` against `save.dc`.
+   */
+  delivery: "melee" | "ranged" | "save";
+  /** Total d20 attack bonus; `null` for `"save"` attacks. */
+  attackBonus: number | null;
+  /** Saving throw a `"save"` attack forces. */
+  save?: { ability: AbilityId; dc: number };
+  /** Damage dice (e.g. `"1d8"`, cantrips scaled by character level). */
+  damageDice: string;
+  /** Flat damage modifier added once (never doubled on a critical hit). */
+  damageModifier: number;
+  /** Two-handed damage dice of a Versatile weapon. */
+  versatileDamageDice?: string;
+  /** Damage type. */
+  damageType: DamageType;
+  /** Melee reach in feet (`5`, or `10` with the Reach property). */
+  reachFt?: number;
+  /** Normal and long range in feet for ranged, thrown and spell attacks. */
+  rangeFt?: { normal: number; long?: number };
+  /** Weapon properties (`"finesse"`, `"reach"`, `"thrown"`, ...). */
+  properties: string[];
+  /** Weapon Mastery property of the weapon, if any. */
+  mastery?: string;
+  /** Whether the proficiency bonus is included in `attackBonus`. */
+  proficient: boolean;
+}
+
+/** Spell referenced on the sheet. */
+export interface DerivedSpellRef {
+  /** Spell compendium id. */
+  id: string;
+  /** Display name (the id when the spell is not in the compendium). */
+  name: string;
+  /** Spell level (`0` = cantrip), `null` when the spell is not in the compendium. */
+  level: number | null;
+}
+
+/** Spell slots of one spell level. */
+export interface DerivedSpellSlot {
+  /** Spell level (`1..=9`). */
+  level: number;
+  /** Slots at the actor's level per the class table. */
+  max: number;
+  /** Unexpended slots (defaults to `max` when not tracked). */
+  current: number;
+}
+
+/** Spells granted by one feat (Magic Initiate), cast with the feat's ability. */
+export interface DerivedFeatSpellcasting {
+  /** Feat id. */
+  featId: string;
+  /** Spellcasting ability chosen for the feat. */
+  ability: AbilityId;
+  /** Spell save DC with that ability. */
+  spellSaveDc: number;
+  /** Spell attack bonus with that ability. */
+  spellAttackBonus: number;
+  /** Cantrips and spells granted by the feat. */
+  spells: DerivedSpellRef[];
+}
+
+/** Spellcasting summary of an actor with a class spellcasting feature or spell feats. */
+export interface DerivedSpellcasting {
+  /** Class spellcasting ability, absent without class spellcasting. */
+  ability?: AbilityId;
+  /** Class spell save DC (`8 + PB + ability modifier`, from the DAG). */
+  spellSaveDc: number;
+  /** Class spell attack bonus (from the DAG). */
+  spellAttackBonus: number;
+  /** Spell slots per level with `max > 0` (none for Pact Magic). */
+  slots: DerivedSpellSlot[];
+  /** Warlock Pact Magic slots. */
+  pactMagic?: { slots: number; slotLevel: number; current: number };
+  /** Number of class cantrips known at the actor's level. */
+  cantripsKnown: number;
+  /** Number of class spells prepared at the actor's level. */
+  preparedSpellsMax: number;
+  /** Class cantrips from `spellIds`. */
+  cantrips: DerivedSpellRef[];
+  /** Leveled class spells from `spellIds` (known, prepared or in the spellbook). */
+  prepared: DerivedSpellRef[];
+  /** Spells granted by feats. */
+  featSpells: DerivedFeatSpellcasting[];
+}
+
+/** Feature or trait listed on the sheet. */
+export interface DerivedFeature {
+  /** Display name. */
+  name: string;
+  /** Origin of the feature. */
+  source: "class" | "subclass" | "species" | "background" | "feat" | "other";
+  /** Character level at which it was gained, `null` when unknown. */
+  level: number | null;
+  /** Compendium id for feats, subclasses and backgrounds. */
+  id?: string;
 }
 
 /** Builder selections: option ids keyed by `BuilderChoice.id`. */
@@ -402,8 +548,15 @@ export interface Dnd5eActorData {
   spellIds?: string[];
   /** Picks made for feats with choices (Magic Initiate, Skilled). */
   featChoices?: FeatChoiceRecord[];
-  /** Armor, weapon and tool proficiencies (class, background, feats). */
+  /**
+   * Armor, weapon and tool proficiencies (class, background, feats). When
+   * absent, the class's starting proficiencies apply.
+   */
   proficiencies?: ProficiencyLists;
+  /** Inventory; equipped weapons, armor and shields feed attacks and AC. */
+  items?: ActorItem[];
+  /** Level at which each feat in `features` was taken (feature levels on the sheet). */
+  featsTaken?: FeatTaken[];
   /** Recalculated proficiency bonus (+2 to +6). */
   proficiencyBonus?: number;
   /** Recalculated derived sheet statistics snapshot. */

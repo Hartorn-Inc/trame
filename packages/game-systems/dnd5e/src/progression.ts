@@ -816,6 +816,7 @@ export function applyLevelUp(
         clone.features = [];
       }
       clone.features.push(options.asiOrFeat.featId);
+      clone.featsTaken = [...(clone.featsTaken ?? []), { featId: options.asiOrFeat.featId, level: targetLevel }];
       if (featIncrease) {
         clone.abilities[featIncrease].score += 1;
       }
