@@ -18,6 +18,9 @@
 //!        (`DiceError::InvalidSides`) *before* allocating `Vec::with_capacity`,
 //!        preventing denial-of-service via astronomical dice strings like
 //!        `"999999999d20"`.
+//!      - `kh`/`kl` keep counts must lie in `1..=count` (`DiceError::InvalidKeep`):
+//!        `2d20kh0` or `2d20kh3` is a parse error rather than a silent `0` or
+//!        a full-pool total.
 //!      - `roll` rejects expressions longer than `MAX_EXPRESSION_BYTES` (128),
 //!        more than `MAX_TERMS` (20) signed terms, and reasons longer than
 //!        `MAX_REASON_BYTES` (200) before parsing, and sums modifiers and term
@@ -69,6 +72,14 @@ pub enum DiceError {
     /// The die face count fell outside the safe range `2..=1000`.
     #[error("Dice sides must be between 2 and 1000, got {0}")]
     InvalidSides(u32),
+    /// A `kh`/`kl` keep count fell outside `1..=count` (keeping zero or more dice than rolled).
+    #[error("Keep count must be between 1 and {count}, got {keep}")]
+    InvalidKeep {
+        /// Requested number of dice to keep.
+        keep: u32,
+        /// Number of dice rolled in the term.
+        count: u32,
+    },
     /// The raw expression exceeded `MAX_EXPRESSION_BYTES`.
     #[error("Dice expression exceeds {MAX_EXPRESSION_BYTES} bytes")]
     ExpressionTooLong,
@@ -309,6 +320,11 @@ impl SeededDiceRoller {
         } else {
             (rest, KeepMode::All)
         };
+        if let KeepMode::KeepHighest(keep) | KeepMode::KeepLowest(keep) = keep_mode
+            && !(1..=count).contains(&keep)
+        {
+            return Err(DiceError::InvalidKeep { keep, count });
+        }
 
         let sides = sides_str
             .parse::<u32>()

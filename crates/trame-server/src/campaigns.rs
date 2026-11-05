@@ -746,6 +746,26 @@ fn i32_at(v: &Value, path: &[&str]) -> Option<i32> {
     cur.as_f64().map(|n| n.round() as i32)
 }
 
+/// Non-Dexterity part of the D&D 5e `derivedDAG` initiative
+/// (`dex_mod + initiative_prof * prof_bonus - 2 * exhaustion`): `initiative_prof` is 1 when
+/// `features` holds `srd:feat:alert`, and `prof_bonus` comes from `attributes.level` clamped
+/// to `1..=20`.
+fn derived_initiative_extra(data: &Value) -> i32 {
+    let level = i32_at(data, &["attributes", "level"])
+        .unwrap_or(1)
+        .clamp(1, 20);
+    let prof_bonus = (level - 1) / 4 + 2;
+    let has_alert = data
+        .get("features")
+        .and_then(Value::as_array)
+        .is_some_and(|f| f.iter().any(|id| id.as_str() == Some("srd:feat:alert")));
+    let exhaustion = i32_at(data, &["attributes", "exhaustion"])
+        .unwrap_or(0)
+        .clamp(0, 6);
+    let alert_bonus = if has_alert { prof_bonus } else { 0 };
+    alert_bonus - 2 * exhaustion
+}
+
 /// Extracts the token-relevant subset of a `Dnd5eActorData` sheet:
 /// `attributes.hp.{current,max,temp}`, `attributes.ac` (or `derived.ac`),
 /// `abilities.dex.score` (-> modifier), `attributes.speed`, `conditions[].id`, and
@@ -778,13 +798,15 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
             }
             (resist, immune, vuln)
         });
+    let dex_mod = i32_at(data, &["abilities", "dex", "score"]).map(|s| (s - 10).div_euclid(2));
     ActorTacticalSync {
         name: name.map(str::to_string),
         hp_current: i32_at(data, &["attributes", "hp", "current"]),
         hp_max: i32_at(data, &["attributes", "hp", "max"]),
         temp_hp: i32_at(data, &["attributes", "hp", "temp"]),
         ac: i32_at(data, &["attributes", "ac"]).or_else(|| i32_at(data, &["derived", "ac"])),
-        dex_mod: i32_at(data, &["abilities", "dex", "score"]).map(|s| (s - 10).div_euclid(2)),
+        dex_mod,
+        initiative_extra: dex_mod.map(|_| derived_initiative_extra(data)),
         speed_ft: data
             .get("attributes")
             .and_then(|a| a.get("speed"))

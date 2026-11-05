@@ -491,7 +491,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### AuthoritativeInitiativeRoll
 
-- **Definition**: Server-side `ChaCha20Rng` `1d20 + dex_mod` roll executed by `TableRoomActor` for every active combatant without a pre-supplied initiative score when transitioning to `Turn-by-Turn Mode`, sorted descending with ties broken by `dex_mod` then `token_id`.
+- **Definition**: Server-side `ChaCha20Rng` roll of `1d20` plus the token's derived initiative bonus (`dex_mod`, plus the proficiency bonus with the Alert feat, minus `2 * exhaustion`; `dex_mod` alone for tokens without a linked sheet), executed by `TableRoomActor`. It is the only source of initiative: when a player asks to roll initiative the server ignores the submitted expression and rolls for the player's token, and only the first roll per encounter counts (later requests are rejected until the encounter starts and consumes it). On transition to `Turn-by-Turn Mode` every other active combatant is rolled, the results fan out only after the command commits, and the order sorts descending with ties broken by `dex_mod` then `token_id`.
 - **Allowed Context**: `StartTurnByTurn` execution, `CombatTracker` initialization, and encounter startup.
 - **_Avoid_**: ClientInitiativeBatch, ManualOrderPrompt.
 

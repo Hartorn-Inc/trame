@@ -365,6 +365,10 @@ fn default_reach_ft() -> f64 {
     5.0
 }
 
+fn is_zero_i32(value: &i32) -> bool {
+    *value == 0
+}
+
 /// SRD condition IDs that include Incapacitated (no actions or reactions).
 const INCAPACITATING_CONDITIONS: [&str; 5] = [
     "incapacitated",
@@ -423,9 +427,14 @@ pub struct TokenState {
     /// Armor Class (`AC`, default `10`).
     #[serde(default = "default_token_ac")]
     pub ac: i32,
-    /// Dexterity modifier used for authoritative `1d20 + dex_mod` initiative rolls (default `0`).
+    /// Dexterity modifier (default `0`); initiative tie-breaker and the base of the
+    /// initiative bonus.
     #[serde(default)]
     pub dex_mod: i32,
+    /// Non-Dexterity part of the derived initiative bonus synced from the linked actor sheet
+    /// (proficiency bonus with Alert, minus `2 * exhaustion`); default `0`.
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub initiative_extra: i32,
     /// Maximum movement speed per combat turn in feet (`ft`, e.g., `30.0`).
     pub speed_max_ft: f64,
     /// Remaining movement budget for the current combat turn in feet (`ft`, `0.0..=speed_max_ft`).
@@ -488,6 +497,7 @@ impl TokenState {
             temp_hp: 0,
             ac: 10,
             dex_mod: 0,
+            initiative_extra: 0,
             speed_max_ft: 30.0,
             speed_remaining_ft: 30.0,
             has_action: true,
@@ -504,6 +514,11 @@ impl TokenState {
             damage_immunities: Vec::new(),
             damage_vulnerabilities: Vec::new(),
         }
+    }
+
+    /// Modifier added to the server's `1d20` initiative roll (`AuthoritativeInitiativeRoll`).
+    pub fn initiative_modifier(&self) -> i32 {
+        self.dex_mod.saturating_add(self.initiative_extra)
     }
 
     /// Derives this token's `DamageAffinity` toward `damage_type` (case-insensitive) from its
@@ -593,7 +608,7 @@ pub enum TrameCommand {
     },
     /// Enters `TurnByTurn` combat mode at Round 1, Turn Index 0 with an explicit or auto-rolled `initiative_order` (GM only).
     StartTurnByTurn {
-        /// Ordered list of token IDs defining the combat initiative sequence (if empty, `TableRoomActor` rolls `1d20 + dex_mod`).
+        /// Ordered list of token IDs defining the combat initiative sequence (if empty, `TableRoomActor` rolls `1d20 + initiative bonus`).
         #[serde(default)]
         initiative_order: Vec<Uuid>,
         /// Initiative totals keyed by token ID (e.g., the `AuthoritativeInitiativeRoll` results);

@@ -66,6 +66,11 @@
 //!        `RollVisibility::GmOnly`; tokens whose player already rolled
 //!        initiative keep that roll; `ActorUpdated` sheets go only to the GM and
 //!        the controllers of linked tokens.
+//!   8. `Server-Only Initiative (SEC3)`:
+//!      - A player's initiative `RollDice` ignores the submitted expression: the
+//!        server rolls `1d20 + TokenState::initiative_modifier()` for their token,
+//!        once per encounter. Encounter-start rolls are broadcast only after the
+//!        command commits, so a rejected start leaks no hidden combatant.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -77,7 +82,7 @@
 //!     └── 3. Return cloneable `TableRoomHandle` for client attachment and envelopes.
 //! ============================================================================
 
-use crate::dice::{RollVisibility, SeededDiceRoller, project_roll_for_recipient};
+use crate::dice::{DiceRollOutcome, RollVisibility, SeededDiceRoller, project_roll_for_recipient};
 use crate::sync::{
     ClientEnvelope, McpStagingProposal, QuarantinedWalSummary, ServerEnvelope,
     encode_server_envelope, filter_events_for_recipient, project_state_for_recipient,
@@ -117,6 +122,15 @@ pub const MAX_RAW_DAMAGE: i32 = 10_000;
 
 fn is_gm_hidden(token: &trame_engine::commands::TokenState) -> bool {
     token.visibility_channel & trame_engine::geometry::CHANNEL_GM_HIDDEN != 0
+}
+
+/// Dice expression for an `AuthoritativeInitiativeRoll`: `1d20` plus a signed modifier.
+fn initiative_expression(modifier: i32) -> String {
+    match modifier.cmp(&0) {
+        std::cmp::Ordering::Greater => format!("1d20+{modifier}"),
+        std::cmp::Ordering::Less => format!("1d20{modifier}"),
+        std::cmp::Ordering::Equal => "1d20".to_string(),
+    }
 }
 
 /// Outbound frame sent from a room actor to a connected client's socket transmission task.
@@ -168,6 +182,8 @@ pub struct ActorTacticalSync {
     pub ac: Option<i32>,
     /// Updated Dexterity ability modifier (`dex_mod`).
     pub dex_mod: Option<i32>,
+    /// Updated non-Dexterity initiative bonus (`TokenState::initiative_extra`, SEC3).
+    pub initiative_extra: Option<i32>,
     /// Updated maximum movement speed in feet (`speed_ft`).
     pub speed_ft: Option<f64>,
     /// Updated list of active condition labels (`conditions`).
@@ -544,9 +560,9 @@ pub struct TableRoomActor {
     dice_roller: SeededDiceRoller,
     wal: Arc<dyn WalStorage>,
     rx: mpsc::Receiver<RoomActorMessage>,
-    /// Latest initiative total each non-GM user rolled themselves (`RollDice` whose reason
-    /// starts with `"initiative"`, case-insensitive), consumed by the next auto-roll so their
-    /// tokens keep the player's own result instead of being re-rolled.
+    /// Server-rolled initiative total per non-GM user who asked to roll (`RollDice` whose
+    /// reason starts with `"initiative"`, case-insensitive), consumed by the next encounter
+    /// start so their tokens keep that result. One entry per user per encounter (SEC3).
     player_initiative_rolls: HashMap<Uuid, i32>,
     sinks: RoomSinks,
     /// Entries quarantined when this actor recovered (empty on a clean replay); sent to GMs.
@@ -837,19 +853,19 @@ impl TableRoomActor {
                         .trim_start()
                         .to_ascii_lowercase()
                         .starts_with("initiative");
-                match self
-                    .dice_roller
-                    .roll(actor_user_id, &expression, visibility, reason)
-                {
+                let rolled = if is_player_initiative {
+                    self.roll_player_initiative(actor_user_id)
+                } else {
+                    self.dice_roller
+                        .roll(actor_user_id, &expression, visibility, reason)
+                        .map_err(|err| err.to_string())
+                };
+                match rolled {
                     Ok(outcome) => {
-                        if is_player_initiative {
-                            self.player_initiative_rolls
-                                .insert(actor_user_id, outcome.total);
-                        }
                         self.fan_out_roll(&outcome);
                         self.note_timeline(roll_timeline_note(self.campaign_id, &outcome));
                     }
-                    Err(err) => send_rejection(&sender_tx, err.to_string(), correlation_id),
+                    Err(reason) => send_rejection(&sender_tx, reason, correlation_id),
                 }
             }
             ClientEnvelope::PointerPing { pos, color_hex } => {
@@ -891,7 +907,7 @@ impl TableRoomActor {
             .map_err(RoomError::CommandRejected)?;
         let checkpoint = self.state.clone();
         let initiative_checkpoint = self.player_initiative_rolls.clone();
-        let resolved_cmd = self.resolve_authoritative_initiative(&actor, cmd);
+        let (resolved_cmd, initiative_rolls) = self.resolve_authoritative_initiative(&actor, cmd);
         let prior_prompts = self.state.data.active_reaction_prompts.clone();
         let prior_vitals = self.linked_vitals();
         let is_undo = matches!(resolved_cmd, TrameCommand::UndoLastAction);
@@ -926,6 +942,10 @@ impl TableRoomActor {
         self.seq_id += 1;
         if !is_undo {
             self.maybe_periodic_snapshot();
+        }
+        for outcome in &initiative_rolls {
+            self.fan_out_roll(outcome);
+            self.note_timeline(roll_timeline_note(self.campaign_id, outcome));
         }
         self.after_accepted(&events, &prior_prompts, &prior_vitals);
         Ok((self.seq_id, events))
@@ -1126,15 +1146,17 @@ impl TableRoomActor {
         Ok(())
     }
 
-    /// Rolls `1d20 + dex_mod` for each active combatant token on the table when `StartTurnByTurn` or
-    /// `SetTableMode { mode: TurnByTurn }` is submitted by a GM with an empty `initiative_order`.
+    /// Rolls `1d20 + initiative bonus` for each active combatant token on the table when
+    /// `StartTurnByTurn` or `SetTableMode { mode: TurnByTurn }` is submitted by a GM with an
+    /// empty `initiative_order`. The roll outcomes are returned, not broadcast: the caller fans
+    /// them out only once the command has committed, so a rejected command leaks nothing.
     fn resolve_authoritative_initiative(
         &mut self,
         actor: &CommandActor,
         cmd: TrameCommand,
-    ) -> TrameCommand {
+    ) -> (TrameCommand, Vec<DiceRollOutcome>) {
         if actor.role != CampaignRole::Gm || self.state.data.tokens.is_empty() {
-            return cmd;
+            return (cmd, Vec::new());
         }
 
         match cmd {
@@ -1142,12 +1164,15 @@ impl TableRoomActor {
                 ref initiative_order,
                 ..
             } if initiative_order.is_empty() => {
-                let (initiative_order, initiative_totals) =
+                let (initiative_order, initiative_totals, rolls) =
                     self.roll_table_initiative(actor.user_id);
-                TrameCommand::StartTurnByTurn {
-                    initiative_order,
-                    initiative_totals,
-                }
+                (
+                    TrameCommand::StartTurnByTurn {
+                        initiative_order,
+                        initiative_totals,
+                    },
+                    rolls,
+                )
             }
             TrameCommand::SetTableMode {
                 mode: TableMode::TurnByTurn,
@@ -1155,31 +1180,76 @@ impl TableRoomActor {
                 ref initiative_order,
                 ..
             } if initiative_order.is_empty() => {
-                let (initiative_order, initiative_totals) =
+                let (initiative_order, initiative_totals, rolls) =
                     self.roll_table_initiative(actor.user_id);
-                TrameCommand::SetTableMode {
-                    mode: TableMode::TurnByTurn,
-                    exploration_paused,
-                    initiative_order,
-                    initiative_totals,
-                }
+                (
+                    TrameCommand::SetTableMode {
+                        mode: TableMode::TurnByTurn,
+                        exploration_paused,
+                        initiative_order,
+                        initiative_totals,
+                    },
+                    rolls,
+                )
             }
-            other => other,
+            other => (other, Vec::new()),
         }
+    }
+
+    /// Server-side initiative for a player who asked to roll (SEC3): whatever expression they
+    /// sent is ignored and `1d20 + initiative bonus` is rolled for their owned token (living
+    /// tokens first, then lowest id). Rejected when they own no token, already rolled for the
+    /// coming encounter, or one of their tokens is already in the running encounter's order.
+    fn roll_player_initiative(&mut self, user_id: Uuid) -> Result<DiceRollOutcome, String> {
+        let owned: Vec<&trame_engine::commands::TokenState> = self
+            .state
+            .data
+            .tokens
+            .values()
+            .filter(|t| t.owner_user_id == Some(user_id))
+            .collect();
+        if self.player_initiative_rolls.contains_key(&user_id)
+            || owned
+                .iter()
+                .any(|t| self.state.data.initiative_order.contains(&t.id))
+        {
+            return Err("initiative already rolled for this encounter".to_string());
+        }
+        let Some(token) = owned.into_iter().min_by_key(|t| (t.hp <= 0, t.id)) else {
+            return Err("permission denied: no token to roll initiative for".to_string());
+        };
+        let visibility = if is_gm_hidden(token) {
+            RollVisibility::GmOnly
+        } else {
+            RollVisibility::Public
+        };
+        let expr = initiative_expression(token.initiative_modifier());
+        let reason = format!("Initiative: {}", token.name);
+        let outcome = self
+            .dice_roller
+            .roll(user_id, &expr, visibility, reason)
+            .map_err(|err| err.to_string())?;
+        self.player_initiative_rolls.insert(user_id, outcome.total);
+        Ok(outcome)
     }
 
     /// Hidden combatants (`CHANNEL_GM_HIDDEN`) are rolled with `RollVisibility::GmOnly` so their
     /// names and results never reach player sockets through the public initiative feed.
-    /// Tokens whose owner already rolled initiative themselves (`player_initiative_rolls`)
-    /// reuse that total and are not auto-rolled; the stored rolls are consumed.
-    /// Returns the sorted order and each token's total (fed to `initiative_totals`).
-    fn roll_table_initiative(&mut self, actor_user_id: Uuid) -> (Vec<Uuid>, BTreeMap<Uuid, i32>) {
-        type Candidate = (Uuid, String, i32, bool, Option<Uuid>);
+    /// Tokens whose owner already had initiative rolled (`player_initiative_rolls`) reuse that
+    /// total and are not re-rolled; the stored rolls are consumed.
+    /// Returns the sorted order, each token's total (fed to `initiative_totals`), and the roll
+    /// outcomes still to be broadcast.
+    fn roll_table_initiative(
+        &mut self,
+        actor_user_id: Uuid,
+    ) -> (Vec<Uuid>, BTreeMap<Uuid, i32>, Vec<DiceRollOutcome>) {
+        type Candidate = (Uuid, String, i32, i32, bool, Option<Uuid>);
         let to_candidate = |t: &trame_engine::commands::TokenState| -> Candidate {
             (
                 t.id,
                 t.name.clone(),
                 t.dex_mod,
+                t.initiative_modifier(),
                 is_gm_hidden(t),
                 t.owner_user_id,
             )
@@ -1201,16 +1271,13 @@ impl TableRoomActor {
 
         let self_rolls = std::mem::take(&mut self.player_initiative_rolls);
         let mut rolled: Vec<(i32, i32, Uuid)> = Vec::with_capacity(candidates.len());
-        for (token_id, token_name, dex_mod, hidden, owner) in candidates {
+        let mut outcomes = Vec::new();
+        for (token_id, token_name, dex_mod, modifier, hidden, owner) in candidates {
             if let Some(total) = owner.and_then(|o| self_rolls.get(&o)) {
                 rolled.push((*total, dex_mod, token_id));
                 continue;
             }
-            let expr = match dex_mod.cmp(&0) {
-                std::cmp::Ordering::Greater => format!("1d20+{dex_mod}"),
-                std::cmp::Ordering::Less => format!("1d20{dex_mod}"),
-                std::cmp::Ordering::Equal => "1d20".to_string(),
-            };
+            let expr = initiative_expression(modifier);
             let reason = format!("Initiative: {token_name}");
             let visibility = if hidden {
                 RollVisibility::GmOnly
@@ -1221,9 +1288,8 @@ impl TableRoomActor {
                 .dice_roller
                 .roll(actor_user_id, &expr, visibility, reason)
             {
-                self.fan_out_roll(&outcome);
-                self.note_timeline(roll_timeline_note(self.campaign_id, &outcome));
                 rolled.push((outcome.total, dex_mod, token_id));
+                outcomes.push(outcome);
             }
         }
 
@@ -1236,11 +1302,11 @@ impl TableRoomActor {
 
         let totals = rolled.iter().map(|(total, _, id)| (*id, *total)).collect();
         let order = rolled.into_iter().map(|(_, _, id)| id).collect();
-        (order, totals)
+        (order, totals, outcomes)
     }
 
     /// Sends `outcome` to every connected client through `project_roll_for_recipient`.
-    fn fan_out_roll(&self, outcome: &crate::dice::DiceRollOutcome) {
+    fn fan_out_roll(&self, outcome: &DiceRollOutcome) {
         for client in self.clients.values() {
             if let Some(projected_roll) =
                 project_roll_for_recipient(outcome, client.user_id, client.role)
@@ -1327,6 +1393,9 @@ impl TableRoomActor {
                 }
                 if let Some(dex_mod) = sync.dex_mod {
                     token.dex_mod = dex_mod;
+                }
+                if let Some(extra) = sync.initiative_extra {
+                    token.initiative_extra = extra;
                 }
                 if let Some(speed_ft) = sync.speed_ft
                     && speed_ft >= 0.0

@@ -462,6 +462,36 @@ async fn snapshot_failure_is_non_fatal_except_for_undo() {
 }
 
 #[tokio::test]
+async fn gm_initiative_rolls_fan_out_only_after_commit() {
+    // (case_id, WAL append fails, rolls broadcast)
+    let cases = [
+        ("committed_start_broadcasts_rolls", false, true),
+        ("unsaved_start_leaks_no_roll", true, false),
+    ];
+    for (case, fail_append, broadcast) in cases {
+        let c = Campaign::seed();
+        let room = c.boot(25).await;
+        let (gm_session, mut gm_rx) = connect(&room, c.gm, CampaignRole::Gm).await;
+        drain(&mut gm_rx);
+        c.wal.fail_append.store(fail_append, Ordering::SeqCst);
+        let start = TrameCommand::StartTurnByTurn {
+            initiative_order: Vec::new(),
+            initiative_totals: Default::default(),
+        };
+        room.send_envelope(gm_session, submit(start, "c-start"))
+            .await
+            .unwrap();
+        let frames = drain(&mut gm_rx);
+        let rolled = frames.iter().any(
+            |f| matches!(f, ServerEnvelope::DiceRolled(r) if r.reason == "Initiative: Goblin"),
+        );
+        assert_eq!(rolled, broadcast, "case {case}");
+        assert_eq!(accepted(&frames), broadcast, "case {case}");
+        assert_eq!(rejection(&frames).is_some(), !broadcast, "case {case}");
+    }
+}
+
+#[tokio::test]
 async fn every_rejection_carries_the_correlation_id() {
     let c = Campaign::seed();
     let room = c.boot(25).await;
