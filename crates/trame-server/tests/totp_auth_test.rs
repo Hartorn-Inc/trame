@@ -181,6 +181,7 @@ async fn test_totp_http_flow_setup_enable_and_verify() {
         mfa_enabled: false,
         totp_secret: None,
         pending_totp_secret: None,
+        instance_role: Default::default(),
     };
     store.save_user(user.clone()).await.unwrap();
 

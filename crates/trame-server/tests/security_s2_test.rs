@@ -50,6 +50,7 @@ use trame_server::archive::{
     InMemoryCampaignStore, ManifestStats, NoteRecord,
 };
 use trame_server::assets::store::{AssetStore, InMemoryAssetStore};
+use trame_server::auth::accounts::InstanceRole;
 use trame_server::auth::magic_link::MagicLinkService;
 use trame_server::auth::session::{
     AuthState, IdentityStore, InMemorySessionStore, SessionStore, UserRecord, build_auth_router,
@@ -57,9 +58,10 @@ use trame_server::auth::session::{
 };
 use trame_server::auth::totp::TotpService;
 use trame_server::config::{
-    ALLOWED_ORIGINS_VAR, COOKIE_SECURE_VAR, ConfigError, INVITE_JWT_SECRET_VAR, JWT_SECRET_VAR,
-    LogFormat, MASTER_ENCRYPTION_KEY_VAR, PUBLIC_ORIGIN_VAR, RuntimeEnv, ServerConfig,
-    TRAME_ENV_VAR,
+    ALLOWED_ORIGINS_VAR, BOOTSTRAP_OWNER_EMAIL_VAR, COOKIE_SECURE_VAR, ConfigError,
+    DATABASE_URL_ALIAS_VAR, DATABASE_URL_VAR, INSTANCE_ID_VAR, INVITE_JWT_SECRET_VAR,
+    JWT_SECRET_VAR, LogFormat, MASTER_ENCRYPTION_KEY_VAR, PUBLIC_ORIGIN_VAR, RuntimeEnv,
+    ServerConfig, TRAME_ENV_VAR,
 };
 use trame_server::dice::RollVisibility;
 use trame_server::http::{
@@ -134,7 +136,8 @@ impl Harness {
     }
 
     /// Creates an account (`role` is the global role, which must grant nothing) with a live
-    /// session and returns `(user_id, cookie_header)`.
+    /// session and returns `(user_id, cookie_header)`. Non-guests are `Host` (may create
+    /// campaigns); guests are `Member`.
     async fn account(&self, is_guest: bool, global_role: &str) -> (Uuid, String) {
         let user_id = Uuid::new_v4();
         let store = &self.state.auth_state.session_store;
@@ -150,6 +153,11 @@ impl Harness {
                 mfa_enabled: false,
                 totp_secret: None,
                 pending_totp_secret: None,
+                instance_role: if is_guest {
+                    InstanceRole::Member
+                } else {
+                    InstanceRole::Host
+                },
             })
             .await
             .unwrap();
@@ -282,6 +290,7 @@ fn a22_config_fails_closed_outside_dev() {
         (JWT_SECRET_VAR, strong.clone()),
         (INVITE_JWT_SECRET_VAR, strong.clone()),
         (PUBLIC_ORIGIN_VAR, ALLOWED_ORIGIN.to_string()),
+        (DATABASE_URL_VAR, "postgresql://trame@db/trame".to_string()),
     ];
     let without = |skip: &'static str| -> Vec<(&'static str, String)> {
         full.iter().filter(|(k, _)| *k != skip).cloned().collect()
@@ -303,8 +312,27 @@ fn a22_config_fails_closed_outside_dev() {
                 JWT_SECRET_VAR,
                 INVITE_JWT_SECRET_VAR,
                 PUBLIC_ORIGIN_VAR,
+                DATABASE_URL_VAR,
             ],
             0,
+        ),
+        (
+            "prod_missing_database_url_refuses_in_memory_store",
+            without(DATABASE_URL_VAR),
+            vec![DATABASE_URL_VAR],
+            0,
+        ),
+        (
+            "prod_malformed_instance_id",
+            with(INSTANCE_ID_VAR, "not-a-uuid"),
+            vec![],
+            1,
+        ),
+        (
+            "prod_malformed_bootstrap_owner_email",
+            with(BOOTSTRAP_OWNER_EMAIL_VAR, "nobody"),
+            vec![],
+            1,
         ),
         (
             "prod_missing_master_key",
@@ -383,6 +411,7 @@ fn a22_a72_config_accepts_dev_and_complete_production() {
                 (PUBLIC_ORIGIN_VAR, ALLOWED_ORIGIN.to_string()),
                 (ALLOWED_ORIGINS_VAR, "http://192.168.1.10:8080".to_string()),
                 (COOKIE_SECURE_VAR, "false".to_string()),
+                (DATABASE_URL_VAR, "postgresql://trame@db/trame".to_string()),
             ],
             RuntimeEnv::Production,
             false,
@@ -404,6 +433,91 @@ fn a22_a72_config_accepts_dev_and_complete_production() {
             !config
                 .security
                 .is_origin_allowed(Some("https://evil.example")),
+            "case {case}"
+        );
+    }
+}
+
+#[test]
+fn sec10_sec11_sec12_config_resolves_accounts_settings() {
+    let instance_id = Uuid::new_v4();
+    let prod = |extra: Vec<(&'static str, String)>| -> Vec<(&'static str, String)> {
+        let mut vars = vec![
+            (MASTER_ENCRYPTION_KEY_VAR, "ab".repeat(32)),
+            (JWT_SECRET_VAR, "x".repeat(32)),
+            (INVITE_JWT_SECRET_VAR, "x".repeat(32)),
+            (PUBLIC_ORIGIN_VAR, ALLOWED_ORIGIN.to_string()),
+        ];
+        vars.extend(extra);
+        vars
+    };
+    // (case_id, vars, registration_open, database_url, instance_id_override, locked email)
+    type Case = (
+        &'static str,
+        Vec<(&'static str, String)>,
+        bool,
+        Option<&'static str>,
+        Option<Uuid>,
+        Option<&'static str>,
+    );
+    let cases: Vec<Case> = vec![
+        (
+            "dev_without_database_keeps_registration_open",
+            vec![(TRAME_ENV_VAR, "dev".to_string())],
+            true,
+            None,
+            None,
+            None,
+        ),
+        (
+            "prod_closes_registration",
+            prod(vec![(DATABASE_URL_VAR, "postgresql://a/b".to_string())]),
+            false,
+            Some("postgresql://a/b"),
+            None,
+            None,
+        ),
+        (
+            "prod_accepts_database_url_alias",
+            prod(vec![(
+                DATABASE_URL_ALIAS_VAR,
+                "postgresql://c/d".to_string(),
+            )]),
+            false,
+            Some("postgresql://c/d"),
+            None,
+            None,
+        ),
+        (
+            "prod_instance_id_override_and_normalized_locked_email",
+            prod(vec![
+                (DATABASE_URL_VAR, "postgresql://a/b".to_string()),
+                (INSTANCE_ID_VAR, instance_id.to_string()),
+                (
+                    BOOTSTRAP_OWNER_EMAIL_VAR,
+                    "  Owner@Example.COM ".to_string(),
+                ),
+            ]),
+            false,
+            Some("postgresql://a/b"),
+            Some(instance_id),
+            Some("owner@example.com"),
+        ),
+    ];
+    for (case, vars, registration_open, database_url, override_id, locked) in cases {
+        let config = ServerConfig::from_lookup(|key| {
+            vars.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone())
+        })
+        .unwrap_or_else(|e| panic!("case {case}: {e}"));
+        assert_eq!(
+            config.security.registration_open, registration_open,
+            "case {case}"
+        );
+        assert_eq!(config.database_url.as_deref(), database_url, "case {case}");
+        assert_eq!(config.instance_id_override, override_id, "case {case}");
+        assert_eq!(
+            config.security.bootstrap_owner_email.as_deref(),
+            locked,
             "case {case}"
         );
     }
@@ -522,6 +636,7 @@ async fn a63_registration_defaults_global_role_to_player() {
     assert!(status.is_success(), "register failed: {status}");
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["user"]["role"], "PLAYER");
+    assert_eq!(json["user"]["instance_role"], "MEMBER");
 }
 
 // ---------------------------------------------------------------------------
@@ -529,45 +644,24 @@ async fn a63_registration_defaults_global_role_to_player() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn invite_route_requires_campaign_gm_and_strong_secret() {
-    let strong = Harness::new();
-    let weak = Harness::with(SecurityPolicy::default(), b"short-secret");
+async fn invite_route_requires_campaign_gm() {
+    let h = Harness::new();
     let campaign_id = Uuid::new_v4();
 
-    // (case_id, harness, role in campaign (None = outsider / unauthenticated), authenticated, expected)
-    let cases: Vec<(&str, &Harness, Option<&str>, bool, StatusCode)> = vec![
-        (
-            "unauthenticated",
-            &strong,
-            None,
-            false,
-            StatusCode::UNAUTHORIZED,
-        ),
-        ("outsider", &strong, None, true, StatusCode::FORBIDDEN),
-        (
-            "player_member",
-            &strong,
-            Some("PLAYER"),
-            true,
-            StatusCode::FORBIDDEN,
-        ),
+    // (case_id, role in campaign (None = outsider / unauthenticated), authenticated, expected)
+    let cases: Vec<(&str, Option<&str>, bool, StatusCode)> = vec![
+        ("unauthenticated", None, false, StatusCode::UNAUTHORIZED),
+        ("outsider", None, true, StatusCode::FORBIDDEN),
+        ("player_member", Some("PLAYER"), true, StatusCode::FORBIDDEN),
         (
             "spectator_member",
-            &strong,
             Some("SPECTATOR"),
             true,
             StatusCode::FORBIDDEN,
         ),
-        (
-            "gm_with_weak_secret",
-            &weak,
-            Some("GM"),
-            true,
-            StatusCode::INTERNAL_SERVER_ERROR,
-        ),
-        ("gm_success", &strong, Some("GM"), true, StatusCode::CREATED),
+        ("gm_success", Some("GM"), true, StatusCode::CREATED),
     ];
-    for (case, h, role, authenticated, expected) in cases {
+    for (case, role, authenticated, expected) in cases {
         let (user_id, cookie) = h.account(false, "PLAYER").await;
         if let Some(role) = role {
             h.join(campaign_id, user_id, role).await;
@@ -578,7 +672,7 @@ async fn invite_route_requires_campaign_gm_and_strong_secret() {
                 "POST",
                 &format!("/api/v1/campaigns/{campaign_id}/invites"),
                 authenticated.then_some(cookie.as_str()),
-                Body::from(r#"{"role":"PLAYER"}"#),
+                Body::from(r#"{"max_uses":4}"#),
             ),
         )
         .await;
@@ -596,6 +690,11 @@ async fn invite_legacy_routes_are_gone_from_full_router() {
     for (case, uri) in [
         ("auth_invites", "/api/v1/auth/invites"),
         ("magic_link_mint", "/api/v1/auth/magic-link/mint"),
+        ("magic_link_guest_session", "/api/v1/auth/magic-link"),
+        (
+            "magic_link_redeem_guest_session",
+            "/api/v1/auth/magic-link/redeem",
+        ),
     ] {
         let (status, _, _) = send(
             &h.app(),
@@ -1073,10 +1172,26 @@ async fn a71_auth_routes_are_rate_limited_per_ip_and_per_account() {
                 .collect(),
         ),
         (
-            "magic_link_per_ip",
-            "/api/v1/auth/magic-link",
+            "invite_redeem_per_ip",
+            "/api/v1/invites/redeem",
             (0..4)
                 .map(|i| ("10.3.0.1", serde_json::json!({ "token": format!("bogus-{i}") })))
+                .collect(),
+        ),
+        (
+            "owner_bootstrap_per_ip",
+            "/api/v1/instance/bootstrap",
+            (0..4)
+                .map(|i| {
+                    (
+                        "10.4.0.1",
+                        serde_json::json!({
+                            "token": format!("bogus-{i}"),
+                            "email": format!("o{i}@example.com"),
+                            "password": "x",
+                        }),
+                    )
+                })
                 .collect(),
         ),
     ];
@@ -1111,12 +1226,8 @@ async fn a71_auth_routes_are_rate_limited_per_ip_and_per_account() {
 #[tokio::test]
 async fn a72_session_cookie_secure_flag_follows_policy() {
     for (case, cookie_secure) in [("secure_default", true), ("plain_http_lan", false)] {
-        let magic = Arc::new(MagicLinkService::new(STRONG_SECRET.to_vec(), "trame-test"));
-        let (token, _) = magic
-            .create_invite_token(Uuid::new_v4(), Uuid::new_v4(), None, "PLAYER", 600)
-            .unwrap();
         let router = build_auth_router(AuthState::with_security(
-            magic,
+            Arc::new(MagicLinkService::new(STRONG_SECRET.to_vec(), "trame-test")),
             Arc::new(InMemorySessionStore::new()),
             Arc::new(TotpService::default()),
             Arc::new(SecurityPolicy {
@@ -1124,17 +1235,22 @@ async fn a72_session_cookie_secure_flag_follows_policy() {
                 ..SecurityPolicy::default()
             }),
         ));
+        let body = serde_json::json!({
+            "email": "cookie@example.com",
+            "display_name": "Cookie",
+            "password": "correct-horse-battery-staple-42",
+        });
         let (status, headers, _) = send(
             &router,
             request(
                 "POST",
-                "/api/v1/auth/magic-link",
+                "/api/v1/auth/register",
                 None,
-                Body::from(serde_json::json!({ "token": token }).to_string()),
+                Body::from(body.to_string()),
             ),
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "case {case}");
+        assert!(status.is_success(), "case {case}: {status}");
         let cookie = headers["set-cookie"].to_str().unwrap();
         assert!(cookie.contains("HttpOnly"), "case {case}");
         assert_eq!(cookie.contains("Secure"), cookie_secure, "case {case}");

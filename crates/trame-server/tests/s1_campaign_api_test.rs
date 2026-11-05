@@ -38,6 +38,7 @@ use trame_engine::commands::{
 use trame_engine::geometry::Point2D;
 use trame_server::archive::InMemoryCampaignStore;
 use trame_server::assets::store::InMemoryAssetStore;
+use trame_server::auth::accounts::InstanceRole;
 use trame_server::auth::magic_link::MagicLinkService;
 use trame_server::auth::session::{
     AuthState, InMemorySessionStore, SessionStore, UserRecord, hash_session_token,
@@ -104,7 +105,8 @@ impl Harness {
         build_router_with_state(self.state.clone())
     }
 
-    /// Registered (non-guest) account with a live session -> `(user_id, cookie_header)`.
+    /// Registered `Host` account (may create campaigns) with a live session ->
+    /// `(user_id, cookie_header)`.
     async fn account(&self) -> (Uuid, String) {
         let user_id = Uuid::new_v4();
         let store = &self.state.auth_state.session_store;
@@ -120,6 +122,7 @@ impl Harness {
                 mfa_enabled: false,
                 totp_secret: None,
                 pending_totp_secret: None,
+                instance_role: InstanceRole::Host,
             })
             .await
             .unwrap();

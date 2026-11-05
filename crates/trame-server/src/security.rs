@@ -168,6 +168,10 @@ pub struct SecurityPolicy {
     pub rate_limiter: AuthRateLimiter,
     /// Normalized `TRAME_PUBLIC_ORIGIN` prefixed to invite URLs; `None` yields relative URLs.
     pub public_origin: Option<String>,
+    /// `POST /api/v1/auth/register` accepts new accounts (only `TRAME_ENV=dev`, SEC10).
+    pub registration_open: bool,
+    /// `TRAME_BOOTSTRAP_OWNER_EMAIL` (normalized): the only email the owner bootstrap accepts.
+    pub bootstrap_owner_email: Option<String>,
 }
 
 impl Default for SecurityPolicy {
@@ -180,6 +184,8 @@ impl Default for SecurityPolicy {
             trust_forwarded_for: false,
             rate_limiter: AuthRateLimiter::default(),
             public_origin: None,
+            registration_open: true,
+            bootstrap_owner_email: None,
         }
     }
 }

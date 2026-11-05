@@ -972,6 +972,7 @@ mod tests {
                 mfa_enabled: false,
                 totp_secret: None,
                 pending_totp_secret: None,
+                instance_role: trame_server::auth::accounts::InstanceRole::Host,
             })
             .await
             .unwrap();

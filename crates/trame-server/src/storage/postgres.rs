@@ -38,10 +38,12 @@
 //!     └── 3. Bridge synchronous WAL/room trait calls via `run_pg_blocking` (`block_in_place`).
 //! ============================================================================
 
+use super::postgres_accounts::instance_role_column;
 use crate::archive::exporter::{ExportEntity, NoteRecord};
 use crate::archive::importer::{ArchiveError, CampaignImportTarget};
 use crate::archive::manifest::CampaignMetadata;
 use crate::assets::store::{AssetStore, AssetStoreError};
+use crate::auth::accounts::InstanceRole;
 use crate::auth::magic_link::{hmac_sha256, now_epoch_seconds};
 use crate::auth::oauth::{OAuthError, OAuthProvider, OAuthStore, PendingOAuthState};
 use crate::auth::password::IdentityStore;
@@ -1210,6 +1212,7 @@ impl SessionStore for SqlxPostgresStore {
                 mfa_enabled: false,
                 totp_secret: None,
                 pending_totp_secret: None,
+                instance_role: InstanceRole::Member,
             })
         })
     }
@@ -1430,7 +1433,7 @@ impl IdentityStore for SqlxPostgresStore {
             let normalized = email.trim().to_lowercase();
             let row_opt = sqlx::query(
                 "SELECT id, email, display_name, password_hash, is_ephemeral, role,
-                        mfa_enabled, totp_secret, pending_totp_secret,
+                        mfa_enabled, totp_secret, pending_totp_secret, instance_role,
                         EXTRACT(EPOCH FROM created_at)::BIGINT AS created_epoch
                  FROM users
                  WHERE LOWER(email) = $1",
@@ -1459,6 +1462,7 @@ impl IdentityStore for SqlxPostgresStore {
                 mfa_enabled: row.try_get("mfa_enabled").unwrap_or(false),
                 totp_secret: row.try_get("totp_secret").ok().flatten(),
                 pending_totp_secret: row.try_get("pending_totp_secret").ok().flatten(),
+                instance_role: instance_role_column(&row),
             }))
         })
     }
@@ -1470,7 +1474,7 @@ impl IdentityStore for SqlxPostgresStore {
         Box::pin(async move {
             let row_opt = sqlx::query(
                 "SELECT id, email, display_name, password_hash, is_ephemeral, role,
-                        mfa_enabled, totp_secret, pending_totp_secret,
+                        mfa_enabled, totp_secret, pending_totp_secret, instance_role,
                         EXTRACT(EPOCH FROM created_at)::BIGINT AS created_epoch
                  FROM users
                  WHERE id = $1",
@@ -1499,6 +1503,7 @@ impl IdentityStore for SqlxPostgresStore {
                 mfa_enabled: row.try_get("mfa_enabled").unwrap_or(false),
                 totp_secret: row.try_get("totp_secret").ok().flatten(),
                 pending_totp_secret: row.try_get("pending_totp_secret").ok().flatten(),
+                instance_role: instance_role_column(&row),
             }))
         })
     }
@@ -1535,8 +1540,8 @@ impl IdentityStore for SqlxPostgresStore {
                 .clone()
                 .unwrap_or_else(|| format!("ephemeral_{}@trame.local", user.id));
             sqlx::query(
-                "INSERT INTO users (id, email, display_name, password_hash, is_ephemeral, role, mfa_enabled, totp_secret, pending_totp_secret)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                "INSERT INTO users (id, email, display_name, password_hash, is_ephemeral, role, mfa_enabled, totp_secret, pending_totp_secret, instance_role)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                  ON CONFLICT (id) DO UPDATE SET
                    email = EXCLUDED.email,
                    display_name = EXCLUDED.display_name,
@@ -1557,6 +1562,7 @@ impl IdentityStore for SqlxPostgresStore {
             .bind(user.mfa_enabled)
             .bind(&user.totp_secret)
             .bind(&user.pending_totp_secret)
+            .bind(user.instance_role.as_str())
             .execute(&self.pool)
             .await
             .map_err(|e| SessionError::Storage(e.to_string()))?;

@@ -326,7 +326,7 @@ async fn caller_role(
     Ok((user_id, role))
 }
 
-async fn load_campaign(
+pub(crate) async fn load_campaign(
     state: &AppState,
     campaign_id: Uuid,
 ) -> Result<Option<CampaignRecord>, String> {
@@ -398,7 +398,8 @@ pub async fn list_campaigns_handler(State(state): State<AppState>, headers: Head
     Json(json!({ "campaigns": campaigns })).into_response()
 }
 
-/// `POST /api/v1/campaigns` -> `201 { campaign }`; the caller becomes GM. Guests are refused.
+/// `POST /api/v1/campaigns` -> `201 { campaign }`; the caller becomes GM. Only `Host` and
+/// `Owner` accounts may create campaigns (`403 HOST_REQUIRED` otherwise, SEC10).
 pub async fn create_campaign_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -411,11 +412,8 @@ pub async fn create_campaign_handler(
             "valid authentication credentials required",
         );
     };
-    match state.auth_state.session_store.get_user_by_id(user_id).await {
-        Ok(Some(user)) if !user.is_guest => {}
-        _ => {
-            return forbidden("only registered (non-guest) accounts can create campaigns");
-        }
+    if let Err(resp) = crate::access::require_campaign_creator(&state, user_id).await {
+        return *resp;
     }
     let name = req.name.trim();
     if name.is_empty() || name.chars().count() > MAX_CAMPAIGN_NAME_CHARS {

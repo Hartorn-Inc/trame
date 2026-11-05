@@ -13,6 +13,9 @@
 //!     otherwise each test returns early so local `cargo test` stays hermetic.
 //!   - Every test uses fresh UUIDs, so reruns against the same database never
 //!     collide.
+//!   - Instance-wide singletons (the `Owner`, `instance_settings`) are shared by
+//!     every run, so tests only assert on them relative to the stored value and
+//!     never claim the `Owner` (covered in-memory by `accounts_access_test.rs`).
 //! ============================================================================
 
 use axum::Router;
@@ -22,6 +25,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tower::ServiceExt;
 use trame_server::assets::store::AssetStore;
+use trame_server::auth::accounts::InstanceRole;
 use trame_server::auth::session::{IdentityStore, SessionStore, UserRecord, hash_session_token};
 use trame_server::campaigns::LIVE_SESSION_NUM;
 use trame_server::config::ServerConfig;
@@ -63,7 +67,15 @@ async fn account(store: &SqlxPostgresStore) -> String {
     account_with_id(store).await.1
 }
 
+/// `Host` account (may create campaigns) with a live session.
 async fn account_with_id(store: &SqlxPostgresStore) -> (Uuid, String) {
+    account_with_role(store, InstanceRole::Host).await
+}
+
+async fn account_with_role(
+    store: &SqlxPostgresStore,
+    instance_role: InstanceRole,
+) -> (Uuid, String) {
     let user_id = Uuid::new_v4();
     store
         .save_user(UserRecord {
@@ -77,6 +89,7 @@ async fn account_with_id(store: &SqlxPostgresStore) -> (Uuid, String) {
             mfa_enabled: false,
             totp_secret: None,
             pending_totp_secret: None,
+            instance_role,
         })
         .await
         .unwrap();

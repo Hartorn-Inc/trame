@@ -34,6 +34,14 @@
 //!      - `TRAME_ENV=dev` logs pretty ANSI lines; every other value (including
 //!        unset) logs JSON without ANSI escapes, so production log collectors
 //!        receive one structured object per line. No separate variable exists.
+//!   5. `Durable Storage & Invite-Only Accounts (SEC10, SEC12)`:
+//!      - `DATABASE_URL` (alias `TRAME_DATABASE_URL`) is required outside dev:
+//!        the in-memory store loses every account and campaign on restart, so
+//!        a production server must never fall back to it silently.
+//!      - Public registration is open only in dev (`registration_open`);
+//!        elsewhere accounts come from owner bootstrap or `InviteRedemption`.
+//!      - `TRAME_INSTANCE_ID` must be a UUID when set; it overrides the id
+//!        persisted in the instance settings row (SEC11).
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -70,6 +78,14 @@ pub const COOKIE_SECURE_VAR: &str = "TRAME_COOKIE_SECURE";
 /// When `true`, rate limiting keys on the right-most `X-Forwarded-For` hop
 /// (set only behind a trusted reverse proxy such as Cloud Run).
 pub const TRUST_FORWARDED_FOR_VAR: &str = "TRAME_TRUST_FORWARDED_FOR";
+/// PostgreSQL connection URL; required outside dev (alias: `TRAME_DATABASE_URL`).
+pub const DATABASE_URL_VAR: &str = "DATABASE_URL";
+/// Alias accepted for `DATABASE_URL`.
+pub const DATABASE_URL_ALIAS_VAR: &str = "TRAME_DATABASE_URL";
+/// Optional UUID overriding the persisted instance id.
+pub const INSTANCE_ID_VAR: &str = "TRAME_INSTANCE_ID";
+/// Optional email the owner bootstrap is locked to.
+pub const BOOTSTRAP_OWNER_EMAIL_VAR: &str = "TRAME_BOOTSTRAP_OWNER_EMAIL";
 
 /// Minimum HMAC secret length in bytes (256 bits).
 pub const MIN_SECRET_BYTES: usize = 32;
@@ -160,6 +176,10 @@ pub struct ServerConfig {
     pub public_origin: Option<String>,
     /// `TRAME_STATIC_DIR`: directory of the built SPA served as fallback (`None` = no static).
     pub static_dir: Option<std::path::PathBuf>,
+    /// `DATABASE_URL`; `None` (dev only) selects the in-memory store.
+    pub database_url: Option<String>,
+    /// `TRAME_INSTANCE_ID`; `None` uses the id persisted in the instance settings row.
+    pub instance_id_override: Option<uuid::Uuid>,
 }
 
 /// Startup configuration failure listing every offending variable at once.
@@ -181,6 +201,8 @@ impl ServerConfig {
             security: Arc::new(SecurityPolicy::default()),
             public_origin: None,
             static_dir: None,
+            database_url: None,
+            instance_id_override: None,
         }
     }
 
@@ -253,6 +275,24 @@ impl ServerConfig {
         let cookie_secure = !get(COOKIE_SECURE_VAR).is_some_and(|v| is_falsy(&v));
         let trust_forwarded_for = get(TRUST_FORWARDED_FOR_VAR).is_some_and(|v| !is_falsy(&v));
 
+        let database_url = get(DATABASE_URL_VAR).or_else(|| get(DATABASE_URL_ALIAS_VAR));
+        if database_url.is_none() && !dev {
+            missing.push(DATABASE_URL_VAR.to_string());
+        }
+        let instance_id_override = get(INSTANCE_ID_VAR).and_then(|v| {
+            let parsed = uuid::Uuid::parse_str(v.trim()).ok();
+            if parsed.is_none() {
+                invalid.push(format!("{INSTANCE_ID_VAR} (expected a UUID)"));
+            }
+            parsed
+        });
+        let bootstrap_owner_email = get(BOOTSTRAP_OWNER_EMAIL_VAR).map(|e| {
+            crate::auth::accounts::normalize_email(&e).unwrap_or_else(|| {
+                invalid.push(format!("{BOOTSTRAP_OWNER_EMAIL_VAR} (expected an email)"));
+                String::new()
+            })
+        });
+
         if !missing.is_empty() || !invalid.is_empty() {
             return Err(ConfigError { missing, invalid });
         }
@@ -270,10 +310,14 @@ impl ServerConfig {
                 trust_forwarded_for,
                 rate_limiter: AuthRateLimiter::default(),
                 public_origin: public_origin.clone(),
+                registration_open: dev,
+                bootstrap_owner_email,
                 ..SecurityPolicy::default()
             }),
             public_origin,
             static_dir: get(STATIC_DIR_VAR).map(|d| std::path::PathBuf::from(d.trim())),
+            database_url,
+            instance_id_override,
         })
     }
 }

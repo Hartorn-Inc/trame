@@ -60,7 +60,8 @@ make test-rust TEST_DATABASE_URL=postgresql://trame:trame_dev_password@postgres:
 | `TRAME_COOKIE_SECURE` | No | Session cookies carry `Secure` unless set to `false`/`0`/`no`/`off` (plain-HTTP LAN tables). |
 | `TRAME_TRUST_FORWARDED_FOR` | No | `true` keys rate limits on the right-most `X-Forwarded-For` hop; set only behind a trusted proxy. |
 | `TRAME_STATIC_DIR` | No | Directory of the built web client served with an `index.html` SPA fallback (set to `/app/static` in the production image). Bundle files under `/assets/` are served as-is (`/assets/download/*` stays the signed asset route); HTML responses carry a CSP that allows the app's own scripts, styles, fonts, images, the WASM engine and the same-origin WebSocket, while API responses keep `default-src 'none'`. |
-| `DATABASE_URL` | No | PostgreSQL URL (alias: `TRAME_DATABASE_URL`). Migrations run at startup. Without it the server uses in-memory persistence. |
+| `DATABASE_URL` | Yes | PostgreSQL URL (alias: `TRAME_DATABASE_URL`). Migrations run at startup. Only `TRAME_ENV=dev` may omit it, which selects in-memory persistence. |
 | `TRAME_PORT` | No | Listen port (fallback `PORT`, default `8080`). |
-| `TRAME_INSTANCE_ID` | No | Instance UUID; a random one is generated when unset. |
+| `TRAME_INSTANCE_ID` | No | Instance UUID override. Without it the server uses the id persisted in `instance_settings` on first boot; an override that differs from the persisted id is used and logged as a warning. |
+| `TRAME_BOOTSTRAP_OWNER_EMAIL` | No | Locks the owner bootstrap to this email. While no Owner exists, each boot logs a one-hour, single-use setup URL as one line with `event="owner_bootstrap_url"` and `setup_url`; public registration is open only with `TRAME_ENV=dev`. |
 | `RUST_LOG` | No | `tracing` log filter (for example `info,trame_server=debug`); defaults to `info`. |

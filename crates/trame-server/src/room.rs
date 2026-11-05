@@ -86,6 +86,10 @@ pub const WS_CLOSE_CODE_GOING_AWAY: u16 = 1001;
 /// Standard reason string broadcast alongside close code 1001.
 pub const WS_CLOSE_REASON_GOING_AWAY: &str = "Server Hibernating";
 
+/// Application close code sent to the sockets of a user whose campaign membership was
+/// removed (SEC13); reconnecting fails the membership check with `403`.
+pub const WS_CLOSE_CODE_MEMBERSHIP_REVOKED: u16 = 4403;
+
 /// Upper bound on `ApplyDamage.raw_damage` (HP). Far above any 5e damage roll while keeping
 /// engine multipliers (`Vulnerable` doubles damage) well inside `i32`.
 pub const MAX_RAW_DAMAGE: i32 = 10_000;
@@ -213,6 +217,13 @@ pub enum RoomActorMessage {
         /// Session UUID to remove.
         session_id: Uuid,
     },
+    /// Closes (code `WS_CLOSE_CODE_MEMBERSHIP_REVOKED`) and removes every session of `user_id`.
+    EvictUser {
+        /// Account whose membership changed.
+        user_id: Uuid,
+        /// Oneshot channel receiving the number of sessions closed.
+        reply: oneshot::Sender<usize>,
+    },
     /// Processes an inbound `ClientEnvelope` (command, dice roll, pointer ping, or latency ping).
     HandleEnvelope {
         /// Originating client session UUID.
@@ -333,6 +344,19 @@ impl TableRoomHandle {
             .send(RoomActorMessage::DisconnectClient { session_id })
             .await
             .map_err(|_| RoomError::ActorClosed)
+    }
+
+    /// Closes every live socket of `user_id`; returns how many sessions were closed.
+    pub async fn evict_user(&self, user_id: Uuid) -> Result<usize, RoomError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(RoomActorMessage::EvictUser {
+                user_id,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RoomError::ActorClosed)?;
+        reply_rx.await.map_err(|_| RoomError::ActorClosed)
     }
 
     /// Submits a deserialized `ClientEnvelope` from `session_id` to the room actor for authoritative execution.
@@ -568,6 +592,20 @@ impl TableRoomActor {
                 RoomActorMessage::DisconnectClient { session_id } => {
                     self.clients.remove(&session_id);
                     self.last_activity_ms = now_ms();
+                }
+                RoomActorMessage::EvictUser { user_id, reply } => {
+                    let before = self.clients.len();
+                    self.clients.retain(|_, client| {
+                        if client.user_id != user_id {
+                            return true;
+                        }
+                        let _ = client.tx.send(OutboundClientFrame::Close {
+                            code: WS_CLOSE_CODE_MEMBERSHIP_REVOKED,
+                            reason: "Membership Revoked".to_string(),
+                        });
+                        false
+                    });
+                    let _ = reply.send(before - self.clients.len());
                 }
                 RoomActorMessage::HandleEnvelope {
                     session_id,

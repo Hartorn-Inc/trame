@@ -9,10 +9,8 @@
 //! - Portable `.trame` campaign archive streaming export (`GET /api/v1/campaigns/{campaign_id}/export`).
 //! - Portable `.trame` campaign archive streaming import (`POST /api/v1/campaigns/import`), which
 //!   always creates a new campaign with remapped IDs owned by the caller (G8).
-//! - GM-authorized campaign Magic Link invite minting (`POST /api/v1/campaigns/{campaign_id}/invites`),
-//!   the only invite minting route.
-//! - Hybrid authentication routes (`/api/v1/auth/magic-link`, `/api/v1/auth/bind-account`,
-//!   `/api/v1/auth/pat`, `/api/v1/auth/totp/{setup,enable,verify}`).
+//! - Campaign access routes (`CampaignInvite`, `InviteRedemption`, member removal) merged from
+//!   `access.rs`, and authentication/instance routes merged from `auth::session`.
 //! - Campaign-scoped asset presigned URL endpoint (`GET /api/v1/campaigns/{campaign_id}/assets/{hash}/presign`).
 //! - Cursor-paginated session timeline endpoint (`GET /api/v1/campaigns/{campaign_id}/sessions/{session_num}/timeline`).
 //! - Binary MessagePack WebSocket upgrade endpoint (`GET /ws/campaigns/{campaign_id}`) backed by `RoomLeaseManager`.
@@ -32,8 +30,8 @@
 //!      - `timeline_handler` requires membership, hides GM-only events from non-GMs, and clamps
 //!        `limit` to `1..=MAX_TIMELINE_LIMIT`.
 //!   3. `Import Creates, Never Overwrites`:
-//!      - `import_campaign_handler` requires a non-guest account, always remaps IDs, and makes
-//!        the caller the GM of the new campaign.
+//!      - `import_campaign_handler` requires a `Host` or `Owner` account, always remaps IDs,
+//!        and makes the caller the GM of the new campaign.
 //!   4. `WebSocket Hardening`:
 //!      - Upgrades require credentials, campaign membership, and an allow-listed `Origin`;
 //!        messages and frames are capped at `SecurityPolicy::ws_max_message_bytes`.
@@ -50,9 +48,8 @@
 //!   `HTTP / WebSocket Request`
 //!     ├── 1. `GET /healthz` -> verify database connectivity & return `200 OK` `{"status":"ok"}` (< 5 ms).
 //!     ├── 2. `GET /api/v1/campaigns/{id}/export` -> verify member auth -> stream `.trame` ZIP archive.
-//!     ├── 3. `POST /api/v1/campaigns/import` -> non-guest auth -> remapped import -> `201 Created`.
-//!     ├── 4. `POST /api/v1/campaigns/{id}/invites` -> verify GM role -> mint JWT & return `201 Created`.
-//!     └── 5. `GET /ws/campaigns/{id}` -> auth + Origin + membership -> capped upgrade -> `TableRoomActor`.
+//!     ├── 3. `POST /api/v1/campaigns/import` -> Host/Owner auth -> remapped import -> `201 Created`.
+//!     └── 4. `GET /ws/campaigns/{id}` -> auth + Origin + membership -> capped upgrade -> `TableRoomActor`.
 //! ============================================================================
 
 use crate::archive::{
@@ -66,8 +63,8 @@ use crate::auth::magic_link::MagicLinkService;
 use crate::auth::password::extract_session_token;
 use crate::auth::pat::PatMiddleware;
 use crate::auth::session::{
-    AuthState, DEFAULT_SESSION_TTL_SECONDS, FullAuthStore, IdentityStore, InMemorySessionStore,
-    SessionStore, build_auth_router, hash_session_token,
+    AuthState, FullAuthStore, InMemorySessionStore, SessionStore, build_auth_router,
+    hash_session_token,
 };
 use crate::auth::totp::TotpService;
 use crate::config::ServerConfig;
@@ -106,35 +103,6 @@ pub const MAX_ARCHIVE_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 /// Upper bound for `TimelineQuery::limit` (entries per page).
 pub const MAX_TIMELINE_LIMIT: usize = 200;
-
-/// Request payload submitted to `POST /api/v1/campaigns/{campaign_id}/invites`.
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub struct CreateCampaignInviteRequest {
-    /// Optional character UUID to pre-assign to the invited player.
-    pub character_id: Option<Uuid>,
-    /// Role granted by the invite (`"PLAYER"`, `"SPECTATOR"`, `"ASSISTANT_GM"`); defaults to `"PLAYER"`.
-    pub role: Option<String>,
-    /// Invite token time-to-live in seconds; defaults to 7 days (`DEFAULT_SESSION_TTL_SECONDS`).
-    pub ttl_seconds: Option<u64>,
-}
-
-/// Response payload returned by `POST /api/v1/campaigns/{campaign_id}/invites`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CampaignInviteResponse {
-    /// Full or relative invite URL containing the signed Magic Link JWT.
-    pub invite_url: String,
-    /// Signed HMAC-SHA256 Magic Link JWT token string.
-    pub token: String,
-    /// Expiration timestamp in UNIX epoch seconds.
-    pub expires_at: u64,
-    /// Target campaign UUID.
-    pub campaign_id: Uuid,
-    /// Granted campaign role.
-    pub role: String,
-    /// Optional pre-assigned character UUID.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub character_id: Option<Uuid>,
-}
 
 /// JSON payload returned by the `GET /healthz` liveness and database connectivity endpoint.
 #[derive(Debug, Serialize, Deserialize)]
@@ -496,7 +464,29 @@ pub fn build_in_memory_router_with_config(
     timeline_storage: Arc<dyn TimelineStorage>,
     config: &ServerConfig,
 ) -> Router {
-    let auth_state = auth_state_from_config(Arc::new(InMemorySessionStore::new()), config);
+    build_in_memory_router_with_store(
+        Arc::new(InMemorySessionStore::new()),
+        lease_manager,
+        asset_store,
+        membership,
+        instance_id,
+        timeline_storage,
+        config,
+    )
+}
+
+/// Same as `build_in_memory_router_with_config` over a caller-owned auth store (lets `main`
+/// prepare the owner bootstrap token on the store the router serves).
+pub fn build_in_memory_router_with_store(
+    session_store: Arc<dyn FullAuthStore>,
+    lease_manager: Arc<RoomLeaseManager>,
+    asset_store: Arc<dyn AssetStore>,
+    membership: Arc<dyn CampaignMembershipValidator>,
+    instance_id: Uuid,
+    timeline_storage: Arc<dyn TimelineStorage>,
+    config: &ServerConfig,
+) -> Router {
+    let auth_state = auth_state_from_config(session_store, config);
     let state = AppState {
         lease_manager,
         asset_store,
@@ -640,17 +630,15 @@ pub fn build_router_with_state(state: AppState) -> Router {
         )
         .route("/api/v1/campaigns/import", post(import_campaign_handler))
         .route(
-            "/api/v1/campaigns/{campaign_id}/invites",
-            post(create_campaign_invite_handler),
-        )
-        .route(
             "/api/v1/campaigns/{campaign_id}/maps",
             get(get_campaign_maps_handler).put(put_campaign_maps_handler),
         )
         .route("/api/v1/mcp", post(crate::mcp::mcp_jsonrpc_handler))
         .merge(crate::campaigns::campaign_routes())
-        .with_state(state)
-        .merge(auth_router);
+        .merge(crate::access::campaign_access_routes())
+        .with_state(state.clone())
+        .merge(auth_router)
+        .merge(crate::access::invite_redemption_router(state));
     let router = match static_dir {
         Some(dir) => router.fallback(spa_fallback(dir)),
         None => router,
@@ -977,8 +965,9 @@ fn is_client_archive_error(err: &ArchiveError) -> bool {
 }
 
 /// Imports a `.trame` archive stream at `POST /api/v1/campaigns/import` as a brand-new campaign
-/// (IDs always remapped, G8) whose GM is the caller. Requires a non-guest account (`401` when
-/// unauthenticated, `403` for guests); returns `201 Created` with restoration counters.
+/// (IDs always remapped, G8) whose GM is the caller. Requires a `Host` or `Owner` account
+/// (`401` when unauthenticated, `403 HOST_REQUIRED` otherwise); returns `201 Created` with
+/// restoration counters.
 pub async fn import_campaign_handler(
     headers: HeaderMap,
     State(state): State<AppState>,
@@ -991,20 +980,8 @@ pub async fn import_campaign_handler(
             "valid authentication credentials required",
         );
     };
-    match state
-        .auth_state
-        .session_store
-        .get_user_by_id(caller_user_id)
-        .await
-    {
-        Ok(Some(user)) if !user.is_guest => {}
-        _ => {
-            return error_response(
-                StatusCode::FORBIDDEN,
-                "GUEST_FORBIDDEN",
-                "only registered (non-guest) accounts can create campaigns",
-            );
-        }
+    if let Err(resp) = crate::access::require_campaign_creator(&state, caller_user_id).await {
+        return *resp;
     }
 
     let body = request.into_body();
@@ -1094,110 +1071,6 @@ pub async fn import_campaign_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 code: Some("IMPORT_ERROR".to_string()),
-                error: err.to_string(),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-/// Mints a signed campaign Magic Link invite token at `POST /api/v1/campaigns/{campaign_id}/invites`
-/// when called by an authorized Game Master (`201 Created`).
-pub async fn create_campaign_invite_handler(
-    Path(campaign_id): Path<Uuid>,
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    body: Bytes,
-) -> Response {
-    if let Err(err) = state.auth_state.magic_link_service.validate_secret() {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "WEAK_JWT_SECRET",
-            &err.to_string(),
-        );
-    }
-
-    let payload: CreateCampaignInviteRequest = if body.is_empty() {
-        CreateCampaignInviteRequest::default()
-    } else {
-        match serde_json::from_slice(&body) {
-            Ok(p) => p,
-            Err(err) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        code: Some("INVALID_PAYLOAD".to_string()),
-                        error: err.to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-        }
-    };
-
-    let caller_id = match resolve_authenticated_user(&state, &headers).await {
-        Ok(uid) => uid,
-        Err(status) => {
-            return (
-                status,
-                Json(ErrorResponse {
-                    code: Some("UNAUTHORIZED".to_string()),
-                    error: "authentication required to create campaign invites".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    if !is_authorized_campaign_gm(&state, campaign_id, caller_id).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                code: Some("FORBIDDEN".to_string()),
-                error: "only a campaign GM may create invite links".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    let role = payload
-        .role
-        .map(|r| r.trim().to_ascii_uppercase())
-        .unwrap_or_else(|| "PLAYER".to_string());
-    let ttl = payload.ttl_seconds.unwrap_or(DEFAULT_SESSION_TTL_SECONDS);
-
-    match state.auth_state.magic_link_service.create_invite_token(
-        caller_id,
-        campaign_id,
-        payload.character_id,
-        &role,
-        ttl,
-    ) {
-        Ok((token, claims)) => {
-            let origin = state
-                .auth_state
-                .security
-                .public_origin
-                .as_deref()
-                .unwrap_or("");
-            let invite_url = format!("{origin}/?invite={token}");
-            (
-                StatusCode::CREATED,
-                Json(CampaignInviteResponse {
-                    invite_url,
-                    token,
-                    expires_at: claims.exp,
-                    campaign_id,
-                    role: claims.role,
-                    character_id: claims.character_id,
-                }),
-            )
-                .into_response()
-        }
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                code: Some("INVITE_CREATION_FAILED".to_string()),
                 error: err.to_string(),
             }),
         )
