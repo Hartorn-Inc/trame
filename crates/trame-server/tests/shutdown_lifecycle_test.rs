@@ -425,7 +425,8 @@ async fn test_http_endpoint_rejects_connections_during_shutdown() {
 
     let wal = Arc::new(InMemoryWalStorage::new());
     let lease_manager = Arc::new(RoomLeaseManager::new(wal.clone(), 25, 900_000));
-    let asset_store = Arc::new(trame_server::assets::store::InMemoryAssetStore::new());
+    let asset_store =
+        Arc::new(trame_server::assets::store::InMemoryAssetStore::with_ephemeral_secret());
     let membership = Arc::new(trame_server::http::InMemoryMembershipValidator::new());
     let instance_id = Uuid::new_v4();
 

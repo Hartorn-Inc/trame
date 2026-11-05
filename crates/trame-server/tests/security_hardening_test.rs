@@ -41,7 +41,9 @@ use trame_server::archive::{
     ArchiveEntryDescriptor, ArchiveImporter, CampaignManifest, CampaignMetadata, ExportEntity,
     InMemoryCampaignStore, ManifestStats,
 };
-use trame_server::assets::store::{AssetStore, InMemoryAssetStore, PRESIGNED_URL_DEFAULT_TTL};
+use trame_server::assets::store::{
+    AssetStore, InMemoryAssetStore, PRESIGNED_URL_DEFAULT_TTL, verify_asset_signature,
+};
 use trame_server::auth::accounts::InstanceRole;
 use trame_server::auth::magic_link::MagicLinkService;
 use trame_server::auth::session::{
@@ -92,7 +94,7 @@ impl Harness {
     fn with(policy: SecurityPolicy) -> Self {
         let wal = Arc::new(InMemoryWalStorage::new());
         let timeline = Arc::new(InMemoryTimelineStorage::new());
-        let asset_store = Arc::new(InMemoryAssetStore::new());
+        let asset_store = Arc::new(InMemoryAssetStore::with_ephemeral_secret());
         let auth_state = AuthState::with_security(
             Arc::new(MagicLinkService::new(STRONG_SECRET.to_vec(), "trame-test")),
             Arc::new(InMemorySessionStore::new()),
@@ -1272,30 +1274,44 @@ fn sec4_removed_trust_forwarded_for_aborts_startup() {
 #[tokio::test]
 async fn sec5_default_constructors_use_per_instance_keys() {
     let key = "instances/i/campaigns/c/assets/a.webp";
-    let signer = InMemoryAssetStore::new();
-    signer
-        .put_asset(key, Bytes::from_static(b"x"), "image/webp")
-        .await
-        .unwrap();
-    let url = signer
-        .mint_presigned_get_url(key, PRESIGNED_URL_DEFAULT_TTL)
-        .await
-        .unwrap();
-    let param = |name: &str| -> String {
-        url.split(['?', '&'])
-            .find_map(|kv| kv.strip_prefix(&format!("{name}=")))
-            .unwrap()
-            .to_string()
+    let configured_secret = b"configured-asset-signing-secret-0123456789".to_vec();
+    let signed = |store: InMemoryAssetStore| async move {
+        store
+            .put_asset(key, Bytes::from_static(b"x"), "image/webp")
+            .await
+            .unwrap();
+        let url = store
+            .mint_presigned_get_url(key, PRESIGNED_URL_DEFAULT_TTL)
+            .await
+            .unwrap();
+        let param = |name: &str| -> String {
+            url.split(['?', '&'])
+                .find_map(|kv| kv.strip_prefix(&format!("{name}=")))
+                .unwrap()
+                .to_string()
+        };
+        (store, param("exp").parse::<u64>().unwrap(), param("sig"))
     };
-    let (exp, sig) = (param("exp").parse::<u64>().unwrap(), param("sig"));
+    let (signer, exp, sig) = signed(InMemoryAssetStore::with_ephemeral_secret()).await;
+    let (_, cfg_exp, cfg_sig) = signed(InMemoryAssetStore::with_base_url_and_secret(
+        "/assets/download",
+        configured_secret.clone(),
+    ))
+    .await;
     let ciphertext = TotpService::default().encrypt_secret(b"totp-seed").unwrap();
 
-    // (case_id, verifies with the minting instance, verifies with a fresh instance)
+    // (case_id, verifies with the minting key, verifies with a fresh instance's key)
     let cases = [
         (
             "asset_signature",
             signer.verify_presigned_get(key, exp, &sig),
-            InMemoryAssetStore::new().verify_presigned_get(key, exp, &sig),
+            InMemoryAssetStore::with_ephemeral_secret().verify_presigned_get(key, exp, &sig),
+        ),
+        (
+            "production_store_signs_with_configured_key",
+            verify_asset_signature(&configured_secret, key, cfg_exp, &cfg_sig),
+            InMemoryAssetStore::with_ephemeral_secret()
+                .verify_presigned_get(key, cfg_exp, &cfg_sig),
         ),
         (
             "totp_secret_encryption",
@@ -1869,7 +1885,7 @@ async fn sec16_each_legacy_asset_is_stored_as_soon_as_it_is_verified() {
     ];
     for (case, assets, succeeds) in cases {
         let (archive, campaign_id) = legacy_asset_archive(&assets).await;
-        let asset_store = Arc::new(InMemoryAssetStore::new());
+        let asset_store = Arc::new(InMemoryAssetStore::with_ephemeral_secret());
         let instance_id = Uuid::new_v4();
         let importer = ArchiveImporter::new(InMemoryCampaignStore::new(), InMemoryBlobStore::new())
             .with_asset_store(asset_store.clone(), instance_id);

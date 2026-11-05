@@ -35,7 +35,7 @@ use trame_engine::geometry::Point2D;
 use trame_engine::rules::DamageAffinity;
 use trame_server::archive::InMemoryCampaignStore;
 use trame_server::assets::store::InMemoryAssetStore;
-use trame_server::auth::accounts::{AccountStore, InstanceRole};
+use trame_server::auth::accounts::InstanceRole;
 use trame_server::auth::magic_link::MagicLinkService;
 use trame_server::auth::session::{
     AuthState, IdentityStore, InMemorySessionStore, SessionStore, UserRecord, hash_session_token,
@@ -1158,7 +1158,7 @@ fn app_state(wal: Arc<InMemoryWalStorage>) -> AppState {
 fn app_state_with(wal: Arc<dyn WalStorage>, policy: SecurityPolicy) -> AppState {
     AppState {
         lease_manager: Arc::new(RoomLeaseManager::new(wal, 25, 900_000)),
-        asset_store: Arc::new(InMemoryAssetStore::new()),
+        asset_store: Arc::new(InMemoryAssetStore::with_ephemeral_secret()),
         membership: Arc::new(InMemoryMembershipValidator::new()),
         instance_id: Uuid::new_v4(),
         timeline_storage: Arc::new(InMemoryTimelineStorage::new()),

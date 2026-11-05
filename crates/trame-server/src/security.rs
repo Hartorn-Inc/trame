@@ -43,8 +43,12 @@
 //!        `X-Forwarded-For` entry from the right (the one appended by the
 //!        outermost trusted proxy) is used. IPv6 clients bucket by /64.
 //!   2b. `No Fallback Keys (SEC5)`:
-//!      - Constructors without a configured secret use `ephemeral_secret()`, a
-//!        random per-instance key, never a hard-coded or environment value.
+//!      - Production stores take their keys explicitly from `ServerSecrets`
+//!        (`InMemoryAssetStore::with_base_url_and_secret`,
+//!        `SqlxPostgresStore::new` / `connect_and_migrate`). Only the
+//!        test/dev-router constructor `InMemoryAssetStore::with_ephemeral_secret`
+//!        uses `ephemeral_secret()`, a random per-process key, never a
+//!        hard-coded or environment value.
 //!   2c. `Opaque Server Errors (SEC15)`:
 //!      - `opaque_server_errors_middleware` logs and replaces the message of
 //!        every `500` JSON body with `GENERIC_SERVER_ERROR`.

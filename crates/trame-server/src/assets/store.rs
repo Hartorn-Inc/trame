@@ -106,7 +106,7 @@ pub fn verify_asset_signature(secret: &[u8], key: &str, exp: u64, sig_hex: &str)
 }
 
 /// Pure in-memory asset store with short-lived presigned token validation for tests and local runtime.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct InMemoryAssetStore {
     assets: Arc<RwLock<HashMap<String, StoredAssetEntry>>>,
     grants: Arc<RwLock<HashMap<String, PresignedGrant>>>,
@@ -115,17 +115,18 @@ pub struct InMemoryAssetStore {
 }
 
 impl InMemoryAssetStore {
-    /// Store signing presigned URLs with a per-instance random key (SEC5); production passes
+    /// Test and dev-router store signing presigned URLs with a random key that dies with the
+    /// process (SEC5). Production never calls it: `main` passes
     /// `ServerSecrets::asset_signing_secret` through `with_base_url_and_secret`.
-    pub fn new() -> Self {
-        Self::with_base_url("http://localhost:8080/assets/download")
+    pub fn with_ephemeral_secret() -> Self {
+        Self::with_base_url_and_secret(
+            "http://localhost:8080/assets/download",
+            crate::security::ephemeral_secret().to_vec(),
+        )
     }
 
-    /// Like `new`, with an explicit presigned URL prefix.
-    pub fn with_base_url(base_url: impl Into<String>) -> Self {
-        Self::with_base_url_and_secret(base_url, crate::security::ephemeral_secret().to_vec())
-    }
-
+    /// Store signing presigned URLs under `base_url` with the configured `signing_secret`
+    /// (>= 32 bytes, `ServerSecrets::asset_signing_secret`).
     pub fn with_base_url_and_secret(
         base_url: impl Into<String>,
         signing_secret: impl Into<Vec<u8>>,

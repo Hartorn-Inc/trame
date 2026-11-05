@@ -89,7 +89,7 @@ impl Harness {
         );
         let state = AppState {
             lease_manager: Arc::new(RoomLeaseManager::new(wal, 25, 900_000)),
-            asset_store: Arc::new(InMemoryAssetStore::new()),
+            asset_store: Arc::new(InMemoryAssetStore::with_ephemeral_secret()),
             membership: Arc::new(InMemoryMembershipValidator::new()),
             instance_id: Uuid::new_v4(),
             timeline_storage: Arc::new(InMemoryTimelineStorage::new()),

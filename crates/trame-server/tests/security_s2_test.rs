@@ -100,7 +100,7 @@ impl Harness {
         let wal = Arc::new(InMemoryWalStorage::new());
         let membership = Arc::new(InMemoryMembershipValidator::new());
         let timeline = Arc::new(InMemoryTimelineStorage::new());
-        let asset_store = Arc::new(InMemoryAssetStore::new());
+        let asset_store = Arc::new(InMemoryAssetStore::with_ephemeral_secret());
         let auth_state = AuthState::with_security(
             Arc::new(MagicLinkService::new(invite_secret.to_vec(), "trame-test")),
             Arc::new(InMemorySessionStore::new()),

@@ -175,7 +175,7 @@ mod tests {
 
     #[tokio::test]
     async fn asset_store_put_get_and_mint_presigned_url_with_ttl() {
-        let store = InMemoryAssetStore::new();
+        let store = InMemoryAssetStore::with_ephemeral_secret();
         let key = "instances/test-inst/campaigns/c1/assets/abc.webp";
         let data = Bytes::from_static(b"FAKE_WEBP_IMAGE_BYTES");
 
@@ -206,7 +206,7 @@ mod tests {
 
     #[tokio::test]
     async fn uvtt_importer_parses_walls_doors_lights_and_scales_coordinates() {
-        let store = InMemoryAssetStore::new();
+        let store = InMemoryAssetStore::with_ephemeral_secret();
         let instance_id = Uuid::new_v4();
         let campaign_id = Uuid::new_v4();
 
@@ -320,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn uvtt_importer_translates_coordinates_by_map_origin() {
-        let store = InMemoryAssetStore::new();
+        let store = InMemoryAssetStore::with_ephemeral_secret();
         let instance_id = Uuid::new_v4();
         let campaign_id = Uuid::new_v4();
 
@@ -388,7 +388,7 @@ mod tests {
 
     #[tokio::test]
     async fn uvtt_importer_enforces_magic_bytes_payload_limits_and_dimension_guards() {
-        let store = InMemoryAssetStore::new();
+        let store = InMemoryAssetStore::with_ephemeral_secret();
         let inst = Uuid::new_v4();
         let camp = Uuid::new_v4();
 

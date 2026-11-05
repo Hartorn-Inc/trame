@@ -948,7 +948,7 @@ mod tests {
 
         let wal = Arc::new(InMemoryWalStorage::new());
         let lease_manager = Arc::new(RoomLeaseManager::new(wal, 16, 900_000));
-        let asset_store = Arc::new(InMemoryAssetStore::new());
+        let asset_store = Arc::new(InMemoryAssetStore::with_ephemeral_secret());
         let membership = Arc::new(InMemoryMembershipValidator::new());
         let timeline_storage = Arc::new(InMemoryTimelineStorage::new());
         let session_store = Arc::new(InMemorySessionStore::new());

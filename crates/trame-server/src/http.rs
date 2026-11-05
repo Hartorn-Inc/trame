@@ -430,7 +430,7 @@ pub fn build_app_router(
     lease_manager: Arc<RoomLeaseManager>,
     timeline_storage: Arc<dyn TimelineStorage>,
 ) -> Router {
-    let asset_store: Arc<dyn AssetStore> = Arc::new(InMemoryAssetStore::new());
+    let asset_store: Arc<dyn AssetStore> = Arc::new(InMemoryAssetStore::with_ephemeral_secret());
     let membership: Arc<dyn CampaignMembershipValidator> =
         Arc::new(InMemoryMembershipValidator::new());
     build_full_router(
