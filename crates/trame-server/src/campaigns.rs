@@ -753,7 +753,7 @@ async fn delete_actor(state: &AppState, campaign_id: Uuid, actor_id: Uuid) -> Re
 
 /// `400 INVALID_ABILITY_SCORE` when a numeric `abilities.<ability>.score` of `data` lies
 /// outside `ABILITY_SCORES`; non-numeric scores are ignored by every derivation.
-fn check_ability_scores(data: &Value) -> Result<(), Response> {
+fn check_ability_scores(data: &Value) -> Result<(), Box<Response>> {
     let Some(abilities) = data.get("abilities").and_then(Value::as_object) else {
         return Ok(());
     };
@@ -762,14 +762,14 @@ fn check_ability_scores(data: &Value) -> Result<(), Response> {
             continue;
         };
         if score.fract() != 0.0 || !ABILITY_SCORES.contains(&(score as i32)) {
-            return Err(bad_request(
+            return Err(Box::new(bad_request(
                 "INVALID_ABILITY_SCORE",
                 &format!(
                     "abilities.{ability}.score must be an integer within {}..={}",
                     ABILITY_SCORES.start(),
                     ABILITY_SCORES.end()
                 ),
-            ));
+            )));
         }
     }
     Ok(())
@@ -946,7 +946,7 @@ pub async fn create_actor_handler(
         return bad_request("INVALID_NAME", "actor name must not be empty");
     }
     if let Err(resp) = check_ability_scores(&req.data) {
-        return resp;
+        return *resp;
     }
     let actor_id = req.id.unwrap_or_else(Uuid::new_v4);
     if let Ok(Some(_)) = get_actor(&state, campaign_id, actor_id).await {
@@ -1008,7 +1008,7 @@ pub async fn update_actor_handler(
         return forbidden("spectators cannot edit actors");
     }
     if let Err(resp) = check_ability_scores(&req.data) {
-        return resp;
+        return *resp;
     }
     let name = req.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
     match update_actor(
