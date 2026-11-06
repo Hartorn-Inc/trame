@@ -44,6 +44,9 @@
 //!        instead of hanging on a stalled actor.
 //!      - Outbound frames go through the client's bounded queue (`room::client_channel`);
 //!        when it overflows the writer closes the socket with `1013` (slow consumer, RT2).
+//!      - Every socket write (frame, heartbeat `Ping`, Close) is bounded by
+//!        `SecurityPolicy::ws_pong_timeout`; a peer that stops reading makes the write
+//!        time out and the writer drops the socket instead of hanging (`run_socket_writer`).
 //!      - The writer sends a WebSocket `Ping` every `SecurityPolicy::ws_ping_interval`
 //!        (20 s, like the client's heartbeat); a peer silent for `ws_ping_interval +
 //!        ws_pong_timeout` (30 s) is closed with `1001` so its room slot is freed.
@@ -1313,14 +1316,30 @@ pub async fn presign_asset_handler(
 /// its linked sheet values and actor-template stat block from storage
 /// (`campaigns::resolve_spawn`); a template that cannot be resolved comes back as
 /// `Err((reason, correlation_id))` for the caller to reject.
-async fn resolve_client_envelope(
+///
+/// Both commands are GM-only, so a non-GM sender is rejected before any storage lookup: a
+/// player can neither make the server read actors or scenes nor learn from the error which
+/// actor ids exist.
+pub(crate) async fn resolve_client_envelope(
     state: &AppState,
     campaign_id: Uuid,
+    role: CampaignRole,
     envelope: ClientEnvelope,
 ) -> Result<ClientEnvelope, (String, Option<String>)> {
     let ClientEnvelope::SubmitCommand(mut submission) = envelope else {
         return Ok(envelope);
     };
+    if role != CampaignRole::Gm
+        && matches!(
+            submission.command,
+            TrameCommand::SpawnToken { .. } | TrameCommand::ActivateScene { .. }
+        )
+    {
+        return Err((
+            "permission denied: GM role required for this command".to_string(),
+            submission.correlation_id.clone(),
+        ));
+    }
     if let TrameCommand::SpawnToken { .. } = submission.command {
         submission.command =
             crate::campaigns::resolve_spawn(state, campaign_id, submission.command)
@@ -1368,6 +1387,52 @@ async fn close_socket(mut socket: WebSocket, code: u16, reason: &str) {
     let _ = socket.send(Message::Close(Some(close_frame))).await;
 }
 
+/// Socket writer task: drains the client's bounded queue into `sink`, sends a `Ping` every
+/// `ping_interval`, and closes with `WS_CLOSE_CODE_SLOW_CONSUMER` when the queue overflowed.
+///
+/// Every send (frames, pings, the Close frame) is bounded by `send_timeout`: a peer that
+/// stops reading fills the TCP window, `send` then never completes, and without the bound
+/// the writer would sit there forever, so neither the overflow close nor the heartbeat would
+/// ever run. On expiry the writer gives up and returns, which tears the socket down.
+pub(crate) async fn run_socket_writer<S>(
+    mut sink: S,
+    mut rx: tokio::sync::mpsc::Receiver<OutboundClientFrame>,
+    overflow: Arc<tokio::sync::Notify>,
+    ping_interval: std::time::Duration,
+    send_timeout: std::time::Duration,
+) where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    let mut heartbeat =
+        tokio::time::interval_at(tokio::time::Instant::now() + ping_interval, ping_interval);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let message = tokio::select! {
+            biased;
+            () = overflow.notified() => Message::Close(Some(axum::extract::ws::CloseFrame {
+                code: WS_CLOSE_CODE_SLOW_CONSUMER,
+                reason: "Slow Consumer".into(),
+            })),
+            frame = rx.recv() => match frame {
+                Some(OutboundClientFrame::Binary(bytes)) => Message::Binary(bytes.into()),
+                Some(OutboundClientFrame::Close { code, reason }) => {
+                    Message::Close(Some(axum::extract::ws::CloseFrame {
+                        code,
+                        reason: reason.into(),
+                    }))
+                }
+                None => break,
+            },
+            _ = heartbeat.tick() => Message::Ping(Bytes::new()),
+        };
+        let is_close = matches!(message, Message::Close(_));
+        let sent = tokio::time::timeout(send_timeout, sink.send(message)).await;
+        if is_close || !matches!(sent, Ok(Ok(()))) {
+            break;
+        }
+    }
+}
+
 async fn handle_ws_connection(
     socket: WebSocket,
     state: AppState,
@@ -1379,7 +1444,7 @@ async fn handle_ws_connection(
     let ping_interval = state.auth_state.security.ws_ping_interval;
     let idle_timeout = ping_interval + state.auth_state.security.ws_pong_timeout;
     let session_id = Uuid::new_v4();
-    let (tx, mut rx) = client_channel();
+    let (tx, rx) = client_channel();
     let overflow = tx.overflow_signal();
     let reject_tx = tx.clone();
     let client = ConnectedClient {
@@ -1424,47 +1489,15 @@ async fn handle_ws_connection(
         return;
     }
 
-    let (mut ws_sender, mut ws_receiver) = socket.split();
-
-    let mut send_task = tokio::spawn(async move {
-        let mut heartbeat =
-            tokio::time::interval_at(tokio::time::Instant::now() + ping_interval, ping_interval);
-        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            let frame = tokio::select! {
-                biased;
-                () = overflow.notified() => OutboundClientFrame::Close {
-                    code: WS_CLOSE_CODE_SLOW_CONSUMER,
-                    reason: "Slow Consumer".to_string(),
-                },
-                frame = rx.recv() => match frame {
-                    Some(frame) => frame,
-                    None => break,
-                },
-                _ = heartbeat.tick() => {
-                    if ws_sender.send(Message::Ping(Bytes::new())).await.is_err() {
-                        break;
-                    }
-                    continue;
-                }
-            };
-            match frame {
-                OutboundClientFrame::Binary(bytes) => {
-                    if ws_sender.send(Message::Binary(bytes.into())).await.is_err() {
-                        break;
-                    }
-                }
-                OutboundClientFrame::Close { code, reason } => {
-                    let close_frame = axum::extract::ws::CloseFrame {
-                        code,
-                        reason: reason.into(),
-                    };
-                    let _ = ws_sender.send(Message::Close(Some(close_frame))).await;
-                    break;
-                }
-            }
-        }
-    });
+    let (ws_sender, mut ws_receiver) = socket.split();
+    let send_timeout = state.auth_state.security.ws_pong_timeout;
+    let mut send_task = tokio::spawn(run_socket_writer(
+        ws_sender,
+        rx,
+        overflow,
+        ping_interval,
+        send_timeout,
+    ));
 
     // Any inbound frame (the browser's automatic `Pong`, the client's heartbeat `Ping`,
     // commands) proves the peer alive; silence past `idle_timeout` frees the room slot.
@@ -1500,7 +1533,7 @@ async fn handle_ws_connection(
             );
             continue;
         };
-        let envelope = match resolve_client_envelope(&state, campaign_id, envelope).await {
+        let envelope = match resolve_client_envelope(&state, campaign_id, role, envelope).await {
             Ok(envelope) => envelope,
             Err((reason, correlation_id)) => {
                 reject_frame(&reject_tx, &reason, correlation_id);
@@ -1567,4 +1600,162 @@ pub async fn seed_campaign_for_export(
         .campaign_store
         .save_asset_ids(campaign.id, &asset_ids)
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use std::time::Duration;
+
+    /// A peer that never reads: the sink is never ready, like a socket whose TCP window is full.
+    struct NeverReadingPeer;
+
+    impl futures_util::Sink<Message> for NeverReadingPeer {
+        type Error = std::convert::Infallible;
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+        fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn socket_writer_gives_up_on_a_peer_that_never_reads() {
+        let send_timeout = Duration::from_millis(50);
+        // (case_id, queued frame, overflow signalled, heartbeat interval)
+        let cases = [
+            (
+                "stalled_binary_frame_times_out",
+                true,
+                false,
+                Duration::from_secs(60),
+            ),
+            (
+                "overflow_close_times_out",
+                false,
+                true,
+                Duration::from_secs(60),
+            ),
+            (
+                "stalled_heartbeat_ping_times_out",
+                false,
+                false,
+                Duration::from_millis(10),
+            ),
+        ];
+        for (case, queue_frame, overflowed, ping_interval) in cases {
+            let (tx, rx) = crate::room::client_channel_with_capacity(1);
+            let overflow = tx.overflow_signal();
+            if queue_frame {
+                tx.send(OutboundClientFrame::Binary(vec![1, 2, 3])).unwrap();
+            }
+            if overflowed {
+                overflow.notify_one();
+            }
+            let writer =
+                run_socket_writer(NeverReadingPeer, rx, overflow, ping_interval, send_timeout);
+            let finished = tokio::time::timeout(Duration::from_secs(2), writer).await;
+            assert!(
+                finished.is_ok(),
+                "case {case}: the writer must stop on its own"
+            );
+            drop(tx);
+        }
+    }
+
+    fn in_memory_state() -> AppState {
+        let wal = Arc::new(crate::wal::InMemoryWalStorage::new());
+        AppState {
+            lease_manager: Arc::new(RoomLeaseManager::new(wal, 25, 900_000)),
+            asset_store: Arc::new(InMemoryAssetStore::with_ephemeral_secret()),
+            membership: Arc::new(InMemoryMembershipValidator::new()),
+            instance_id: Uuid::new_v4(),
+            timeline_storage: Arc::new(InMemoryTimelineStorage::new()),
+            campaign_store: InMemoryCampaignStore::new(),
+            blob_store: InMemoryBlobStore::new(),
+            auth_state: auth_state_from_config(
+                Arc::new(InMemorySessionStore::new()),
+                &ServerConfig::dev(),
+            ),
+            db_healthy: Arc::new(AtomicBool::new(true)),
+            map_storage: InMemoryMapStorage::new(),
+            postgres_store: None,
+            campaign_data: Default::default(),
+            static_dir: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_and_scene_resolution_is_gm_only_and_runs_no_lookup_for_others() {
+        let state = in_memory_state();
+        let campaign_id = Uuid::new_v4();
+        let mut spawned = trame_engine::commands::TokenState::new_default(
+            Uuid::new_v4(),
+            "Goblin",
+            trame_engine::geometry::Point2D::new(0.0, 0.0),
+        );
+        spawned.stat_block = Some(serde_json::Value::String(Uuid::new_v4().to_string()));
+        let spawn = TrameCommand::SpawnToken {
+            token: Box::new(spawned),
+        };
+        let scene = TrameCommand::ActivateScene {
+            scene_id: Uuid::new_v4(),
+            scene: None,
+        };
+        let denied = "permission denied: GM role required for this command";
+        // (case_id, role, command, expected rejection; `None` = resolved and forwarded)
+        let cases = [
+            (
+                "player_spawn_denied_before_lookup",
+                CampaignRole::Player,
+                spawn.clone(),
+                Some(denied),
+            ),
+            (
+                "spectator_spawn_denied_before_lookup",
+                CampaignRole::Spectator,
+                spawn.clone(),
+                Some(denied),
+            ),
+            (
+                "player_scene_denied_before_lookup",
+                CampaignRole::Player,
+                scene.clone(),
+                Some(denied),
+            ),
+            (
+                "gm_spawn_looks_up_the_template",
+                CampaignRole::Gm,
+                spawn,
+                Some("not found"),
+            ),
+            ("gm_scene_is_forwarded", CampaignRole::Gm, scene, None),
+        ];
+        for (case, role, command, expected) in cases {
+            let envelope =
+                ClientEnvelope::SubmitCommand(Box::new(crate::sync::CommandSubmission {
+                    command,
+                    correlation_id: Some(case.to_string()),
+                }));
+            let result = resolve_client_envelope(&state, campaign_id, role, envelope).await;
+            match (expected, result) {
+                (None, Ok(_)) => {}
+                (Some(prefix), Err((reason, correlation))) => {
+                    assert!(reason.starts_with(prefix), "case {case}: {reason}");
+                    assert_eq!(correlation.as_deref(), Some(case), "case {case}");
+                }
+                (expected, Ok(_)) => panic!("case {case}: expected {expected:?}, got Ok"),
+                (None, Err((reason, _))) => panic!("case {case}: unexpected rejection {reason}"),
+            }
+        }
+    }
 }
