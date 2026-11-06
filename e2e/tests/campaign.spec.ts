@@ -7,10 +7,12 @@
  * -----
  * Drives one full D&D 5e session through the real UI with two simultaneous
  * browser contexts (GM and player), each recording video: Owner setup,
- * campaign invite and redemption, character creation, map import and
- * activation, tokens, initiative, movement and reactions, damage/heal/undo,
- * dice, sheet conflict, documents and handouts, and the player projection
- * rules.
+ * campaign invite and redemption, character creation (a level-1 Wizard),
+ * map import and activation, doors, conditions and GM rulings, tokens,
+ * initiative, movement and reactions, damage/heal/undo, SRD monsters spawned
+ * from the compendium, sheet attacks and area spells resolved with an
+ * explicit Apply, spell slots, dice, sheet conflict, documents and handouts,
+ * and the player projection rules.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
@@ -48,22 +50,30 @@
  *      `docker kill -s KILL` on trame-server, restarts it, and runs this
  *      spec again with `E2E_STAGE=after-restart`, which signs both users
  *      back in and asserts the WAL-recovered table shows the undone HP.
+ * 8. `GM-Side Resolution Against Monsters`:
+ *    - A player never sees a monster's AC or save bonuses, and the room only
+ *      lets a player apply damage to tokens they control, so the sheet attack
+ *      and the area spell against the SRD monster are resolved and applied
+ *      by the GM (who sees every number); the player checks the tier only.
  *
  * EXECUTION LIFECYCLE:
  * -----
  * GM claims Owner -> campaign -> invite -> player redeems -> characters (both)
  * -> sheet edit + version conflict -> UVTT import + background + secret door
- * + GM light + hidden goblin -> activate -> tokens -> WebGL renderer, fog,
- * GM vision preview, night + lights (pixel probes) -> projection checks -> combat ->
- * player reload (initiative after reconnect) -> movement / opportunity
- * attack -> damage, undo, heal -> dice (WS + REST) -> documents + handout
+ * + locked door + GM light + hidden goblin -> activate -> tokens -> WebGL
+ * renderer, fog, GM vision preview, night + lights (pixel probes) ->
+ * projection checks -> door handles and vision -> Restrained + GM ruling ->
+ * combat -> player reload (initiative after reconnect) -> movement /
+ * opportunity attack -> damage, undo, heal -> compendium monster -> GM sheet
+ * attack + Apply -> player slot spend -> GM area spell + save-for-half Apply
+ * -> dice (WS + REST) -> documents + handout
  * -> player export refused -> offline / online reconnect -> damage + undo
  * before the crash -> fonts + CSP checks -> videos saved under `artifacts/`.
  * [harness: SIGKILL + restart] -> `E2E_STAGE=after-restart`: sign in again
  * -> GM and player see the undone HP (no ghost damage).
  * ============================================================================
  */
-import { expect, test, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Browser, type BrowserContext, type Locator, type Page, type Response } from '@playwright/test';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { backgroundPng, uvttBundle } from '../support/fixtures.ts';
@@ -118,6 +128,17 @@ const PROBE: Record<'east' | 'west' | 'unlit' | 'lit', ProbeRect> = {
   unlit: { x: 635, y: 345, w: 55, h: 60 },
   lit: { x: NEW_LIGHT.x - 30, y: NEW_LIGHT.y - 30, w: 60, h: 60 },
 };
+/**
+ * Floor east of the UVTT door (x = 700, y = 280..420) that the PC token in the
+ * top-left column sees only through the open door.
+ */
+const PROBE_BEYOND_DOOR: ProbeRect = { x: 725, y: 335, w: 90, h: 60 };
+/** Locked door the GM adds in the studio (board px), away from every probe. */
+const LOCKED_DOOR = { p1: { x: 140, y: 560 }, p2: { x: 280, y: 560 } };
+/** SRD monster spawned from the compendium; numbers from `packs/monsters.json`. */
+const SRD_MONSTER = { slug: 'srd:monster:pirate_captain', name: 'Pirate Captain', hp: 84, ac: 17 };
+/** Spells the player's Wizard writes into the spellbook at creation. */
+const WIZARD_SPELLS = ['srd:spell:burning_hands', 'srd:spell:mage_armor'];
 
 interface PhaseResult {
   phase: string;
@@ -351,8 +372,30 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await shot(both, 'joined');
   });
 
-  /** Walks the six-step creation modal (2024 origins) and returns the new actor id. */
-  const createCharacter = async (page: Page, name: string, classId: string) => {
+  /**
+   * Fills the class choices of the current builder step: the first option of
+   * every single-pick radio group, then free checkboxes until each multi-pick
+   * is full (the modal disables the rest once `count` are chosen).
+   */
+  const fillClassChoices = async (page: Page) => {
+    const modal = page.getByTestId('character-builder-modal');
+    const groups = await modal.locator('input[type="radio"][name^="class-"]').evaluateAll((els) => [...new Set(els.map((el) => (el as HTMLInputElement).name))]);
+    for (const group of groups) await modal.locator(`input[type="radio"][name="${group}"]`).first().check();
+    const free = modal.locator('input[type="checkbox"]:not(:checked):not(:disabled)');
+    for (let i = 0; i < 30 && (await free.count()) > 0; i++) await free.first().check();
+  };
+
+  /**
+   * Walks the eight-step creation modal (2024 origins, class skills,
+   * equipment and spells) and returns the new actor id. `scores` reassigns the
+   * standard array; `spells` are picked before the remaining spell slots fill.
+   */
+  const createCharacter = async (
+    page: Page,
+    name: string,
+    classId: string,
+    options: { scores?: Record<string, number>; spells?: string[] } = {},
+  ) => {
     await openTab(page, 'actors');
     await page.getByTestId('actors-new').click();
     const modal = page.getByTestId('character-builder-modal');
@@ -370,9 +413,20 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await page.getByTestId('builder-next').click();
     await expect(page.getByTestId('builder-step-abilityScores')).toBeVisible();
     await page.getByTestId('builder-method-standardArray').check();
+    for (const [ability, score] of Object.entries(options.scores ?? {})) {
+      await page.getByTestId(`builder-score-${ability}`).selectOption(String(score));
+    }
+    await page.getByTestId('builder-next').click();
+    await expect(page.getByTestId('builder-step-skills')).toBeVisible();
+    await fillClassChoices(page);
     await page.getByTestId('builder-next').click();
     await expect(page.getByTestId('builder-step-equipment')).toBeVisible();
+    await fillClassChoices(page);
     await page.getByTestId('builder-equipment-package').check();
+    await page.getByTestId('builder-next').click();
+    await expect(page.getByTestId('builder-step-spells')).toBeVisible();
+    for (const spell of options.spells ?? []) await page.getByTestId(`builder-spells-${spell}`).check();
+    await fillClassChoices(page);
     await page.getByTestId('builder-next').click();
     await expect(page.getByTestId('builder-step-review')).toBeVisible();
     await page.getByTestId('builder-name').fill(name);
@@ -387,8 +441,11 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     return { id: await idFromTestId(row, 'actor-'), summary };
   };
 
-  await phase('Player creates a character (species, class, background)', async () => {
-    const pc = await createCharacter(pl, PC_NAME, 'fighter');
+  await phase('Player creates a level-1 Wizard (species, class, background, skills, equipment, spells)', async () => {
+    const pc = await createCharacter(pl, PC_NAME, 'wizard', {
+      scores: { str: 12, int: 15, dex: 13, con: 14 },
+      spells: WIZARD_SPELLS,
+    });
     pcActorId = pc.id;
     await expect(pl.getByTestId('hud-sheet-drawer')).toBeVisible();
     await expect(pl.getByTestId('sheet-actor-name')).toHaveText(PC_NAME);
@@ -466,14 +523,24 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     return (await gm.getByTestId('maps-status').innerText()).trim();
   });
 
-  await phase('GM adds a secret door and a hidden goblin, reveals, saves, activates', async () => {
+  await phase('GM adds a secret door, a locked door and a hidden goblin, reveals, saves, activates', async () => {
     await gm.locator('[data-testid^="scene-item-"]').first().click();
-    await gm.getByTestId('wall-type-select').selectOption('SecretDoor');
-    await gm.getByTestId('wall-p1x-input').fill('420');
-    await gm.getByTestId('wall-p1y-input').fill('420');
-    await gm.getByTestId('wall-p2x-input').fill('560');
-    await gm.getByTestId('wall-p2y-input').fill('420');
-    await gm.getByTestId('add-wall-btn').click();
+    const addWall = async (type: string, p1: { x: number; y: number }, p2: { x: number; y: number }) => {
+      await gm.getByTestId('wall-type-select').selectOption(type);
+      await gm.getByTestId('wall-p1x-input').fill(String(p1.x));
+      await gm.getByTestId('wall-p1y-input').fill(String(p1.y));
+      await gm.getByTestId('wall-p2x-input').fill(String(p2.x));
+      await gm.getByTestId('wall-p2y-input').fill(String(p2.y));
+      await gm.getByTestId('add-wall-btn').click();
+    };
+    await addWall('SecretDoor', { x: 420, y: 420 }, { x: 560, y: 420 });
+    const locks = gm.locator('[data-testid^="toggle-lock-"]');
+    const doorsBefore = await locks.count();
+    await addWall('Door', LOCKED_DOOR.p1, LOCKED_DOOR.p2);
+    await expect(locks).toHaveCount(doorsBefore + 1);
+    const lockId = await idFromTestId(locks.last(), 'toggle-lock-');
+    await locks.last().click();
+    await expect(gm.getByTestId(`lock-badge-${lockId}`)).toBeVisible();
     await gm.getByTestId('light-x-input').fill(String(NEW_LIGHT.x));
     await gm.getByTestId('light-y-input').fill(String(NEW_LIGHT.y));
     await gm.getByTestId('light-radius-input').fill('10');
@@ -495,6 +562,7 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     const gmWalls = latestState(gmFrames)?.walls ?? [];
     const lights = (latestState(gmFrames)?.lights ?? []) as Array<Record<string, unknown>>;
     expect(lights.length, 'UVTT torch + GM light').toBe(2);
+    expect(gmWalls.some((w) => (w.kind as Record<string, unknown> | undefined)?.is_locked === true), 'the locked door reached the table').toBe(true);
     return `GM table has ${gmWalls.length} walls and ${lights.length} lights (color_hex ${lights.map((l) => l.color_hex).join(', ')})`;
   });
 
@@ -631,6 +699,72 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await openTab(pl, 'table');
   });
 
+  /** Door kind of a projected wall (`DOOR` / `SECRET_DOOR` carry `is_open`, doors `is_locked`). */
+  type WireDoorKind = { kind?: string; is_open?: boolean; is_locked?: boolean };
+  const wallsOf = (frames: RecordedFrame[]) => (latestState(frames)?.walls ?? []) as Array<{ id: string; kind?: WireDoorKind }>;
+
+  await phase('Doors: GM opens the crypt door from its canvas handle; player vision reaches through; locked and secret doors stay shut', async () => {
+    const walls = wallsOf(gmFrames);
+    const crypt = walls.find((w) => w.kind?.kind === 'DOOR' && !w.kind.is_locked);
+    const locked = walls.find((w) => w.kind?.kind === 'DOOR' && w.kind.is_locked);
+    const secret = walls.find((w) => w.kind?.kind === 'SECRET_DOOR');
+    if (!crypt || !locked || !secret) throw new Error(`missing doors on the GM table: ${JSON.stringify(walls.map((w) => w.kind))}`);
+    const playerSeesOpen = () => wallsOf(plFrames).find((w) => w.id === crypt.id)?.kind?.is_open;
+    expect(playerSeesOpen(), 'the crypt door starts closed for the player').toBe(false);
+    const before = meanLuma(await board(pl), PROBE_BEYOND_DOOR);
+    const handle = gm.getByTestId(`door-${crypt.id}`);
+    await expect(handle).toHaveAttribute('aria-pressed', 'false');
+    await handle.click();
+    await expect(handle).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(playerSeesOpen).toBe(true);
+    await expect(pl.getByTestId(`door-${crypt.id}`)).toHaveAttribute('aria-pressed', 'true');
+    const after = meanLuma(await board(pl), PROBE_BEYOND_DOOR);
+    await shot(both, 'door-open-player-vision');
+    expect(after, `player sees the floor beyond the open door (luma ${before} -> ${after})`).toBeGreaterThan(before + 15);
+    const lockedForPlayer = pl.getByTestId(`door-${locked.id}`);
+    await expect(lockedForPlayer).toBeDisabled();
+    await expect(lockedForPlayer).toHaveAttribute('aria-label', /locked/);
+    await expect(gm.getByTestId(`door-${secret.id}`), 'the GM can still work the secret door').toBeEnabled();
+    await expect(pl.getByTestId(`door-${secret.id}`), 'the player gets no handle for the secret door').toHaveCount(0);
+    await handle.click();
+    await expect.poll(playerSeesOpen).toBe(false);
+    return `player luma beyond the door ${before} -> ${after}; locked handle disabled; secret door absent for the player`;
+  });
+
+  await phase("Restrained sets Speed 0: the player's move is refused until the GM removes the effect", async () => {
+    await gm.getByTestId(`token-${pcTokenId}`).click();
+    await expect(gm.getByTestId('conditions-panel')).toBeVisible();
+    const restrained = gm.getByTestId('condition-restrained');
+    await restrained.click();
+    await expect(restrained).toHaveAttribute('aria-pressed', 'true');
+    await expect(gm.getByTestId('conditions-effects')).toContainText('Speed 0');
+    await expect.poll(() => JSON.stringify(latestState(plFrames)?.tokens[pcTokenId]?.conditions ?? []).toLowerCase()).toContain('restrained');
+    const token = pl.getByTestId(`token-${pcTokenId}`);
+    await token.click();
+    const start = await token.getAttribute('style');
+    await token.press('ArrowDown');
+    const refusal = pl.getByTestId('command-feedback-item').filter({ hasText: /Speed is 0/i });
+    await expect(refusal.first()).toBeVisible();
+    expect(await token.getAttribute('style'), 'the refused move left the token in place').toBe(start);
+    const toast = (await refusal.first().innerText()).replace(/\s+/g, ' ').trim();
+    await shot(both, 'speed-zero-refused');
+    await gm.getByTestId('conditions-rulings').locator('summary').click();
+    const ruling = gm.getByTestId('ruling-effect-restrained.speed_zero');
+    await ruling.selectOption('REMOVE');
+    await expect(gm.getByTestId('conditions-effects')).not.toContainText('Speed 0');
+    await expect.poll(() => JSON.stringify(latestState(plFrames)?.tokens[pcTokenId]?.condition_overrides ?? [])).toContain('REMOVE');
+    await token.press('ArrowDown');
+    await expect.poll(() => token.getAttribute('style')).not.toBe(start);
+    await shot(both, 'speed-zero-overridden');
+    await token.press('ArrowUp');
+    await expect.poll(() => token.getAttribute('style')).toBe(start);
+    await ruling.selectOption('');
+    await restrained.click();
+    await expect(restrained).toHaveAttribute('aria-pressed', 'false');
+    await expect.poll(() => JSON.stringify(latestState(plFrames)?.tokens[pcTokenId]?.conditions ?? []).toLowerCase()).not.toContain('restrained');
+    return `refusal toast: "${toast}"; after the GM REMOVE ruling the move succeeded`;
+  });
+
   await phase('Combat tracker: start, set initiative, advance to the PC', async () => {
     await gm.getByTestId('combat-start').click();
     await expect(gm.getByTestId('combat-round')).toBeVisible();
@@ -741,22 +875,187 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     return `PC ${start.hp} -> ${start.hp - 4} -> ${start.hp - 2}; sheet hp ${JSON.stringify(sheet?.actor?.data?.attributes?.hp ?? null)}`;
   });
 
+  const openSheetFor = async (page: Page, tokenId: string) => {
+    await page.getByTestId(`token-${tokenId}`).click();
+    await page.getByTestId('vitals-open-sheet').click();
+    await expect(page.getByTestId('hud-sheet-drawer')).toBeVisible();
+  };
+  /** Clicks through the sheet tabs until `target` shows. */
+  const revealInSheet = async (page: Page, target: Locator) => {
+    const tabs = page.getByTestId('hud-sheet-drawer').locator('[data-testid^="tab-btn-"]');
+    for (let i = 0; i < (await tabs.count()) && !(await target.first().isVisible()); i++) await tabs.nth(i).click();
+    await expect(target.first()).toBeVisible();
+  };
+  /** Health tier the player must see for `hp` of `max` (either one exactly at half). */
+  const tierFor = (hp: number, max: number) => (hp * 2 < max ? /Bloodied/ : hp * 2 > max ? /Unhurt/ : /Unhurt|Bloodied/);
+  const assertPublicOnly = (tokenId: string) => {
+    expect(latestState(plFrames)?.tokens[tokenId], 'the monster is never a controlled token for the player').toBeUndefined();
+    for (const s of states(plFrames)) {
+      const pub = s.public_tokens?.[tokenId];
+      if (pub) for (const secret of ['hp', 'max_hp', 'temp_hp', 'ac', 'stat_block']) expect(Object.keys(pub)).not.toContain(secret);
+    }
+  };
+
+  let srdTokenId = '';
+  const srdHp = () => Number(latestState(gmFrames)?.tokens[srdTokenId]?.hp);
+
+  await phase('GM spawns an SRD monster from the compendium; the server fills HP and AC; the player sees a tier only', async () => {
+    await openTab(gm, 'compendium');
+    await gm.getByTestId('compendium-tab-monster').click();
+    await gm.getByTestId('compendium-search-input').fill(SRD_MONSTER.name);
+    await gm.getByTestId(`btn-stat-block-${SRD_MONSTER.slug}`).click();
+    await expect(gm.getByTestId(`stat-block-${SRD_MONSTER.slug}`)).toBeVisible();
+    await shot({ gm }, 'gm-compendium-monster');
+    await gm.getByTestId(`btn-spawn-${SRD_MONSTER.slug}`).click();
+    await expect(gm.getByTestId('workspace-spawn-status')).toContainText(SRD_MONSTER.name);
+    const spawned = () => Object.values(latestState(gmFrames)?.tokens ?? {}).find((t) => String(t.name).startsWith(SRD_MONSTER.name));
+    await expect.poll(() => spawned()?.id ?? null).not.toBeNull();
+    const token = spawned()!;
+    srdTokenId = String(token.id);
+    expect({ hp: token.hp, max: token.max_hp, ac: token.ac }, 'server-derived vitals from the SRD stat block').toEqual({
+      hp: SRD_MONSTER.hp,
+      max: SRD_MONSTER.hp,
+      ac: SRD_MONSTER.ac,
+    });
+    expect(token.stat_block, 'the GM token carries the server copy of the stat block').toBeTruthy();
+    await openTab(gm, 'table');
+    await gm.getByTestId(`token-${srdTokenId}`).click();
+    await expect(gm.getByTestId('vitals-hp')).toContainText(`HP ${SRD_MONSTER.hp} / ${SRD_MONSTER.hp}`);
+    const plToken = pl.getByTestId(`token-${srdTokenId}`);
+    await expect(plToken).toHaveAttribute('aria-label', /Unhurt/);
+    await plToken.click();
+    await expect(pl.getByTestId('vitals-hp')).toHaveText('Unhurt');
+    assertPublicOnly(srdTokenId);
+    await shot(both, 'srd-monster-spawned');
+    const pc = latestState(gmFrames)?.tokens[pcTokenId];
+    return `${token.name} at ${JSON.stringify(token.top_left)} (PC at ${JSON.stringify(pc?.top_left)}): HP ${token.hp}/${token.max_hp}, AC ${token.ac}`;
+  });
+
+  await phase('GM attacks the SRD monster from the NPC sheet, reviews and Applies; the player sees the tier only', async () => {
+    const before = srdHp();
+    await openSheetFor(gm, monsterTokenId);
+    const resolve = gm.locator('[data-testid^="btn-atk-resolve-"]');
+    await revealInSheet(gm, resolve);
+    const attack = (await resolve.first().getAttribute('aria-label')) ?? '';
+    await resolve.first().click();
+    const card = gm.getByTestId('action-card');
+    await expect(card).toBeVisible();
+    await gm.getByTestId(`action-target-${srdTokenId}`).check();
+    await gm.getByTestId('action-roll').click();
+    await expect(gm.getByTestId(`action-result-${srdTokenId}`)).toBeVisible();
+    const outcome = (await gm.getByTestId(`action-outcome-${srdTokenId}`).innerText()).trim();
+    expect(outcome, 'the GM sees the AC, so the outcome is decided').toMatch(/^(Hit|Critical hit|Miss)$/);
+    const amount = gm.getByTestId(`action-damage-${srdTokenId}`);
+    let damage = Number(await amount.inputValue());
+    expect(damage > 0, `${outcome} rolls damage only on a hit`).toBe(outcome !== 'Miss');
+    let adjusted = '';
+    if (damage === 0) {
+      damage = 6;
+      await amount.fill(String(damage));
+      adjusted = ' (miss; GM adjusted the amount to 6)';
+    }
+    await shot(both, 'attack-review');
+    await gm.getByTestId('action-apply').click();
+    await expect(card).toBeHidden();
+    await expect.poll(srdHp).toBe(before - damage);
+    await gm.getByTestId(`token-${srdTokenId}`).click();
+    await expect(gm.getByTestId('vitals-hp')).toContainText(`HP ${before - damage} /`);
+    const tier = tierFor(before - damage, SRD_MONSTER.hp);
+    await expect(pl.getByTestId(`token-${srdTokenId}`)).toHaveAttribute('aria-label', tier);
+    await pl.getByTestId(`token-${srdTokenId}`).click();
+    await expect(pl.getByTestId('vitals-hp')).toHaveText(tier);
+    assertPublicOnly(srdTokenId);
+    await shot(both, 'attack-applied');
+    return `${attack}: ${outcome}, ${damage} damage${adjusted}; HP ${before} -> ${before - damage}`;
+  });
+
+  await phase('Level-1 Wizard sheet shows two level-1 slots; casting Mage Armor spends one', async () => {
+    await openSheetFor(pl, pcTokenId);
+    const count = pl.getByTestId('slot-count-1');
+    await revealInSheet(pl, count);
+    await expect(count).toHaveText('2/2');
+    await shot({ player: pl }, 'player-spell-slots');
+    const saved = pl.waitForResponse((r) => r.url().includes(`/actors/${pcActorId}`) && r.request().method() === 'PUT');
+    await pl.getByTestId('btn-cast-spell-srd:spell:mage_armor').click();
+    expect((await saved).status()).toBe(200);
+    await expect(pl.getByTestId('hud-sheet-drawer'), 'casting on the table closes the drawer').toBeHidden();
+    await openSheetFor(pl, pcTokenId);
+    await revealInSheet(pl, count);
+    await expect(count).toHaveText('1/2');
+    const stored = await (await pl.request.get(campaignApi(`/actors/${pcActorId}`))).json();
+    expect(stored?.actor?.data?.spellSlots?.level1, 'the spent slot is stored on the sheet').toEqual({ current: 1, max: 2 });
+    await closeSheet(pl);
+    return 'level-1 slots 2/2 -> 1/2 after Mage Armor';
+  });
+
+  await phase('GM casts Burning Hands from the Wizard sheet at the SRD monster; DEX save rolled; save-for-half applied', async () => {
+    const before = srdHp();
+    await openSheetFor(gm, pcTokenId);
+    const cast = gm.getByTestId('btn-cast-spell-srd:spell:burning_hands');
+    await revealInSheet(gm, cast);
+    const slotsSeen = (await gm.getByTestId('slot-count-1').innerText()).trim();
+    const rolls: Array<{ reason: string; total: number }> = [];
+    const onRoll = async (res: Response) => {
+      if (!res.url().includes('/dice/roll') || res.request().method() !== 'POST') return;
+      const body = res.request().postDataJSON() as { reason?: string } | null;
+      const json = (await res.json().catch(() => null)) as { roll?: { total?: number } } | null;
+      rolls.push({ reason: String(body?.reason ?? ''), total: Number(json?.roll?.total) });
+    };
+    gm.on('response', onRoll);
+    const saved = gm.waitForResponse((r) => r.url().includes(`/actors/${pcActorId}`) && r.request().method() === 'PUT');
+    await cast.click();
+    expect((await saved).status(), 'the GM spends the Wizard slot').toBe(200);
+    const card = gm.getByTestId('action-card');
+    await expect(card).toBeVisible();
+    await gm.getByTestId('action-area-token').selectOption(srdTokenId);
+    await gm.getByTestId('action-area-project').click();
+    await expect(gm.getByTestId(`action-result-${srdTokenId}`)).toBeVisible({ timeout: 15_000 });
+    await expect.poll(() => rolls.find((r) => r.reason.endsWith(': damage'))?.total ?? null).not.toBeNull();
+    gm.off('response', onRoll);
+    const raw = rolls.find((r) => r.reason.endsWith(': damage'))!.total;
+    const outcome = (await gm.getByTestId(`action-outcome-${srdTokenId}`).innerText()).trim();
+    expect(outcome, 'the GM sees the save bonus, so the save is rolled').toMatch(/^Save (succeeded|failed)$/);
+    const expected = outcome === 'Save succeeded' ? Math.floor(raw / 2) : raw;
+    await expect(gm.getByTestId(`action-damage-${srdTokenId}`)).toHaveValue(String(expected));
+    const unknown = gm.locator('[data-testid^="action-rule-"][data-testid$="-failure"]');
+    for (let i = 0; i < 10 && (await unknown.count()) > 0; i++) await unknown.first().click();
+    const amounts = gm.locator('input[data-testid^="action-damage-"]');
+    const affected = await amounts.count();
+    for (let i = 0; i < affected; i++) {
+      if ((await amounts.nth(i).getAttribute('data-testid')) !== `action-damage-${srdTokenId}`) await amounts.nth(i).fill('0');
+    }
+    await shot(both, 'area-review');
+    await gm.getByTestId('action-apply').click();
+    await expect(card).toBeHidden();
+    await expect.poll(srdHp).toBe(before - expected);
+    await gm.getByTestId(`token-${srdTokenId}`).click();
+    await expect(gm.getByTestId('vitals-hp')).toContainText(`HP ${before - expected} /`);
+    await expect(pl.getByTestId(`token-${srdTokenId}`)).toHaveAttribute('aria-label', tierFor(before - expected, SRD_MONSTER.hp));
+    assertPublicOnly(srdTokenId);
+    await shot(both, 'area-applied');
+    return `GM saw slots ${slotsSeen}; ${affected} token(s) in the cone; 3d6 = ${raw}, ${outcome} -> ${expected}; monster HP ${before} -> ${before - expected}`;
+  });
+
+  /** `DiceRolled` frames a page received; the tray itself only lists the last 8 rolls. */
+  const rollsSeen = (frames: RecordedFrame[]) => frames.filter((f) => f.tag === 'DiceRolled').length;
+
   await phase('Dice: table tray (WebSocket) roll seen by both', async () => {
     const gmLog = gm.getByTestId('tray-log').locator('li');
     const plLog = pl.getByTestId('tray-log').locator('li');
-    const gmBefore = await gmLog.count();
-    const plBefore = await plLog.count();
+    const gmBefore = rollsSeen(gmFrames);
+    const plBefore = rollsSeen(plFrames);
     await pl.getByTestId('tray-expression').fill('1d20+5');
     await pl.getByTestId('tray-roll').click();
-    await expect(plLog).toHaveCount(plBefore + 1);
-    await expect(gmLog).toHaveCount(gmBefore + 1);
+    await expect.poll(() => rollsSeen(plFrames)).toBe(plBefore + 1);
+    await expect.poll(() => rollsSeen(gmFrames)).toBe(gmBefore + 1);
+    await expect(plLog.first()).toContainText('1d20+5');
     await expect(gmLog.first()).toContainText('1d20+5');
     return (await gmLog.first().innerText()).replace(/\s+/g, ' ');
   });
 
   await phase('Dice: sheet roll (REST) reaches both dice logs', async () => {
     const gmLog = gm.getByTestId('tray-log').locator('li');
-    const gmBefore = await gmLog.count();
+    const gmBefore = rollsSeen(gmFrames);
     await pl.getByTestId(`token-${pcTokenId}`).click();
     await pl.getByTestId('vitals-open-sheet').click();
     await expect(pl.getByTestId('hud-sheet-drawer')).toBeVisible();
@@ -769,7 +1068,7 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     const rolled = pl.waitForResponse((r) => r.url().includes('/dice/roll'));
     await roll.click();
     expect((await rolled).status()).toBe(200);
-    await expect(gmLog).toHaveCount(gmBefore + 1);
+    await expect.poll(() => rollsSeen(gmFrames)).toBe(gmBefore + 1);
     await shot(both, 'dice-logs');
     await closeSheet(pl);
     return (await gmLog.first().innerText()).replace(/\s+/g, ' ');
@@ -867,10 +1166,10 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await expect(banner).toHaveAttribute('data-state', 'open', { timeout: 30_000 });
     await expect(banner).toHaveClass(/ds-visually-hidden/);
     const gmLog = gm.getByTestId('tray-log').locator('li');
-    const gmBefore = await gmLog.count();
+    const gmBefore = rollsSeen(gmFrames);
     await pl.getByTestId('tray-expression').fill('1d6+1');
     await pl.getByTestId('tray-roll').click();
-    await expect(gmLog).toHaveCount(gmBefore + 1);
+    await expect.poll(() => rollsSeen(gmFrames)).toBe(gmBefore + 1);
     await expect(gmLog.first()).toContainText('1d6+1');
     return `banner ${dropped} -> open; post-reconnect roll reached the GM`;
   });
