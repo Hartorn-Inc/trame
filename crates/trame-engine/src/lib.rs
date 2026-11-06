@@ -50,9 +50,9 @@ pub mod wasm_api;
 pub use crate::commands::{
     AmbientLightingPreset, CampaignRole, CommandActor, CommandError, ConditionOverrideEntry,
     FogOverrideCell, FogOverrideMode, LightSource, McpStagingProposal, MovePreview, OverrideMode,
-    OverrideSubject, ReactionDecision,
-    ReactionPrompt, ReactionPromptCloseReason, RefundableResource, SceneActivation, TableMode,
-    TableSnapshotData, TableState, TokenState, TrameCommand, TrameEvent, UndoEntry,
+    OverrideSubject, ReactionDecision, ReactionPrompt, ReactionPromptCloseReason,
+    RefundableResource, SceneActivation, TableMode, TableSnapshotData, TableState, TokenState,
+    TrameCommand, TrameEvent, UndoEntry,
 };
 pub use crate::cover::CoverLevel;
 pub use crate::geometry::{Bvh2D, Point2D, SenseProfile, WallKind, WallSegment};

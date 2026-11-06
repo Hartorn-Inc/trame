@@ -2009,14 +2009,49 @@ async fn condition_events_follow_token_visibility_and_control() {
     };
     // (case_id, submitted by GM, command, what the player receives)
     let cases = [
-        ("player_sets_own_token_conditions", false, set(hero), Seen::Conditions),
-        ("player_cannot_set_npc_conditions", false, set(goblin), Seen::Rejected),
-        ("gm_sets_visible_npc_conditions", true, set(goblin), Seen::Conditions),
-        ("hidden_npc_conditions_withheld", true, set(lich), Seen::Nothing),
+        (
+            "player_sets_own_token_conditions",
+            false,
+            set(hero),
+            Seen::Conditions,
+        ),
+        (
+            "player_cannot_set_npc_conditions",
+            false,
+            set(goblin),
+            Seen::Rejected,
+        ),
+        (
+            "gm_sets_visible_npc_conditions",
+            true,
+            set(goblin),
+            Seen::Conditions,
+        ),
+        (
+            "hidden_npc_conditions_withheld",
+            true,
+            set(lich),
+            Seen::Nothing,
+        ),
         ("player_cannot_override", false, force(hero), Seen::Rejected),
-        ("own_token_ruling_kept", true, force(hero), Seen::Rulings { kept: true }),
-        ("npc_ruling_stripped", true, force(goblin), Seen::Rulings { kept: false }),
-        ("hidden_npc_ruling_withheld", true, force(lich), Seen::Nothing),
+        (
+            "own_token_ruling_kept",
+            true,
+            force(hero),
+            Seen::Rulings { kept: true },
+        ),
+        (
+            "npc_ruling_stripped",
+            true,
+            force(goblin),
+            Seen::Rulings { kept: false },
+        ),
+        (
+            "hidden_npc_ruling_withheld",
+            true,
+            force(lich),
+            Seen::Nothing,
+        ),
     ];
     for (case, as_gm, command, expected) in cases {
         let target = match &command {
@@ -2025,7 +2060,10 @@ async fn condition_events_follow_token_visibility_and_control() {
             _ => unreachable!(),
         };
         table
-            .submit(as_gm, ClientEnvelope::SubmitCommand(Box::new(command.into())))
+            .submit(
+                as_gm,
+                ClientEnvelope::SubmitCommand(Box::new(command.into())),
+            )
             .await;
         let frames = Table::drain(&mut table.player.1);
         Table::drain(&mut table.gm.1);
@@ -2060,10 +2098,7 @@ async fn condition_events_follow_token_visibility_and_control() {
             Seen::Rulings { kept } => {
                 let (rulings, effective) = ruling.unwrap_or_else(|| panic!("case {case}"));
                 assert_eq!(rulings > 0, kept, "case {case}: rulings");
-                assert!(
-                    effective.contains(&"frightened".to_string()),
-                    "case {case}"
-                );
+                assert!(effective.contains(&"frightened".to_string()), "case {case}");
                 if !kept {
                     assert!(
                         projected.public_tokens[&target]

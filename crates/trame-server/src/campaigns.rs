@@ -847,7 +847,9 @@ fn threat_reach_ft(data: &Value) -> Option<f64> {
                 )
             })
             .filter_map(|attack| attack.get("reachFt").and_then(Value::as_f64))
-            .fold(None, |best: Option<f64>, r| Some(best.map_or(r, |b| b.max(r))));
+            .fold(None, |best: Option<f64>, r| {
+                Some(best.map_or(r, |b| b.max(r)))
+            });
         return Some(melee_reach.unwrap_or(5.0).clamp(0.0, 100.0));
     }
     let items = data.get("items").and_then(Value::as_array)?;
@@ -876,7 +878,10 @@ fn threat_reach_ft(data: &Value) -> Option<f64> {
 /// species: the token keeps its current senses).
 fn darkvision_ft(data: &Value) -> Option<f64> {
     if let Some(senses) = data.get("senses").and_then(Value::as_object) {
-        let ft = senses.get("darkvision").and_then(Value::as_f64).unwrap_or(0.0);
+        let ft = senses
+            .get("darkvision")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
         return Some(ft.clamp(0.0, 500.0));
     }
     let species = data.get("speciesId").and_then(Value::as_str)?;
@@ -1808,7 +1813,10 @@ fn merge_sheet_conditions(sheet_conditions: Option<&Value>, ids: &[String]) -> V
         .cloned()
         .collect();
     for id in ids {
-        if !merged.iter().any(|entry| entry_id(entry).as_ref() == Some(id)) {
+        if !merged
+            .iter()
+            .any(|entry| entry_id(entry).as_ref() == Some(id))
+        {
             merged.push(json!({ "id": id }));
         }
     }

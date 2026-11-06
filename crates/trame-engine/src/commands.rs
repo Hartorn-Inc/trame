@@ -610,7 +610,10 @@ impl TokenState {
                 .any(|o| o.subject == OverrideSubject::Condition && o.mode == mode && o.id == id)
         };
         let mut out: Vec<String> = Vec::new();
-        let own = self.conditions.iter().map(|c| c.trim().to_ascii_lowercase());
+        let own = self
+            .conditions
+            .iter()
+            .map(|c| c.trim().to_ascii_lowercase());
         let forced = self
             .condition_overrides
             .iter()
@@ -2179,11 +2182,8 @@ impl TableState {
                 match (mode, existing) {
                     (Some(mode), Some(idx)) => tok.condition_overrides[idx].mode = mode,
                     (Some(mode), None) => {
-                        tok.condition_overrides.push(ConditionOverrideEntry {
-                            subject,
-                            id,
-                            mode,
-                        })
+                        tok.condition_overrides
+                            .push(ConditionOverrideEntry { subject, id, mode })
                     }
                     (None, Some(idx)) => {
                         tok.condition_overrides.remove(idx);

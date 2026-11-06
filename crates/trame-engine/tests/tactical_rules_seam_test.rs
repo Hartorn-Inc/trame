@@ -900,7 +900,10 @@ fn condition_rulings_decide_whether_a_reactor_is_incapacitated() {
     for c in cases {
         let mut goblin = token(GOBLIN_ID, "Goblin", 0.0, 0.0, None);
         goblin.conditions = c.goblin_conditions.iter().map(|s| s.to_string()).collect();
-        let mut state = table(vec![token(HERO_ID, "Kyra", 100.0, 0.0, Some(PLAYER_ID)), goblin]);
+        let mut state = table(vec![
+            token(HERO_ID, "Kyra", 100.0, 0.0, Some(PLAYER_ID)),
+            goblin,
+        ]);
         if let Some((id, mode)) = c.ruling {
             state
                 .apply_command(
@@ -1075,7 +1078,11 @@ fn vision_api_reads_the_wall_kind() {
     // (case_id, wall kind across the eastward ray at x = 200, expected ray length in px)
     let cases = [
         ("normal_wall_blocks", json!({"kind": "NORMAL"}), 100.0),
-        ("window_lets_sight_through", json!({"kind": "WINDOW"}), 500.0),
+        (
+            "window_lets_sight_through",
+            json!({"kind": "WINDOW"}),
+            500.0,
+        ),
         (
             "open_door_lets_sight_through",
             json!({"kind": "DOOR", "is_open": true, "is_locked": false}),
@@ -1096,7 +1103,11 @@ fn vision_api_reads_the_wall_kind() {
             json!({"kind": "SECRET_DOOR", "is_open": true}),
             500.0,
         ),
-        ("single_terrain_wall_is_seen_across", json!({"kind": "TERRAIN"}), 500.0),
+        (
+            "single_terrain_wall_is_seen_across",
+            json!({"kind": "TERRAIN"}),
+            500.0,
+        ),
         (
             "illusion_blocks_without_truesight",
             json!({"kind": "ILLUSION", "pierced_by_truesight": true}),

@@ -685,13 +685,13 @@ pub fn filter_events_for_recipient(
                 if recipient_controls(state, token_id, recipient_user_id) {
                     Some(ev.clone())
                 } else {
-                    visible_ids.contains(token_id).then(|| {
-                        TrameEvent::ConditionOverrideChanged {
+                    visible_ids
+                        .contains(token_id)
+                        .then(|| TrameEvent::ConditionOverrideChanged {
                             token_id: *token_id,
                             overrides: Vec::new(),
                             effective_conditions: effective_conditions.clone(),
-                        }
-                    })
+                        })
                 }
             }
             TrameEvent::ReactionPromptOpened { prompt } => {

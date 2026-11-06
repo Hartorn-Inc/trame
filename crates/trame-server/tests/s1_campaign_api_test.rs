@@ -1495,7 +1495,12 @@ async fn linked_token_reach_and_darkvision_come_from_the_stored_sheet() {
 
     // (case_id, token, expected reach_ft, expected darkvision_range_ft)
     let cases = [
-        ("spawn_ignores_client_reach_and_sight", after_spawn, 10.0, 120.0),
+        (
+            "spawn_ignores_client_reach_and_sight",
+            after_spawn,
+            10.0,
+            120.0,
+        ),
         ("sheet_save_resyncs_reach_and_sight", after_resync, 5.0, 0.0),
     ];
     for (case, t, reach, darkvision) in cases {
