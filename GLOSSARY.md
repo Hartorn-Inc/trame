@@ -371,7 +371,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ThreatReach
 
-- **Definition**: Radial spatial perimeter within which an actor threatens adjacent hostile entities and triggers opportunity reactions upon exit.
+- **Definition**: Radial spatial perimeter within which an actor threatens adjacent hostile entities and triggers opportunity reactions upon exit. Its radius (`TokenState::reach_ft`) is set by the server from the linked `Actor` sheet: 10 ft with an equipped Reach weapon, otherwise 5 ft; a stat block uses its longest melee attack reach.
 - **Allowed Context**: Movement validation, reaction triggers, and token combat ranges.
 - **_Avoid_**: MeleeRange, OpportunityZone, DangerArea.
 

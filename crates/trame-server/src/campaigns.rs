@@ -28,7 +28,12 @@
 //!        `ActorUpdated`; the room snapshots the synced tokens (WAL durability).
 //!   4. `Linked Vitals Persistence`:
 //!      - `install_room_sinks` drains `LinkedVitalsChange` from rooms and writes hp /
-//!        temp hp into the linked actor sheet. Synthetic tokens never reach storage.
+//!        temp hp (and changed conditions) into the linked actor sheet. Synthetic
+//!        tokens never reach storage.
+//!   4b. `Sheet-Derived Rules Fields`:
+//!      - Threat reach (equipped reach weapon or stat-block melee reach) and darkvision
+//!        (species or stat-block senses) come from the stored sheet on every resync and
+//!        on actor-linked `SpawnToken` (`resolve_linked_spawn`), never from the client.
 //!   5. `Confidential Notes`:
 //!      - Non-GM readers never receive `min_role = GM` notes nor `:::dm` / unrevealed
 //!        `:::handout` blocks; player edits go through `merge_party_note_ast`, so the
@@ -807,10 +812,86 @@ fn derived_initiative_extra(data: &Value) -> i32 {
     alert_bonus - 2 * exhaustion
 }
 
+/// Compendium keys (`srd:item:<key>`) of the SRD 5.2.1 weapons with the Reach property.
+const SRD_REACH_WEAPONS: [&str; 5] = ["glaive", "halberd", "lance", "pike", "whip"];
+
+/// Darkvision in feet of each SRD 5.2.1 species (`speciesId` key without `srd:species:`),
+/// mirroring `SRD_SPECIES[*].darkvisionFt` in `packages/game-systems/dnd5e/src/origins.ts`.
+const SRD_SPECIES_DARKVISION_FT: [(&str, f64); 9] = [
+    ("dragonborn", 60.0),
+    ("dwarf", 120.0),
+    ("elf", 60.0),
+    ("gnome", 60.0),
+    ("goliath", 0.0),
+    ("halfling", 0.0),
+    ("human", 0.0),
+    ("orc", 120.0),
+    ("tiefling", 60.0),
+];
+
+/// Melee reach in feet a token threatens for opportunity attacks, from the sheet:
+/// - Stat block (`actions[]`): the largest `attack.reachFt` among `melee` and
+///   `melee_or_ranged` attacks, `5` when none is printed.
+/// - Character sheet (`items[]`): `10` when an equipped item is an SRD reach weapon (matched
+///   by `compendiumId`, else by `name` without a leading count, plural `s` allowed), else `5`.
+/// - Neither list: `None`, so the token keeps its current reach.
+fn threat_reach_ft(data: &Value) -> Option<f64> {
+    if let Some(actions) = data.get("actions").and_then(Value::as_array) {
+        let melee_reach = actions
+            .iter()
+            .filter_map(|a| a.get("attack"))
+            .filter(|attack| {
+                matches!(
+                    attack.get("kind").and_then(Value::as_str),
+                    Some("melee" | "melee_or_ranged")
+                )
+            })
+            .filter_map(|attack| attack.get("reachFt").and_then(Value::as_f64))
+            .fold(None, |best: Option<f64>, r| Some(best.map_or(r, |b| b.max(r))));
+        return Some(melee_reach.unwrap_or(5.0).clamp(0.0, 100.0));
+    }
+    let items = data.get("items").and_then(Value::as_array)?;
+    let is_reach_weapon = |item: &Value| {
+        let key = match item.get("compendiumId").and_then(Value::as_str) {
+            Some(id) => id.rsplit(':').next().unwrap_or(id).to_ascii_lowercase(),
+            None => item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim_start_matches(|c: char| c.is_ascii_digit() || c.is_whitespace())
+                .to_ascii_lowercase(),
+        };
+        SRD_REACH_WEAPONS
+            .iter()
+            .any(|w| key == *w || key.strip_suffix('s') == Some(*w))
+    };
+    let wields_reach = items.iter().any(|item| {
+        item.get("equipped").and_then(Value::as_bool) == Some(true) && is_reach_weapon(item)
+    });
+    Some(if wields_reach { 10.0 } else { 5.0 })
+}
+
+/// Darkvision in feet from the sheet: a stat block's `senses.darkvision` (`0` when the
+/// `senses` object omits it), else the SRD species of `speciesId`, else `None` (unknown
+/// species: the token keeps its current senses).
+fn darkvision_ft(data: &Value) -> Option<f64> {
+    if let Some(senses) = data.get("senses").and_then(Value::as_object) {
+        let ft = senses.get("darkvision").and_then(Value::as_f64).unwrap_or(0.0);
+        return Some(ft.clamp(0.0, 500.0));
+    }
+    let species = data.get("speciesId").and_then(Value::as_str)?;
+    let key = species.strip_prefix("srd:species:").unwrap_or(species);
+    SRD_SPECIES_DARKVISION_FT
+        .iter()
+        .find(|(id, _)| *id == key)
+        .map(|(_, ft)| *ft)
+}
+
 /// Extracts the token-relevant subset of a `Dnd5eActorData` sheet:
 /// `attributes.hp.{current,max,temp}`, `attributes.ac` (or `derived.ac`),
-/// `abilities.dex.score` (-> modifier), `attributes.speed`, `conditions[].id`, and
-/// `damageMitigations` (`RESISTANT` / `IMMUNE` / `VULNERABLE` per damage type, A68).
+/// `abilities.dex.score` (-> modifier), `attributes.speed`, `conditions[].id`,
+/// `damageMitigations` (`RESISTANT` / `IMMUNE` / `VULNERABLE` per damage type, A68), the
+/// threat reach (`threat_reach_ft`), and darkvision (`darkvision_ft`).
 pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTacticalSync {
     let conditions = data.get("conditions").and_then(Value::as_array).map(|arr| {
         arr.iter()
@@ -855,7 +936,29 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
             .and_then(Value::as_f64),
         conditions,
         damage_affinities,
+        reach_ft: threat_reach_ft(data),
+        darkvision_ft: darkvision_ft(data),
     }
+}
+
+/// Overwrites the sheet-derived rules fields (`reach_ft`, darkvision) of an actor-linked
+/// `SpawnToken` with the values from the stored sheet, so a client cannot spawn its token
+/// with a longer reach or sight than the sheet allows. Other commands, synthetic tokens,
+/// and actors that cannot be loaded pass through unchanged.
+pub async fn resolve_linked_spawn(
+    state: &AppState,
+    campaign_id: Uuid,
+    cmd: TrameCommand,
+) -> TrameCommand {
+    let TrameCommand::SpawnToken { mut token } = cmd else {
+        return cmd;
+    };
+    if let Some(actor_id) = token.actor_id
+        && let Ok(Some(actor)) = get_actor(state, campaign_id, actor_id).await
+    {
+        tactical_sync_from_sheet(None, &actor.payload).apply_sheet_rules(&mut token);
+    }
+    TrameCommand::SpawnToken { token }
 }
 
 /// Wakes the room and resyncs linked tokens + broadcasts `ActorUpdated` for `record`.
@@ -1684,8 +1787,37 @@ const MAP_IMPORT_SAVE_RETRIES: u32 = 3;
 // Room sinks and router
 // ---------------------------------------------------------------------------
 
-/// Writes a linked token's hp / temp hp into its actor sheet (`attributes.hp`), retrying
-/// once on a concurrent sheet edit, then broadcasts the new version (`ActorUpdated`).
+/// Merges table condition ids into a sheet's `conditions` list: entries whose id is still
+/// present keep their sheet metadata (duration, source), removed ids are dropped, and new
+/// ids are appended as `{ "id": ... }` in table order.
+fn merge_sheet_conditions(sheet_conditions: Option<&Value>, ids: &[String]) -> Value {
+    let existing = sheet_conditions
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let entry_id = |entry: &Value| {
+        entry
+            .get("id")
+            .and_then(Value::as_str)
+            .or_else(|| entry.as_str())
+            .map(str::to_string)
+    };
+    let mut merged: Vec<Value> = existing
+        .iter()
+        .filter(|entry| entry_id(entry).is_some_and(|id| ids.contains(&id)))
+        .cloned()
+        .collect();
+    for id in ids {
+        if !merged.iter().any(|entry| entry_id(entry).as_ref() == Some(id)) {
+            merged.push(json!({ "id": id }));
+        }
+    }
+    Value::Array(merged)
+}
+
+/// Writes a linked token's hp / temp hp into its actor sheet (`attributes.hp`), and its
+/// conditions when they changed (`merge_sheet_conditions`), retrying once on a concurrent
+/// sheet edit, then broadcasts the new version (`ActorUpdated`).
 pub async fn persist_linked_vitals(
     state: &AppState,
     change: &LinkedVitalsChange,
@@ -1703,6 +1835,9 @@ pub async fn persist_linked_vitals(
         }
         data["attributes"]["hp"]["current"] = json!(change.hp);
         data["attributes"]["hp"]["temp"] = json!(change.temp_hp);
+        if let Some(conditions) = &change.conditions {
+            data["conditions"] = merge_sheet_conditions(data.get("conditions"), conditions);
+        }
         match update_actor(
             state,
             change.campaign_id,

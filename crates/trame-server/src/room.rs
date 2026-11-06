@@ -205,6 +205,25 @@ pub struct ActorTacticalSync {
     /// Updated `(resistances, immunities, vulnerabilities)` damage-type lists (A68), copied
     /// onto `TokenState::damage_*` so typed `ApplyDamage` derives the affinity server-side.
     pub damage_affinities: Option<(Vec<String>, Vec<String>, Vec<String>)>,
+    /// Opportunity-attack reach in feet (`ft`, `0..=100`) derived server-side from the
+    /// equipped weapon or the stat block's melee attacks; copied onto `TokenState::reach_ft`.
+    pub reach_ft: Option<f64>,
+    /// Darkvision radius in feet (`ft`, `0..=500`) from the species or stat block senses;
+    /// copied onto `TokenState::senses.darkvision_range_ft`.
+    pub darkvision_ft: Option<f64>,
+}
+
+impl ActorTacticalSync {
+    /// Copies the sheet-derived rules fields (reach, darkvision) onto `token`. Shared by the
+    /// sheet resync and by actor-linked `SpawnToken`, so both paths ignore client values.
+    pub fn apply_sheet_rules(&self, token: &mut trame_engine::commands::TokenState) {
+        if let Some(reach_ft) = self.reach_ft {
+            token.reach_ft = reach_ft;
+        }
+        if let Some(darkvision_ft) = self.darkvision_ft {
+            token.senses.darkvision_range_ft = darkvision_ft;
+        }
+    }
 }
 
 /// Vitals of an actor-linked token after a tabletop command changed them, forwarded to the
@@ -220,7 +239,21 @@ pub struct LinkedVitalsChange {
     pub hp: i32,
     /// Temporary hit points after the command (`>= 0`).
     pub temp_hp: i32,
+    /// Condition ids of the token (`TokenState::conditions`, without GM overrides) when the
+    /// command changed them; `None` leaves the sheet's conditions untouched.
+    pub conditions: Option<Vec<String>>,
 }
+
+/// Table-side fields of an actor-linked token mirrored into its actor sheet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinkedVitals {
+    hp: i32,
+    temp_hp: i32,
+    conditions: Vec<String>,
+}
+
+/// `LinkedVitals` keyed by `(token_id, actor_id)`.
+type LinkedVitalsMap = BTreeMap<(Uuid, Uuid), LinkedVitals>;
 
 /// Room-side record of a dice roll or initiative result destined for the session timeline.
 #[derive(Debug, Clone, PartialEq)]
@@ -1096,7 +1129,7 @@ impl TableRoomActor {
         &self,
         events: &[TrameEvent],
         prior_prompts: &std::collections::BTreeMap<Uuid, trame_engine::commands::ReactionPrompt>,
-        prior_vitals: &BTreeMap<(Uuid, Uuid), (i32, i32)>,
+        prior_vitals: &LinkedVitalsMap,
     ) {
         for client in self.clients.values() {
             let filtered_events = filter_events_for_recipient(
@@ -1397,33 +1430,45 @@ impl TableRoomActor {
         }
     }
 
-    /// `(hp, temp_hp)` of every actor-linked token, keyed by `(token_id, actor_id)`.
-    fn linked_vitals(&self) -> BTreeMap<(Uuid, Uuid), (i32, i32)> {
+    /// `LinkedVitals` of every actor-linked token, keyed by `(token_id, actor_id)`.
+    fn linked_vitals(&self) -> LinkedVitalsMap {
         self.state
             .data
             .tokens
             .values()
-            .filter_map(|t| t.actor_id.map(|a| ((t.id, a), (t.hp, t.temp_hp))))
+            .filter_map(|t| {
+                t.actor_id.map(|a| {
+                    let vitals = LinkedVitals {
+                        hp: t.hp,
+                        temp_hp: t.temp_hp,
+                        conditions: t.conditions.clone(),
+                    };
+                    ((t.id, a), vitals)
+                })
+            })
             .collect()
     }
 
     /// Forwards linked tokens whose vitals differ from `before` to the vitals sink. Diffing
     /// (rather than matching damage events) also covers undo, batches, and staged commits;
     /// tokens absent from `before` (just spawned from the sheet) are not echoed back.
-    fn forward_linked_vitals(&self, before: &BTreeMap<(Uuid, Uuid), (i32, i32)>) {
+    /// Conditions are only forwarded when they changed, so an hp change never rewrites a
+    /// sheet's conditions from a token that was spawned without them.
+    fn forward_linked_vitals(&self, before: &LinkedVitalsMap) {
         let Some(tx) = &self.sinks.vitals else {
             return;
         };
         for ((token_id, actor_id), vitals) in self.linked_vitals() {
-            if before
-                .get(&(token_id, actor_id))
-                .is_some_and(|prev| *prev != vitals)
-            {
+            let Some(prev) = before.get(&(token_id, actor_id)) else {
+                continue;
+            };
+            if *prev != vitals {
                 let _ = tx.send(LinkedVitalsChange {
                     campaign_id: self.campaign_id,
                     actor_id,
-                    hp: vitals.0,
-                    temp_hp: vitals.1,
+                    hp: vitals.hp,
+                    temp_hp: vitals.temp_hp,
+                    conditions: (prev.conditions != vitals.conditions).then_some(vitals.conditions),
                 });
             }
         }
@@ -1487,6 +1532,7 @@ impl TableRoomActor {
                     token.damage_immunities = immune.clone();
                     token.damage_vulnerabilities = vuln.clone();
                 }
+                sync.apply_sheet_rules(token);
                 updated_count += 1;
             }
         }

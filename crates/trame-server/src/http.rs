@@ -1304,7 +1304,8 @@ pub async fn presign_asset_handler(
 }
 
 /// Replaces a client `ActivateScene` payload with the stored scene. A failed lookup becomes a
-/// command without payload, which the room rejects back to the sender.
+/// command without payload, which the room rejects back to the sender. An actor-linked
+/// `SpawnToken` gets its reach and darkvision from the stored sheet (`resolve_linked_spawn`).
 async fn resolve_client_envelope(
     state: &AppState,
     campaign_id: Uuid,
@@ -1313,6 +1314,11 @@ async fn resolve_client_envelope(
     let ClientEnvelope::SubmitCommand(mut submission) = envelope else {
         return envelope;
     };
+    if let TrameCommand::SpawnToken { .. } = submission.command {
+        submission.command =
+            crate::campaigns::resolve_linked_spawn(state, campaign_id, submission.command).await;
+        return ClientEnvelope::SubmitCommand(submission);
+    }
     let TrameCommand::ActivateScene { scene_id, .. } = submission.command else {
         return ClientEnvelope::SubmitCommand(submission);
     };
