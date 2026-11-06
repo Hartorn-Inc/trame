@@ -30,7 +30,6 @@ use std::io::Write as _;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tower::ServiceExt;
 use trame_engine::commands::{
     CampaignRole, CommandActor, TableMode, TableState, TokenState, TrameCommand,
@@ -736,7 +735,7 @@ async fn a03_handout_reveal_matches_block_id_and_reaches_player() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "case {case}");
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = trame_server::room::client_channel();
         h.room(campaign_id)
             .await
             .connect_client(ConnectedClient {
@@ -2359,7 +2358,7 @@ async fn a27_ping_does_not_renew_the_lease() {
     let wal = Arc::new(InMemoryWalStorage::new());
     let mgr = RoomLeaseManager::new(wal, 25, 900_000);
     let room = mgr.get_or_wake_room(Uuid::new_v4()).await.unwrap();
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = trame_server::room::client_channel();
     let session_id = Uuid::new_v4();
     room.connect_client(ConnectedClient {
         session_id,
@@ -2382,6 +2381,7 @@ async fn a27_ping_does_not_renew_the_lease() {
             ClientEnvelope::PointerPing {
                 pos: Point2D::new(1.0, 1.0),
                 color_hex: "#ffaa00".to_string(),
+                scene_id: None,
             },
             true,
         ),

@@ -359,7 +359,22 @@ pub struct SecurityPolicy {
     /// (default `DEFAULT_WS_ROOM_CALL_TIMEOUT`). On expiry the socket is closed with `1011`,
     /// so a stalled actor cannot hold connections and their reconnect storm forever.
     pub ws_room_call_timeout: Duration,
+    /// Interval between the server's WebSocket `Ping` frames on an attached socket
+    /// (default `DEFAULT_WS_PING_INTERVAL`, the client's heartbeat interval).
+    pub ws_ping_interval: Duration,
+    /// Silence allowed after a server `Ping` before the peer counts as gone (default
+    /// `DEFAULT_WS_PONG_TIMEOUT`, the client's `Pong` window). A socket that receives no
+    /// frame at all for `ws_ping_interval + ws_pong_timeout` is closed.
+    pub ws_pong_timeout: Duration,
 }
+
+/// Default `SecurityPolicy::ws_ping_interval` (20 s), matching the web client's `Ping`
+/// interval (`HEARTBEAT_INTERVAL_MS`).
+pub const DEFAULT_WS_PING_INTERVAL: Duration = Duration::from_secs(20);
+
+/// Default `SecurityPolicy::ws_pong_timeout` (10 s), matching the web client's `Pong`
+/// deadline (`PONG_TIMEOUT_MS`).
+pub const DEFAULT_WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Default `SecurityPolicy::campaign_asset_quota_bytes` (1 GiB).
 pub const DEFAULT_CAMPAIGN_ASSET_QUOTA_BYTES: u64 = 1024 * 1024 * 1024;
@@ -382,6 +397,8 @@ impl Default for SecurityPolicy {
             bootstrap_owner_email: None,
             campaign_asset_quota_bytes: DEFAULT_CAMPAIGN_ASSET_QUOTA_BYTES,
             ws_room_call_timeout: DEFAULT_WS_ROOM_CALL_TIMEOUT,
+            ws_ping_interval: DEFAULT_WS_PING_INTERVAL,
+            ws_pong_timeout: DEFAULT_WS_PONG_TIMEOUT,
         }
     }
 }

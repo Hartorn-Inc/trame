@@ -1452,6 +1452,10 @@ pub struct TableSnapshotData {
     /// Painted with `SetDifficultTerrain`; cleared when another map is loaded or activated.
     #[serde(default)]
     pub difficult_terrain: BTreeSet<GridCell>,
+    /// Scene shown on the table, set by `LoadScene` and `ActivateScene` (`None` before the
+    /// first scene). Lets the server drop a `PointerPing` aimed at a map that is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_scene_id: Option<Uuid>,
 }
 
 /// Authoritative in-memory tabletop state machine combining serializable `TableSnapshotData`,
@@ -1565,6 +1569,7 @@ impl TableState {
                 revealed_handout_ids: BTreeSet::new(),
                 reaction_prompt_seq: 0,
                 difficult_terrain: BTreeSet::new(),
+                active_scene_id: None,
             },
             bvh,
             undo_stack: VecDeque::with_capacity(MAX_UNDO_HISTORY),
@@ -2760,6 +2765,7 @@ impl TableState {
                 }
                 self.push_undo("Load scene");
                 self.cell_size_px = pixels_per_grid;
+                self.data.active_scene_id = Some(scene_id);
                 self.data.background_asset_hash = Some(map_asset_id.clone());
                 self.data.map_width_px = width_px;
                 self.data.map_height_px = height_px;
@@ -2823,6 +2829,7 @@ impl TableState {
                 }
 
                 self.cell_size_px = scene.pixels_per_grid;
+                self.data.active_scene_id = Some(scene_id);
                 self.data.background_asset_hash = scene.map_asset_id.clone();
                 self.data.map_width_px = scene.width_px;
                 self.data.map_height_px = scene.height_px;

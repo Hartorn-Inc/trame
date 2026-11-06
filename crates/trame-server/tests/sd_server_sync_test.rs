@@ -62,12 +62,16 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
+        Self::with_policy(SecurityPolicy::default())
+    }
+
+    fn with_policy(policy: SecurityPolicy) -> Self {
         let wal = Arc::new(InMemoryWalStorage::new());
         let auth_state = AuthState::with_security(
             Arc::new(MagicLinkService::new(SECRET.to_vec(), "trame-test")),
             Arc::new(InMemorySessionStore::new()),
             Arc::new(TotpService::default()),
-            Arc::new(SecurityPolicy::default()),
+            Arc::new(policy),
         );
         let state = AppState {
             lease_manager: Arc::new(RoomLeaseManager::new(wal, 25, 900_000)),
@@ -655,8 +659,13 @@ async fn ws_read(stream: &mut TcpStream) -> ServerEnvelope {
 
 /// Writes one masked frame with `opcode` (zero mask key, so the payload is sent as is).
 async fn ws_write_op(stream: &mut TcpStream, opcode: u8, payload: &[u8]) {
-    let mut frame = vec![0x80 | opcode, 0x80 | 127];
-    frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    let mut frame = vec![0x80 | opcode];
+    if payload.len() <= 125 {
+        frame.push(0x80 | payload.len() as u8);
+    } else {
+        frame.push(0x80 | 127);
+        frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    }
     frame.extend_from_slice(&[0, 0, 0, 0]);
     frame.extend_from_slice(payload);
     stream.write_all(&frame).await.unwrap();
@@ -758,6 +767,57 @@ async fn websocket_spawn_derives_combat_numbers_and_rejects_bad_blocks() {
                 );
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RT2 — server-initiated heartbeat
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn websocket_heartbeat_pings_and_closes_silent_peers() {
+    const WS_OP_CLOSE: u8 = 0x8;
+    const WS_OP_PING: u8 = 0x9;
+    const WS_OP_PONG: u8 = 0xA;
+    let ping = std::time::Duration::from_millis(150);
+    let h = Harness::with_policy(SecurityPolicy {
+        ws_ping_interval: ping,
+        ws_pong_timeout: std::time::Duration::from_millis(100),
+        ..SecurityPolicy::default()
+    });
+    let app = h.app();
+    let (campaign_id, _, gm) = h.campaign(&app).await;
+    let addr = serve(app).await;
+
+    // (case_id, answer each server Ping with a Pong, expected close code or None if still open)
+    let cases = [
+        ("answering_peer_stays_open", true, None),
+        ("silent_peer_is_closed_going_away", false, Some(1001u16)),
+    ];
+    for (case, answer, close_code) in cases {
+        let mut ws = ws_open(addr, &format!("/ws/campaigns/{campaign_id}"), &gm).await;
+        let deadline = tokio::time::Instant::now() + ping * 4;
+        let mut pings = 0;
+        let mut closed = None;
+        while tokio::time::Instant::now() < deadline && closed.is_none() {
+            let Ok((opcode, payload)) =
+                tokio::time::timeout_at(deadline, ws_read_frame(&mut ws)).await
+            else {
+                break;
+            };
+            match opcode {
+                WS_OP_PING => {
+                    pings += 1;
+                    if answer {
+                        ws_write_op(&mut ws, WS_OP_PONG, &payload).await;
+                    }
+                }
+                WS_OP_CLOSE => closed = Some(u16::from_be_bytes([payload[0], payload[1]])),
+                _ => {}
+            }
+        }
+        assert!(pings >= 1, "case {case}: the server pings first");
+        assert_eq!(closed, close_code, "case {case}");
     }
 }
 

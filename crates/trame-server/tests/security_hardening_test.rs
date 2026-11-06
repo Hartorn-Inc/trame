@@ -228,8 +228,8 @@ fn text(body: &Bytes) -> String {
 
 struct Table {
     room: TableRoomHandle,
-    gm: (Uuid, mpsc::UnboundedReceiver<OutboundClientFrame>),
-    player: (Uuid, mpsc::UnboundedReceiver<OutboundClientFrame>),
+    gm: (Uuid, mpsc::Receiver<OutboundClientFrame>),
+    player: (Uuid, mpsc::Receiver<OutboundClientFrame>),
 }
 
 impl Table {
@@ -253,8 +253,8 @@ impl Table {
         room: &TableRoomHandle,
         user_id: Uuid,
         role: CampaignRole,
-    ) -> (Uuid, mpsc::UnboundedReceiver<OutboundClientFrame>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    ) -> (Uuid, mpsc::Receiver<OutboundClientFrame>) {
+        let (tx, rx) = trame_server::room::client_channel();
         let session_id = Uuid::new_v4();
         room.connect_client(ConnectedClient {
             session_id,
@@ -296,7 +296,7 @@ impl Table {
         .await;
     }
 
-    fn drain(rx: &mut mpsc::UnboundedReceiver<OutboundClientFrame>) -> Vec<ServerEnvelope> {
+    fn drain(rx: &mut mpsc::Receiver<OutboundClientFrame>) -> Vec<ServerEnvelope> {
         let mut out = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             if let OutboundClientFrame::Binary(bytes) = frame {

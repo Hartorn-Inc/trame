@@ -42,6 +42,11 @@
 //!      - Waking/attaching to the room and handing it each frame are bounded by
 //!        `SecurityPolicy::ws_room_call_timeout`; on expiry the socket closes with `1011`
 //!        instead of hanging on a stalled actor.
+//!      - Outbound frames go through the client's bounded queue (`room::client_channel`);
+//!        when it overflows the writer closes the socket with `1013` (slow consumer, RT2).
+//!      - The writer sends a WebSocket `Ping` every `SecurityPolicy::ws_ping_interval`
+//!        (20 s, like the client's heartbeat); a peer silent for `ws_ping_interval +
+//!        ws_pong_timeout` (30 s) is closed with `1001` so its room slot is freed.
 //!   5. `Hardening Headers`:
 //!      - `security_headers_middleware` wraps the whole router (CSP, `nosniff`, frame denial).
 //!   6. `Deterministic Session Cleanup & Sub-5ms Healthz`:
@@ -84,8 +89,9 @@ use crate::auth::totp::TotpService;
 use crate::config::ServerConfig;
 pub use crate::maps::{InMemoryMapStorage, get_campaign_maps_handler, put_campaign_maps_handler};
 use crate::room::{
-    ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomError, RoomLeaseManager,
-    WS_CLOSE_CODE_INTERNAL_ERROR, WS_CLOSE_CODE_MEMBERSHIP_REVOKED,
+    ClientSender, ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomError,
+    RoomLeaseManager, WS_CLOSE_CODE_GOING_AWAY, WS_CLOSE_CODE_INTERNAL_ERROR,
+    WS_CLOSE_CODE_MEMBERSHIP_REVOKED, WS_CLOSE_CODE_SLOW_CONSUMER, client_channel,
 };
 use crate::security::{opaque_server_errors_middleware, security_headers_middleware};
 use crate::storage::SqlxPostgresStore;
@@ -110,7 +116,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use tokio::sync::mpsc;
 use trame_engine::commands::{CampaignRole, TrameCommand};
 use uuid::Uuid;
 
@@ -1344,11 +1349,7 @@ async fn resolve_client_envelope(
 
 /// Answers a frame the socket task refused before the room saw it with `CommandRejected`;
 /// `correlation_id` is `None` when the frame could not be decoded (RT10).
-fn reject_frame(
-    tx: &mpsc::UnboundedSender<OutboundClientFrame>,
-    reason: &str,
-    correlation_id: Option<String>,
-) {
+fn reject_frame(tx: &ClientSender, reason: &str, correlation_id: Option<String>) {
     let out = crate::sync::ServerEnvelope::CommandRejected {
         reason: reason.to_string(),
         correlation_id,
@@ -1375,8 +1376,11 @@ async fn handle_ws_connection(
     role: CampaignRole,
 ) {
     let room_timeout = state.auth_state.security.ws_room_call_timeout;
+    let ping_interval = state.auth_state.security.ws_ping_interval;
+    let idle_timeout = ping_interval + state.auth_state.security.ws_pong_timeout;
     let session_id = Uuid::new_v4();
-    let (tx, mut rx) = mpsc::unbounded_channel::<OutboundClientFrame>();
+    let (tx, mut rx) = client_channel();
+    let overflow = tx.overflow_signal();
     let reject_tx = tx.clone();
     let client = ConnectedClient {
         session_id,
@@ -1423,7 +1427,27 @@ async fn handle_ws_connection(
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
     let mut send_task = tokio::spawn(async move {
-        while let Some(frame) = rx.recv().await {
+        let mut heartbeat =
+            tokio::time::interval_at(tokio::time::Instant::now() + ping_interval, ping_interval);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            let frame = tokio::select! {
+                biased;
+                () = overflow.notified() => OutboundClientFrame::Close {
+                    code: WS_CLOSE_CODE_SLOW_CONSUMER,
+                    reason: "Slow Consumer".to_string(),
+                },
+                frame = rx.recv() => match frame {
+                    Some(frame) => frame,
+                    None => break,
+                },
+                _ = heartbeat.tick() => {
+                    if ws_sender.send(Message::Ping(Bytes::new())).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            };
             match frame {
                 OutboundClientFrame::Binary(bytes) => {
                     if ws_sender.send(Message::Binary(bytes.into())).await.is_err() {
@@ -1442,7 +1466,29 @@ async fn handle_ws_connection(
         }
     });
 
-    while let Some(Ok(msg)) = ws_receiver.next().await {
+    // Any inbound frame (the browser's automatic `Pong`, the client's heartbeat `Ping`,
+    // commands) proves the peer alive; silence past `idle_timeout` frees the room slot.
+    let mut writer_done = false;
+    loop {
+        let inbound = tokio::select! {
+            inbound = tokio::time::timeout(idle_timeout, ws_receiver.next()) => inbound,
+            _ = &mut send_task => {
+                writer_done = true;
+                break;
+            }
+        };
+        let msg = match inbound {
+            Ok(Some(Ok(msg))) => msg,
+            Ok(_) => break,
+            Err(_) => {
+                tracing::debug!(%campaign_id, "WebSocket peer silent past the heartbeat window");
+                let _ = reject_tx.send(OutboundClientFrame::Close {
+                    code: WS_CLOSE_CODE_GOING_AWAY,
+                    reason: "Heartbeat Timeout".to_string(),
+                });
+                break;
+            }
+        };
         let Message::Binary(bin) = msg else {
             continue;
         };
@@ -1486,9 +1532,10 @@ async fn handle_ws_connection(
     let _ = tokio::time::timeout(room_timeout, room_handle.disconnect_client(session_id)).await;
     drop(reject_tx);
     // Lets a queued Close frame reach the peer before the writer is torn down.
-    if tokio::time::timeout(std::time::Duration::from_secs(1), &mut send_task)
-        .await
-        .is_err()
+    if !writer_done
+        && tokio::time::timeout(std::time::Duration::from_secs(1), &mut send_task)
+            .await
+            .is_err()
     {
         send_task.abort();
     }

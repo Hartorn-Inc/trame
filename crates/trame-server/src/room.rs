@@ -68,9 +68,12 @@
 //!      - `authorize_command` rejects `ApplyDamage` outside `0..=MAX_RAW_DAMAGE`
 //!        and, for non-GM actors, against tokens they do not control or with a
 //!        non-`Normal` affinity, before the command reaches the engine or the WAL.
-//!   7. `Hidden Initiative & Sheet Privacy (G5)`:
-//!      - Auto-rolled initiative for `CHANNEL_GM_HIDDEN` tokens uses
-//!        `RollVisibility::GmOnly`; tokens whose player already rolled
+//!   7. `Hidden Initiative & Sheet Privacy (G5, RT7)`:
+//!      - Initiative for a token some player cannot see (`CHANNEL_GM_HIDDEN`, or
+//!        out of the line of sight of a token controller or connected player)
+//!        is rolled `RollVisibility::GmOnly`: only the GM and the token's
+//!        controller receive it, and its timeline record and the `initiative`
+//!        order record are GM-only. Tokens whose player already rolled
 //!        initiative keep that roll; `ActorUpdated` sheets go only to the GM and
 //!        the controllers of linked tokens.
 //!   8. `Server-Only Initiative (SEC3)`:
@@ -81,6 +84,16 @@
 //!      - Stored player rolls are dropped on every committed transition into or
 //!        out of `TurnByTurn`, whatever supplied the initiative order, so a roll
 //!        made for one encounter never carries over to the next.
+//!   9. `Bounded Fan-Out & Pointer Pings (RT2)`:
+//!      - Each client has a `CLIENT_OUTBOUND_QUEUE_FRAMES`-deep queue the actor
+//!        fills without waiting (`ClientSender`). A full queue drops the frame
+//!        and closes that socket with `1013`; the client reconnects and resyncs
+//!        from a fresh `StateSnapshot`, and everyone else is unaffected.
+//!      - A `PointerPing` is broadcast only when its position is finite and on
+//!        the map, its color is a palette color, its `scene_id` (if any) is the
+//!        active scene, and the session's previous ping is at least
+//!        `POINTER_PING_MIN_INTERVAL_MS` old. Invalid pings are rejected;
+//!        throttled ones are dropped silently.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -96,11 +109,12 @@ use crate::dice::{DiceRollOutcome, RollVisibility, SeededDiceRoller, project_rol
 use crate::sync::{
     ClientEnvelope, McpStagingProposal, QuarantinedWalSummary, ServerEnvelope,
     encode_server_envelope, filter_events_for_recipient, project_state_for_recipient,
+    visible_token_ids_for_recipient,
 };
 use crate::wal::{
     TableStateSnapshot, WalEntry, WalError, WalRecord, WalStorage, recover_table_state,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -138,6 +152,23 @@ fn is_gm_hidden(token: &trame_engine::commands::TokenState) -> bool {
     token.visibility_channel & trame_engine::geometry::CHANNEL_GM_HIDDEN != 0
 }
 
+/// A server-rolled initiative: the token it was rolled for and the outcome.
+type InitiativeRoll = (Uuid, DiceRollOutcome);
+
+/// Initiative privacy (RT7): `Public` only when the token is not GM-hidden and every player
+/// in `views` (`TableRoomActor::player_views`) can see it; otherwise `GmOnly`, which keeps
+/// the roll out of other players' sockets and makes its timeline record GM-only.
+fn initiative_roll_visibility(
+    token: &trame_engine::commands::TokenState,
+    views: &[HashSet<Uuid>],
+) -> RollVisibility {
+    if is_gm_hidden(token) || views.iter().any(|seen| !seen.contains(&token.id)) {
+        RollVisibility::GmOnly
+    } else {
+        RollVisibility::Public
+    }
+}
+
 /// Dice expression for an `AuthoritativeInitiativeRoll`: `1d20` plus a signed modifier.
 fn initiative_expression(modifier: i32) -> String {
     match modifier.cmp(&0) {
@@ -145,6 +176,118 @@ fn initiative_expression(modifier: i32) -> String {
         std::cmp::Ordering::Less => format!("1d20{modifier}"),
         std::cmp::Ordering::Equal => "1d20".to_string(),
     }
+}
+
+/// RFC 6455 close code `1013 Try Again Later`: the client's outbound queue overflowed (slow
+/// consumer, RT2). The web client treats it like any close of an opened socket: it reconnects
+/// with backoff and resyncs from the `StateSnapshot`.
+pub const WS_CLOSE_CODE_SLOW_CONSUMER: u16 = 1013;
+
+/// Frames a client's outbound queue holds (`client_channel`). A `CommandAccepted` carries the
+/// whole projected state, so a consumer this far behind is better served by a resync.
+pub const CLIENT_OUTBOUND_QUEUE_FRAMES: usize = 64;
+
+/// Minimum spacing between two broadcast `PointerPing`s of one session (`ms`); faster pings
+/// are dropped silently (RT2).
+pub const POINTER_PING_MIN_INTERVAL_MS: u64 = 250;
+
+/// Longest accepted `PointerPing.color_hex` (`bytes`).
+pub const MAX_POINTER_PING_COLOR_LEN: usize = 48;
+
+/// Why `ClientSender::send` did not queue a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboundSendError {
+    /// The queue was full: the frame was dropped and the socket is being closed with
+    /// `WS_CLOSE_CODE_SLOW_CONSUMER`.
+    Overflow,
+    /// The socket task is gone.
+    Closed,
+}
+
+/// Sending half of a client's bounded outbound queue (RT2).
+///
+/// `send` never waits, so one stalled browser cannot stall the room actor and every other
+/// client with it. On a full queue the frame is dropped and the overflow signal fires; the
+/// socket task then closes the socket with `WS_CLOSE_CODE_SLOW_CONSUMER` without draining the
+/// backlog, and the client recovers by reconnecting (fresh `StateSnapshot`).
+#[derive(Debug, Clone)]
+pub struct ClientSender {
+    tx: mpsc::Sender<OutboundClientFrame>,
+    overflow: Arc<tokio::sync::Notify>,
+}
+
+impl ClientSender {
+    /// Queues `frame` without waiting (see the type docs for the overflow policy).
+    pub fn send(&self, frame: OutboundClientFrame) -> Result<(), OutboundSendError> {
+        match self.tx.try_send(frame) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.overflow.notify_one();
+                Err(OutboundSendError::Overflow)
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(OutboundSendError::Closed),
+        }
+    }
+
+    /// Signal fired when a frame was dropped because the queue was full; the socket task
+    /// waits on it to close the socket.
+    pub fn overflow_signal(&self) -> Arc<tokio::sync::Notify> {
+        self.overflow.clone()
+    }
+}
+
+/// Bounded outbound queue of one client, `CLIENT_OUTBOUND_QUEUE_FRAMES` deep.
+pub fn client_channel() -> (ClientSender, mpsc::Receiver<OutboundClientFrame>) {
+    client_channel_with_capacity(CLIENT_OUTBOUND_QUEUE_FRAMES)
+}
+
+/// Bounded outbound queue holding at most `capacity` frames (`>= 1`).
+pub fn client_channel_with_capacity(
+    capacity: usize,
+) -> (ClientSender, mpsc::Receiver<OutboundClientFrame>) {
+    let (tx, rx) = mpsc::channel(capacity.max(1));
+    let sender = ClientSender {
+        tx,
+        overflow: Arc::new(tokio::sync::Notify::new()),
+    };
+    (sender, rx)
+}
+
+/// Checks a `PointerPing` against the active map (RT2): finite coordinates inside
+/// `0..=map_width_px` x `0..=map_height_px`, a palette color (`#RGB`, `#RRGGBB`,
+/// `#RRGGBBAA`, or `var(--token)`), and, when the client named one, the active scene.
+pub fn validate_pointer_ping(
+    state: &TableState,
+    pos: &trame_engine::geometry::Point2D,
+    color_hex: &str,
+    scene_id: Option<Uuid>,
+) -> Result<(), String> {
+    let on_map = |v: f64, max: u32| v.is_finite() && (0.0..=f64::from(max)).contains(&v);
+    if !on_map(pos.x, state.data.map_width_px) || !on_map(pos.y, state.data.map_height_px) {
+        return Err("invalid pointer ping: position is not on the map".to_string());
+    }
+    if scene_id.is_some() && scene_id != state.data.active_scene_id {
+        return Err("invalid pointer ping: scene is not the active scene".to_string());
+    }
+    let is_hex = |s: &str| {
+        s.strip_prefix('#').is_some_and(|digits| {
+            matches!(digits.len(), 3 | 6 | 8) && digits.chars().all(|c| c.is_ascii_hexdigit())
+        })
+    };
+    let is_token = |s: &str| {
+        s.strip_prefix("var(--")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .is_some_and(|name| {
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            })
+    };
+    if color_hex.len() > MAX_POINTER_PING_COLOR_LEN || !(is_hex(color_hex) || is_token(color_hex)) {
+        return Err("invalid pointer ping: color is not a palette color".to_string());
+    }
+    Ok(())
 }
 
 /// Outbound frame sent from a room actor to a connected client's socket transmission task.
@@ -336,8 +479,8 @@ pub struct ConnectedClient {
     pub user_id: Uuid,
     /// Campaign role (`Gm`, `Player`, or `Spectator`) governing RBAC and state projection.
     pub role: CampaignRole,
-    /// Outbound channel carrying frames (`OutboundClientFrame`) to the socket task.
-    pub tx: mpsc::UnboundedSender<OutboundClientFrame>,
+    /// Bounded outbound queue (`client_channel`) carrying frames to the socket task.
+    pub tx: ClientSender,
 }
 
 /// Internal control messages processed sequentially by `TableRoomActor::run`.
@@ -664,6 +807,8 @@ pub struct TableRoomActor {
     /// reason starts with `"initiative"`, case-insensitive), consumed by the next encounter
     /// start so their tokens keep that result. One entry per user per encounter (SEC3).
     player_initiative_rolls: HashMap<Uuid, i32>,
+    /// Time of the last broadcast `PointerPing` per session (`ms`), for the throttle.
+    last_pointer_ping_ms: HashMap<Uuid, u64>,
     sinks: RoomSinks,
     /// Entries quarantined when this actor recovered (empty on a clean replay); sent to GMs.
     quarantine_notice: Vec<QuarantinedWalSummary>,
@@ -685,11 +830,7 @@ fn rejection_reason(err: &RoomError) -> String {
 }
 
 /// Unicasts `CommandRejected` to one client.
-fn send_rejection(
-    tx: &mpsc::UnboundedSender<OutboundClientFrame>,
-    reason: String,
-    correlation_id: Option<String>,
-) {
+fn send_rejection(tx: &ClientSender, reason: String, correlation_id: Option<String>) {
     let out = ServerEnvelope::CommandRejected {
         reason,
         correlation_id,
@@ -732,6 +873,7 @@ impl TableRoomActor {
             wal,
             rx,
             player_initiative_rolls: HashMap::new(),
+            last_pointer_ping_ms: HashMap::new(),
             sinks,
             quarantine_notice: recovered
                 .quarantined
@@ -775,6 +917,7 @@ impl TableRoomActor {
                 }
                 RoomActorMessage::DisconnectClient { session_id } => {
                     self.clients.remove(&session_id);
+                    self.last_pointer_ping_ms.remove(&session_id);
                     self.last_activity_ms = now_ms();
                 }
                 RoomActorMessage::EvictUser { user_id, reply } => {
@@ -1006,21 +1149,44 @@ impl TableRoomActor {
                         .starts_with("initiative");
                 let rolled = if is_player_initiative {
                     self.roll_player_initiative(actor_user_id)
+                        .map(|(token_id, outcome)| (Some(token_id), outcome))
                 } else {
                     self.dice_roller
                         .roll(actor_user_id, &expression, visibility, reason)
+                        .map(|outcome| (None, outcome))
                         .map_err(|err| err.to_string())
                 };
                 match rolled {
-                    Ok(outcome) => {
-                        self.fan_out_roll(&outcome);
+                    Ok((token_id, outcome)) => {
+                        match token_id {
+                            Some(token_id) => self.fan_out_initiative_roll(token_id, &outcome),
+                            None => self.fan_out_roll(&outcome),
+                        }
                         self.note_timeline(roll_timeline_note(self.campaign_id, &outcome));
                     }
                     Err(reason) => send_rejection(&sender_tx, reason, correlation_id),
                 }
             }
-            ClientEnvelope::PointerPing { pos, color_hex } => {
-                self.last_activity_ms = now_ms();
+            ClientEnvelope::PointerPing {
+                pos,
+                color_hex,
+                scene_id,
+            } => {
+                if let Err(reason) = validate_pointer_ping(&self.state, &pos, &color_hex, scene_id)
+                {
+                    send_rejection(&sender_tx, reason, None);
+                    return Ok(());
+                }
+                let now = now_ms();
+                if self
+                    .last_pointer_ping_ms
+                    .get(&session_id)
+                    .is_some_and(|last| now.saturating_sub(*last) < POINTER_PING_MIN_INTERVAL_MS)
+                {
+                    return Ok(());
+                }
+                self.last_pointer_ping_ms.insert(session_id, now);
+                self.last_activity_ms = now;
                 let out = ServerEnvelope::PointerPingBroadcast {
                     sender_user_id: actor_user_id,
                     pos,
@@ -1061,7 +1227,6 @@ impl TableRoomActor {
         let initiative_checkpoint = self.player_initiative_rolls.clone();
         let prior_mode = self.state.data.mode;
         let (resolved_cmd, initiative_rolls) = self.resolve_authoritative_initiative(&actor, cmd);
-        let prior_prompts = self.state.data.active_reaction_prompts.clone();
         let prior_vitals = self.linked_vitals();
         let is_undo = matches!(resolved_cmd, TrameCommand::UndoLastAction);
         let persisted = match self.state.apply_command(&actor, resolved_cmd.clone()) {
@@ -1100,11 +1265,11 @@ impl TableRoomActor {
         if !is_undo {
             self.maybe_periodic_snapshot();
         }
-        for outcome in &initiative_rolls {
-            self.fan_out_roll(outcome);
+        for (token_id, outcome) in &initiative_rolls {
+            self.fan_out_initiative_roll(*token_id, outcome);
             self.note_timeline(roll_timeline_note(self.campaign_id, outcome));
         }
-        self.after_accepted(&events, &prior_prompts, &prior_vitals);
+        self.after_accepted(&events, &checkpoint, &prior_vitals);
         Ok((self.seq_id, events))
     }
 
@@ -1124,7 +1289,6 @@ impl TableRoomActor {
         }
         let checkpoint = self.state.clone();
         let prior_mode = self.state.data.mode;
-        let prior_prompts = self.state.data.active_reaction_prompts.clone();
         let prior_vitals = self.linked_vitals();
         let persisted = match self.state.apply_batch(&actor, commands, description) {
             Err(err) => Err(RoomError::CommandRejected(err.to_string())),
@@ -1139,7 +1303,7 @@ impl TableRoomActor {
         };
         self.seq_id += 1;
         self.forget_initiative_on_mode_change(prior_mode);
-        self.after_accepted(&events, &prior_prompts, &prior_vitals);
+        self.after_accepted(&events, &checkpoint, &prior_vitals);
         Ok((self.seq_id, events))
     }
 
@@ -1190,17 +1354,18 @@ impl TableRoomActor {
     }
 
     /// Post-commit fan-out shared by single commands and batches: per-recipient
-    /// `CommandAccepted`, linked vitals persistence, and initiative timeline records.
+    /// `CommandAccepted` (events filtered against `prior`, the table before the command),
+    /// linked vitals persistence, and initiative timeline records.
     fn after_accepted(
         &self,
         events: &[TrameEvent],
-        prior_prompts: &std::collections::BTreeMap<Uuid, trame_engine::commands::ReactionPrompt>,
+        prior: &TableState,
         prior_vitals: &LinkedVitalsMap,
     ) {
         for client in self.clients.values() {
             let filtered_events = filter_events_for_recipient(
                 &self.state,
-                prior_prompts,
+                prior,
                 events,
                 client.user_id,
                 client.role,
@@ -1229,6 +1394,7 @@ impl TableRoomActor {
             | TrameEvent::InitiativeUpdated { .. } = ev
             {
                 let order = &self.state.data.initiative_order;
+                let views = self.player_views();
                 let entries: Vec<serde_json::Value> = order
                     .iter()
                     .filter_map(|id| self.state.data.tokens.get(id))
@@ -1237,7 +1403,7 @@ impl TableRoomActor {
                             "token_id": t.id,
                             "name": t.name,
                             "total": self.state.data.initiative_totals.get(&t.id),
-                            "hidden": is_gm_hidden(t),
+                            "hidden": initiative_roll_visibility(t, &views) != RollVisibility::Public,
                         })
                     })
                     .collect();
@@ -1325,7 +1491,7 @@ impl TableRoomActor {
         &mut self,
         actor: &CommandActor,
         cmd: TrameCommand,
-    ) -> (TrameCommand, Vec<DiceRollOutcome>) {
+    ) -> (TrameCommand, Vec<InitiativeRoll>) {
         if actor.role != CampaignRole::Gm || self.state.data.tokens.is_empty() {
             return (cmd, Vec::new());
         }
@@ -1371,7 +1537,8 @@ impl TableRoomActor {
     /// sent is ignored and `1d20 + initiative bonus` is rolled for their owned token (living
     /// tokens first, then lowest id). Rejected when they own no token, already rolled for the
     /// coming encounter, or one of their tokens is already in the running encounter's order.
-    fn roll_player_initiative(&mut self, user_id: Uuid) -> Result<DiceRollOutcome, String> {
+    fn roll_player_initiative(&mut self, user_id: Uuid) -> Result<InitiativeRoll, String> {
+        let views = self.player_views();
         let owned: Vec<&trame_engine::commands::TokenState> = self
             .state
             .data
@@ -1389,11 +1556,8 @@ impl TableRoomActor {
         let Some(token) = owned.into_iter().min_by_key(|t| (t.hp <= 0, t.id)) else {
             return Err("permission denied: no token to roll initiative for".to_string());
         };
-        let visibility = if is_gm_hidden(token) {
-            RollVisibility::GmOnly
-        } else {
-            RollVisibility::Public
-        };
+        let visibility = initiative_roll_visibility(token, &views);
+        let token_id = token.id;
         let expr = initiative_expression(token.initiative_modifier());
         let reason = format!("Initiative: {}", token.name);
         let outcome = self
@@ -1401,11 +1565,12 @@ impl TableRoomActor {
             .roll(user_id, &expr, visibility, reason)
             .map_err(|err| err.to_string())?;
         self.player_initiative_rolls.insert(user_id, outcome.total);
-        Ok(outcome)
+        Ok((token_id, outcome))
     }
 
-    /// Hidden combatants (`CHANNEL_GM_HIDDEN`) are rolled with `RollVisibility::GmOnly` so their
-    /// names and results never reach player sockets through the public initiative feed.
+    /// Combatants some player cannot see (`initiative_roll_visibility`) are rolled with
+    /// `RollVisibility::GmOnly` so their names and results never reach other players through
+    /// the initiative feed or the timeline.
     /// Tokens whose owner already had initiative rolled (`player_initiative_rolls`) reuse that
     /// total and are not re-rolled; the stored rolls are consumed.
     /// Returns the sorted order, each token's total (fed to `initiative_totals`), and the roll
@@ -1413,15 +1578,16 @@ impl TableRoomActor {
     fn roll_table_initiative(
         &mut self,
         actor_user_id: Uuid,
-    ) -> (Vec<Uuid>, BTreeMap<Uuid, i32>, Vec<DiceRollOutcome>) {
-        type Candidate = (Uuid, String, i32, i32, bool, Option<Uuid>);
+    ) -> (Vec<Uuid>, BTreeMap<Uuid, i32>, Vec<InitiativeRoll>) {
+        type Candidate = (Uuid, String, i32, i32, RollVisibility, Option<Uuid>);
+        let views = self.player_views();
         let to_candidate = |t: &trame_engine::commands::TokenState| -> Candidate {
             (
                 t.id,
                 t.name.clone(),
                 t.dex_mod,
                 t.initiative_modifier(),
-                is_gm_hidden(t),
+                initiative_roll_visibility(t, &views),
                 t.owner_user_id,
             )
         };
@@ -1443,24 +1609,19 @@ impl TableRoomActor {
         let self_rolls = std::mem::take(&mut self.player_initiative_rolls);
         let mut rolled: Vec<(i32, i32, Uuid)> = Vec::with_capacity(candidates.len());
         let mut outcomes = Vec::new();
-        for (token_id, token_name, dex_mod, modifier, hidden, owner) in candidates {
+        for (token_id, token_name, dex_mod, modifier, visibility, owner) in candidates {
             if let Some(total) = owner.and_then(|o| self_rolls.get(&o)) {
                 rolled.push((*total, dex_mod, token_id));
                 continue;
             }
             let expr = initiative_expression(modifier);
             let reason = format!("Initiative: {token_name}");
-            let visibility = if hidden {
-                RollVisibility::GmOnly
-            } else {
-                RollVisibility::Public
-            };
             if let Ok(outcome) = self
                 .dice_roller
                 .roll(actor_user_id, &expr, visibility, reason)
             {
                 rolled.push((outcome.total, dex_mod, token_id));
-                outcomes.push(outcome);
+                outcomes.push((token_id, outcome));
             }
         }
 
@@ -1474,6 +1635,55 @@ impl TableRoomActor {
         let totals = rolled.iter().map(|(total, _, id)| (*id, *total)).collect();
         let order = rolled.into_iter().map(|(_, _, id)| id).collect();
         (order, totals, outcomes)
+    }
+
+    /// Line of sight (`visible_token_ids_for_recipient`) of every player who could read an
+    /// initiative roll: the controllers of tokens on the table and the connected players.
+    /// Spectators control nothing and are left out, so they cannot hide every roll.
+    fn player_views(&self) -> Vec<HashSet<Uuid>> {
+        let mut players: BTreeSet<Uuid> = self
+            .state
+            .data
+            .tokens
+            .values()
+            .filter_map(|t| t.owner_user_id)
+            .collect();
+        players.extend(
+            self.clients
+                .values()
+                .filter(|c| c.role == CampaignRole::Player)
+                .map(|c| c.user_id),
+        );
+        players
+            .into_iter()
+            .map(|user_id| {
+                visible_token_ids_for_recipient(&self.state, user_id, CampaignRole::Player)
+            })
+            .collect()
+    }
+
+    /// Sends an initiative roll for `token_id` like `fan_out_roll`, except that the token's
+    /// controller always receives it in full, as its roller would.
+    fn fan_out_initiative_roll(&self, token_id: Uuid, outcome: &DiceRollOutcome) {
+        let controller = self
+            .state
+            .data
+            .tokens
+            .get(&token_id)
+            .and_then(|t| t.owner_user_id);
+        for client in self.clients.values() {
+            let viewer = if controller == Some(client.user_id) {
+                outcome.roller_user_id
+            } else {
+                client.user_id
+            };
+            if let Some(projected_roll) = project_roll_for_recipient(outcome, viewer, client.role) {
+                let out = ServerEnvelope::DiceRolled(projected_roll);
+                if let Ok(bytes) = encode_server_envelope(&out) {
+                    let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
+                }
+            }
+        }
     }
 
     /// Sends `outcome` to every connected client through `project_roll_for_recipient`.
