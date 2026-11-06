@@ -110,6 +110,12 @@ export interface WireTokenState {
   bloodied?: WireBloodiedState;
   /** Visible condition labels. */
   conditions?: string[];
+  /**
+   * Server-validated monster or actor-template stat block copy (full tokens only); the
+   * source of the token's HP, AC, speed, senses, reach and damage affinities. Absent for
+   * plain and sheet-linked tokens.
+   */
+  stat_block?: Record<string, unknown>;
   [field: string]: unknown;
 }
 
@@ -194,6 +200,10 @@ export interface WireReactionPrompt {
   reactor_owner_user_id?: Uuid | null;
   /** `true` after `Trigger`: waiting for `ResolveReaction`. */
   awaiting_resolution?: boolean;
+  /** Mover's intended destination (px); `null` for players who cannot see the mover. */
+  pending_destination?: WirePoint2D | null;
+  /** Reactors already resolved on this trigger; always empty for players. */
+  resolved_reactor_ids?: Uuid[];
   [field: string]: unknown;
 }
 
@@ -223,6 +233,7 @@ export interface ProjectedTableState {
   /** Reduced views of visible tokens the recipient does not control (always empty for GMs). */
   public_tokens?: Record<Uuid, WireTokenState>;
   walls: WireWallSegment[];
+  /** Active AoE zones; `concentration_caster_id` is `null` when the recipient cannot see the caster. */
   persistent_aoes: Record<Uuid, WireAoeTemplate>;
   initiative_order: Uuid[];
   /** Totals keyed by token id, limited to `initiative_order` (no hidden combatant's total). */
@@ -237,7 +248,13 @@ export interface ProjectedTableState {
   map_width_px: number;
   /** Battlemap height in canvas pixels (`px`). */
   map_height_px: number;
+  /**
+   * Open reaction prompts. Players only receive the prompts of reactors they own or
+   * control, never the prompts their own movement triggered.
+   */
   active_reaction_prompts: Record<Uuid, WireReactionPrompt>;
+  /** Scene shown on the table (`null` before the first scene); echoed in `PointerPing.sceneId`. */
+  active_scene_id?: Uuid | null;
   /** Pending MCP proposals; always empty for non-GM recipients. */
   mcp_staging_proposals: Record<Uuid, McpStagingProposal>;
 }
@@ -289,7 +306,11 @@ export interface QuarantinedWalSummary {
 export type ClientEnvelope =
   | { type: "SubmitCommand"; command: WireTrameCommand; correlationId?: string }
   | { type: "RollDice"; expression: string; visibility: WireRollVisibility; reason: string; correlationId?: string }
-  | { type: "PointerPing"; pos: WirePoint2D; colorHex: string }
+  /**
+   * Dropped by the server unless `pos` is finite and on the map, `colorHex` is a palette
+   * color, and `sceneId` (when sent) is `active_scene_id`; at most one ping per 250 ms.
+   */
+  | { type: "PointerPing"; pos: WirePoint2D; colorHex: string; sceneId?: Uuid }
   | { type: "Ping"; clientTimeMs: number };
 
 /** Inbound frames after external-tag unwrapping. */
@@ -324,7 +345,13 @@ export function toWireClientEnvelope(envelope: ClientEnvelope): Record<string, u
         },
       };
     case "PointerPing":
-      return { PointerPing: { pos: envelope.pos, color_hex: envelope.colorHex } };
+      return {
+        PointerPing: {
+          pos: envelope.pos,
+          color_hex: envelope.colorHex,
+          ...(envelope.sceneId ? { scene_id: envelope.sceneId } : {}),
+        },
+      };
     case "Ping":
       return { Ping: { client_time_ms: envelope.clientTimeMs } };
   }

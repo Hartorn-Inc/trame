@@ -11,6 +11,7 @@ import {
 
 const TOKEN_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 const USER_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+const SCENE_ID = "3b241101-e2bb-4255-8caf-4136c566a962";
 
 function uuidBytes(uuid: string): Uint8Array {
   const hex = uuid.replace(/-/g, "");
@@ -42,6 +43,11 @@ describe("wire: ClientEnvelope external tagging", () => {
       id: "PointerPing is tagged with snake_case color_hex",
       envelope: { type: "PointerPing", pos: { x: 120, y: 64 }, colorHex: "var(--atlas-focus)" },
       wire: { PointerPing: { pos: { x: 120, y: 64 }, color_hex: "var(--atlas-focus)" } },
+    },
+    {
+      id: "PointerPing echoes the active scene as snake_case scene_id",
+      envelope: { type: "PointerPing", pos: { x: 5, y: 6 }, colorHex: "#ff0000", sceneId: SCENE_ID },
+      wire: { PointerPing: { pos: { x: 5, y: 6 }, color_hex: "#ff0000", scene_id: SCENE_ID } },
     },
     {
       id: "SubmitCommand is a newtype variant wrapping the tagged command",
@@ -86,6 +92,17 @@ describe("wire: decodeServerEnvelope", () => {
     initiative_order: [TOKEN_ID],
     mcp_staging_proposals: {},
   };
+  const sceneState = {
+    ...state,
+    tokens: {
+      [TOKEN_ID]: {
+        id: TOKEN_ID,
+        owner_user_id: USER_ID,
+        stat_block: { armorClass: { value: 15 }, hitPoints: { average: 7 }, speed: { walk: 30 } },
+      },
+    },
+    active_scene_id: SCENE_ID,
+  };
 
   const cases: Array<{ id: string; frame: Uint8Array; expected: unknown }> = [
     {
@@ -100,6 +117,14 @@ describe("wire: decodeServerEnvelope", () => {
         [TOKEN_ID, USER_ID],
       ),
       expected: { type: "CommandAccepted", seqId: 8, events: [{ TurnAdvanced: { round: 2 } }], state },
+    },
+    {
+      id: "StateSnapshot decodes active_scene_id and a stat block copy to plain values",
+      frame: encodeLikeRmpSerde(
+        { StateSnapshot: { seq_id: 9, state: sceneState } },
+        [TOKEN_ID, USER_ID, SCENE_ID],
+      ),
+      expected: { type: "StateSnapshot", seqId: 9, state: sceneState },
     },
     {
       id: "PointerPingBroadcast maps sender and color",
