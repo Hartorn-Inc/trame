@@ -47,6 +47,13 @@
 //!        controller of a token they can see; other players get the
 //!        `BloodiedState` of the projection. `speed_remaining_ft` in `TokenMoved`
 //!        / `TokenSqueezeToggled` is `0.0` for non-controllers.
+//!      - Condition rulings follow the same rule: raw `conditions`
+//!        (`TokenConditionsChanged`) and `overrides` (`ConditionOverrideChanged`)
+//!        reach the controller of a visible token only, everyone else sees the
+//!        effective list. `DeathSaveRecorded` keeps its counters for the
+//!        controller only; others get the d20 and the Stable / dead flags.
+//!      - The GM's `stat_block` copy never leaves the server for a non-GM: it is
+//!        stripped from controlled tokens in snapshots and in `TokenSpawned`.
 //!      - `TokenRemoved` reaches only players who could see the token before the
 //!        command (line of sight in the pre-command state), and a token moving
 //!        into view never reveals where it came from.
@@ -512,6 +519,15 @@ fn mask_aoe_caster(template: &AoeTemplate, visible_ids: &HashSet<Uuid>) -> AoeTe
     masked
 }
 
+/// Full `TokenState` as sent to its non-GM controller: everything but the GM's `stat_block`
+/// copy (attack bonuses, save DCs, legendary actions and homebrew notes stay GM knowledge
+/// even when the GM hands the token to a player).
+fn controller_token_view(token: &TokenState) -> TokenState {
+    let mut view = token.clone();
+    view.stat_block = None;
+    view
+}
+
 /// Returns `true` when `recipient_user_id` controls `token_id` (`owner_user_id` match).
 fn recipient_controls(state: &TableState, token_id: &Uuid, recipient_user_id: Uuid) -> bool {
     state
@@ -615,8 +631,10 @@ pub fn project_state_for_recipient(
         if !visible_ids.contains(id) {
             continue;
         }
-        if is_gm || tok.owner_user_id == Some(recipient_user_id) {
+        if is_gm {
             tokens.insert(*id, tok.clone());
+        } else if tok.owner_user_id == Some(recipient_user_id) {
+            tokens.insert(*id, controller_token_view(tok));
         } else {
             public_tokens.insert(*id, PublicTokenView::from(tok));
         }
@@ -725,8 +743,14 @@ pub fn project_state_for_recipient(
 ///   for the controller only (`0.0` for others), and a token that comes into view hides
 ///   where it came from (`from_top_left` is its destination).
 /// - `TokenRemoved` reaches recipients who could see the token before the command.
-/// - `ConditionOverrideChanged` keeps its rulings for the controller only; other recipients
-///   who see the token get it with `overrides` emptied.
+/// - `ConditionOverrideChanged` keeps its rulings for the controller of a visible token only;
+///   other recipients who see the token get it with `overrides` emptied.
+/// - `TokenConditionsChanged` carries the raw `conditions` for the controller only; other
+///   recipients get the effective list in both fields, so a hidden `Remove` ruling never
+///   shows through the difference.
+/// - `DeathSaveRecorded` is full for the controller only; other recipients get the d20 and
+///   the Stable / dead flags, with the counters zeroed and `regains_hp` cleared.
+/// - The GM's `stat_block` copy is stripped from the `TokenSpawned` a controller receives.
 /// - Secret door / illusion geometry in `DoorToggled`, `DoorConfigured`, and `WallAdded` is
 ///   masked; closing a secret door is dropped entirely.
 /// - `AoeProjected` keeps only visible affected tokens and hides invisible casters.
@@ -780,7 +804,11 @@ pub fn filter_events_for_recipient(
             | TrameEvent::ActionRefunded { token_id, .. } => {
                 controls_visible(token_id).then(|| ev.clone())
             }
-            TrameEvent::TokenSpawned { token } => controls_visible(&token.id).then(|| ev.clone()),
+            TrameEvent::TokenSpawned { token } => {
+                controls_visible(&token.id).then(|| TrameEvent::TokenSpawned {
+                    token: Box::new(controller_token_view(token)),
+                })
+            }
             TrameEvent::TokenMoved {
                 token_id,
                 from_top_left,
@@ -818,11 +846,49 @@ pub fn filter_events_for_recipient(
             }),
             TrameEvent::TokenDisengaged { token_id, .. }
             | TrameEvent::ConcentrationChanged { token_id, .. }
-            | TrameEvent::DeathSaveRecorded { token_id, .. }
-            | TrameEvent::TokenConditionsChanged { token_id, .. }
             | TrameEvent::TokenVisibilityChanged { token_id, .. }
             | TrameEvent::TokenOwnerAssigned { token_id, .. } => {
                 visible_ids.contains(token_id).then(|| ev.clone())
+            }
+            TrameEvent::DeathSaveRecorded {
+                token_id,
+                d20,
+                outcome,
+            } => {
+                if controls_visible(token_id) {
+                    Some(ev.clone())
+                } else {
+                    visible_ids
+                        .contains(token_id)
+                        .then(|| TrameEvent::DeathSaveRecorded {
+                            token_id: *token_id,
+                            d20: *d20,
+                            outcome: trame_engine::rules::DeathSaveOutcome {
+                                successes: 0,
+                                failures: 0,
+                                regains_hp: false,
+                                stable: outcome.stable,
+                                dead: outcome.dead,
+                            },
+                        })
+                }
+            }
+            TrameEvent::TokenConditionsChanged {
+                token_id,
+                effective_conditions,
+                ..
+            } => {
+                if controls_visible(token_id) {
+                    Some(ev.clone())
+                } else {
+                    visible_ids
+                        .contains(token_id)
+                        .then(|| TrameEvent::TokenConditionsChanged {
+                            token_id: *token_id,
+                            conditions: effective_conditions.clone(),
+                            effective_conditions: effective_conditions.clone(),
+                        })
+                }
             }
             TrameEvent::TokenRemoved { token_id } => was_visible(token_id).then(|| ev.clone()),
             TrameEvent::ConditionOverrideChanged {
@@ -830,7 +896,7 @@ pub fn filter_events_for_recipient(
                 effective_conditions,
                 ..
             } => {
-                if recipient_controls(state, token_id, recipient_user_id) {
+                if controls_visible(token_id) {
                     Some(ev.clone())
                 } else {
                     visible_ids

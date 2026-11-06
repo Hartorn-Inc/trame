@@ -21,14 +21,15 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use trame_engine::aoe::{AoeShape, AoeTemplate, GridDiscretizationMode};
 use trame_engine::commands::{
-    CampaignRole, CommandActor, ReactionDecision, ReactionPrompt, RefundableResource, TableMode,
-    TableState, TokenState, TrameCommand, TrameEvent,
+    CampaignRole, CommandActor, ConditionOverrideEntry, OverrideMode, OverrideSubject,
+    ReactionDecision, ReactionPrompt, RefundableResource, TableMode, TableState, TokenState,
+    TrameCommand, TrameEvent,
 };
 use trame_engine::geometry::{Bvh2D, CHANNEL_GM_HIDDEN, Point2D, WallSegment};
 use trame_engine::resolution::{
     PendingResolution, ResolutionCheck, ResolvedTarget, RollMode, TargetOutcome,
 };
-use trame_engine::rules::DamageAffinity;
+use trame_engine::rules::{DamageAffinity, DeathSaveOutcome};
 use trame_server::room::{
     ConnectedClient, OutboundClientFrame, RoomSinks, TableRoomActor, TableRoomHandle, TimelineNote,
     client_channel, client_channel_with_capacity,
@@ -151,6 +152,14 @@ enum Want {
     NoOrigin,
     /// `ActionResolved` whose targets the recipient does not control lost their d20s and total.
     ResolutionRedacted,
+    /// `TokenConditionsChanged` whose raw `conditions` are replaced by the effective list.
+    EffectiveConditions,
+    /// `ConditionOverrideChanged` without its rulings.
+    NoOverrides,
+    /// `DeathSaveRecorded` keeping only the d20 and the Stable / dead flags.
+    DeathSaveRedacted,
+    /// `TokenSpawned` without the GM's stat block copy.
+    NoStatBlock,
 }
 
 fn expected(want: Want, ev: &TrameEvent) -> Vec<TrameEvent> {
@@ -191,6 +200,23 @@ fn expected(want: Want, ev: &TrameEvent) -> Vec<TrameEvent> {
             resolution.targets[0].d20_rolls.clear();
             resolution.targets[0].total = None;
         }
+        (
+            Want::EffectiveConditions,
+            TrameEvent::TokenConditionsChanged {
+                conditions,
+                effective_conditions,
+                ..
+            },
+        ) => *conditions = effective_conditions.clone(),
+        (Want::NoOverrides, TrameEvent::ConditionOverrideChanged { overrides, .. }) => {
+            overrides.clear();
+        }
+        (Want::DeathSaveRedacted, TrameEvent::DeathSaveRecorded { outcome, .. }) => {
+            outcome.successes = 0;
+            outcome.failures = 0;
+            outcome.regains_hp = false;
+        }
+        (Want::NoStatBlock, TrameEvent::TokenSpawned { token }) => token.stat_block = None,
         (want, ev) => panic!("{want:?} does not apply to {ev:?}"),
     }
     vec![ev]
@@ -253,10 +279,24 @@ fn event_privacy_matrix() {
     let mut spawned = t.state.data.tokens[&t.hero].clone();
     spawned.id = Uuid::new_v4();
     spawned.top_left = Point2D::new(100.0, 250.0);
+    spawned.stat_block = Some(serde_json::json!({ "name": "Knight", "attackBonus": 5 }));
     let mut with_spawned = t.state.clone();
     with_spawned.data.tokens.insert(spawned.id, spawned.clone());
     let mut hero_removed = t.state.clone();
     hero_removed.data.tokens.remove(&t.hero);
+    // The GM-hidden lurker handed to `controller`: controlled, but not visible to them.
+    let mut lurker_owned = t.state.clone();
+    lurker_owned
+        .data
+        .tokens
+        .get_mut(&t.lurker)
+        .unwrap()
+        .owner_user_id = Some(t.controller);
+    let removed_poison = ConditionOverrideEntry {
+        subject: OverrideSubject::Condition,
+        id: "poisoned".to_string(),
+        mode: OverrideMode::Remove,
+    };
     let mut with_prompts = t.state.clone();
     for p in [&lurker_prompt, &blind_prompt] {
         with_prompts
@@ -335,7 +375,85 @@ fn event_privacy_matrix() {
                 token: Box::new(spawned.clone()),
             },
             (&with_spawned, &t.state),
-            [Same, Same, Absent, Absent],
+            [Same, NoStatBlock, Absent, Absent],
+        ),
+        (
+            "conditions_changed_raw_list_for_controller_only",
+            TrameEvent::TokenConditionsChanged {
+                token_id: t.hero,
+                conditions: vec!["poisoned".to_string(), "prone".to_string()],
+                effective_conditions: vec!["prone".to_string()],
+            },
+            (&t.state, &t.state),
+            [Same, Same, EffectiveConditions, Absent],
+        ),
+        (
+            "override_rulings_for_controller_only",
+            TrameEvent::ConditionOverrideChanged {
+                token_id: t.hero,
+                overrides: vec![removed_poison.clone()],
+                effective_conditions: vec!["prone".to_string()],
+            },
+            (&t.state, &t.state),
+            [Same, Same, NoOverrides, Absent],
+        ),
+        (
+            "override_rulings_skip_a_controller_who_cannot_see_the_token",
+            TrameEvent::ConditionOverrideChanged {
+                token_id: t.lurker,
+                overrides: vec![removed_poison.clone()],
+                effective_conditions: vec![],
+            },
+            (&lurker_owned, &lurker_owned),
+            [Same, Absent, Absent, Absent],
+        ),
+        (
+            "death_save_counters_for_controller_only",
+            TrameEvent::DeathSaveRecorded {
+                token_id: t.hero,
+                d20: 12,
+                outcome: DeathSaveOutcome {
+                    successes: 2,
+                    failures: 1,
+                    regains_hp: false,
+                    stable: false,
+                    dead: false,
+                },
+            },
+            (&t.state, &t.state),
+            [Same, Same, DeathSaveRedacted, Absent],
+        ),
+        (
+            "death_save_revival_keeps_only_the_d20_for_viewers",
+            TrameEvent::DeathSaveRecorded {
+                token_id: t.hero,
+                d20: 20,
+                outcome: DeathSaveOutcome {
+                    successes: 0,
+                    failures: 0,
+                    regains_hp: true,
+                    stable: false,
+                    dead: false,
+                },
+            },
+            (&t.state, &t.state),
+            [Same, Same, DeathSaveRedacted, Absent],
+        ),
+        (
+            "death_save_death_flag_reaches_viewers",
+            TrameEvent::DeathSaveRecorded {
+                token_id: t.hero,
+                d20: 1,
+                outcome: DeathSaveOutcome {
+                    successes: 1,
+                    failures: 3,
+                    regains_hp: false,
+                    stable: false,
+                    dead: true,
+                },
+            },
+            (&t.state, &t.state),
+            [Same, Same, DeathSaveRedacted, Absent],
         ),
         (
             "token_moved_speed_for_controller_only",
@@ -586,6 +704,30 @@ fn snapshot_privacy_matrix() {
         assert_eq!(
             view.persistent_aoes[&aoe_id].concentration_caster_id, caster,
             "{recipient} caster"
+        );
+    }
+}
+
+#[test]
+fn snapshot_stat_block_is_gm_only() {
+    let t = Table::new();
+    let mut state = t.state.clone();
+    let stat_block = serde_json::json!({ "name": "Knight", "attackBonus": 5 });
+    state.data.tokens.get_mut(&t.hero).unwrap().stat_block = Some(stat_block.clone());
+    // (recipient, hero stat block sent in a full token)
+    let cases = [
+        ("gm", Some(stat_block)),
+        ("controller", None),
+        ("viewer", None),
+        ("blind", None),
+    ];
+    for (recipient, want) in cases {
+        let (user_id, role) = t.recipient(recipient);
+        let view = project_state_for_recipient(Uuid::nil(), &state, user_id, role);
+        assert_eq!(
+            view.tokens.get(&t.hero).and_then(|h| h.stat_block.clone()),
+            want,
+            "{recipient}"
         );
     }
 }
