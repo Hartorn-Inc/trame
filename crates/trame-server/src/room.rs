@@ -85,7 +85,9 @@
 //!        out of `TurnByTurn`, whatever supplied the initiative order, so a roll
 //!        made for one encounter never carries over to the next.
 //!      - `RecordDeathSave` follows the same rule: a player's d20 is replaced by
-//!        a server `1d20` (`resolve_death_save_roll`), broadcast after commit.
+//!        a server `1d20` (`resolve_death_save_roll`), broadcast after commit
+//!        like an initiative roll (the token's controller always receives it).
+//!        Batches (MCP) resolve an empty `d20` the same way.
 //!   9. `Bounded Fan-Out & Pointer Pings (RT2)`:
 //!      - Each client has a `CLIENT_OUTBOUND_QUEUE_FRAMES`-deep queue the actor
 //!        fills without waiting (`ClientSender`). A full queue drops the frame
@@ -93,7 +95,8 @@
 //!        from a fresh `StateSnapshot`, and everyone else is unaffected.
 //!      - A `PointerPing` is broadcast only when its position is finite and on
 //!        the map, its color is a palette color, its `scene_id` (if any) is the
-//!        active scene, and the session's previous ping is at least
+//!        active scene, and the user's previous ping (any of their sessions,
+//!        monotonic `tokio::time::Instant`) is at least
 //!        `POINTER_PING_MIN_INTERVAL_MS` old. Invalid pings are rejected;
 //!        throttled ones are dropped silently.
 //!  10. `Server-Rolled Action Resolution (D6, ADR-0042)`:
@@ -195,8 +198,8 @@ pub const WS_CLOSE_CODE_SLOW_CONSUMER: u16 = 1013;
 /// whole projected state, so a consumer this far behind is better served by a resync.
 pub const CLIENT_OUTBOUND_QUEUE_FRAMES: usize = 64;
 
-/// Minimum spacing between two broadcast `PointerPing`s of one session (`ms`); faster pings
-/// are dropped silently (RT2).
+/// Minimum spacing between two broadcast `PointerPing`s of one user, across all their
+/// sessions (`ms`, monotonic clock); faster pings are dropped silently (RT2).
 pub const POINTER_PING_MIN_INTERVAL_MS: u64 = 250;
 
 /// Longest accepted `PointerPing.color_hex` (`bytes`).
@@ -332,6 +335,31 @@ pub enum RoomError {
     CommandRejected(String),
 }
 
+/// Armor Class a synced sheet can give a token, the stat block bound (`statblock.rs`).
+pub const SHEET_AC_RANGE: std::ops::RangeInclusive<i32> = 1..=30;
+
+/// Highest walking speed a synced sheet can give a token (`ft`), the stat block bound.
+pub const MAX_SHEET_SPEED_FT: f64 = 200.0;
+
+/// Sheet condition ids as `SetTokenConditions` would store them (trimmed, ASCII lowercase,
+/// deduplicated, `1..=MAX_CONDITION_ID_LEN` bytes, at most `MAX_TOKEN_CONDITIONS`). A sheet
+/// save is never rejected for its conditions, so invalid ids are dropped and the list is
+/// truncated instead.
+fn sheet_condition_ids(raw: &[String]) -> Vec<String> {
+    use trame_engine::commands::{MAX_CONDITION_ID_LEN, MAX_TOKEN_CONDITIONS};
+    let mut ids: Vec<String> = Vec::new();
+    for id in raw {
+        let id = id.trim().to_ascii_lowercase();
+        if ids.len() == MAX_TOKEN_CONDITIONS {
+            break;
+        }
+        if !id.is_empty() && id.len() <= MAX_CONDITION_ID_LEN && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
 /// Tactical subset of persistent actor fields synchronized out-of-band into linked `TokenState` instances (`ADR-0037`).
 #[derive(Debug, Clone, Default)]
 pub struct ActorTacticalSync {
@@ -349,7 +377,8 @@ pub struct ActorTacticalSync {
     pub dex_mod: Option<i32>,
     /// Updated non-Dexterity initiative bonus (`TokenState::initiative_extra`, SEC3).
     pub initiative_extra: Option<i32>,
-    /// Updated walking speed in feet (`ft`, `>= 0`) after exhaustion, from the sheet's
+    /// Updated walking speed in feet (`ft`, clamped to `0..=MAX_SHEET_SPEED_FT`) after
+    /// exhaustion and class features, from the sheet's `derived.speed`, else
     /// `attributes.speedFt` (GS6); copied onto `speed_max_ft`.
     pub speed_ft: Option<f64>,
     /// Updated list of active condition labels (`conditions`).
@@ -370,7 +399,9 @@ pub struct ActorTacticalSync {
 
 impl ActorTacticalSync {
     /// Copies every synced field onto `token` (the sheet resync and actor-linked `SpawnToken`
-    /// share it, so both ignore client values). `mode` decides the remaining speed: the full
+    /// share it, so both ignore client values). The sheet is client-written, so values get
+    /// the stat block bounds: AC `SHEET_AC_RANGE`, speed `0..=MAX_SHEET_SPEED_FT`, and
+    /// conditions normalized and capped (`sheet_condition_ids`). `mode` decides the remaining speed: the full
     /// speed in `Exploration`, at most the new speed in `TurnByTurn`. A token whose conditions
     /// set its Speed to 0 (`condition_effects().speed_zero`, GM rulings included) ends with
     /// `speed_remaining_ft == 0` while `speed_max_ft` keeps the sheet speed, so lifting the
@@ -390,7 +421,7 @@ impl ActorTacticalSync {
             token.temp_hp = temp_hp.max(0);
         }
         if let Some(ac) = self.ac {
-            token.ac = ac.max(0);
+            token.ac = ac.clamp(*SHEET_AC_RANGE.start(), *SHEET_AC_RANGE.end());
         }
         if let Some(dex_mod) = self.dex_mod {
             token.dex_mod = dex_mod;
@@ -399,8 +430,9 @@ impl ActorTacticalSync {
             token.initiative_extra = extra;
         }
         if let Some(speed_ft) = self.speed_ft
-            && speed_ft >= 0.0
+            && speed_ft.is_finite()
         {
+            let speed_ft = speed_ft.clamp(0.0, MAX_SHEET_SPEED_FT);
             token.speed_max_ft = speed_ft;
             if mode == TableMode::Exploration {
                 token.speed_remaining_ft = speed_ft;
@@ -409,7 +441,7 @@ impl ActorTacticalSync {
             }
         }
         if let Some(ref conditions) = self.conditions {
-            token.conditions = conditions.clone();
+            token.conditions = sheet_condition_ids(conditions);
         }
         if token.condition_effects().speed_zero {
             token.speed_remaining_ft = 0.0;
@@ -821,8 +853,11 @@ pub struct TableRoomActor {
     /// reason starts with `"initiative"`, case-insensitive), consumed by the next encounter
     /// start so their tokens keep that result. One entry per user per encounter (SEC3).
     player_initiative_rolls: HashMap<Uuid, i32>,
-    /// Time of the last broadcast `PointerPing` per session (`ms`), for the throttle.
-    last_pointer_ping_ms: HashMap<Uuid, u64>,
+    /// Monotonic time of the last broadcast `PointerPing` per user, for the throttle. Keyed
+    /// by user so extra tabs or reconnects do not multiply the allowance, and kept across
+    /// disconnects (one entry per member who pinged); a monotonic clock so a wall-clock jump
+    /// can neither lift nor freeze the throttle.
+    last_pointer_ping: HashMap<Uuid, tokio::time::Instant>,
     sinks: RoomSinks,
     /// Entries quarantined when this actor recovered (empty on a clean replay); sent to GMs.
     quarantine_notice: Vec<QuarantinedWalSummary>,
@@ -887,7 +922,7 @@ impl TableRoomActor {
             wal,
             rx,
             player_initiative_rolls: HashMap::new(),
-            last_pointer_ping_ms: HashMap::new(),
+            last_pointer_ping: HashMap::new(),
             sinks,
             quarantine_notice: recovered
                 .quarantined
@@ -931,7 +966,6 @@ impl TableRoomActor {
                 }
                 RoomActorMessage::DisconnectClient { session_id } => {
                     self.clients.remove(&session_id);
-                    self.last_pointer_ping_ms.remove(&session_id);
                     self.last_activity_ms = now_ms();
                 }
                 RoomActorMessage::EvictUser { user_id, reply } => {
@@ -1191,16 +1225,17 @@ impl TableRoomActor {
                     send_rejection(&sender_tx, reason, None);
                     return Ok(());
                 }
-                let now = now_ms();
+                let now = tokio::time::Instant::now();
+                let min_interval = Duration::from_millis(POINTER_PING_MIN_INTERVAL_MS);
                 if self
-                    .last_pointer_ping_ms
-                    .get(&session_id)
-                    .is_some_and(|last| now.saturating_sub(*last) < POINTER_PING_MIN_INTERVAL_MS)
+                    .last_pointer_ping
+                    .get(&actor_user_id)
+                    .is_some_and(|last| now.duration_since(*last) < min_interval)
                 {
                     return Ok(());
                 }
-                self.last_pointer_ping_ms.insert(session_id, now);
-                self.last_activity_ms = now;
+                self.last_pointer_ping.insert(actor_user_id, now);
+                self.last_activity_ms = now_ms();
                 let out = ServerEnvelope::PointerPingBroadcast {
                     sender_user_id: actor_user_id,
                     pos,
@@ -1289,7 +1324,11 @@ impl TableRoomActor {
             self.fan_out_initiative_roll(*token_id, outcome);
             self.note_timeline(roll_timeline_note(self.campaign_id, outcome));
         }
-        for outcome in death_save_roll.iter().chain(&concentration_roll) {
+        if let Some((token_id, outcome)) = &death_save_roll {
+            self.fan_out_initiative_roll(*token_id, outcome);
+            self.note_timeline(roll_timeline_note(self.campaign_id, outcome));
+        }
+        if let Some(outcome) = &concentration_roll {
             self.fan_out_roll(outcome);
             self.note_timeline(roll_timeline_note(self.campaign_id, outcome));
         }
@@ -1382,12 +1421,14 @@ impl TableRoomActor {
     /// submitted value is ignored and `1d20` is rolled for them; a Game Master may enter a
     /// physical die result or leave `d20` empty to have it rolled. The roll is broadcast only
     /// after the command commits, with the initiative privacy rule (`GmOnly` when some player
-    /// cannot see the token). Unknown tokens pass through so the engine reports `NotFound`.
+    /// cannot see the token) and the initiative fan-out (`fan_out_initiative_roll`), so the
+    /// token's controller always sees their own death save. Unknown tokens pass through so
+    /// the engine reports `NotFound`.
     fn resolve_death_save_roll(
         &mut self,
         actor: &CommandActor,
         cmd: TrameCommand,
-    ) -> Result<(TrameCommand, Option<DiceRollOutcome>), String> {
+    ) -> Result<(TrameCommand, Option<(Uuid, DiceRollOutcome)>), String> {
         let TrameCommand::RecordDeathSave { token_id, d20 } = cmd else {
             return Ok((cmd, None));
         };
@@ -1412,20 +1453,23 @@ impl TableRoomActor {
         let d20 = u8::try_from(outcome.total).ok();
         Ok((
             TrameCommand::RecordDeathSave { token_id, d20 },
-            Some(outcome),
+            Some((token_id, outcome)),
         ))
     }
 
     /// Applies an atomic batch (`TableState::apply_batch`). Durability comes from a snapshot at
     /// the bumped `seq_id` instead of a `WalEntry`, because the WAL replays single commands; if
-    /// that snapshot fails, the batch is rolled back and rejected.
+    /// that snapshot fails, the batch is rolled back and rejected. `RecordDeathSave` d20s are
+    /// resolved like single commands (`resolve_death_save_roll`) and fanned out after commit.
     fn execute_and_broadcast_batch(
         &mut self,
         actor: CommandActor,
-        mut commands: Vec<TrameCommand>,
+        commands: Vec<TrameCommand>,
         description: String,
     ) -> Result<(u64, Vec<TrameEvent>), RoomError> {
-        for cmd in &mut commands {
+        let mut resolved = Vec::with_capacity(commands.len());
+        let mut death_save_rolls = Vec::new();
+        for mut cmd in commands {
             if matches!(
                 cmd,
                 TrameCommand::ResolveAction { .. } | TrameCommand::RollConcentrationCheck { .. }
@@ -1434,10 +1478,16 @@ impl TableRoomActor {
                     "invalid configuration: server-rolled commands cannot be batched".to_string(),
                 ));
             }
-            self.authorize_command(&actor, cmd)
+            self.authorize_command(&actor, &cmd)
                 .map_err(RoomError::CommandRejected)?;
-            crate::statblock::normalize_command(cmd).map_err(RoomError::CommandRejected)?;
+            crate::statblock::normalize_command(&mut cmd).map_err(RoomError::CommandRejected)?;
+            let (cmd, roll) = self
+                .resolve_death_save_roll(&actor, cmd)
+                .map_err(RoomError::CommandRejected)?;
+            death_save_rolls.extend(roll);
+            resolved.push(cmd);
         }
+        let commands = resolved;
         let checkpoint = self.state.clone();
         let prior_mode = self.state.data.mode;
         let prior_vitals = self.linked_vitals();
@@ -1454,6 +1504,10 @@ impl TableRoomActor {
         };
         self.seq_id += 1;
         self.forget_initiative_on_mode_change(prior_mode);
+        for (token_id, outcome) in &death_save_rolls {
+            self.fan_out_initiative_roll(*token_id, outcome);
+            self.note_timeline(roll_timeline_note(self.campaign_id, outcome));
+        }
         self.after_accepted(&events, &checkpoint, &prior_vitals);
         Ok((self.seq_id, events))
     }

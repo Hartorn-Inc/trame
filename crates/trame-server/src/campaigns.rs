@@ -35,8 +35,11 @@
 //!        (species or stat-block senses) come from the stored sheet on every resync and
 //!        on actor-linked `SpawnToken` (`resolve_spawn`), never from the client.
 //!      - Armor Class comes from the sheet's `derived.armorClass` and speed from
-//!        `attributes.speedFt` minus exhaustion (GS6); a token whose conditions impose
-//!        Speed 0 keeps the sheet speed as its maximum but has no movement left.
+//!        `derived.speed` (class features applied), else `attributes.speedFt` minus
+//!        exhaustion (GS6). Both are bounded like stat block values (AC `1..=30`,
+//!        speed `0..=200` ft) and sheet conditions are normalized and capped like
+//!        `SetTokenConditions`. A token whose conditions impose Speed 0 keeps the
+//!        sheet speed as its maximum but has no movement left.
 //!      - A `SpawnToken` whose `stat_block` names an actor template UUID gets a copy of
 //!        that actor's `statBlock`, which the room validates and applies (`statblock`).
 //!   5. `Confidential Notes`:
@@ -968,12 +971,22 @@ fn sheet_armor_class(data: &Value) -> Option<i32> {
         .or_else(|| i32_at(data, &["armorClass", "value"]))
 }
 
-/// Walking speed in feet from the sheet (GS6), mirroring the `derivedDAG` `speed` formula
-/// `max(0, speed_base - 5 * exhaustion)`: `speed_base` is `attributes.speedFt` (legacy
-/// `attributes.speed`, or a stat block's `speed.walk`), exhaustion is clamped to `0..=6`.
-/// `None` keeps the token's speed. Conditions are not folded in here: the token evaluates
-/// Speed 0 itself (`ActorTacticalSync::apply_to_token`) so GM rulings still apply.
+/// Walking speed in feet from the sheet (GS6). The derived speed the client stores with the
+/// sheet (`derived.speed`: exhaustion and ClassFeature bonuses such as Unarmored Movement
+/// or Fast Movement applied) wins, with the same trust model as `derived.armorClass`: the
+/// room bounds it like a stat block speed (`ActorTacticalSync::apply_to_token`). Without
+/// it, the `derivedDAG` base formula `max(0, speed_base - 5 * exhaustion)`: `speed_base` is
+/// `attributes.speedFt` (legacy `attributes.speed`, or a stat block's `speed.walk`),
+/// exhaustion is clamped to `0..=6`. `None` keeps the token's speed. Conditions are not
+/// folded in here: the token evaluates Speed 0 itself so GM rulings still apply.
 fn sheet_speed_ft(data: &Value) -> Option<f64> {
+    if let Some(derived) = data
+        .pointer("/derived/speed")
+        .and_then(Value::as_f64)
+        .filter(|ft| ft.is_finite())
+    {
+        return Some(derived);
+    }
     let attributes = data.get("attributes");
     let base = attributes
         .and_then(|a| a.get("speedFt").or_else(|| a.get("speed")))

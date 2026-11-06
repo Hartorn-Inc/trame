@@ -2113,6 +2113,53 @@ async fn ua8_death_save_d20_is_rolled_by_the_server_for_players() {
 }
 
 #[tokio::test]
+async fn gm_rolled_death_save_reaches_the_controller_on_every_path() {
+    // (case_id, through `dispatch_batch` (the MCP path), token hidden from its controller so
+    // the roll is GM-only)
+    let cases = [
+        ("single_command_visible_token", false, false),
+        ("single_command_hidden_token", false, true),
+        ("batch_visible_token", true, false),
+        ("batch_hidden_token", true, true),
+    ];
+    for (case, batched, hidden) in cases {
+        let player_user = Uuid::new_v4();
+        let hero = Uuid::new_v4();
+        let mut t = token(hero, "Hero", Some(player_user));
+        t.hp = 0;
+        if hidden {
+            t.visibility_channel |= trame_engine::geometry::CHANNEL_GM_HIDDEN;
+        }
+        let mut state = TableState::new(100.0, 5.0, Vec::new());
+        state.data.tokens.insert(hero, t);
+        let mut table = Table::open(state, player_user).await;
+        let command = TrameCommand::RecordDeathSave {
+            token_id: hero,
+            d20: None,
+        };
+        if batched {
+            let gm = trame_engine::commands::CommandActor {
+                user_id: Uuid::new_v4(),
+                role: CampaignRole::Gm,
+            };
+            let result = table
+                .room
+                .dispatch_batch(gm, vec![command], "MCP death save".to_string())
+                .await;
+            assert!(result.is_ok(), "case {case}: {result:?}");
+        } else {
+            table.command(command).await;
+        }
+        let player_rolls = rolls(&Table::drain(&mut table.player.1));
+        let gm_rolls = rolls(&Table::drain(&mut table.gm.1));
+        assert_eq!(gm_rolls.len(), 1, "case {case}: GM roll {gm_rolls:?}");
+        assert_eq!(player_rolls.len(), 1, "case {case}: controller roll");
+        assert_eq!(player_rolls[0].2, gm_rolls[0].2, "case {case}: same total");
+        assert_eq!(player_rolls[0].0, "Death Saving Throw: Hero", "case {case}");
+    }
+}
+
+#[tokio::test]
 async fn ua8_difficult_terrain_is_projected_to_players() {
     let player_user = Uuid::new_v4();
     let mut state = TableState::new(100.0, 5.0, Vec::new());

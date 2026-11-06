@@ -27,7 +27,9 @@ use std::sync::atomic::AtomicBool;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tower::ServiceExt;
-use trame_engine::commands::{CampaignRole, CommandActor, TableState, TokenState, TrameCommand};
+use trame_engine::commands::{
+    CampaignRole, CommandActor, TableMode, TableState, TokenState, TrameCommand,
+};
 use trame_engine::geometry::Point2D;
 use trame_server::archive::InMemoryCampaignStore;
 use trame_server::assets::store::InMemoryAssetStore;
@@ -350,10 +352,75 @@ fn sheet_derives_armor_class_and_speed() {
             json!({ "attributes": { "speed": 25 } }),
             (None, Some(25.0)),
         ),
+        (
+            "monk_level_2_unarmored_movement_from_derived_speed",
+            json!({ "derived": { "armorClass": 15, "speed": 40 },
+                    "attributes": { "speedFt": 30 } }),
+            (Some(15), Some(40.0)),
+        ),
+        (
+            "barbarian_fast_movement_with_exhaustion_from_derived_speed",
+            json!({ "derived": { "speed": 35 },
+                    "attributes": { "speedFt": 30, "exhaustion": 1 } }),
+            (None, Some(35.0)),
+        ),
     ];
     for (case, sheet, expected) in cases {
         let sync = tactical_sync_from_sheet(None, &sheet);
         assert_eq!((sync.ac, sync.speed_ft), expected, "case {case}");
+    }
+}
+
+#[test]
+fn sheet_values_get_stat_block_bounds_on_the_token() {
+    let many: Vec<Value> = (0..40).map(|i| json!({ "id": format!("c{i}") })).collect();
+    let capped: Vec<String> = (0..32).map(|i| format!("c{i}")).collect();
+    // (case_id, sheet, expected (ac, speed_max_ft, conditions))
+    let cases = [
+        (
+            "derived_ac_above_30_is_clamped",
+            json!({ "derived": { "armorClass": 99 } }),
+            (30, 30.0, vec![]),
+        ),
+        (
+            "derived_ac_below_1_is_clamped",
+            json!({ "derived": { "armorClass": -4 } }),
+            (1, 30.0, vec![]),
+        ),
+        (
+            "derived_speed_above_200_is_clamped",
+            json!({ "derived": { "speed": 5000 } }),
+            (10, 200.0, vec![]),
+        ),
+        (
+            "negative_derived_speed_is_floored",
+            json!({ "derived": { "speed": -30 } }),
+            (10, 0.0, vec![]),
+        ),
+        (
+            "conditions_are_trimmed_lowercased_and_deduplicated",
+            json!({ "conditions": [{ "id": " Prone " }, { "id": "prone" }, "POISONED", { "id": "" }] }),
+            (10, 30.0, vec!["prone".to_string(), "poisoned".to_string()]),
+        ),
+        (
+            "oversized_condition_id_is_dropped",
+            json!({ "conditions": [{ "id": "x".repeat(65) }, { "id": "prone" }] }),
+            (10, 30.0, vec!["prone".to_string()]),
+        ),
+        (
+            "conditions_are_capped_at_32",
+            json!({ "conditions": many }),
+            (10, 30.0, capped),
+        ),
+    ];
+    for (case, sheet, (ac, speed, conditions)) in cases {
+        let mut token = TokenState::new_default(Uuid::new_v4(), "Hero", Point2D::new(0.0, 0.0));
+        tactical_sync_from_sheet(None, &sheet).apply_to_token(&mut token, TableMode::Exploration);
+        assert_eq!(
+            (token.ac, token.speed_max_ft, token.conditions),
+            (ac, speed, conditions),
+            "case {case}"
+        );
     }
 }
 

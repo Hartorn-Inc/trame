@@ -1095,6 +1095,63 @@ async fn pointer_pings_are_validated_and_throttled() {
 }
 
 #[tokio::test]
+async fn pointer_ping_throttle_is_per_user_across_sessions() {
+    let r = room().await;
+    let gm_id = Uuid::new_v4();
+    let player_id = Uuid::new_v4();
+    let (gm_tab_1, mut gm_rx) = connect(&r.handle, gm_id, CampaignRole::Gm).await;
+    let (gm_tab_2, mut gm_tab_2_rx) = connect(&r.handle, gm_id, CampaignRole::Gm).await;
+    let (player_session, mut player_rx) = connect(&r.handle, player_id, CampaignRole::Player).await;
+    r.handle
+        .dispatch_direct_command(
+            CommandActor {
+                user_id: gm_id,
+                role: CampaignRole::Gm,
+            },
+            TrameCommand::LoadScene {
+                scene_id: Uuid::new_v4(),
+                map_asset_id: "map".to_string(),
+                width_px: 1000,
+                height_px: 800,
+                pixels_per_grid: 100.0,
+                walls: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    for rx in [&mut gm_rx, &mut gm_tab_2_rx, &mut player_rx] {
+        drain(rx);
+    }
+    let ping = || ClientEnvelope::PointerPing {
+        pos: Point2D::new(10.0, 20.0),
+        color_hex: "#D57973".to_string(),
+        scene_id: None,
+    };
+    // (case_id, sending session, wait before sending (ms), broadcast expected)
+    let cases = [
+        ("first_ping_of_the_gm", gm_tab_1, 0, true),
+        ("second_tab_of_the_same_gm_is_throttled", gm_tab_2, 0, false),
+        (
+            "another_user_has_their_own_allowance",
+            player_session,
+            0,
+            true,
+        ),
+        ("same_gm_after_the_window", gm_tab_2, 300, true),
+    ];
+    for (case, session, wait_ms, broadcast) in cases {
+        tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+        r.handle.send_envelope(session, ping()).await.unwrap();
+        let received = drain(&mut player_rx)
+            .iter()
+            .any(|f| matches!(f, ServerEnvelope::PointerPingBroadcast { .. }));
+        assert_eq!(received, broadcast, "case {case}");
+        drain(&mut gm_rx);
+        drain(&mut gm_tab_2_rx);
+    }
+}
+
+#[tokio::test]
 async fn slow_consumer_overflow_spares_the_other_clients() {
     let r = room().await;
     let gm_id = Uuid::new_v4();
