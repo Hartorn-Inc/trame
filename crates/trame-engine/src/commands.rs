@@ -483,21 +483,7 @@ pub fn condition_effects(
 ) -> ConditionEffects {
     let effective_conditions = effective_condition_ids(conditions, overrides);
     let effect = |suffix: &str, sources: &[&str]| {
-        let ruled = |mode: OverrideMode, id: &str| {
-            overrides
-                .iter()
-                .any(|o| o.subject == OverrideSubject::Effect && o.mode == mode && o.id == id)
-        };
-        let forced = overrides.iter().any(|o| {
-            o.subject == OverrideSubject::Effect
-                && o.mode == OverrideMode::Force
-                && o.id.rsplit_once('.').map(|(_, s)| s) == Some(suffix)
-        });
-        forced
-            || effective_conditions.iter().any(|c| {
-                sources.contains(&c.as_str())
-                    && !ruled(OverrideMode::Remove, &format!("{c}.{suffix}"))
-            })
+        condition_effect_active(conditions, overrides, suffix, sources)
     };
     ConditionEffects {
         incapacitated: effect(EFFECT_INCAPACITATED, &INCAPACITATING_CONDITIONS),
@@ -505,6 +491,31 @@ pub fn condition_effects(
         resists_all_damage: effect(EFFECT_RESISTANCE_ALL_DAMAGE, &RESIST_ALL_DAMAGE_CONDITIONS),
         effective_conditions,
     }
+}
+
+/// `true` when the effect `"<condition>.<suffix>"` applies: a `Force` effect ruling names it,
+/// or a condition in force is one of `sources` and no `Remove` effect ruling names it. Shared
+/// by `condition_effects` and the server-side action resolution rules (`resolution.rs`).
+pub fn condition_effect_active(
+    conditions: &[String],
+    overrides: &[ConditionOverrideEntry],
+    suffix: &str,
+    sources: &[&str],
+) -> bool {
+    let removed = |id: &str| {
+        overrides.iter().any(|o| {
+            o.subject == OverrideSubject::Effect && o.mode == OverrideMode::Remove && o.id == id
+        })
+    };
+    let forced = overrides.iter().any(|o| {
+        o.subject == OverrideSubject::Effect
+            && o.mode == OverrideMode::Force
+            && o.id.rsplit_once('.').map(|(_, s)| s) == Some(suffix)
+    });
+    forced
+        || effective_condition_ids(conditions, overrides)
+            .iter()
+            .any(|c| sources.contains(&c.as_str()) && !removed(&format!("{c}.{suffix}")))
 }
 
 /// Maximum number of conditions on a token, and of `ConditionOverride` entries per token.
@@ -677,6 +688,11 @@ pub struct TokenState {
     /// tokens; omitted from the wire when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stat_block: Option<serde_json::Value>,
+    /// Saving throw bonuses keyed by ability id (`"str"`..`"cha"`), synchronized from the
+    /// linked actor sheet so the server can roll a hidden target's save. Empty for tokens
+    /// without a linked sheet (stat block tokens read their copy); omitted when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub save_bonuses: BTreeMap<String, i32>,
 }
 
 impl TokenState {
@@ -722,6 +738,7 @@ impl TokenState {
             damage_vulnerabilities: Vec::new(),
             condition_overrides: Vec::new(),
             stat_block: None,
+            save_bonuses: BTreeMap::new(),
         }
     }
 
@@ -1110,6 +1127,46 @@ pub enum TrameCommand {
     },
     /// Restores the most recent pre-mutation `TableSnapshotData` from the 50-action ring buffer (GM only).
     UndoLastAction,
+    /// Rolls an attack or area action on the server and stores it as a `PendingResolution`
+    /// (players: attacker tokens they control; not spectators). Undoable.
+    ResolveAction {
+        /// What to resolve (client side).
+        request: Box<crate::resolution::ActionRequest>,
+        /// Server-rolled result filled in by the room; whatever a client sends is replaced,
+        /// and `None` is rejected by the engine.
+        #[serde(default)]
+        resolution: Option<Box<crate::resolution::PendingResolution>>,
+    },
+    /// Applies a `PendingResolution` once per target (issuer or GM; adjustments GM only).
+    /// Undoable.
+    ApplyResolution {
+        /// `PendingResolution::id`.
+        resolution_id: Uuid,
+        /// One target, or every target not yet applied when `None`.
+        #[serde(default)]
+        token_id: Option<Uuid>,
+        /// Game Master changes (amount needs `token_id`).
+        #[serde(default)]
+        adjustment: Option<crate::resolution::ResolutionAdjustment>,
+    },
+    /// Drops a `PendingResolution` without applying it (GM only). Undoable.
+    DismissResolution {
+        /// `PendingResolution::id`.
+        resolution_id: Uuid,
+    },
+    /// Rolls the oldest pending `ConcentrationCheckPrompt` of a token (GM: any token; players: owned
+    /// tokens). A failure ends concentration and its persistent zone. Undoable.
+    RollConcentrationCheck {
+        /// Concentrating token ID.
+        token_id: Uuid,
+        /// Advantage state from the controller's sheet (War Caster); the bonus is server-side.
+        #[serde(default)]
+        roll_mode: crate::resolution::RollMode,
+        /// Server roll filled in by the room; whatever a client sends is replaced, and
+        /// `None` is rejected by the engine.
+        #[serde(default)]
+        roll: Option<crate::resolution::ConcentrationRoll>,
+    },
 }
 
 /// Domain events emitted after a `TrameCommand` is accepted and applied to `TableState`.
@@ -1428,6 +1485,43 @@ pub enum TrameEvent {
         /// Token ID of the combatant holding the turn.
         active_turn_token_id: Option<Uuid>,
     },
+    /// Emitted when `ResolveAction` rolled an action (stored unless nothing is left to apply).
+    ActionResolved {
+        /// Server-rolled resolution (redacted per recipient).
+        resolution: Box<crate::resolution::PendingResolution>,
+    },
+    /// Emitted when `ApplyResolution` applied some targets of a resolution.
+    ResolutionApplied {
+        /// `PendingResolution::id`.
+        resolution_id: Uuid,
+        /// Targets applied by this command.
+        token_ids: Vec<Uuid>,
+    },
+    /// Emitted when the GM dismisses a pending resolution.
+    ResolutionDismissed {
+        /// `PendingResolution::id`.
+        resolution_id: Uuid,
+    },
+    /// Emitted when damage opens a `ConcentrationCheckPrompt` on a concentrating token.
+    ConcentrationCheckRequested {
+        /// Concentrating token ID.
+        token_id: Uuid,
+        /// Constitution save DC (`max(10, floor(damage / 2))`, at most `30`).
+        dc: i32,
+    },
+    /// Emitted when `RollConcentrationCheck` resolves a check.
+    ConcentrationCheckRolled {
+        /// Concentrating token ID.
+        token_id: Uuid,
+        /// Save DC.
+        dc: i32,
+        /// Natural d20s rolled.
+        d20_rolls: Vec<u8>,
+        /// Save total.
+        total: i32,
+        /// `true` when concentration holds.
+        success: bool,
+    },
 }
 
 /// Single compensating snapshot entry stored in the `TableState::undo_stack` ring buffer.
@@ -1505,6 +1599,17 @@ pub struct TableSnapshotData {
     /// first scene). Lets the server drop a `PointerPing` aimed at a map that is gone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_scene_id: Option<Uuid>,
+    /// Server-rolled actions waiting for their Apply, keyed by `PendingResolution::id`
+    /// (at most `MAX_PENDING_RESOLUTIONS`; cleared by `ActivateScene`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pending_resolutions: BTreeMap<Uuid, crate::resolution::PendingResolution>,
+    /// Count of resolutions ever created (`PendingResolution::sequence`), for oldest-first eviction.
+    #[serde(default)]
+    pub resolution_seq: u64,
+    /// Open `ConcentrationCheckPrompt` DCs per concentrating token, oldest first. Dropped as soon as
+    /// the token stops concentrating.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pending_concentration_checks: BTreeMap<Uuid, Vec<i32>>,
 }
 
 /// Authoritative in-memory tabletop state machine combining serializable `TableSnapshotData`,
@@ -1619,6 +1724,9 @@ impl TableState {
                 reaction_prompt_seq: 0,
                 difficult_terrain: BTreeSet::new(),
                 active_scene_id: None,
+                pending_resolutions: BTreeMap::new(),
+                resolution_seq: 0,
+                pending_concentration_checks: BTreeMap::new(),
             },
             bvh,
             undo_stack: VecDeque::with_capacity(MAX_UNDO_HISTORY),
@@ -1651,7 +1759,7 @@ impl TableState {
             .copied()
     }
 
-    fn push_undo(&mut self, description: impl Into<String>) {
+    pub(crate) fn push_undo(&mut self, description: impl Into<String>) {
         let snapshot = self.data.clone();
         let cell_size_px = self.cell_size_px;
         self.push_undo_snapshot(description.into(), snapshot, cell_size_px);
@@ -2167,7 +2275,7 @@ impl TableState {
         }
     }
 
-    fn require_gm(actor: &CommandActor) -> Result<(), CommandError> {
+    pub(crate) fn require_gm(actor: &CommandActor) -> Result<(), CommandError> {
         if actor.role == CampaignRole::Gm {
             Ok(())
         } else {
@@ -2177,7 +2285,7 @@ impl TableState {
         }
     }
 
-    fn require_token_control(
+    pub(crate) fn require_token_control(
         &self,
         actor: &CommandActor,
         token_id: Uuid,
@@ -2200,7 +2308,91 @@ impl TableState {
     /// turn-order movement budgets, and pushing a compensating `UndoEntry` onto `undo_stack`.
     ///
     /// Fails closed without mutating `self.data` or `self.undo_stack` whenever any precondition fails.
+    /// After every accepted command, `ConcentrationCheckPrompt`s of tokens that stopped concentrating
+    /// are dropped.
     pub fn apply_command(
+        &mut self,
+        actor: &CommandActor,
+        cmd: TrameCommand,
+    ) -> Result<Vec<TrameEvent>, CommandError> {
+        let events = self.apply_command_unpruned(actor, cmd)?;
+        self.prune_concentration_checks();
+        Ok(events)
+    }
+
+    /// Applies `damage` to `token_id` (which must exist) without an undo entry: typed damage
+    /// derives the affinity from the token (`damage_affinity_for`), otherwise `affinity` is
+    /// used. Shared by `ApplyDamage` and `ApplyResolution`; queues a `ConcentrationCheckPrompt` when a
+    /// concentrating token keeps HP, and ends concentration at 0 HP.
+    pub(crate) fn apply_damage_to_token(
+        &mut self,
+        token_id: Uuid,
+        raw_damage: i32,
+        affinity: DamageAffinity,
+        is_critical: bool,
+        damage_type: Option<&str>,
+    ) -> Vec<TrameEvent> {
+        let token = self.data.tokens[&token_id].clone();
+        let affinity = damage_type.map_or(affinity, |t| token.damage_affinity_for(t));
+        let is_concentrating = token.concentrating_on_aoe_id.is_some() || token.concentrating;
+        let mut resolution = resolve_damage_application(
+            raw_damage,
+            affinity,
+            token.hp,
+            token.max_hp,
+            token.temp_hp,
+            is_concentrating,
+            is_critical,
+            token.death_save_failures,
+        );
+        // 5e: monsters die at 0 HP instead of making death saves. Synthetic GM tokens
+        // (no player owner, no linked actor) follow that default; the GM can revive one
+        // with `GmOverrideTokenResources`.
+        if resolution.new_hp == 0 && token.owner_user_id.is_none() && token.actor_id.is_none() {
+            resolution.dead = true;
+            resolution.unconscious = false;
+        }
+
+        let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
+        tok_mut.hp = resolution.new_hp;
+        tok_mut.temp_hp = resolution.new_temp_hp;
+        tok_mut.death_save_failures = resolution.new_death_save_failures;
+        tok_mut.is_dead |= resolution.dead;
+        if resolution.death_save_failures_added > 0 {
+            tok_mut.is_stable = false;
+        }
+
+        let concentration_dc = resolution.concentration_check_dc;
+        let mut events = vec![TrameEvent::DamageApplied {
+            token_id,
+            resolution: resolution.clone(),
+        }];
+
+        // If the caster dropped to 0 HP, concentration breaks automatically
+        if resolution.new_hp == 0
+            && (tok_mut.concentrating || tok_mut.concentrating_on_aoe_id.is_some())
+        {
+            tok_mut.concentrating = false;
+            let removed_aoe_id = tok_mut.concentrating_on_aoe_id.take();
+            if let Some(aoe_id) = removed_aoe_id {
+                self.data.persistent_aoes.remove(&aoe_id);
+            }
+            events.push(TrameEvent::ConcentrationBroken {
+                caster_token_id: token_id,
+                removed_aoe_id,
+            });
+        } else if let Some(dc) = concentration_dc {
+            self.data
+                .pending_concentration_checks
+                .entry(token_id)
+                .or_default()
+                .push(dc);
+            events.push(TrameEvent::ConcentrationCheckRequested { token_id, dc });
+        }
+        events
+    }
+
+    fn apply_command_unpruned(
         &mut self,
         actor: &CommandActor,
         cmd: TrameCommand,
@@ -2593,65 +2785,15 @@ impl TableState {
                 is_critical,
                 damage_type,
             } => {
-                let token = self.require_token_control(actor, token_id)?.clone();
-                let affinity = damage_type
-                    .as_deref()
-                    .map_or(affinity, |t| token.damage_affinity_for(t));
-
-                self.push_undo(format!("Apply {raw_damage} damage to {}", token.name));
-                let is_concentrating =
-                    token.concentrating_on_aoe_id.is_some() || token.concentrating;
-                let mut resolution = resolve_damage_application(
+                let token_name = self.require_token_control(actor, token_id)?.name.clone();
+                self.push_undo(format!("Apply {raw_damage} damage to {token_name}"));
+                Ok(self.apply_damage_to_token(
+                    token_id,
                     raw_damage,
                     affinity,
-                    token.hp,
-                    token.max_hp,
-                    token.temp_hp,
-                    is_concentrating,
                     is_critical,
-                    token.death_save_failures,
-                );
-                // 5e: monsters die at 0 HP instead of making death saves. Synthetic GM tokens
-                // (no player owner, no linked actor) follow that default; the GM can revive one
-                // with `GmOverrideTokenResources`.
-                if resolution.new_hp == 0
-                    && token.owner_user_id.is_none()
-                    && token.actor_id.is_none()
-                {
-                    resolution.dead = true;
-                    resolution.unconscious = false;
-                }
-
-                let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
-                tok_mut.hp = resolution.new_hp;
-                tok_mut.temp_hp = resolution.new_temp_hp;
-                tok_mut.death_save_failures = resolution.new_death_save_failures;
-                tok_mut.is_dead |= resolution.dead;
-                if resolution.death_save_failures_added > 0 {
-                    tok_mut.is_stable = false;
-                }
-
-                let mut events = vec![TrameEvent::DamageApplied {
-                    token_id,
-                    resolution: resolution.clone(),
-                }];
-
-                // If the caster dropped to 0 HP, concentration breaks automatically
-                if resolution.new_hp == 0
-                    && (tok_mut.concentrating || tok_mut.concentrating_on_aoe_id.is_some())
-                {
-                    tok_mut.concentrating = false;
-                    let removed_aoe_id = tok_mut.concentrating_on_aoe_id.take();
-                    if let Some(aoe_id) = removed_aoe_id {
-                        self.data.persistent_aoes.remove(&aoe_id);
-                    }
-                    events.push(TrameEvent::ConcentrationBroken {
-                        caster_token_id: token_id,
-                        removed_aoe_id,
-                    });
-                }
-
-                Ok(events)
+                    damage_type.as_deref(),
+                ))
             }
 
             TrameCommand::HealActor { token_id, amount } => {
@@ -2949,6 +3091,8 @@ impl TableState {
                 self.data.difficult_terrain.clear();
                 self.data.persistent_aoes.clear();
                 self.data.active_reaction_prompts.clear();
+                self.data.pending_resolutions.clear();
+                self.data.pending_concentration_checks.clear();
                 self.data.mode = TableMode::Exploration;
                 self.data.exploration_paused = false;
                 self.data.initiative_order.clear();
@@ -3386,6 +3530,25 @@ impl TableState {
                     &self.data.active_reaction_prompts,
                 ));
                 Ok(events)
+            }
+
+            TrameCommand::ResolveAction {
+                request,
+                resolution,
+            } => self.resolve_action_command(actor, &request, resolution.map(|r| *r)),
+
+            TrameCommand::ApplyResolution {
+                resolution_id,
+                token_id,
+                adjustment,
+            } => self.apply_resolution_command(actor, resolution_id, token_id, adjustment),
+
+            TrameCommand::DismissResolution { resolution_id } => {
+                self.dismiss_resolution_command(actor, resolution_id)
+            }
+
+            TrameCommand::RollConcentrationCheck { token_id, roll, .. } => {
+                self.roll_concentration_check_command(actor, token_id, roll)
             }
         }
     }

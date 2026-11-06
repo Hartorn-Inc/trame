@@ -25,6 +25,9 @@ use trame_engine::commands::{
     TableState, TokenState, TrameCommand, TrameEvent,
 };
 use trame_engine::geometry::{Bvh2D, CHANNEL_GM_HIDDEN, Point2D, WallSegment};
+use trame_engine::resolution::{
+    PendingResolution, ResolutionCheck, ResolvedTarget, RollMode, TargetOutcome,
+};
 use trame_engine::rules::DamageAffinity;
 use trame_server::room::{
     ConnectedClient, OutboundClientFrame, RoomSinks, TableRoomActor, TableRoomHandle, TimelineNote,
@@ -146,6 +149,8 @@ enum Want {
     PromptRedacted,
     /// `TokenMoved` whose `from_top_left` is its destination.
     NoOrigin,
+    /// `ActionResolved` whose targets the recipient does not control lost their d20s and total.
+    ResolutionRedacted,
 }
 
 fn expected(want: Want, ev: &TrameEvent) -> Vec<TrameEvent> {
@@ -181,6 +186,11 @@ fn expected(want: Want, ev: &TrameEvent) -> Vec<TrameEvent> {
                 ..
             },
         ) => *from_top_left = *to_top_left,
+        (Want::ResolutionRedacted, TrameEvent::ActionResolved { resolution }) => {
+            // Only the first target (the hidden monster) is not controlled by the issuer.
+            resolution.targets[0].d20_rolls.clear();
+            resolution.targets[0].total = None;
+        }
         (want, ev) => panic!("{want:?} does not apply to {ev:?}"),
     }
     vec![ev]
@@ -190,6 +200,35 @@ fn gm() -> CommandActor {
     CommandActor {
         user_id: Uuid::new_v4(),
         role: CampaignRole::Gm,
+    }
+}
+
+/// Resolution issued by `controller`: a hit on the lurker (hidden AC) and a hit on their own
+/// hero.
+fn controller_resolution(t: &Table) -> PendingResolution {
+    let hit = |token_id| ResolvedTarget {
+        token_id,
+        roll_mode: RollMode::Normal,
+        outcome: TargetOutcome::Hit,
+        d20_rolls: vec![14],
+        total: Some(19),
+        damage: 6,
+        is_critical: false,
+        applied: false,
+    };
+    PendingResolution {
+        id: Uuid::new_v4(),
+        issuer_user_id: t.controller,
+        attacker_token_id: Some(t.hero),
+        action_name: "Longsword".to_string(),
+        check: ResolutionCheck::Attack {
+            attack_bonus: 5,
+            critical_range: 20,
+        },
+        damage_type: Some("slashing".to_string()),
+        damage_expression: "1d8+3".to_string(),
+        targets: vec![hit(t.lurker), hit(t.hero)],
+        sequence: 1,
     }
 }
 
@@ -225,6 +264,12 @@ fn event_privacy_matrix() {
             .active_reaction_prompts
             .insert(p.prompt_id, p.clone());
     }
+    let resolution = controller_resolution(&t);
+    let mut with_resolution = t.state.clone();
+    with_resolution
+        .data
+        .pending_resolutions
+        .insert(resolution.id, resolution.clone());
 
     // (case_id, event, (state after, state before), [gm, controller, viewer, blind])
     let cases: Vec<(&str, TrameEvent, (&TableState, &TableState), [Want; 4])> = vec![
@@ -362,6 +407,52 @@ fn event_privacy_matrix() {
             (&t.state, &with_prompts),
             [Same, Absent, Absent, Same],
         ),
+        (
+            "action_resolved_reaches_issuer_without_hidden_numbers",
+            TrameEvent::ActionResolved {
+                resolution: Box::new(resolution.clone()),
+            },
+            (&t.state, &t.state),
+            [Same, ResolutionRedacted, Absent, Absent],
+        ),
+        (
+            "resolution_applied_reaches_gm_and_issuer",
+            TrameEvent::ResolutionApplied {
+                resolution_id: resolution.id,
+                token_ids: vec![t.lurker],
+            },
+            (&t.state, &with_resolution),
+            [Same, Same, Absent, Absent],
+        ),
+        (
+            "resolution_dismissed_reaches_gm_and_issuer",
+            TrameEvent::ResolutionDismissed {
+                resolution_id: resolution.id,
+            },
+            (&t.state, &with_resolution),
+            [Same, Same, Absent, Absent],
+        ),
+        (
+            "concentration_check_prompts_the_controller_only",
+            TrameEvent::ConcentrationCheckRequested {
+                token_id: t.hero,
+                dc: 10,
+            },
+            (&t.state, &t.state),
+            [Same, Same, Absent, Absent],
+        ),
+        (
+            "monster_concentration_roll_is_gm_only",
+            TrameEvent::ConcentrationCheckRolled {
+                token_id: t.lurker,
+                dc: 12,
+                d20_rolls: vec![7],
+                total: 9,
+                success: false,
+            },
+            (&t.state, &t.state),
+            [Same, Absent, Absent, Absent],
+        ),
     ];
 
     for (case, event, (state, prior), wants) in cases {
@@ -496,6 +587,66 @@ fn snapshot_privacy_matrix() {
             view.persistent_aoes[&aoe_id].concentration_caster_id, caster,
             "{recipient} caster"
         );
+    }
+}
+
+#[test]
+fn snapshot_resolution_and_concentration_matrix() {
+    let t = Table::new();
+    let mut state = t.state.clone();
+    let resolution = controller_resolution(&t);
+    state
+        .data
+        .pending_resolutions
+        .insert(resolution.id, resolution.clone());
+    state
+        .data
+        .pending_concentration_checks
+        .insert(t.hero, vec![10]);
+    state
+        .data
+        .pending_concentration_checks
+        .insert(t.lurker, vec![15]);
+
+    // (recipient, resolution sent, lurker target d20s and total sent, hero target d20s sent,
+    // concentration check tokens sent)
+    type Row = (bool, bool, bool, Vec<Uuid>);
+    let mut all_checks = vec![t.hero, t.lurker];
+    all_checks.sort();
+    let cases: [(&str, Row); 4] = [
+        ("gm", (true, true, true, all_checks)),
+        ("controller", (true, false, true, vec![t.hero])),
+        ("viewer", (false, false, false, vec![])),
+        ("blind", (false, false, false, vec![])),
+    ];
+    for (recipient, (sent, lurker_numbers, hero_numbers, checks)) in cases {
+        let (user_id, role) = t.recipient(recipient);
+        let view = project_state_for_recipient(Uuid::nil(), &state, user_id, role);
+        let seen = view.pending_resolutions.get(&resolution.id);
+        assert_eq!(seen.is_some(), sent, "{recipient} resolution");
+        if let Some(seen) = seen {
+            let lurker = &seen.targets[0];
+            assert_eq!(
+                lurker.outcome,
+                TargetOutcome::Hit,
+                "{recipient} outcome kept"
+            );
+            assert_eq!(lurker.damage, 6, "{recipient} damage kept");
+            assert_eq!(
+                lurker.total.is_some() && !lurker.d20_rolls.is_empty(),
+                lurker_numbers,
+                "{recipient} hidden AC bound"
+            );
+            assert_eq!(
+                seen.targets[1].total.is_some(),
+                hero_numbers,
+                "{recipient} own token numbers"
+            );
+        }
+        let mut sent_checks: Vec<Uuid> =
+            view.pending_concentration_checks.keys().copied().collect();
+        sent_checks.sort();
+        assert_eq!(sent_checks, checks, "{recipient} concentration checks");
     }
 }
 

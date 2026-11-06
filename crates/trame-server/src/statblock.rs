@@ -74,7 +74,8 @@ const SIZES: [(&str, u8); 6] = [
 const ABILITIES: [&str; 6] = ["str", "dex", "con", "int", "wis", "cha"];
 const SPEED_MODES: [&str; 5] = ["walk", "fly", "swim", "climb", "burrow"];
 const SENSES: [&str; 4] = ["darkvision", "blindsight", "tremorsense", "truesight"];
-const DAMAGE_TYPES: [&str; 13] = [
+/// SRD 5.2.1 damage type ids (lowercase).
+pub const DAMAGE_TYPES: [&str; 13] = [
     "acid",
     "bludgeoning",
     "cold",
@@ -240,6 +241,7 @@ pub fn validate_stat_block(block: &Value) -> Result<(), String> {
     }
     for ability in ABILITIES {
         bounded_number(block, &format!("/abilities/{ability}"), 1.0, 30.0)?;
+        optional_number(block, &format!("/savingThrows/{ability}"), -10.0, 30.0)?;
     }
     optional_number(block, "/initiativeBonus", -10.0, 20.0)?;
     for sense in SENSES {

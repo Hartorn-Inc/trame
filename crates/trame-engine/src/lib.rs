@@ -45,6 +45,7 @@ pub mod commands;
 pub mod cover;
 pub mod geometry;
 pub mod movement;
+pub mod resolution;
 pub mod rules;
 pub mod wasm_api;
 

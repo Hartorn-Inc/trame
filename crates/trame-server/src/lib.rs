@@ -62,6 +62,7 @@ pub mod instance;
 pub mod maps;
 pub mod mcp;
 pub mod notes;
+pub mod resolution;
 pub mod room;
 pub mod security;
 pub mod statblock;

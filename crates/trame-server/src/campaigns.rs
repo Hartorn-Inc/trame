@@ -102,7 +102,7 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post, put};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use trame_engine::commands::{CampaignRole, CommandActor, TrameCommand};
@@ -817,6 +817,66 @@ fn derived_initiative_extra(data: &Value) -> i32 {
     alert_bonus - 2 * exhaustion
 }
 
+/// Saving throw bonuses of a sheet, keyed by ability id, for server-rolled saves (D6):
+/// - Stat block sheet (`statBlock` object, or numeric `abilities.<ability>`): the printed
+///   `savingThrows`, else the score modifier (`resolution::stat_block_save_bonus`).
+/// - Character sheet (`abilities.<ability>.score`, clamped to `ABILITY_SCORES`): the modifier,
+///   plus the proficiency bonus of `attributes.level` when `saveProficiency` is set, minus
+///   `2 * exhaustion` (SRD 5.2.1 d20 tests). The flat sheet (numeric `abilities` with a
+///   `saveProficiencies` map, `level`, `exhaustionLevel`) follows the same formula. Feats and
+///   magic items are not folded in.
+/// - Neither: `None`, so the token keeps its current bonuses.
+fn sheet_save_bonuses(data: &Value) -> Option<BTreeMap<String, i32>> {
+    use trame_engine::resolution::ABILITY_IDS;
+    let collect = |f: &dyn Fn(&str) -> i32| {
+        Some(
+            ABILITY_IDS
+                .iter()
+                .map(|ab| (ab.to_string(), f(ab)))
+                .collect(),
+        )
+    };
+    if let Some(block) = data.get("statBlock").filter(|b| b.is_object()) {
+        return collect(&|ab| crate::resolution::stat_block_save_bonus(block, ab));
+    }
+    let abilities = data.get("abilities")?.as_object()?;
+    let flat_proficiencies = data.get("saveProficiencies").filter(|p| p.is_object());
+    let flat = abilities.values().any(Value::is_number);
+    if flat && flat_proficiencies.is_none() {
+        return collect(&|ab| crate::resolution::stat_block_save_bonus(data, ab));
+    }
+    if !flat && !abilities.values().any(|a| a.get("score").is_some()) {
+        return None;
+    }
+    let (level_path, exhaustion_path): (&[&str], &[&str]) = if flat {
+        (&["level"], &["exhaustionLevel"])
+    } else {
+        (&["attributes", "level"], &["attributes", "exhaustion"])
+    };
+    let level = i32_at(data, level_path).unwrap_or(1).clamp(1, 20);
+    let prof_bonus = (level - 1) / 4 + 2;
+    let exhaustion = i32_at(data, exhaustion_path).unwrap_or(0).clamp(0, 6);
+    collect(&|ab| {
+        let entry = abilities.get(ab);
+        let (score, proficient) = if flat {
+            (
+                entry.and_then(Value::as_f64),
+                flat_proficiencies.and_then(|p| p.get(ab)),
+            )
+        } else {
+            (
+                entry.and_then(|e| e.get("score")).and_then(Value::as_f64),
+                entry.and_then(|e| e.get("saveProficiency")),
+            )
+        };
+        let score = score.map_or(10, |s| {
+            (s.round() as i32).clamp(*ABILITY_SCORES.start(), *ABILITY_SCORES.end())
+        });
+        let proficient = proficient.and_then(Value::as_bool).unwrap_or(false);
+        (score - 10).div_euclid(2) + if proficient { prof_bonus } else { 0 } - 2 * exhaustion
+    })
+}
+
 /// Compendium keys (`srd:item:<key>`) of the SRD 5.2.1 weapons with the Reach property.
 /// This table and `SRD_SPECIES_DARKVISION_FT` are parsed and checked against the dnd5e
 /// packs by `packages/game-systems/dnd5e/tests/serverTablesDrift.test.ts`.
@@ -973,6 +1033,7 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
         damage_affinities,
         reach_ft: threat_reach_ft(data),
         darkvision_ft: darkvision_ft(data),
+        save_bonuses: sheet_save_bonuses(data),
     }
 }
 

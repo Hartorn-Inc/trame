@@ -96,6 +96,12 @@
 //!        active scene, and the session's previous ping is at least
 //!        `POINTER_PING_MIN_INTERVAL_MS` old. Invalid pings are rejected;
 //!        throttled ones are dropped silently.
+//!  10. `Server-Rolled Action Resolution (D6, ADR-0042)`:
+//!      - `ResolveAction` and `RollConcentrationCheck` are always filled by the
+//!        room (`resolve_action_rolls`, `resolution.rs`), whatever the client
+//!        sent, and cannot be batched. Resolution rolls never reach the dice
+//!        log; a Concentration roll of a GM-controlled token is `GmOnly`.
+//!      - `ApplyResolution` adjustments are bounded like `ApplyDamage`.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -357,6 +363,9 @@ pub struct ActorTacticalSync {
     /// Darkvision radius in feet (`ft`, `0..=500`) from the species or stat block senses;
     /// copied onto `TokenState::senses.darkvision_range_ft`.
     pub darkvision_ft: Option<f64>,
+    /// Saving throw bonuses by ability id derived from the sheet (bounded scores), copied onto
+    /// `TokenState::save_bonuses` so the room can roll a hidden target's save.
+    pub save_bonuses: Option<BTreeMap<String, i32>>,
 }
 
 impl ActorTacticalSync {
@@ -420,6 +429,9 @@ impl ActorTacticalSync {
         }
         if let Some(darkvision_ft) = self.darkvision_ft {
             token.senses.darkvision_range_ft = darkvision_ft;
+        }
+        if let Some(ref save_bonuses) = self.save_bonuses {
+            token.save_bonuses = save_bonuses.clone();
         }
     }
 }
@@ -1232,6 +1244,9 @@ impl TableRoomActor {
         let (resolved_cmd, death_save_roll) = self
             .resolve_death_save_roll(&actor, resolved_cmd)
             .map_err(RoomError::CommandRejected)?;
+        let (resolved_cmd, concentration_roll) = self
+            .resolve_action_rolls(&actor, resolved_cmd)
+            .map_err(RoomError::CommandRejected)?;
         let prior_vitals = self.linked_vitals();
         let is_undo = matches!(resolved_cmd, TrameCommand::UndoLastAction);
         let persisted = match self.state.apply_command(&actor, resolved_cmd.clone()) {
@@ -1274,12 +1289,93 @@ impl TableRoomActor {
             self.fan_out_initiative_roll(*token_id, outcome);
             self.note_timeline(roll_timeline_note(self.campaign_id, outcome));
         }
-        if let Some(outcome) = &death_save_roll {
+        for outcome in death_save_roll.iter().chain(&concentration_roll) {
             self.fan_out_roll(outcome);
             self.note_timeline(roll_timeline_note(self.campaign_id, outcome));
         }
         self.after_accepted(&events, &checkpoint, &prior_vitals);
         Ok((self.seq_id, events))
+    }
+
+    /// Fills the server rolls of `ResolveAction` and `RollConcentrationCheck` (invariant 10),
+    /// replacing whatever the client sent. The Concentration roll is returned for fan-out after
+    /// commit, with the death save privacy rule; resolution rolls are never fanned out.
+    /// Unknown tokens or a missing check pass through so the engine reports them.
+    fn resolve_action_rolls(
+        &mut self,
+        actor: &CommandActor,
+        cmd: TrameCommand,
+    ) -> Result<(TrameCommand, Option<DiceRollOutcome>), String> {
+        match cmd {
+            TrameCommand::ResolveAction { request, .. } => {
+                let resolution = crate::resolution::fill_action_resolution(
+                    &self.state,
+                    actor,
+                    &request,
+                    &mut self.dice_roller,
+                )?;
+                Ok((
+                    TrameCommand::ResolveAction {
+                        request,
+                        resolution: Some(Box::new(resolution)),
+                    },
+                    None,
+                ))
+            }
+            TrameCommand::RollConcentrationCheck {
+                token_id,
+                roll_mode,
+                ..
+            } => {
+                let pending = self
+                    .state
+                    .data
+                    .pending_concentration_checks
+                    .get(&token_id)
+                    .and_then(|dcs| dcs.first().copied());
+                let (Some(token), Some(dc)) = (self.state.data.tokens.get(&token_id), pending)
+                else {
+                    return Ok((
+                        TrameCommand::RollConcentrationCheck {
+                            token_id,
+                            roll_mode,
+                            roll: None,
+                        },
+                        None,
+                    ));
+                };
+                let bonus = crate::resolution::server_save_bonus(token, "con");
+                // A GM-controlled token's save bonus is a hidden stat (G5): GM only.
+                let visibility = if token.owner_user_id.is_none() {
+                    RollVisibility::GmOnly
+                } else {
+                    initiative_roll_visibility(token, &self.player_views())
+                };
+                let reason = format!("Concentration check (DC {dc}): {}", token.name);
+                let outcome = self
+                    .dice_roller
+                    .roll(
+                        actor.user_id,
+                        &crate::resolution::d20_expression(roll_mode, bonus),
+                        visibility,
+                        reason,
+                    )
+                    .map_err(|err| err.to_string())?;
+                let (d20_rolls, _) = crate::resolution::d20s_of(&outcome, roll_mode);
+                Ok((
+                    TrameCommand::RollConcentrationCheck {
+                        token_id,
+                        roll_mode,
+                        roll: Some(trame_engine::resolution::ConcentrationRoll {
+                            d20_rolls,
+                            total: outcome.total,
+                        }),
+                    },
+                    Some(outcome),
+                ))
+            }
+            other => Ok((other, None)),
+        }
     }
 
     /// Server-rolled `RecordDeathSave` d20, like `AuthoritativeInitiativeRoll`: a player's
@@ -1330,6 +1426,14 @@ impl TableRoomActor {
         description: String,
     ) -> Result<(u64, Vec<TrameEvent>), RoomError> {
         for cmd in &mut commands {
+            if matches!(
+                cmd,
+                TrameCommand::ResolveAction { .. } | TrameCommand::RollConcentrationCheck { .. }
+            ) {
+                return Err(RoomError::CommandRejected(
+                    "invalid configuration: server-rolled commands cannot be batched".to_string(),
+                ));
+            }
             self.authorize_command(&actor, cmd)
                 .map_err(RoomError::CommandRejected)?;
             crate::statblock::normalize_command(cmd).map_err(RoomError::CommandRejected)?;
@@ -1494,6 +1598,29 @@ impl TableRoomActor {
         }
         if let TrameCommand::ActivateScene { scene: None, .. } = cmd {
             return Err("invalid configuration: scene payload was not resolved".to_string());
+        }
+        if let TrameCommand::ApplyResolution {
+            adjustment: Some(adjustment),
+            ..
+        } = cmd
+        {
+            if adjustment
+                .damage
+                .is_some_and(|d| !(0..=MAX_RAW_DAMAGE).contains(&d))
+            {
+                return Err(format!(
+                    "invalid configuration: damage must be within 0..={MAX_RAW_DAMAGE}"
+                ));
+            }
+            if adjustment
+                .damage_type
+                .as_deref()
+                .is_some_and(|t| !t.is_empty() && !crate::statblock::DAMAGE_TYPES.contains(&t))
+            {
+                return Err(
+                    "invalid configuration: damage type is not an SRD damage type".to_string(),
+                );
+            }
         }
         if let TrameCommand::ApplyDamage {
             token_id,

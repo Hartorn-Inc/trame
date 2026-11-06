@@ -56,6 +56,15 @@
 //!        excluded, so a mover never learns which hidden creature may react;
 //!        other reactors (`resolved_reactor_ids`) and a hidden mover's
 //!        destination are redacted.
+//!   8. `Pending Resolutions & Concentration Checks (D6, story 58)`:
+//!      - A `PendingResolution` (snapshot and `ActionResolved`) reaches the GM
+//!        and its issuer only. For the issuer, every target they do not
+//!        control loses its natural d20s and total: hit / miss / critical or
+//!        save success / failure and the damage remain, never a number that
+//!        bounds AC or a save bonus. `ResolutionApplied` / `Dismissed` follow
+//!        the same audience.
+//!      - Concentration checks (state, `ConcentrationCheckRequested`,
+//!        `ConcentrationCheckRolled`) reach the token's controller only.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -79,6 +88,7 @@ use trame_engine::commands::{
 use trame_engine::geometry::{
     CHANNEL_GM_HIDDEN, Point2D, WallKind, WallSegment, can_token_see_target,
 };
+use trame_engine::resolution::PendingResolution;
 use uuid::Uuid;
 
 /// A submitted `TrameCommand` plus the client's correlation id (RT10).
@@ -217,6 +227,14 @@ pub struct ProjectedTableState {
     /// Queued MCP dry-run staging proposals keyed by `proposal_id` (included only for `Gm` recipients).
     #[serde(default)]
     pub mcp_staging_proposals: BTreeMap<Uuid, McpStagingProposal>,
+    /// Server-rolled actions waiting for their Apply: every one for GMs; for other recipients
+    /// only those they issued, redacted by `redact_resolution` (invariant 8).
+    #[serde(default)]
+    pub pending_resolutions: BTreeMap<Uuid, PendingResolution>,
+    /// Open Concentration check DCs (oldest first) keyed by token: every token for GMs, the
+    /// tokens the recipient controls otherwise.
+    #[serde(default)]
+    pub pending_concentration_checks: BTreeMap<Uuid, Vec<i32>>,
 }
 
 /// Coarse health tier shown to participants who do not control a token (G5, `GLOSSARY.md`).
@@ -530,6 +548,34 @@ fn redact_prompt_for_player(
     redacted
 }
 
+/// Issuer view of a resolution (invariant 8): targets the recipient does not control keep
+/// their outcome and damage but lose their natural d20s and total.
+pub fn redact_resolution(
+    state: &TableState,
+    resolution: &PendingResolution,
+    recipient_user_id: Uuid,
+) -> PendingResolution {
+    let mut redacted = resolution.clone();
+    for target in &mut redacted.targets {
+        if !recipient_controls(state, &target.token_id, recipient_user_id) {
+            target.d20_rolls.clear();
+            target.total = None;
+        }
+    }
+    redacted
+}
+
+/// Issuer of the resolution `id` before or after the command (it leaves the table once
+/// fully applied or dismissed).
+fn resolution_issuer(state: &TableState, prior: &TableState, id: &Uuid) -> Option<Uuid> {
+    prior
+        .data
+        .pending_resolutions
+        .get(id)
+        .or_else(|| state.data.pending_resolutions.get(id))
+        .map(|r| r.issuer_user_id)
+}
+
 /// Initiative totals of the combatants the recipient can see.
 fn visible_totals(
     totals: &BTreeMap<Uuid, i32>,
@@ -647,6 +693,24 @@ pub fn project_state_for_recipient(
         } else {
             BTreeMap::new()
         },
+        pending_resolutions: if is_gm {
+            state.data.pending_resolutions.clone()
+        } else {
+            state
+                .data
+                .pending_resolutions
+                .iter()
+                .filter(|(_, r)| r.issuer_user_id == recipient_user_id)
+                .map(|(id, r)| (*id, redact_resolution(state, r, recipient_user_id)))
+                .collect()
+        },
+        pending_concentration_checks: state
+            .data
+            .pending_concentration_checks
+            .iter()
+            .filter(|(id, _)| is_gm || recipient_controls(state, id, recipient_user_id))
+            .map(|(id, dcs)| (*id, dcs.clone()))
+            .collect(),
     }
 }
 
@@ -872,6 +936,20 @@ pub fn filter_events_for_recipient(
                 active_turn_token_id: visible_turn(active_turn_token_id),
                 round: *round,
             }),
+            TrameEvent::ActionResolved { resolution } => (resolution.issuer_user_id
+                == recipient_user_id)
+                .then(|| TrameEvent::ActionResolved {
+                    resolution: Box::new(redact_resolution(state, resolution, recipient_user_id)),
+                }),
+            TrameEvent::ResolutionApplied { resolution_id, .. }
+            | TrameEvent::ResolutionDismissed { resolution_id } => {
+                (resolution_issuer(state, prior, resolution_id) == Some(recipient_user_id))
+                    .then(|| ev.clone())
+            }
+            TrameEvent::ConcentrationCheckRequested { token_id, .. }
+            | TrameEvent::ConcentrationCheckRolled { token_id, .. } => {
+                controls_visible(token_id).then(|| ev.clone())
+            }
             TrameEvent::McpStagingCommitted { .. }
             | TrameEvent::McpStagingRejected { .. }
             | TrameEvent::ActionUndone { .. } => None,

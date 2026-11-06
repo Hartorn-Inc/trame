@@ -143,7 +143,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ConcentrationCheckPrompt
 
-- **Definition**: Interactive prompt emitted by the damage pipeline when a concentrating actor takes damage, with a Difficulty Class equal to `Math.min(30, Math.max(10, Math.floor(damageTaken / 2)))` (minimum 10, capped at 30).
+- **Definition**: Interactive prompt emitted by the damage pipeline when a concentrating actor takes damage, with a Difficulty Class equal to `Math.min(30, Math.max(10, Math.floor(damageTaken / 2)))` (minimum 10, capped at 30). The engine queues the DC in `TableSnapshotData::pending_concentration_checks` (`ConcentrationCheckRequested`) for the token's controller, or the Game Master for monsters; `RollConcentrationCheck` rolls the Constitution save on the server and a failure ends concentration and its persistent zone.
 - **Allowed Context**: `ConcentrationCheckPrompt`, `concentration check prompt`.
 - **_Avoid_**: `concentration check`, `concentration save prompt`, `concentration DC`.
 
@@ -536,6 +536,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Coarse health tier shown in a `PublicTokenView`: `Unhurt` above half of maximum hit points, `Bloodied` at half or below, and `Down` at 0 hit points.
 - **Allowed Context**: Player-facing health indicator on enemy tokens and in the combat tracker.
 - **_Avoid_**: HealthBarPercent, HpHint, WoundLevel.
+
+### PendingResolution
+
+- **Definition**: Server-held result of an attack or area action (`ResolveAction`): per target the outcome (hit, miss, critical, blocked, save success or failure) and the server-rolled damage after save-for-half, waiting for an explicit `ApplyResolution`. The issuer may apply it as rolled, the Game Master may apply, adjust or dismiss it, and each target is applied at most once. It lives in `TableSnapshotData`, so the WAL and undo restore it ([ADR-0042](./docs/adr/0042-server-held-pending-resolutions.md)).
+- **Allowed Context**: Decision D6 attack and area resolution, the attack card, and the Game Master pending list.
+- **_Avoid_**: PendingAttack, DamageQueue, UnappliedRoll.
 
 ### McpStagingProposal
 

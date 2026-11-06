@@ -27,7 +27,9 @@ use tower::ServiceExt;
 use trame_engine::commands::{
     CampaignRole, CommandActor, McpStagingProposal, TableState, TokenState, TrameCommand,
 };
+use trame_engine::cover::CoverLevel;
 use trame_engine::geometry::Point2D;
+use trame_engine::resolution::{ActionRequest, ActionTargetRequest, ResolutionCheck, RollMode};
 use trame_engine::rules::DamageAffinity;
 use trame_server::assets::store::AssetStore;
 use trame_server::auth::accounts::InstanceRole;
@@ -1426,6 +1428,80 @@ async fn pg_undo_and_staging_survive_crash() {
                 .is_empty(),
             "case {case}"
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_pending_resolution_survives_restart_and_applies_once() {
+    let Some((_app, store)) = harness().await else {
+        return;
+    };
+    // (case_id, snapshot_interval)
+    for (case, interval) in [("pg_interval_1", 1u64), ("pg_interval_25", 25)] {
+        let (campaign_id, token_id) = seed_wal_campaign(&store);
+        let gm = CommandActor {
+            user_id: Uuid::new_v4(),
+            role: CampaignRole::Gm,
+        };
+        let wake = || async {
+            RoomLeaseManager::new(store.clone(), interval, 900_000)
+                .get_or_wake_room(campaign_id)
+                .await
+                .unwrap()
+        };
+        let resolution_id = Uuid::new_v4();
+        let request = ActionRequest {
+            resolution_id,
+            attacker_token_id: None,
+            action_name: "Magic Missile".to_string(),
+            check: ResolutionCheck::Automatic,
+            damage_dice: String::new(),
+            damage_modifier: 7,
+            damage_type: Some("force".to_string()),
+            targets: vec![ActionTargetRequest {
+                token_id,
+                roll_mode: RollMode::Normal,
+                cover: CoverLevel::None,
+            }],
+        };
+        wake()
+            .await
+            .dispatch_direct_command(
+                gm.clone(),
+                TrameCommand::ResolveAction {
+                    request: Box::new(request),
+                    resolution: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let (_, state) = wake().await.get_table_snapshot().await.unwrap();
+        let pending = &state.data.pending_resolutions[&resolution_id];
+        assert_eq!(
+            pending.targets[0].damage, 7,
+            "case {case}: survives restart"
+        );
+        assert_eq!(state.data.tokens[&token_id].hp, 20, "case {case}");
+
+        let apply = TrameCommand::ApplyResolution {
+            resolution_id,
+            token_id: None,
+            adjustment: None,
+        };
+        wake()
+            .await
+            .dispatch_direct_command(gm.clone(), apply.clone())
+            .await
+            .unwrap();
+        let rebooted = wake().await;
+        assert!(
+            rebooted.dispatch_direct_command(gm, apply).await.is_err(),
+            "case {case}: second apply refused after restart"
+        );
+        let (_, state) = rebooted.get_table_snapshot().await.unwrap();
+        assert_eq!(state.data.tokens[&token_id].hp, 13, "case {case}");
+        assert!(state.data.pending_resolutions.is_empty(), "case {case}");
     }
 }
 
