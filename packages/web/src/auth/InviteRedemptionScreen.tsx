@@ -26,9 +26,16 @@
  *      the form with an explanation; `409 EMAIL_ALREADY_EXISTS`,
  *      `INVALID_EMAIL`, `INVALID_DISPLAY_NAME` and `WEAK_PASSWORD` flag their
  *      field; anything else shows a generic retryable message.
+ *    - `403 MEMBER_REMOVED` (the user was removed from this campaign) ends
+ *      the flow like a dead link: re-joining needs a fresh invite.
+ *    - `401 MFA_REQUIRED` / `INVALID_TOTP_CODE` on "Sign in" add a 6-digit
+ *      authentication code field instead of locking TOTP users out.
  * 4. `Live Regions Exist Before Their Message`:
- *    - The link-state alert region is always mounted and filled after the
- *      async preview, so screen readers announce it.
+ *    - The link-state and form-error alert regions are always mounted and
+ *      only their text changes, so screen readers announce it.
+ * 6. `Focus Follows The Next Step`:
+ *    - After a successful sign-in the form unmounts; focus moves to "Join"
+ *      instead of falling back to `<body>`.
  * 5. `Focusable While Busy`:
  *    - Submit buttons use `aria-disabled` + `aria-busy` and ignore repeated
  *      activation, so focus is kept and a double click cannot redeem twice.
@@ -42,7 +49,14 @@
  * ============================================================================
  */
 import { useEffect, useRef, useState } from "preact/hooks";
-import { ApiError, type ApiClient, type InvitePreview, type InviteStatus } from "../api/client.ts";
+import {
+  ApiError,
+  INVALID_TOTP_CODE,
+  MFA_REQUIRED,
+  type ApiClient,
+  type InvitePreview,
+  type InviteStatus,
+} from "../api/client.ts";
 import { LocaleToggle } from "../components/ShellToggles.tsx";
 import { useFocusOnMount } from "../components/a11y/useFocusOnMount.ts";
 import { formatEpochSeconds, t, type MessageKey } from "../i18n/index.ts";
@@ -58,7 +72,7 @@ export interface InviteRedemptionScreenProps {
 }
 
 type Mode = "create" | "signin";
-type Field = "email" | "displayName" | "password";
+type Field = "email" | "displayName" | "password" | "totp";
 type LinkState = { kind: "loading" } | { kind: "ready"; preview: InvitePreview } | { kind: "unavailable"; reason: MessageKey };
 
 const ERROR_ID = "invite-error";
@@ -68,6 +82,7 @@ const UNAVAILABLE: Record<string, MessageKey> = {
   INVITE_REVOKED: "invite.unavailable.revoked",
   INVITE_EXPIRED: "invite.unavailable.expired",
   INVITE_EXHAUSTED: "invite.unavailable.exhausted",
+  MEMBER_REMOVED: "invite.unavailable.memberRemoved",
 };
 
 const STATUS_UNAVAILABLE: Record<Exclude<InviteStatus, "active">, MessageKey> = {
@@ -82,6 +97,7 @@ const FIELD_ERRORS: Record<string, MessageKey> = {
   INVALID_DISPLAY_NAME: "auth.error.invalidDisplayName",
   WEAK_PASSWORD: "auth.error.weakPassword",
   INVALID_CREDENTIALS: "auth.error.invalidCredentials",
+  [INVALID_TOTP_CODE]: "auth.error.invalidTotp",
 };
 
 const ERROR_FIELDS: Partial<Record<MessageKey, readonly Field[]>> = {
@@ -90,6 +106,7 @@ const ERROR_FIELDS: Partial<Record<MessageKey, readonly Field[]>> = {
   "auth.error.invalidDisplayName": ["displayName"],
   "auth.error.weakPassword": ["password"],
   "auth.error.invalidCredentials": ["email", "password"],
+  "auth.error.invalidTotp": ["totp"],
 };
 
 /** Previews a campaign invite and redeems it into a real account or membership. */
@@ -100,11 +117,24 @@ export function InviteRedemptionScreen({ client, token, onDone }: InviteRedempti
   const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  const [totpStep, setTotpStep] = useState(false);
+  const [totpCode, setTotpCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<MessageKey | null>(null);
+  const [focusJoin, setFocusJoin] = useState(false);
   const titleRef = useRef<HTMLHeadingElement | null>(null);
+  const totpRef = useRef<HTMLInputElement | null>(null);
+  const joinRef = useRef<HTMLButtonElement | null>(null);
 
   useFocusOnMount(titleRef);
+  useEffect(() => {
+    if (totpStep) totpRef.current?.focus();
+  }, [totpStep]);
+  useEffect(() => {
+    if (!focusJoin || !user) return;
+    joinRef.current?.focus();
+    setFocusJoin(false);
+  }, [focusJoin, user]);
 
   const loadPreview = () => {
     setLink({ kind: "loading" });
@@ -133,9 +163,11 @@ export function InviteRedemptionScreen({ client, token, onDone }: InviteRedempti
       setSubmitting(false);
       if (leaveOnSuccess) onDone();
     } catch (err) {
-      const gone = err instanceof ApiError && err.code ? UNAVAILABLE[err.code] : undefined;
+      const code = err instanceof ApiError ? err.code : undefined;
+      const gone = code ? UNAVAILABLE[code] : undefined;
+      if (code === MFA_REQUIRED || code === INVALID_TOTP_CODE) setTotpStep(true);
       if (gone) setLink({ kind: "unavailable", reason: gone });
-      else setError(apiErrorKey(err, FIELD_ERRORS));
+      else if (code !== MFA_REQUIRED) setError(apiErrorKey(err, FIELD_ERRORS));
       setSubmitting(false);
     }
   };
@@ -147,7 +179,10 @@ export function InviteRedemptionScreen({ client, token, onDone }: InviteRedempti
 
   const onSignIn = (e: Event) => {
     e.preventDefault();
-    void run(() => client.login({ email, password }), false);
+    void run(async () => {
+      await client.login({ email, password, totpCode: totpStep ? totpCode.trim() : undefined });
+      setFocusJoin(true);
+    }, false);
   };
 
   const onJoin = () => {
@@ -166,6 +201,7 @@ export function InviteRedemptionScreen({ client, token, onDone }: InviteRedempti
       onClick={() => {
         setMode(value);
         setError(null);
+        setTotpStep(false);
       }}
     >
       {mode === value && <span aria-hidden="true">✓</span>}
@@ -173,10 +209,14 @@ export function InviteRedemptionScreen({ client, token, onDone }: InviteRedempti
     </button>
   );
 
-  const errorAlert = error && (
-    <p id={ERROR_ID} data-testid="invite-error" role="alert" class="ds-field-error">
-      {t(error)}
-    </p>
+  const errorAlert = (
+    <div role="alert" data-testid="invite-error-region">
+      {error && (
+        <p id={ERROR_ID} data-testid="invite-error" class="ds-field-error">
+          {t(error)}
+        </p>
+      )}
+    </div>
   );
 
   const renderReady = (preview: InvitePreview) => (
@@ -195,7 +235,14 @@ export function InviteRedemptionScreen({ client, token, onDone }: InviteRedempti
           <p>{t("invite.signedInAs", { name: user.displayName })}</p>
           {errorAlert}
           <div class="ds-cluster">
-            <button type="button" class="ds-btn ds-btn-primary" data-testid="invite-join" onClick={onJoin} {...busyProps}>
+            <button
+              type="button"
+              ref={joinRef}
+              class="ds-btn ds-btn-primary"
+              data-testid="invite-join"
+              onClick={onJoin}
+              {...busyProps}
+            >
               {submitting ? t("auth.submitting") : t("invite.join")}
             </button>
             <button type="button" class="ds-btn ds-btn-secondary" data-testid="invite-dismiss" onClick={onDone}>
@@ -240,6 +287,20 @@ export function InviteRedemptionScreen({ client, token, onDone }: InviteRedempti
               hint={mode === "create" ? t("setup.passwordHint") : undefined}
               errorId={errorIdFor("password")}
             />
+            {mode === "signin" && totpStep && (
+              <AccountField
+                id="invite-totp"
+                label={t("auth.totp")}
+                type="text"
+                autocomplete="one-time-code"
+                inputMode="numeric"
+                value={totpCode}
+                onInput={setTotpCode}
+                hint={t("auth.totpRequired")}
+                errorId={errorIdFor("totp")}
+                inputRef={totpRef}
+              />
+            )}
             {errorAlert}
             <button type="submit" class="ds-btn ds-btn-primary" data-testid="invite-submit" {...busyProps}>
               {submitting ? t("auth.submitting") : t(mode === "create" ? "invite.submit.create" : "auth.submit.login")}

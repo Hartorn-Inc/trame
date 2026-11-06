@@ -25,9 +25,10 @@
  * 4. `PreactSignalState`:
  *    - Signals drive view transitions without full-tree re-renders.
  * 5. `Connection Feedback On Every Campaign Layout`:
- *    - Desktop and mobile companion layouts both mount `ConnectionBanner`
- *      and `CommandFeedbackToasts`, which own the only connection and
- *      action-failure live regions (the header badge is plain text).
+ *    - Desktop and mobile companion layouts both mount `ConnectionBanner`,
+ *      `WalQuarantineBanner` and `CommandFeedbackToasts`, which own the only
+ *      connection, recovery and action-failure live regions (the header
+ *      badge is plain text).
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -48,7 +49,7 @@ import { AccountSettingsDialog } from './auth/AccountSettingsDialog.tsx';
 import { AuthScreen } from './auth/AuthScreen.tsx';
 import { InviteRedemptionScreen } from './auth/InviteRedemptionScreen.tsx';
 import { OwnerSetupScreen } from './auth/OwnerSetupScreen.tsx';
-import { CommandFeedbackToasts, ConnectionBanner } from './components/RoomConnectionFeedback.tsx';
+import { CommandFeedbackToasts, ConnectionBanner, WalQuarantineBanner } from './components/RoomConnectionFeedback.tsx';
 import { LocaleToggle, UnitsToggle } from './components/ShellToggles.tsx';
 import { mobileCompanionOverrideSignal, t } from './i18n/index.ts';
 import { CampaignLobby } from './lobby/CampaignLobby.tsx';
@@ -200,6 +201,7 @@ function CampaignView({ client, campaignId }: { client: ApiClient; campaignId: s
     return (
       <>
         <ConnectionBanner client={client} />
+        <WalQuarantineBanner client={client} />
         <MobileCompanionView campaignId={campaignId} client={client} isGm={campaign?.role === 'GM'} />
         <CommandFeedbackToasts client={client} />
       </>
@@ -210,6 +212,7 @@ function CampaignView({ client, campaignId }: { client: ApiClient; campaignId: s
     <div class="ds-app-shell" data-testid="trame-app-root">
       <ShellHeader client={client} inCampaign />
       <ConnectionBanner client={client} />
+      <WalQuarantineBanner client={client} />
       <main style={{ flex: 1, overflowY: 'auto' }}>
         <CampaignWorkspace campaignId={campaignId} userRole={toUserRole(campaign?.role)} client={client} />
       </main>
@@ -238,7 +241,7 @@ function LobbyView({ client }: { client: ApiClient }) {
       ) : (
         <CampaignLobby client={client} />
       )}
-      {accountOpen && user && <AccountSettingsDialog user={user} onClose={() => setAccountOpen(false)} />}
+      {accountOpen && user && <AccountSettingsDialog client={client} user={user} onClose={() => setAccountOpen(false)} />}
     </div>
   );
 }

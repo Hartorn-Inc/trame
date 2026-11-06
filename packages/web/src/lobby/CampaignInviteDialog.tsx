@@ -31,8 +31,10 @@
  *      never offered for removal, and removed users read "No longer a member".
  * 5. `Modal Keyboard Contract`:
  *    - `useModalFocusTrap` (Tab cycles, Escape closes, focus returns to the
- *      lobby button). After a request removes the focused control, focus is
- *      moved to the next logical control instead of being dropped.
+ *      lobby button). Focus starts on Close while loading and moves to the
+ *      create button once the data is loaded. After a request removes the
+ *      focused control, focus is moved to the next logical control instead
+ *      of being dropped.
  * 6. `Announced Outcomes`:
  *    - A persistent `role="status"` region announces minted, copied, revoked
  *      and removed results; failures use `role="alert"`.
@@ -136,6 +138,10 @@ export function CampaignInviteDialog({ client, campaign, onClose }: CampaignInvi
       () => setLoaded("failed"),
     );
   }, [client, campaign.id]);
+
+  useEffect(() => {
+    if (loaded === "ready") createRef.current?.focus();
+  }, [loaded]);
 
   useEffect(() => {
     if (focusUrl.current && urlRef.current) {

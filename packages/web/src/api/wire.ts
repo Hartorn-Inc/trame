@@ -270,6 +270,21 @@ export interface HandoutRevealedBroadcast {
   timestamp: number;
 }
 
+/**
+ * Game Master-facing summary of a WAL entry set aside during room recovery
+ * (`QuarantinedWalSummary` in `sync.rs`, ADR-0040). Carries no command payload.
+ */
+export interface QuarantinedWalSummary {
+  /** Original WAL sequence number. */
+  seq_id: number;
+  /** Command label, e.g. `"UNDO_LAST_ACTION"`, `"MOVE_TOKEN"`, `"MCP_STAGING"`, or `"UNDECODABLE"`. */
+  command_kind: string;
+  /** Replay error, or a note naming the failing `seq_id` for later entries. */
+  error: string;
+  /** UNIX epoch milliseconds (`ms`) when the entry was quarantined. */
+  quarantined_at_ms: number;
+}
+
 /** Outbound frames, discriminated by `type` on the client side only. */
 export type ClientEnvelope =
   | { type: "SubmitCommand"; command: WireTrameCommand; correlationId?: string }
@@ -282,6 +297,7 @@ export type ServerEnvelope =
   | { type: "StateSnapshot"; seqId: number; state: ProjectedTableState }
   | { type: "CommandAccepted"; seqId: number; events: WireTrameEvent[]; state: ProjectedTableState }
   | { type: "CommandRejected"; reason: string; correlationId: string | null }
+  | { type: "WalEntriesQuarantined"; entries: QuarantinedWalSummary[] }
   | { type: "DiceRolled"; roll: ProjectedDiceRoll }
   | { type: "PointerPingBroadcast"; senderUserId: Uuid; pos: WirePoint2D; colorHex: string }
   | { type: "Pong"; clientTimeMs: number; serverTimeMs: number }
@@ -385,6 +401,16 @@ export function parseServerEnvelope(raw: unknown): ServerEnvelope | null {
         type: "CommandRejected",
         reason: String(p.reason ?? ""),
         correlationId: typeof p.correlation_id === "string" ? p.correlation_id : null,
+      };
+    case "WalEntriesQuarantined":
+      return {
+        type: "WalEntriesQuarantined",
+        entries: ((p.entries as Record<string, unknown>[] | undefined) ?? []).map((e) => ({
+          seq_id: Number(e.seq_id),
+          command_kind: String(e.command_kind ?? ""),
+          error: String(e.error ?? ""),
+          quarantined_at_ms: Number(e.quarantined_at_ms ?? 0),
+        })),
       };
     case "DiceRolled":
       return { type: "DiceRolled", roll: p as unknown as ProjectedDiceRoll };

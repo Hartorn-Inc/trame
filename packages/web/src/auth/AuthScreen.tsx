@@ -28,12 +28,16 @@
  * 4. `Focusable While Busy`:
  *    - Submit uses `aria-disabled` + `aria-busy` instead of `disabled`, so
  *      focus is not dropped to `<body>` while the request is in flight.
+ * 5. `TOTP Step On Demand`:
+ *    - `401 MFA_REQUIRED` (or `INVALID_TOTP_CODE`) adds a 6-digit code field
+ *      under the kept email and password and moves focus to it; the next
+ *      submit sends `totp_code`. Accounts without TOTP never see the field.
  * 5. `ATLAS v1.1 Only`:
  *    - Layout uses `ds-*` primitives and `--atlas-*` tokens, no raw colors.
  * ============================================================================
  */
 import { useEffect, useRef, useState } from "preact/hooks";
-import { ApiError, type ApiClient } from "../api/client.ts";
+import { ApiError, INVALID_TOTP_CODE, MFA_REQUIRED, type ApiClient } from "../api/client.ts";
 import { LocaleToggle } from "../components/ShellToggles.tsx";
 import { useFocusOnMount } from "../components/a11y/useFocusOnMount.ts";
 import { t, type MessageKey } from "../i18n/index.ts";
@@ -44,9 +48,10 @@ export interface AuthScreenProps {
 }
 
 type AuthMode = "login" | "register";
-type AuthField = "email" | "displayName" | "password";
+type AuthField = "email" | "displayName" | "password" | "totp";
 
 const ERROR_ID = "auth-error";
+const TOTP_HINT_ID = "auth-totp-hint";
 
 const ERROR_KEYS: Record<string, MessageKey> = {
   EMAIL_ALREADY_EXISTS: "auth.error.emailTaken",
@@ -54,6 +59,7 @@ const ERROR_KEYS: Record<string, MessageKey> = {
   INVALID_DISPLAY_NAME: "auth.error.invalidDisplayName",
   WEAK_PASSWORD: "auth.error.weakPassword",
   REGISTRATION_CLOSED: "auth.error.registrationClosed",
+  [INVALID_TOTP_CODE]: "auth.error.invalidTotp",
 };
 
 /** Fields each error message describes; `auth.error.generic` points at none. */
@@ -63,7 +69,13 @@ const ERROR_FIELDS: Partial<Record<MessageKey, readonly AuthField[]>> = {
   "auth.error.invalidDisplayName": ["displayName"],
   "auth.error.weakPassword": ["password"],
   "auth.error.invalidCredentials": ["email", "password"],
+  "auth.error.invalidTotp": ["totp"],
 };
+
+/** `true` when a sign-in failure means the account needs (another) TOTP code. */
+function needsTotp(err: unknown): boolean {
+  return err instanceof ApiError && (err.code === MFA_REQUIRED || err.code === INVALID_TOTP_CODE);
+}
 
 function errorKey(err: unknown): MessageKey {
   if (err instanceof ApiError) {
@@ -81,11 +93,17 @@ export function AuthScreen({ client }: AuthScreenProps) {
   const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  const [totpStep, setTotpStep] = useState(false);
+  const [totpCode, setTotpCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<MessageKey | null>(null);
   const titleRef = useRef<HTMLHeadingElement | null>(null);
+  const totpRef = useRef<HTMLInputElement | null>(null);
 
   useFocusOnMount(titleRef);
+  useEffect(() => {
+    if (totpStep) totpRef.current?.focus();
+  }, [totpStep]);
   useEffect(() => {
     client.getInstanceInfo().then(
       (info) => setRegistrationOpen(info.registrationOpen),
@@ -105,12 +123,13 @@ export function AuthScreen({ client }: AuthScreenProps) {
     setError(null);
     try {
       if (activeMode === "login") {
-        await client.login({ email, password });
+        await client.login({ email, password, totpCode: totpStep ? totpCode.trim() : undefined });
       } else {
         await client.register({ email, displayName, password });
       }
     } catch (err) {
-      setError(errorKey(err));
+      if (needsTotp(err)) setTotpStep(true);
+      setError(err instanceof ApiError && err.code === MFA_REQUIRED ? null : errorKey(err));
       setSubmitting(false);
     }
   };
@@ -125,6 +144,7 @@ export function AuthScreen({ client }: AuthScreenProps) {
       onClick={() => {
         setMode(value);
         setError(null);
+        setTotpStep(false);
       }}
     >
       {activeMode === value && <span aria-hidden="true">✓</span>}
@@ -200,6 +220,31 @@ export function AuthScreen({ client }: AuthScreenProps) {
               {...fieldErrorProps("password")}
             />
           </label>
+
+          {activeMode === "login" && totpStep && (
+            <>
+              <label class="ds-field" for="auth-totp">
+                <span class="ds-field-label">{t("auth.totp")}</span>
+                <input
+                  id="auth-totp"
+                  ref={totpRef}
+                  data-testid="auth-totp"
+                  class="ds-input atlas-tabular-nums"
+                  type="text"
+                  inputMode="numeric"
+                  autocomplete="one-time-code"
+                  required
+                  value={totpCode}
+                  onInput={(e) => setTotpCode((e.currentTarget as HTMLInputElement).value)}
+                  aria-invalid={invalidFields.includes("totp") ? "true" : undefined}
+                  aria-describedby={invalidFields.includes("totp") ? `${ERROR_ID} ${TOTP_HINT_ID}` : TOTP_HINT_ID}
+                />
+              </label>
+              <p id={TOTP_HINT_ID} class="ds-hint" data-testid="auth-totp-hint">
+                {t("auth.totpRequired")}
+              </p>
+            </>
+          )}
 
           {error && (
             <p id={ERROR_ID} data-testid="auth-error" role="alert" class="ds-field-error">

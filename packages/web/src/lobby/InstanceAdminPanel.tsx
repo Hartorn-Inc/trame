@@ -26,6 +26,8 @@
  * 4. `Announced Outcomes`:
  *    - A persistent `role="status"` region announces each role change; text
  *      badges carry the role so it is never conveyed by color.
+ *    - Load and per-row errors fill `role="alert"` regions that are mounted
+ *      before their text, so screen readers announce them.
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -140,14 +142,16 @@ export function InstanceAdminPanel({ client, onBack }: InstanceAdminPanelProps) 
         </div>
         <p class="ds-hint">{t("admin.intro")}</p>
         {loadState === "loading" && <p aria-hidden="true">{t("admin.loading")}</p>}
-        {loadState === "failed" && (
-          <div role="alert" data-testid="admin-load-error" class="ds-cluster">
-            <span class="ds-field-error">{t("admin.loadFailed")}</span>
-            <button type="button" class="ds-btn ds-btn-secondary" onClick={load}>
-              {t("lobby.retry")}
-            </button>
-          </div>
-        )}
+        <div role="alert">
+          {loadState === "failed" && (
+            <div data-testid="admin-load-error" class="ds-cluster">
+              <span class="ds-field-error">{t("admin.loadFailed")}</span>
+              <button type="button" class="ds-btn ds-btn-secondary" onClick={load}>
+                {t("lobby.retry")}
+              </button>
+            </div>
+          )}
+        </div>
         {users.length > 0 && (
           <ul role="list" class="ds-list-plain ds-stack-sm">
             {users.map((user) => (
@@ -166,11 +170,13 @@ export function InstanceAdminPanel({ client, onBack }: InstanceAdminPanelProps) 
                   </div>
                   {renderAction(user)}
                 </div>
-                {error?.userId === user.id && (
-                  <p role="alert" class="ds-field-error" data-testid={`admin-error-${user.id}`}>
-                    {t(error.key)}
-                  </p>
-                )}
+                <div role="alert" data-testid={`admin-error-region-${user.id}`}>
+                  {error?.userId === user.id && (
+                    <p class="ds-field-error" data-testid={`admin-error-${user.id}`}>
+                      {t(error.key)}
+                    </p>
+                  )}
+                </div>
               </li>
             ))}
           </ul>

@@ -1072,7 +1072,8 @@ button.ds-prof-pip {
 }
 
 .ds-connection-banner[data-state="signedOut"],
-.ds-connection-banner[data-state="forbidden"] {
+.ds-connection-banner[data-state="forbidden"],
+.ds-connection-banner[data-state="quarantine"] {
   border-left-color: var(--atlas-danger);
 }
 

@@ -38,6 +38,7 @@
  * ============================================================================
  */
 import { ApiError, VERSION_CONFLICT, type ApiClient, type CampaignActor } from "../api/client.ts";
+import { describeActionError } from "../api/errorMessages.ts";
 import type { Uuid, WireRollVisibility } from "../api/wire.ts";
 import type { DiceRollResult, DiceRollService } from "../components/modals/LevelUpModal.tsx";
 
@@ -136,7 +137,7 @@ export interface SheetDispatcherOptions {
  */
 export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (command: unknown) => void {
   const { client, campaignId, actorId } = options;
-  const fail = (err: unknown) => options.onError?.(err instanceof Error ? err.message : String(err));
+  const fail = (err: unknown) => options.onError?.(describeActionError(err, String(err)));
   return (command) => {
     const cmd = (command ?? {}) as Record<string, unknown>;
     if (cmd.cmd === 'ROLL_DICE') {

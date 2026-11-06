@@ -7,6 +7,7 @@ import { createSessionState } from "../src/api/session.ts";
 import { localeSignal, t } from "../src/i18n/index.ts";
 import { setupMockDom } from "./helpers/mockDom.ts";
 import { authUserDto, campaignDto, createMockTransport, flush, type RouteReply } from "./helpers/mockTransport.ts";
+import { assertAbsent } from "./helpers/domAssert.ts";
 
 localeSignal.value = "en";
 options.debounceRendering = (cb: () => void) => cb();
@@ -158,13 +159,15 @@ describe("OwnerSetupScreen (/setup?token=)", () => {
       if (c.bootstrap) routes["POST /api/v1/instance/bootstrap"] = c.bootstrap;
       const { transport } = await mount(routes, { pathname: "/setup", search: c.search });
       if (byTestId("setup-form")) {
+        assert.equal(byTestId("setup-error-region").getAttribute("role"), "alert", "the alert region exists before its message");
+        assert.equal(byTestId("setup-error-region").textContent, "");
         typeInto("setup-email", "owner@example.test");
         typeInto("setup-display-name", "Morgan");
         typeInto("setup-password", "correct horse battery");
         await act("setup-form", "submit");
       }
       assert.ok(byTestId(c.visible), `expected ${c.visible}`);
-      assert.equal(byTestId(c.hidden), null, `expected ${c.hidden} hidden`);
+      assertAbsent(byTestId(c.hidden), c.hidden);
       assert.equal(callsTo(transport, "POST /api/v1/instance/bootstrap").length, c.bootstrapCalls);
     });
   }
@@ -256,7 +259,10 @@ describe("InstanceAdminPanel (Owner)", () => {
       });
       await act("header-instance-admin");
       assert.ok(byTestId("instance-admin"));
-      assert.equal(byTestId(`admin-role-${OWNER_ID}`), null, "the Owner row offers no role change");
+      assertAbsent(byTestId(`admin-role-${OWNER_ID}`), "the Owner row offers no role change");
+      const region = byTestId(`admin-error-region-${c.userId}`);
+      assert.equal(region.getAttribute("role"), "alert", "the row alert region exists before its message");
+      assert.equal(region.textContent, "");
       await act(`admin-role-${c.userId}`);
       assert.deepEqual(callsTo(transport, `PUT /api/v1/instance/users/${c.userId}/role`)[0].body, { instance_role: c.sent });
       assert.equal(byTestId(`admin-role-badge-${c.userId}`).textContent, c.badge);
@@ -327,8 +333,8 @@ describe("CampaignInviteDialog (GM)", () => {
     await act("invite-revoke");
     assert.equal(callsTo(transport, `DELETE ${CAMPAIGNS}/invites/active`).length, 1);
     assert.equal(byTestId("invite-status").textContent, "Revoked");
-    assert.equal(byTestId("invite-url"), null, "a revoked link is no longer shown");
-    assert.equal(byTestId("invite-revoke"), null);
+    assertAbsent(byTestId("invite-url"), "a revoked link is no longer shown");
+    assertAbsent(byTestId("invite-revoke"), "invite-revoke");
   });
 
   const maxUsesCases = [
@@ -354,7 +360,7 @@ describe("CampaignInviteDialog (GM)", () => {
       inviteRoutes({ [`DELETE ${CAMPAIGNS}/members/${PLAYER_ID}`]: { status: 200, body: { removed: true, disconnected_sessions: 1 } } }),
     );
     await act(`lobby-invite-${CAMPAIGN_ID}`);
-    assert.equal(byTestId(`member-remove-${OWNER_ID}`), null, "the GM is never offered for removal");
+    assertAbsent(byTestId(`member-remove-${OWNER_ID}`), "the GM is never offered for removal");
     await act(`member-remove-${PLAYER_ID}`);
     assert.equal(callsTo(transport, `DELETE ${CAMPAIGNS}/members/${PLAYER_ID}`).length, 0, "first click only asks to confirm");
     assert.ok(byTestId(`member-remove-cancel-${PLAYER_ID}`));
@@ -365,6 +371,13 @@ describe("CampaignInviteDialog (GM)", () => {
     assert.equal(byTestId("invite-dialog-status").textContent, t("invites.removed", { name: "Lyra" }));
   });
 
+  it("invite_dialog_focuses_create_once_loaded", async () => {
+    await mount(inviteRoutes());
+    await act(`lobby-invite-${CAMPAIGN_ID}`);
+    assert.ok(byTestId("invite-create"));
+    assert.ok(doc.activeElement === byTestId("invite-create"), "focus lands on the create button, not Close");
+  });
+
   it("escape_closes_the_invite_dialog", async () => {
     await mount(inviteRoutes());
     const inviteButton = byTestId(`lobby-invite-${CAMPAIGN_ID}`);
@@ -373,7 +386,7 @@ describe("CampaignInviteDialog (GM)", () => {
     await act(`lobby-invite-${CAMPAIGN_ID}`);
     doc.dispatchEvent({ type: "keydown", key: "Escape" });
     await flush(3);
-    assert.equal(byTestId("invite-dialog"), null);
+    assertAbsent(byTestId("invite-dialog"), "invite-dialog");
     // Identity check: diffing two mock DOM nodes on failure exhausts memory.
     assert.ok(doc.activeElement === inviteButton, "focus returns to the invite button");
   });
@@ -436,6 +449,16 @@ describe("InviteRedemptionScreen (?invite=)", () => {
       message: t("invite.unavailable.exhausted"),
     },
     {
+      id: "redeem_after_removal_shows_member_removed_message",
+      session: me({ id: PLAYER_ID, instance_role: "MEMBER" }),
+      preview: PREVIEW,
+      redeem: err(403, "MEMBER_REMOVED"),
+      action: "join",
+      redeemBody: { token: "abc" },
+      visible: "invite-unavailable",
+      message: t("invite.unavailable.memberRemoved"),
+    },
+    {
       id: "redeem_email_taken_flags_email_and_keeps_form",
       session: ME_401,
       preview: PREVIEW,
@@ -490,16 +513,18 @@ describe("InviteRedemptionScreen (?invite=)", () => {
       assert.equal(byTestId("invite-alert-region").getAttribute("role"), "alert");
 
       if (c.action === "none") {
-        assert.equal(byTestId("invite-form"), null);
-        assert.equal(byTestId("invite-join"), null);
+        assertAbsent(byTestId("invite-form"), "invite-form");
+        assertAbsent(byTestId("invite-join"), "invite-join");
       } else if (c.action === "create") {
-        assert.equal(byTestId("invite-join"), null, "signed-out visitors get the account form");
+        assertAbsent(byTestId("invite-join"), "signed-out visitors get the account form");
+        assert.equal(byTestId("invite-error-region").getAttribute("role"), "alert", "the alert region exists before its message");
+        assert.equal(byTestId("invite-error-region").textContent, "");
         typeInto("invite-display-name", "Lyra");
         typeInto("invite-email", "pc@example.test");
         typeInto("invite-password", "correct horse battery");
         await act("invite-form", "submit");
       } else {
-        assert.equal(byTestId("invite-form"), null, "signed-in users only see Join");
+        assertAbsent(byTestId("invite-form"), "signed-in users only see Join");
         await act("invite-join");
       }
 
@@ -523,11 +548,12 @@ describe("InviteRedemptionScreen (?invite=)", () => {
       { search: "?invite=abc" },
     );
     await act("invite-mode-signin");
-    assert.equal(byTestId("invite-display-name"), null);
+    assertAbsent(byTestId("invite-display-name"), "invite-display-name");
     typeInto("invite-email", "pc@example.test");
     typeInto("invite-password", "correct horse battery");
     await act("invite-form", "submit");
     assert.ok(byTestId("invite-join"));
+    assert.ok(doc.activeElement === byTestId("invite-join"), "focus moves to Join instead of falling to <body>");
     await act("invite-join");
     assert.deepEqual(callsTo(transport, "POST /api/v1/invites/redeem")[0].body, { token: "abc" });
     assert.ok(byTestId("trame-app-root"));
@@ -553,12 +579,13 @@ describe("GuestBindPrompt (legacy guests)", () => {
       "GET /api/v1/campaigns": NO_CAMPAIGNS,
       "POST /api/v1/auth/bind": { status: 200, body: { user: authUserDto() } },
     });
+    assert.equal(byTestId("bind-error-region").getAttribute("role"), "alert", "the alert region exists before its message");
     typeInto("bind-email", "gm@example.test");
     typeInto("bind-password", "correct horse battery");
     transport.routes["GET /api/v1/auth/me"] = me({ is_guest: false });
     await act("bind-form", "submit");
     assert.deepEqual(callsTo(transport, "POST /api/v1/auth/bind")[0].body, { email: "gm@example.test", password: "correct horse battery" });
-    assert.equal(byTestId("guest-bind-prompt"), null);
+    assertAbsent(byTestId("guest-bind-prompt"), "guest-bind-prompt");
   });
 });
 
@@ -576,7 +603,93 @@ describe("AccountSettingsDialog TOTP recommendation", () => {
       assert.equal(byTestId("account-settings-dialog").getAttribute("aria-modal"), "true");
       assert.ok(byTestId(c.visible).textContent.includes(c.text));
       await act("account-close");
-      assert.equal(byTestId("account-settings-dialog"), null);
+      assertAbsent(byTestId("account-settings-dialog"), "account-settings-dialog");
+    });
+  }
+
+  it("totp_enrollment_shows_key_and_link_then_confirms_a_code", async () => {
+    const { transport, state } = await mount({
+      "GET /api/v1/auth/me": me({ instance_role: "MEMBER", totp_enabled: false }),
+      "GET /api/v1/campaigns": NO_CAMPAIGNS,
+      "POST /api/v1/auth/totp/setup": {
+        status: 200,
+        body: { secret: "JBSWY3DPEHPK3PXP", secret_base32: "JBSWY3DPEHPK3PXP", otpauth_url: "otpauth://totp/TRAME:pc?secret=JBSWY3DPEHPK3PXP" },
+      },
+      "POST /api/v1/auth/totp/enable": { status: 401, body: { error: "invalid totp code" } },
+    });
+    await act("header-account");
+    await act("account-totp-setup");
+    assert.equal(byTestId("account-totp-secret").textContent, "JBSWY3DPEHPK3PXP");
+    assert.equal(byTestId("account-totp-link").getAttribute("href"), "otpauth://totp/TRAME:pc?secret=JBSWY3DPEHPK3PXP");
+    assert.ok(doc.activeElement === byTestId("account-totp-code"), "focus moves to the code field");
+
+    typeInto("account-totp-code", "000000");
+    await act("account-totp-form", "submit");
+    assert.ok(byTestId("account-totp-error"), "a wrong code is explained");
+    assert.equal(state.user.value?.totpEnabled, false);
+
+    transport.routes["POST /api/v1/auth/totp/enable"] = { status: 200, body: { status: "enabled", mfa_enabled: true } };
+    typeInto("account-totp-code", "123456");
+    await act("account-totp-form", "submit");
+    assert.deepEqual(callsTo(transport, "POST /api/v1/auth/totp/enable").at(-1)?.body, { code: "123456" });
+    assert.equal(state.user.value?.totpEnabled, true);
+    assert.equal(byTestId("account-totp-status").textContent, t("account.totp.enabledNow"));
+    assertAbsent(byTestId("account-totp-nudge"), "account-totp-nudge");
+  });
+});
+
+describe("TOTP code step on sign-in", () => {
+  const screens = [
+    {
+      id: "auth_screen",
+      search: "",
+      prepare: async () => undefined,
+      ids: { email: "auth-email", password: "auth-password", totp: "auth-totp", form: "auth-form", error: "auth-error" },
+    },
+    {
+      id: "invite_sign_in",
+      search: "?invite=abc",
+      prepare: () => act("invite-mode-signin"),
+      ids: { email: "invite-email", password: "invite-password", totp: "invite-totp", form: "invite-form", error: "invite-error" },
+    },
+  ];
+
+  for (const s of screens) {
+    it(`totp_sign_in_${s.id}: MFA_REQUIRED asks for a code, INVALID_TOTP_CODE flags it, a valid code signs in`, async () => {
+      const { transport, state } = await mount(
+        {
+          "GET /api/v1/auth/me": ME_401,
+          "POST /api/v1/invites/preview": {
+            status: 200,
+            body: { campaign_id: CAMPAIGN_ID, campaign_name: "Lost Mine", status: "active", expires_at: 1_900_000_000 },
+          },
+          "POST /api/v1/auth/login": err(401, "MFA_REQUIRED"),
+          "GET /api/v1/campaigns": NO_CAMPAIGNS,
+        },
+        { search: s.search },
+      );
+      await s.prepare();
+      assertAbsent(byTestId(s.ids.totp), "the code field before the server asks for it");
+      typeInto(s.ids.email, "pc@example.test");
+      typeInto(s.ids.password, "correct horse battery");
+      await act(s.ids.form, "submit");
+      assert.ok(byTestId(s.ids.totp), "MFA_REQUIRED adds the code field");
+      assert.ok(doc.activeElement === byTestId(s.ids.totp), "focus moves to the code field");
+      assertAbsent(byTestId(s.ids.error), "MFA_REQUIRED is a step, not an error");
+
+      transport.routes["POST /api/v1/auth/login"] = err(401, "INVALID_TOTP_CODE");
+      typeInto(s.ids.totp, "000000");
+      await act(s.ids.form, "submit");
+      assert.equal(byTestId(s.ids.error).textContent, t("auth.error.invalidTotp"));
+      assert.equal(byTestId(s.ids.totp).getAttribute("aria-invalid"), "true");
+
+      transport.routes["POST /api/v1/auth/login"] = me({ id: PLAYER_ID, instance_role: "MEMBER", totp_enabled: true });
+      typeInto(s.ids.totp, " 123456 ");
+      await act(s.ids.form, "submit");
+      const logins = callsTo(transport, "POST /api/v1/auth/login");
+      assert.deepEqual(logins[0].body, { email: "pc@example.test", password: "correct horse battery" });
+      assert.deepEqual(logins.at(-1)?.body, { email: "pc@example.test", password: "correct horse battery", totp_code: "123456" });
+      assert.equal(state.user.value?.id, PLAYER_ID);
     });
   }
 });

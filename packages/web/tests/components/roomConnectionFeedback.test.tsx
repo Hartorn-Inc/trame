@@ -4,11 +4,12 @@ import { afterEach, describe, it } from "node:test";
 import { decode } from "@msgpack/msgpack";
 import { h } from "preact";
 import type { ConnectionStatus } from "../../src/api/session.ts";
-import { CommandFeedbackToasts, ConnectionBanner } from "../../src/components/RoomConnectionFeedback.tsx";
+import { CommandFeedbackToasts, ConnectionBanner, WalQuarantineBanner } from "../../src/components/RoomConnectionFeedback.tsx";
 import { localeSignal, type LocaleCode } from "../../src/i18n/index.ts";
 import * as commands from "../../src/table/commands.ts";
-import { CAMPAIGN, HERO, PLAYER_ID, liveTable, mount, tableState } from "../helpers/liveTable.ts";
+import { CAMPAIGN, GM_ID, HERO, PLAYER_ID, liveTable, mount, tableState } from "../helpers/liveTable.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
+import { assertAbsent } from "../helpers/domAssert.ts";
 
 setupMockDom();
 
@@ -210,9 +211,37 @@ describe("CommandFeedbackToasts", () => {
       locale: "fr",
       act: (live) => {
         live.client.rollDice("1d20", "Public", "");
-        live.socket.receive({ CommandRejected: { reason: "invalid expression" } });
+        const rollId = (decode(live.socket.sent[0]) as { RollDice: { correlation_id: string } }).RollDice.correlation_id;
+        live.socket.receive({ CommandRejected: { reason: "invalid expression", correlation_id: rollId } });
       },
       expected: /^Action refusée \(Jet de dés\) : invalid expression/,
+    },
+    {
+      id: "a rejection without correlation id never blames the newest action",
+      locale: "en",
+      act: (live) => {
+        live.client.rollDice("1d20", "Public", "");
+        live.socket.receive({ CommandRejected: { reason: "invalid expression" } });
+      },
+      expected: /^Action was refused: invalid expression/,
+    },
+    {
+      id: "maybe_lost: a command in flight when the socket dies asks to check the table",
+      locale: "en",
+      act: (live) => {
+        live.client.submitCommand(commands.advanceTurn());
+        live.socket.serverClose(1006);
+      },
+      expected: /^Next turn may not have been applied: the connection dropped before the table answered\. Check the table\./,
+    },
+    {
+      id: "maybe_lost: French notice",
+      locale: "fr",
+      act: (live) => {
+        live.client.submitCommand(commands.advanceTurn());
+        live.socket.serverClose(1006);
+      },
+      expected: /^Action peut-être non appliquée \(Tour suivant\) : .*Vérifiez la table\./,
     },
     {
       id: "a rejection that matches no action falls back to a generic label",
@@ -239,7 +268,93 @@ describe("CommandFeedbackToasts", () => {
     live.socket.receive({ CommandRejected: { reason: "Not your turn" } });
     assert.ok(ui.byTestId("command-feedback-item"));
     ui.click("command-feedback-dismiss");
-    assert.equal(ui.byTestId("command-feedback-item"), null);
+    assertAbsent(ui.byTestId("command-feedback-item"), "command-feedback-item");
+    live.client.disconnect();
+    ui.unmount();
+  });
+
+  const dismissNames: Array<{ id: string; locale: LocaleCode; expected: string }> = [
+    { id: "dismiss_names_the_action: English", locale: "en", expected: "Dismiss Next turn notice" },
+    { id: "dismiss_names_the_action: French", locale: "fr", expected: "Fermer l'avis : Tour suivant" },
+  ];
+  for (const c of dismissNames) {
+    it(c.id, () => {
+      localeSignal.value = c.locale;
+      const live = liveTable(PLAYER_ID, tableState());
+      const ui = mount(h(CommandFeedbackToasts, { client: live.client }));
+      live.client.disconnect();
+      live.client.submitCommand(commands.advanceTurn());
+      assert.equal(ui.byTestId("command-feedback-dismiss").getAttribute("aria-label"), c.expected);
+      ui.unmount();
+    });
+  }
+});
+
+describe("wal_quarantine_banner", () => {
+  const ENTRIES = [
+    { seq_id: 7, command_kind: "APPLY_DAMAGE", error: "token not found", quarantined_at_ms: 1 },
+    { seq_id: 8, command_kind: "UNDO_LAST_ACTION", error: "depends on quarantined seq_id 7", quarantined_at_ms: 1 },
+  ];
+  const quarantine = (live: ReturnType<typeof liveTable>) => live.socket.receive({ WalEntriesQuarantined: { entries: ENTRIES } });
+  const asRole = (userId: string, role: string) => {
+    const live = liveTable(userId, tableState());
+    live.client.state.activeCampaignId.value = CAMPAIGN;
+    live.client.state.campaigns.value = [{ id: CAMPAIGN, name: "Camp", system: "dnd5e", role, createdAt: "", description: null }];
+    return live;
+  };
+
+  const cases: Array<{ id: string; userId: string; role: string; locale: LocaleCode; visible: boolean; message: string; entry: string | null }> = [
+    {
+      id: "wal_quarantine_banner: the GM sees every set-aside entry with seq, kind and error",
+      userId: GM_ID,
+      role: "GM",
+      locale: "en",
+      visible: true,
+      message: "Table actions set aside after a restart 2 table actions could not be restored after the server restarted. The table shows the state without them.",
+      entry: "#7 APPLY_DAMAGE: token not found",
+    },
+    {
+      id: "wal_quarantine_banner: French GM banner",
+      userId: GM_ID,
+      role: "GM",
+      locale: "fr",
+      visible: true,
+      message: "Actions de table mises de côté après un redémarrage 2 actions de table n'ont pas pu être restaurées après le redémarrage du serveur. La table affiche l'état sans elles.",
+      entry: "n° 7 APPLY_DAMAGE : token not found",
+    },
+    { id: "wal_quarantine_banner: a player never sees it", userId: PLAYER_ID, role: "PLAYER", locale: "en", visible: false, message: "", entry: null },
+  ];
+  for (const c of cases) {
+    it(c.id, () => {
+      localeSignal.value = c.locale;
+      const live = asRole(c.userId, c.role);
+      const ui = mount(h(WalQuarantineBanner, { client: live.client }));
+      const message = ui.byTestId("wal-quarantine-message");
+      assert.equal(message.getAttribute("role"), "alert", "the live region is mounted before the frame arrives");
+      assert.equal(message.textContent, "");
+
+      quarantine(live);
+      assert.equal(ui.byTestId("wal-quarantine-banner").classList.contains("ds-connection-banner"), c.visible);
+      assert.equal(ui.byTestId("wal-quarantine-message").textContent, c.message);
+      assert.equal(ui.byTestId("wal-quarantine-entry-7")?.textContent ?? null, c.entry);
+      assert.equal(Boolean(ui.byTestId("wal-quarantine-entry-8")), c.visible);
+      assert.equal(Boolean(ui.byTestId("wal-quarantine-dismiss")), c.visible);
+      live.client.disconnect();
+      ui.unmount();
+    });
+  }
+
+  it("wal_quarantine_banner: dismissing hides it and the same entries resent on reconnect stay hidden", () => {
+    const live = asRole(GM_ID, "GM");
+    const ui = mount(h(WalQuarantineBanner, { client: live.client }));
+    quarantine(live);
+    ui.click("wal-quarantine-dismiss");
+    assert.equal(ui.byTestId("wal-quarantine-banner").classList.contains("ds-visually-hidden"), true);
+    assertAbsent(ui.byTestId("wal-quarantine-dismiss"), "wal-quarantine-dismiss");
+    quarantine(live);
+    assertAbsent(ui.byTestId("wal-quarantine-entry-7"), "wal-quarantine-entry-7");
+    live.socket.receive({ WalEntriesQuarantined: { entries: [{ ...ENTRIES[0], seq_id: 9 }] } });
+    assert.ok(ui.byTestId("wal-quarantine-entry-9"), "a different set of entries is shown again");
     live.client.disconnect();
     ui.unmount();
   });

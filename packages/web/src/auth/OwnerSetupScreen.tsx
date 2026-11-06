@@ -26,8 +26,8 @@
  *      submit switch to the matching explanation; field-level codes
  *      (`INVALID_EMAIL`, `WEAK_PASSWORD`, ...) flag their field.
  * 4. `Live Region Exists Before Its Message`:
- *    - The token-state alert region is always mounted and filled after the
- *      async check, because screen readers ignore live regions inserted
+ *    - The token-state and form-error alert regions are always mounted and
+ *      filled later, because screen readers ignore live regions inserted
  *      together with their text.
  * 5. `Token Never In The Address Bar`:
  *    - The bootstrap strips `?token=` before this screen mounts; the token
@@ -195,11 +195,13 @@ export function OwnerSetupScreen({ client, token, onDone }: OwnerSetupScreenProp
               hint={t("setup.passwordHint")}
               errorId={errorIdFor("password")}
             />
-            {error && (
-              <p id={ERROR_ID} data-testid="setup-error" role="alert" class="ds-field-error">
-                {t(error)}
-              </p>
-            )}
+            <div role="alert" data-testid="setup-error-region">
+              {error && (
+                <p id={ERROR_ID} data-testid="setup-error" class="ds-field-error">
+                  {t(error)}
+                </p>
+              )}
+            </div>
             <button
               type="submit"
               class="ds-btn ds-btn-primary"

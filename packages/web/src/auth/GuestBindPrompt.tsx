@@ -19,7 +19,8 @@
  *      guest and the panel disappears.
  * 2. `Errors Point At Their Field`:
  *    - `EMAIL_ALREADY_EXISTS` flags the email, `WEAK_PASSWORD` the password,
- *      through `aria-invalid` + `aria-describedby`.
+ *      through `aria-invalid` + `aria-describedby`. The `role="alert"`
+ *      region is always mounted so screen readers announce new text.
  * 3. `Focusable While Busy`:
  *    - Submit uses `aria-disabled` + `aria-busy` and ignores repeats.
  * ============================================================================
@@ -103,11 +104,13 @@ export function GuestBindPrompt({ client, onBound }: GuestBindPromptProps) {
           hint={t("setup.passwordHint")}
           errorId={errorIdFor("password")}
         />
-        {error && (
-          <p id={ERROR_ID} data-testid="bind-error" role="alert" class="ds-field-error">
-            {t(error)}
-          </p>
-        )}
+        <div role="alert" data-testid="bind-error-region">
+          {error && (
+            <p id={ERROR_ID} data-testid="bind-error" class="ds-field-error">
+              {t(error)}
+            </p>
+          )}
+        </div>
         <button
           type="submit"
           class="ds-btn ds-btn-primary"

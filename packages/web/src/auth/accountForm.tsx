@@ -25,6 +25,7 @@
  * ============================================================================
  */
 import { ApiError } from "../api/client.ts";
+import type { Ref } from "preact";
 import type { MessageKey } from "../i18n/index.ts";
 
 /** Props for `AccountField`. */
@@ -44,6 +45,10 @@ export interface AccountFieldProps {
   readOnly?: boolean;
   /** Help text rendered under the field (already translated). */
   hint?: string;
+  /** Virtual keyboard hint; `numeric` for one-time codes. */
+  inputMode?: "numeric";
+  /** Ref to the `<input>`, for screens that move focus to a field that just appeared. */
+  inputRef?: Ref<HTMLInputElement>;
 }
 
 /** Labelled `ds-input` with error and hint association (invariants 1-2). */
@@ -58,10 +63,12 @@ export function AccountField(props: AccountFieldProps) {
         <span class="ds-field-label">{props.label}</span>
         <input
           id={props.id}
+          ref={props.inputRef}
           data-testid={props.id}
           class="ds-input"
           type={inputType}
           autocomplete={props.autocomplete}
+          inputMode={props.inputMode}
           required
           readOnly={props.readOnly}
           value={props.value}

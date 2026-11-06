@@ -32,6 +32,7 @@ import type {
   McpStagingProposal,
   ProjectedDiceRoll,
   ProjectedTableState,
+  QuarantinedWalSummary,
   ReactionPromptCloseReason,
   Uuid,
   WirePoint2D,
@@ -116,8 +117,11 @@ export const COMMAND_FEEDBACK_LIMIT = 3;
 export interface CommandFeedback {
   /** Local toast id (unique per client). */
   id: number;
-  /** `rejected`: the server answered `CommandRejected`; `notConnected`: nothing was sent. */
-  kind: "rejected" | "notConnected";
+  /**
+   * `rejected`: the server answered `CommandRejected`; `notConnected`: nothing was sent;
+   * `maybeLost`: sent, but the socket died before any answer, so it may or may not have been applied.
+   */
+  kind: "rejected" | "notConnected" | "maybeLost";
   /** `TrameCommand` tag (`"MOVE_TOKEN"`, ...) or `"ROLL_DICE"`; `null` when no pending action matched. */
   action: string | null;
   /** Server rejection reason (`rejected` only). */
@@ -190,6 +194,11 @@ export interface SessionState {
   initiativeTotals: Signal<Record<Uuid, number>>;
   /** Most recent `REACTION_PROMPT_CLOSED` event, e.g. `UNDONE` after a GM undo. */
   lastClosedPrompt: Signal<ClosedReactionPrompt | null>;
+  /**
+   * WAL entries the room set aside during recovery (`WalEntriesQuarantined`, ADR-0040),
+   * in `seq_id` order; empty when none or once the GM dismissed the notice.
+   */
+  walQuarantine: Signal<QuarantinedWalSummary[]>;
 }
 
 /** Creates an isolated set of session signals in their initial state. */
@@ -214,6 +223,7 @@ export function createSessionState(): SessionState {
     rttMs: signal<number | null>(null),
     initiativeTotals: signal<Record<Uuid, number>>({}),
     lastClosedPrompt: signal<ClosedReactionPrompt | null>(null),
+    walQuarantine: signal<QuarantinedWalSummary[]>([]),
   };
 }
 

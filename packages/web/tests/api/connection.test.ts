@@ -298,7 +298,7 @@ describe("rejected_command_toast_matches_correlation_id", () => {
   const cases: Array<{ id: string; rejectWith: (ids: string[]) => string | undefined; expected: string | null }> = [
     { id: "rejected_command_toast_matches_correlation_id: exact id picks the matching action", rejectWith: (ids) => ids[0], expected: "MOVE_TOKEN" },
     { id: "rejected_command_toast_matches_correlation_id: RollDice ids are tracked too", rejectWith: (ids) => ids[2], expected: "ROLL_DICE" },
-    { id: "rejected_command_toast_matches_correlation_id: no id falls back to the most recent pending", rejectWith: () => undefined, expected: "ROLL_DICE" },
+    { id: "rejected_command_toast_matches_correlation_id: no id uses the generic label instead of blaming the newest", rejectWith: () => undefined, expected: null },
     { id: "rejected_command_toast_matches_correlation_id: unknown id matches nothing", rejectWith: () => "not-sent-by-this-client", expected: null },
   ];
   for (const c of cases) {
@@ -366,6 +366,81 @@ describe("submit_while_offline_shows_feedback", () => {
       assert.deepEqual(env.state.commandFeedback.value, [{ id: 1, kind: "notConnected", action: c.action, reason: null }]);
       env.latest().open();
       assert.deepEqual(env.latest().sent, [], "nothing is replayed after reconnecting");
+      env.client.disconnect();
+    });
+  }
+});
+
+describe("in_flight_commands_when_the_socket_dies", () => {
+  type Env = ReturnType<typeof connected>;
+  const sendThree = ({ client }: Env) => {
+    client.submitCommand(commands.moveToken(TOKEN_A, { x: 50, y: 50 }));
+    client.submitCommand(commands.advanceTurn());
+    client.rollDice("1d20", "Public", "");
+  };
+  const correlationIds = ({ socket, frames }: Env) =>
+    frames(socket(0))
+      .filter((f) => f.SubmitCommand ?? f.RollDice)
+      .map((f) => String((f.SubmitCommand ?? f.RollDice).correlation_id));
+  const cases: Array<{ id: string; act: (env: Env) => void; maybeLost: string[] }> = [
+    {
+      id: "unanswered commands each get a may-not-have-been-applied notice on a network drop",
+      act: (env) => {
+        sendThree(env);
+        env.socket(0).serverClose(1006);
+      },
+      maybeLost: ["MOVE_TOKEN", "ADVANCE_TURN", "ROLL_DICE"],
+    },
+    {
+      id: "a Pong echoing a later send time resolves every earlier command",
+      act: (env) => {
+        sendThree(env);
+        env.socket(0).receive({ Pong: { client_time_ms: T0 + 1, server_time_ms: 1 } });
+        env.socket(0).serverClose(1006);
+      },
+      maybeLost: [],
+    },
+    {
+      id: "a rejection resolves its command and every older one",
+      act: (env) => {
+        sendThree(env);
+        env.socket(0).receive({ CommandRejected: { reason: "Not your turn", correlation_id: correlationIds(env)[1] } });
+        env.socket(0).serverClose(1006);
+      },
+      maybeLost: ["ROLL_DICE"],
+    },
+    {
+      id: "going offline counts as a dropped socket",
+      act: (env) => {
+        env.client.submitCommand(commands.advanceTurn());
+        env.network.goOffline();
+      },
+      maybeLost: ["ADVANCE_TURN"],
+    },
+    {
+      id: "a missing Pong counts as a dropped socket",
+      act: (env) => {
+        env.client.submitCommand(commands.advanceTurn());
+        mock.timers.tick(HEARTBEAT_INTERVAL_MS);
+        mock.timers.tick(PONG_TIMEOUT_MS);
+      },
+      maybeLost: ["ADVANCE_TURN"],
+    },
+    {
+      id: "leaving the campaign raises no notice",
+      act: (env) => {
+        sendThree(env);
+        env.client.disconnect();
+      },
+      maybeLost: [],
+    },
+  ];
+  for (const c of cases) {
+    it(`in_flight_commands_when_the_socket_dies: ${c.id}`, () => {
+      const env = connected();
+      c.act(env);
+      const lost = env.state.commandFeedback.value.filter((f) => f.kind === "maybeLost").map((f) => f.action);
+      assert.deepEqual(lost, c.maybeLost);
       env.client.disconnect();
     });
   }

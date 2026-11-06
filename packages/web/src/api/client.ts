@@ -52,6 +52,14 @@
  *      `CommandRejected` is matched back to the action (`PendingCommands`)
  *      and pushed to `commandFeedback`. Submitting while the socket is not
  *      open sends nothing, queues nothing, and pushes `notConnected`.
+ *    - When an open socket dies, every action still unanswered becomes a
+ *      `maybeLost` notice ("may not have been applied, check the table"):
+ *      its answer can never arrive on the next socket.
+ * 9. `GM-Only Quarantine Notice (ADR-0040, D4)`:
+ *    - `WalEntriesQuarantined` fills `walQuarantine`; the server unicasts it
+ *      to Game Masters on every attach while the recovering room lives, so
+ *      once the GM dismisses a notice, the same entries are not shown again
+ *      for that campaign on reconnect.
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -236,6 +244,19 @@ export interface LoginInput {
   password: string;
   /** 6-digit TOTP code, required when MFA is enabled. */
   totpCode?: string;
+}
+
+/** `POST /api/v1/auth/login` code: the account has TOTP on and the request carried no `totp_code`. */
+export const MFA_REQUIRED = "MFA_REQUIRED";
+/** `POST /api/v1/auth/login` code: the `totp_code` is wrong or expired. */
+export const INVALID_TOTP_CODE = "INVALID_TOTP_CODE";
+
+/** Pending TOTP enrollment returned by `POST /api/v1/auth/totp/setup`. */
+export interface TotpEnrollment {
+  /** Base32 shared secret for manual entry in an authenticator app. */
+  secret: string;
+  /** `otpauth://totp/...` URI (issuer, account, 6 digits, 30 s period). */
+  otpauthUrl: string;
 }
 
 /** Public instance facts (`GET /api/v1/instance`). */
@@ -492,6 +513,8 @@ export class ApiClient {
   /** `true` from a socket opening until its `StateSnapshot` (invariant 7). */
   private awaitingSnapshot = false;
   private nextFeedbackId = 1;
+  /** `{campaignId}:{seq ids}` of the quarantine notice the GM dismissed (invariant 9). */
+  private dismissedQuarantineKey: string | null = null;
 
   constructor(options: ApiClientOptions = {}) {
     this.transport = options.transport ?? browserTransport();
@@ -509,6 +532,9 @@ export class ApiClient {
       onOpen: () => {
         this.awaitingSnapshot = true;
         this.pending.clear();
+      },
+      onSocketLost: () => {
+        for (const action of this.pending.drain()) this.pushFeedback({ kind: "maybeLost", action, reason: null });
       },
       probeAccess: () => this.probeRoomAccess(),
       encodePing: (nowMs) => encodeClientEnvelope({ type: "Ping", clientTimeMs: nowMs }),
@@ -592,6 +618,26 @@ export class ApiClient {
     const user = toAuthUser(res.user as Json);
     this.setUser(user);
     return user;
+  }
+
+  /**
+   * Starts TOTP enrollment (`POST /api/v1/auth/totp/setup`). The returned secret is
+   * stored as pending and protects nothing until `enableTotp` confirms a code.
+   */
+  async setupTotp(): Promise<TotpEnrollment> {
+    const res = await this.request("POST", "/api/v1/auth/totp/setup");
+    return { secret: String(res.secret_base32 ?? res.secret ?? ""), otpauthUrl: String(res.otpauth_url ?? "") };
+  }
+
+  /**
+   * Confirms enrollment with a 6-digit code from the authenticator
+   * (`POST /api/v1/auth/totp/enable`; `401` for a wrong code) and marks the
+   * signed-in user as TOTP-enabled.
+   */
+  async enableTotp(code: string): Promise<void> {
+    await this.request("POST", "/api/v1/auth/totp/enable", { code });
+    const user = this.state.user.value;
+    if (user) this.state.user.value = { ...user, totpEnabled: true };
   }
 
   /** Ends the session and clears all user-scoped state. */
@@ -962,6 +1008,7 @@ export class ApiClient {
     s.initiativeTotals.value = {};
     s.lastClosedPrompt.value = null;
     s.commandFeedback.value = [];
+    s.walQuarantine.value = [];
     this.roomCampaignId = campaignId;
     this.room.start(`${this.wsOrigin}/api/v1/campaigns/${encodeURIComponent(campaignId)}/ws`);
   }
@@ -990,6 +1037,16 @@ export class ApiClient {
   /** Removes one toast from `commandFeedback`. */
   dismissFeedback(id: number): void {
     this.state.commandFeedback.value = this.state.commandFeedback.value.filter((f) => f.id !== id);
+  }
+
+  /** Hides the quarantine notice; the same entries stay hidden on reconnect (invariant 9). */
+  dismissWalQuarantine(): void {
+    this.dismissedQuarantineKey = this.quarantineKey(this.state.walQuarantine.value);
+    this.state.walQuarantine.value = [];
+  }
+
+  private quarantineKey(entries: { seq_id: number }[]): string {
+    return `${this.roomCampaignId}:${entries.map((e) => e.seq_id).join(",")}`;
   }
 
   /** Classifies a refused room handshake through the member-only campaign route. */
@@ -1094,6 +1151,9 @@ export class ApiClient {
           reason: envelope.reason,
         });
         return;
+      case "WalEntriesQuarantined":
+        if (this.quarantineKey(envelope.entries) !== this.dismissedQuarantineKey) s.walQuarantine.value = envelope.entries;
+        return;
       case "DiceRolled":
         s.diceLog.value = [...s.diceLog.value, envelope.roll].slice(-DICE_LOG_LIMIT);
         this.applyInitiativeRoll(envelope.roll);
@@ -1106,6 +1166,7 @@ export class ApiClient {
         return;
       case "Pong":
         s.rttMs.value = Math.max(0, nowMs - envelope.clientTimeMs);
+        this.pending.resolveSentBefore(envelope.clientTimeMs);
         this.room.notePong();
         return;
       case "ActorUpdated": {

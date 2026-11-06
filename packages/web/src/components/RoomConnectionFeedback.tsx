@@ -10,6 +10,8 @@
  * `CommandFeedbackToasts` shows every refused or unsent table action, named
  * after what the player did. Without them a dropped socket or a
  * `CommandRejected` is invisible and actions silently do nothing.
+ * `WalQuarantineBanner` tells the Game Master which table actions the room
+ * set aside while recovering from a crash (ADR-0040, spec US23 / D4).
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
@@ -30,9 +32,15 @@
  * 4. `No Timed Disappearance`:
  *    - Toasts stay until dismissed or pushed out by newer ones
  *      (`COMMAND_FEEDBACK_LIMIT`), so slow readers never lose a message.
+ *    - Each dismiss button's accessible name repeats the action it closes
+ *      ("Dismiss Move token notice"), so a stack of toasts is not a list of
+ *      identical "Dismiss" buttons.
  * 5. `Canvas Primacy`:
  *    - When connected, the banner collapses to visually hidden text; the top
  *      bar badge already shows "Connected".
+ * 6. `Quarantine Is GM-Only`:
+ *    - The server unicasts `WalEntriesQuarantined` to Game Masters only; the
+ *      banner also renders nothing unless the active campaign role is `GM`.
  * ============================================================================
  */
 import { useEffect, useState } from 'preact/hooks';
@@ -131,6 +139,52 @@ export function ConnectionBanner({ client }: RoomConnectionFeedbackProps) {
   );
 }
 
+/**
+ * Game Master notice listing the WAL entries the room set aside while
+ * recovering after a crash (ADR-0040 decision 3), so the GM knows which
+ * table actions are missing instead of discovering it mid-scene. The live
+ * region stays mounted (invariant 1); the list and the dismiss button sit
+ * outside it, and only the campaign's GM ever sees the content.
+ */
+export function WalQuarantineBanner({ client }: RoomConnectionFeedbackProps) {
+  const campaignId = client.state.activeCampaignId.value;
+  const isGm = client.state.campaigns.value.some((c) => c.id === campaignId && c.role === 'GM');
+  const entries = isGm ? client.state.walQuarantine.value : [];
+  const visible = entries.length > 0;
+  return (
+    <div class={visible ? 'ds-connection-banner' : 'ds-visually-hidden'} data-testid="wal-quarantine-banner" data-state="quarantine">
+      <div class="ds-stack-sm">
+        <p class="ds-connection-banner-text" role="alert" aria-atomic="true" data-testid="wal-quarantine-message">
+          {visible && (
+            <>
+              <strong>{t('quarantine.title')}</strong> {tn('quarantine.summary', entries.length)}
+            </>
+          )}
+        </p>
+        {visible && (
+          <ul class="ds-list-plain ds-meta" aria-label={t('quarantine.listLabel')} data-testid="wal-quarantine-list">
+            {entries.map((e) => (
+              <li key={e.seq_id} class="atlas-tabular-nums" data-testid={`wal-quarantine-entry-${e.seq_id}`}>
+                {t('quarantine.entry', { seq: e.seq_id, kind: e.command_kind, error: e.error })}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {visible && (
+        <button
+          type="button"
+          class="ds-btn ds-btn-secondary ds-btn-sm"
+          data-testid="wal-quarantine-dismiss"
+          onClick={() => client.dismissWalQuarantine()}
+        >
+          {t('quarantine.dismiss')}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** Localized label of the action a feedback toast refers to. */
 function actionLabel(action: string | null): string {
   const key = `command.action.${action ?? ''}`;
@@ -139,9 +193,14 @@ function actionLabel(action: string | null): string {
 
 function feedbackMessage(item: CommandFeedback): string {
   const action = actionLabel(item.action);
-  return item.kind === 'rejected'
-    ? t('feedback.rejected', { action, reason: item.reason ?? '' })
-    : t('feedback.notConnected', { action });
+  switch (item.kind) {
+    case 'rejected':
+      return t('feedback.rejected', { action, reason: item.reason ?? '' });
+    case 'maybeLost':
+      return t('feedback.maybeLost', { action });
+    default:
+      return t('feedback.notConnected', { action });
+  }
 }
 
 /** Toast stack for refused (`CommandRejected`) and unsent (not connected) table actions. */
@@ -163,6 +222,7 @@ export function CommandFeedbackToasts({ client }: RoomConnectionFeedbackProps) {
             type="button"
             class="ds-btn ds-btn-close ds-btn-sm"
             data-testid="command-feedback-dismiss"
+            aria-label={t('feedback.dismissAction', { action: actionLabel(item.action) })}
             onClick={() => client.dismissFeedback(item.id)}
           >
             {t('feedback.dismiss')}

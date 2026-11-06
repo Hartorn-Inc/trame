@@ -27,7 +27,11 @@
  *      before opening therefore triggers one REST access probe: `401` stops
  *      in `signedOut`, `403` stops in `forbidden`, anything else retries.
  *    - Close codes `4401` (`signedOut`), `1008` and `4403` (`forbidden`)
- *      stop immediately, for servers that report access loss in-band.
+ *      stop immediately, for servers that report access loss in-band
+ *      (`4403`: membership revoked after the socket attached).
+ *    - Close code `1011` (the room actor timed out or stopped) is a server
+ *      fault, never an access decision: it always retries with backoff and
+ *      skips the access probe, so the next attempt wakes a fresh room.
  * 3. `Heartbeat`:
  *    - Every 20 s an open socket sends `Ping`; no `Pong` within 10 s marks
  *      the socket dead, detaches it, and schedules a reconnect without
@@ -41,12 +45,18 @@
  *    - Handlers are detached before any socket is closed and every callback
  *      checks it still belongs to the current socket, so an old socket can
  *      never flip the status or deliver frames after a reconnect.
+ * 6. `Loss Is Reported Once`:
+ *    - `onSocketLost` runs once per opened socket that dies unexpectedly
+ *      (close, missing `Pong`, browser offline), before it is detached, so
+ *      the client can report actions that may not have been applied. A
+ *      deliberate `stop()` or `start()` never reports a loss.
  *
  * EXECUTION LIFECYCLE:
  * -----
  * `start(url)` -> status `connecting` -> `openSocket()`
  * ├── `onopen`  -> status `open`, heartbeat starts, `onOpen()` (resync prep).
  * ├── `onclose` -> 4401 / 1008 / 4403: terminal status.
+ * │             -> 1011: `scheduleRetry()` without probing.
  * │             -> never opened: `probeAccess()` -> terminal or retry.
  * │             -> otherwise: `scheduleRetry()` (status `reconnecting`).
  * ├── no `Pong` -> detach socket -> `scheduleRetry()`.
@@ -62,6 +72,8 @@ export const SOCKET_OPEN = 1;
 export const CLOSE_GOING_AWAY = 1001;
 /** RFC 6455 `Policy Violation`: the server refuses this client. Terminal (`forbidden`). */
 export const CLOSE_POLICY_VIOLATION = 1008;
+/** RFC 6455 `Internal Error`: the room actor timed out or stopped. Reconnects (invariant 2). */
+export const CLOSE_INTERNAL_ERROR = 1011;
 /** Application code: the session is no longer authenticated. Terminal (`signedOut`). */
 export const CLOSE_UNAUTHORIZED = 4401;
 /** Application code: the user lost access to the campaign. Terminal (`forbidden`). */
@@ -120,6 +132,8 @@ export interface ConnectionManagerOptions {
   onFrame(data: unknown): void;
   /** Runs when a new socket opens, before any of its frames (resync preparation). */
   onOpen(): void;
+  /** Runs once when an opened socket dies unexpectedly (invariant 6). */
+  onSocketLost?(): void;
   /** Classifies a refused handshake through REST (see invariant 2). */
   probeAccess(): Promise<AccessProbeResult>;
   /** Encodes a heartbeat `Ping` carrying `nowMs`. */
@@ -289,11 +303,13 @@ export class ConnectionManager {
 
   private handleClose(code: number): void {
     const wasOpened = this.opened;
-    this.dropSocket();
+    this.loseSocket();
     if (code === CLOSE_UNAUTHORIZED) {
       this.setStatus("signedOut");
     } else if (code === CLOSE_POLICY_VIOLATION || code === CLOSE_FORBIDDEN) {
       this.setStatus("forbidden");
+    } else if (code === CLOSE_INTERNAL_ERROR) {
+      this.scheduleRetry();
     } else if (!wasOpened) {
       void this.probeThenRetry();
     } else {
@@ -329,7 +345,7 @@ export class ConnectionManager {
 
   private goOffline(): void {
     this.clearRetry();
-    this.dropSocket();
+    this.loseSocket();
     this.setStatus("offline");
   }
 
@@ -357,7 +373,7 @@ export class ConnectionManager {
     this.pongTimer = unref(
       setTimeout(() => {
         this.pongTimer = null;
-        this.dropSocket();
+        this.loseSocket();
         this.scheduleRetry();
       }, PONG_TIMEOUT_MS),
     );
@@ -372,6 +388,12 @@ export class ConnectionManager {
   private clearRetry(): void {
     if (this.retryTimer !== null) clearTimeout(this.retryTimer);
     this.retryTimer = null;
+  }
+
+  /** Reports an unexpected loss of an opened socket (invariant 6), then drops it. */
+  private loseSocket(): void {
+    if (this.socket && this.opened) this.options.onSocketLost?.();
+    this.dropSocket();
   }
 
   /** Detaches every handler, then closes the socket (invariant 5). */
