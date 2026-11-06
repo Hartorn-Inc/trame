@@ -248,6 +248,13 @@ export interface LevelUpOptions {
   casterType?: CasterType;
   /** Primary class identifier override or assertion (e.g., `'wizard'`, `'cleric'`). */
   classId?: string;
+  /**
+   * Fighting Style feat (`"srd:feat:archery"`) granted at `targetLevel` by the Fighting Style
+   * feature (Paladin/Ranger 2) or Additional Fighting Style (Champion 7). Rejected at other
+   * levels, for non-Fighting Style feats and for feats already held. The level-up UI requires
+   * it when `grantsFightingStyleFeat` is true.
+   */
+  fightingStyleFeatId?: string;
 }
 
 /**
@@ -387,7 +394,8 @@ export interface BuilderChoice {
     | "tool"
     | "spell_list"
     | "spell"
-    | "equipment_option";
+    | "equipment_option"
+    | "feat";
   /** English label. */
   label: string;
   /** Exact number of picks. */

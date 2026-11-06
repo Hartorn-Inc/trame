@@ -296,7 +296,7 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
   };
 
   const optionLabel = (choice: BuilderChoice, option: BuilderChoiceOption) =>
-    choice.kind === 'skill' ? t(`skill.${option.id}` as MessageKey) : option.label;
+    choice.kind === 'skill' ? t(`skill.${option.id}` as MessageKey) : choice.kind === 'feat' ? featLabel(option.id) : option.label;
 
   /** One class choice: radios for a single pick, else checkboxes capped at `count` (invariant 4). */
   const renderChoice = (choice: BuilderChoice) => {

@@ -664,6 +664,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     { id: "asi-first-ability", classId: "rogue", level: 3, steps: 2, mode: "plusOneOne", subclassId: THIEF },
     { id: "asi-second-ability", classId: "rogue", level: 3, steps: 2, mode: "plusOneOne", subclassId: THIEF },
     { id: "asi-feat-select", classId: "rogue", level: 3, steps: 2, mode: "feat", subclassId: THIEF },
+    { id: "fighting-style-select", classId: "paladin", level: 1, steps: 2, mode: null, subclassId: undefined },
   ];
 
   for (const scenario of SELECT_SCENARIOS) {
@@ -715,6 +716,60 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
       assert.equal(expected.getAttribute("tabindex"), "0");
       assert.equal(other.getAttribute("tabindex"), "-1");
       assertSameNode((globalThis as any).document.activeElement, expected, "Focus must follow the selected tab");
+      unmount();
+    });
+  }
+});
+
+describe("LevelUpModal: Fighting Style feat on the features step", () => {
+  const actorAt = (classId: string, level: number, subclassId?: string): Dnd5eActorData => {
+    const actor = createDefaultActorData(`actor-${classId}`, "Probe");
+    actor.classId = classId;
+    actor.attributes.level = level;
+    actor.features = classId === "fighter" ? ["srd:feat:defense"] : [];
+    if (subclassId) actor.subclassId = subclassId;
+    return actor;
+  };
+  const click = (el: any) => el.dispatchEvent(new (globalThis as any).Event("click"));
+
+  const SCENARIOS = [
+    { id: "paladin-2-picks-a-style", actor: () => actorAt("paladin", 1), pick: "srd:feat:archery" },
+    { id: "ranger-2-picks-a-style", actor: () => actorAt("ranger", 1), pick: "srd:feat:two_weapon_fighting" },
+    { id: "champion-7-picks-an-additional-style", actor: () => actorAt("fighter", 6, "srd:subclass:champion"), pick: "srd:feat:archery" },
+    { id: "fighter-2-has-no-style-step", actor: () => actorAt("fighter", 1), pick: null },
+  ];
+
+  for (const scenario of SCENARIOS) {
+    it(`[${scenario.id}] the style is required before Next and recorded on confirm`, async () => {
+      let saved: Dnd5eActorData | null = null;
+      const { container, getNextButton, getConfirmButton, unmount } = await renderModal({
+        isOpen: true,
+        actor: scenario.actor(),
+        onClose: () => {},
+        onSave: (updated) => {
+          saved = updated;
+        },
+      });
+      click(getNextButton());
+      click(getNextButton());
+      const select = container.querySelector("#fighting-style-select");
+      if (!scenario.pick) {
+        assertAbsent(select, "No Fighting Style select off its levels");
+        unmount();
+        return;
+      }
+      assert.ok(select, "The Fighting Style select must render");
+      const offered = select.querySelectorAll("option").map((o: any) => o.value);
+      assert.equal(offered.includes("srd:feat:defense"), scenario.actor().features?.length === 0, "A held style is not offered again");
+      assert.equal(getNextButton().getAttribute("aria-disabled"), "true", "Next stays disabled until a style is chosen");
+      select.value = scenario.pick;
+      select.dispatchEvent(new (globalThis as any).Event("change"));
+      assert.equal(getNextButton().getAttribute("aria-disabled"), null);
+      click(getNextButton());
+      click(getConfirmButton());
+      await new Promise((r) => setTimeout(r, 10));
+      assert.ok(saved, "onSave must receive the leveled actor");
+      assert.equal(saved!.features?.includes(scenario.pick), true);
       unmount();
     });
   }

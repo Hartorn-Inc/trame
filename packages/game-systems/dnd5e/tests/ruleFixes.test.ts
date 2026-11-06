@@ -3,11 +3,14 @@ import { describe, it } from "node:test";
 import "../src/node.ts";
 import {
   applyBackground,
+  applyClassChoices,
   applyFeatChoices,
   applyLevelUp,
   concentrationCheckDc,
   createDefaultActorData,
+  getClassChoices,
   getFeatChoices,
+  grantsFightingStyleFeat,
   getLevelUpFeatOptions,
   getOriginFeatChoices,
   getSpellsByLevel,
@@ -18,6 +21,7 @@ import {
   type BuilderSelections,
   type Dnd5eActorData,
   type Dnd5eActorSheet,
+  type LevelUpOptions,
   type SrdClassId,
 } from "../src/index.ts";
 
@@ -143,6 +147,85 @@ describe("GS10: Fighting Style feats at feat slots", () => {
     });
     assert.ok(actor.features?.includes("srd:feat:archery"));
   });
+});
+
+describe("Fighting Style class feature grants its feat", () => {
+  const grants: [string, string, string | undefined, number, boolean][] = [
+    ["fighter_level_1", "fighter", undefined, 1, true],
+    ["fighter_level_2_has_none", "fighter", undefined, 2, false],
+    ["paladin_level_2", "paladin", undefined, 2, true],
+    ["ranger_level_2_prefixed_class", "srd:class:ranger", undefined, 2, true],
+    ["champion_level_7_additional_fighting_style", "fighter", "champion", 7, true],
+    ["fighter_level_7_without_champion", "fighter", "srd:subclass:test", 7, false],
+    ["wizard_never", "wizard", undefined, 1, false],
+  ];
+  for (const [id, classId, subclassId, level, expected] of grants) {
+    it(id, () => assert.equal(grantsFightingStyleFeat(classId, subclassId, level), expected));
+  }
+
+  const levelUps: [string, () => Dnd5eActorData, LevelUpOptions, string][] = [
+    ["paladin_2_records_defense", () => classActor("paladin", 1), { targetLevel: 2, fightingStyleFeatId: "srd:feat:defense" }, "srd:feat:defense"],
+    ["ranger_2_accepts_bare_key", () => classActor("ranger", 1), { targetLevel: 2, fightingStyleFeatId: "archery" }, "srd:feat:archery"],
+    [
+      "champion_7_records_a_second_style",
+      () => {
+        const fighter = classActor("fighter", 6);
+        fighter.subclassId = "srd:subclass:champion";
+        fighter.features = [...(fighter.features ?? []), "srd:feat:defense"];
+        return fighter;
+      },
+      { targetLevel: 7, fightingStyleFeatId: "srd:feat:great_weapon_fighting" },
+      "srd:feat:great_weapon_fighting",
+    ],
+  ];
+  for (const [id, build, options, featId] of levelUps) {
+    it(id, () => {
+      const actor = applyLevelUp(build(), options);
+      assert.ok(actor.features?.includes(featId));
+      assert.deepEqual(actor.featsTaken?.at(-1), { featId, level: options.targetLevel });
+    });
+  }
+
+  const rejects: [string, () => Dnd5eActorData, LevelUpOptions, RegExp][] = [
+    ["off_level_rejected", () => classActor("paladin", 2), { targetLevel: 3, subclassId: "srd:subclass:devotion", fightingStyleFeatId: "srd:feat:defense" }, /No Fighting Style feat at this level/],
+    ["general_feat_rejected", () => classActor("paladin", 1), { targetLevel: 2, fightingStyleFeatId: "srd:feat:alert" }, /Invalid Fighting Style feat/],
+    [
+      "held_style_rejected",
+      () => {
+        const ranger = classActor("ranger", 1);
+        ranger.features = ["srd:feat:archery"];
+        return ranger;
+      },
+      { targetLevel: 2, fightingStyleFeatId: "srd:feat:archery" },
+      /Feat already taken/,
+    ],
+  ];
+  for (const [id, build, options, error] of rejects) {
+    it(id, () => assert.throws(() => applyLevelUp(build(), options), error));
+  }
+
+  it("fighter_builder_offers_and_records_the_style", () => {
+    const base = createDefaultActorData("fighter-1", "Fighter");
+    const choices = getClassChoices("fighter", { actor: base });
+    const style = choices.find((choice) => choice.id === "fighting_style");
+    assert.deepEqual([style?.kind, style?.count, style?.options.map((o) => o.id)], [
+      "feat",
+      1,
+      ["srd:feat:archery", "srd:feat:defense", "srd:feat:great_weapon_fighting", "srd:feat:two_weapon_fighting"],
+    ]);
+    const selections: BuilderSelections = Object.fromEntries(choices.map((c) => [c.id, c.options.slice(0, c.count).map((o) => o.id)]));
+    selections.fighting_style = ["srd:feat:defense"];
+    const actor = applyClassChoices(base, "fighter", selections);
+    assert.deepEqual([actor.features?.includes("srd:feat:defense"), actor.featsTaken?.at(-1)], [true, { featId: "srd:feat:defense", level: 1 }]);
+  });
+
+  const noStyleAtCreation: [string, string][] = [
+    ["paladin_builder_has_no_style_at_level_1", "paladin"],
+    ["wizard_builder_has_no_style", "wizard"],
+  ];
+  for (const [id, classId] of noStyleAtCreation) {
+    it(id, () => assert.ok(!getClassChoices(classId).some((choice) => choice.id === "fighting_style")));
+  }
 });
 
 describe("GS10: Magic Initiate and Skilled choice descriptors", () => {

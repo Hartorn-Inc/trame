@@ -36,7 +36,8 @@
  *      spells are the `getClassChoices` descriptors (SRD 5.2.1 counts and
  *      lists); a step validates only when each of its choices has exactly
  *      `count` distinct allowed picks, and `applyClassChoices` applies them.
- *      Skills the background already grants are not offered.
+ *      Skills the background already grants are not offered. A Fighter also
+ *      picks its Fighting Style feat on the skills step.
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -91,7 +92,7 @@ function abilityMod(score: number): number {
 
 /** `getClassChoices` ids picked on each class step (invariant 6). */
 const STEP_CHOICES: Partial<Record<BuilderStep, readonly string[]>> = {
-  skills: ["skills", "tools"],
+  skills: ["skills", "tools", "fighting_style"],
   equipment: ["equipment"],
   spells: ["cantrips", "spells"],
 };
@@ -101,6 +102,11 @@ const STEP_CHOICE_ERROR: Partial<Record<BuilderStep, string>> = {
   skills: "builder.error.skills",
   equipment: "builder.error.classEquipment",
   spells: "builder.error.spells",
+};
+
+/** Validation error of a class choice that needs its own message (instead of the step's). */
+const CHOICE_ERROR: Readonly<Record<string, string>> = {
+  fighting_style: "builder.error.fightingStyle",
 };
 
 function isChoiceComplete(choice: BuilderChoice, picked: readonly string[]): boolean {
@@ -278,8 +284,10 @@ export class CharacterBuilderWizard {
   }
 
   private classChoiceErrors(step: BuilderStep): string[] {
-    const complete = this.choicesForStep(step).every((choice) => isChoiceComplete(choice, this.getClassSelection(choice.id)));
-    return complete ? [] : [STEP_CHOICE_ERROR[step]!];
+    const errors = this.choicesForStep(step)
+      .filter((choice) => !isChoiceComplete(choice, this.getClassSelection(choice.id)))
+      .map((choice) => CHOICE_ERROR[choice.id] ?? STEP_CHOICE_ERROR[step]!);
+    return [...new Set(errors)];
   }
 
   public canAdvance(): boolean {

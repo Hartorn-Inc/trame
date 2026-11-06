@@ -24,7 +24,7 @@ const COMPLETE: Partial<CharacterDraft> = {
   abilityScores: { ...STANDARD },
   abilityGenerationMethod: "standardArray",
   equipmentIds: ["Spear", "Shortbow"],
-  classSelections: { skills: ["acrobatics", "perception"], equipment: ["A"] },
+  classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:archery"], equipment: ["A"] },
 };
 
 /** Fills every class choice with its first `count` options. */
@@ -83,10 +83,22 @@ describe("CharacterBuilderWizard: 2024 step order and gating", () => {
       step: "skills",
       error: "builder.error.skills",
     },
+    {
+      id: "a missing Fighting Style feat blocks a Fighter's skills step",
+      draft: { ...COMPLETE, classSelections: { skills: ["acrobatics", "perception"], equipment: ["A"] } },
+      step: "skills",
+      error: "builder.error.fightingStyle",
+    },
+    {
+      id: "a general feat is not a Fighting Style pick",
+      draft: { ...COMPLETE, classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:alert"], equipment: ["A"] } },
+      step: "skills",
+      error: "builder.error.fightingStyle",
+    },
     { id: "empty equipment blocks the equipment step", draft: { ...COMPLETE, equipmentIds: [] }, step: "equipment", error: "builder.error.equipment" },
     {
       id: "a missing class equipment option blocks the equipment step",
-      draft: { ...COMPLETE, classSelections: { skills: ["acrobatics", "perception"] } },
+      draft: { ...COMPLETE, classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:archery"] } },
       step: "equipment",
       error: "builder.error.classEquipment",
     },
@@ -121,7 +133,7 @@ describe("CharacterBuilderWizard: 2024 step order and gating", () => {
     const wizard = wizardWith(COMPLETE);
     wizard.setBackground("sage");
     assert.deepEqual(wizard.getDraft()?.backgroundChoice, { mode: "plus1_each" });
-    assert.deepEqual(wizard.getDraft()?.classSelections, { equipment: ["A"] });
+    assert.deepEqual(wizard.getDraft()?.classSelections, { fighting_style: ["srd:feat:archery"], equipment: ["A"] });
   });
 
   it("changing the class clears every class pick", () => {
@@ -144,7 +156,8 @@ describe("CharacterBuilderWizard: 2024 step order and gating", () => {
   }
 
   const offered: Array<{ id: string; draft: Partial<CharacterDraft>; step: "skills" | "spells"; choices: string[] }> = [
-    { id: "a Fighter picks skills only on the skills step", draft: COMPLETE, step: "skills", choices: ["skills"] },
+    { id: "a Fighter picks skills and a Fighting Style feat on the skills step", draft: COMPLETE, step: "skills", choices: ["skills", "fighting_style"] },
+    { id: "a Paladin has no Fighting Style feat at level 1", draft: { ...COMPLETE, classId: "paladin" }, step: "skills", choices: ["skills"] },
     { id: "a Bard also picks tools on the skills step", draft: { ...COMPLETE, classId: "bard" }, step: "skills", choices: ["skills", "tools"] },
     { id: "a Fighter has no spell picks", draft: COMPLETE, step: "spells", choices: [] },
     { id: "a Wizard picks cantrips and spellbook spells", draft: { ...COMPLETE, classId: "wizard" }, step: "spells", choices: ["cantrips", "spells"] },
@@ -204,6 +217,7 @@ describe("CharacterBuilderWizard: finalized level-1 actor", () => {
       assert.equal(actor.attributes.hp.max, c.hp);
       assert.equal(actor.attributes.speedFt, c.speedFt);
       assert.ok(actor.features?.includes(c.feat));
+      if (actor.classId === "fighter") assert.ok(actor.features?.includes("srd:feat:archery"), "the Fighting Style feat is recorded");
       for (const skill of c.skills) assert.equal(actor.skills[skill as keyof typeof actor.skills].proficiencyRank, 1);
       assert.deepEqual(
         Object.entries(actor.abilities).filter(([, v]) => v.saveProficiency).map(([k]) => k),
@@ -214,7 +228,7 @@ describe("CharacterBuilderWizard: finalized level-1 actor", () => {
   }
 
   it("writes the background and class equipment to the sheet items", () => {
-    const wizard = wizardWith({ ...COMPLETE, equipmentIds: ["50 GP"], classSelections: { skills: ["acrobatics", "perception"], equipment: ["C"] } });
+    const wizard = wizardWith({ ...COMPLETE, equipmentIds: ["50 GP"], classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:archery"], equipment: ["C"] } });
     while (wizard.nextStep());
     const actor = wizard.confirm() as unknown as { items: Array<{ name: string }> };
     assert.deepEqual(actor.items.map((i) => i.name), ["50 GP", "155 GP"]);
@@ -227,7 +241,7 @@ describe("CharacterBuilderWizard: finalized level-1 actor", () => {
   ];
   for (const c of armor) {
     it(`class starting equipment feeds Armor Class: ${c.id}`, () => {
-      const wizard = wizardWith({ ...COMPLETE, classSelections: { skills: ["acrobatics", "perception"], equipment: [c.equipment] } });
+      const wizard = wizardWith({ ...COMPLETE, classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:archery"], equipment: [c.equipment] } });
       while (wizard.nextStep());
       const actor = wizard.confirm();
       assert.ok(actor);

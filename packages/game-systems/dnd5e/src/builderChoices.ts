@@ -11,8 +11,8 @@
  * - Feats: Magic Initiate (spell list, spellcasting ability, two cantrips,
  *   one level-1 spell) and Skilled (three skills or tools). Without them an
  *   actor could hold Magic Initiate with no spells (GS10).
- * - Classes at level 1: skills, tools, starting equipment, cantrips and
- *   prepared (or spellbook) spells. Without them a level-1 caster has no
+ * - Classes at level 1: skills, tools, the Fighting Style feat (Fighter),
+ *   starting equipment, cantrips and prepared (or spellbook) spells. Without them a level-1 caster has no
  *   spells or slots and nobody has class skills or gear (GS5, GS12, UA13).
  *
  * INVARIANTS & SAFETY BOUNDARIES:
@@ -45,7 +45,7 @@
  *   `applyClassChoices(actor, classId, selections, options?)`
  *     ├── 1. Build `getClassChoices` for the actor and validate the selections.
  *     ├── 2. Record class, saves, hit die, caster type, spellcasting ability.
- *     ├── 3. Grant skills; store armor/weapon/tool proficiencies.
+ *     ├── 3. Grant skills and the Fighting Style feat; store armor/weapon/tool proficiencies.
  *     ├── 4. Add the starting equipment option (weapons and armor equipped).
  *     ├── 5. Learn cantrips and spells; fill slots for the actor's level.
  *     └── 6. Recompute derived statistics.
@@ -63,7 +63,13 @@ import {
 import { CompendiumResolver } from "./compendium.ts";
 import { parseEquipmentLine } from "./derivations.ts";
 import { computeDnd5eSheetDerived, DND5E_SKILLS } from "./manifest.ts";
-import { getClassProgression, reconcileSlots } from "./progression.ts";
+import {
+  getClassProgression,
+  getFightingStyleFeatOptions,
+  grantsFightingStyleFeat,
+  recordFightingStyleFeat,
+  reconcileSlots,
+} from "./progression.ts";
 import {
   FEAT_CHOICE_SPECS,
   MAGIC_INITIATE_ABILITIES,
@@ -272,6 +278,8 @@ function equipmentLabel(option: StartingEquipmentOption): string {
  * Level-1 builder choices of `classId`, in step order:
  * - `"skills"` (`"skill"`): the class skill picks.
  * - `"tools"` (`"tool"`): Bard instruments / Monk tool, when the class has one.
+ * - `"fighting_style"` (`"feat"`): one Fighting Style feat (`srd:feat:<key>`)
+ *   when the class gains Fighting Style at level 1 (Fighter).
  * - `"equipment"` (`"equipment_option"`): one starting equipment option id (`"A"`, `"B"`, ...).
  * - `"cantrips"` (`"spell"`): class cantrips known at level 1, when any.
  * - `"spells"` (`"spell"`): level-1 class spells prepared (Wizard: its 6
@@ -300,6 +308,16 @@ export function getClassChoices(classId: string, options: ClassChoiceOptions = {
       label: "Tool proficiencies",
       count: rules.toolChoices.count,
       options: rules.toolChoices.options.map((tool) => ({ id: tool, label: tool })),
+    });
+  }
+  if (grantsFightingStyleFeat(classId, undefined, 1)) {
+    const resolver = options.resolver ?? CompendiumResolver.getDefault();
+    choices.push({
+      id: "fighting_style",
+      kind: "feat",
+      label: "Fighting Style feat",
+      count: 1,
+      options: getFightingStyleFeatOptions(options.actor?.features ?? []).map((id) => ({ id, label: resolver.get(id)?.name ?? id })),
     });
   }
   choices.push({
@@ -384,6 +402,7 @@ export function applyClassChoices(
     clone.abilities[ab].saveProficiency = progression.savingThrows.includes(ab);
   }
   for (const skill of selections.skills ?? []) clone.skills[skill as SkillId].proficiencyRank = 1;
+  for (const featId of selections.fighting_style ?? []) recordFightingStyleFeat(clone, featId, key, undefined, 1);
 
   const proficiencies = getActorProficiencies(clone);
   const add = <T>(list: T[], values: readonly T[]) => values.forEach((value) => list.includes(value) || list.push(value));
