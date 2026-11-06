@@ -1,81 +1,145 @@
+/**
+ * ============================================================================
+ * SPELLBOOK & SPELL SLOTS WIDGET (sheet/widgets/SpellbookAccordionWidget.tsx)
+ * ============================================================================
+ *
+ * PURPOSE:
+ * -----
+ * Lists the actor's spells by level with their slots (`derived.spells`, the
+ * `DerivedSpellcasting` summary: class cantrips, prepared spells, feat spells,
+ * slots per level and Warlock Pact Magic) and casts them. Without the slot
+ * spend on cast, a level-1 Wizard or Warlock could cast forever.
+ *
+ * INVARIANTS & SAFETY BOUNDARIES:
+ * -----
+ * 1. `One Slot Per Leveled Cast`:
+ *    - `pickCastSlot` spends a slot of the spell's level first, then a Pact
+ *      Magic slot whose level is at least the spell's. With neither left the
+ *      cast button is disabled and says so. Cantrips never spend a slot.
+ * 2. `Whole Tier Written`:
+ *    - Slot changes write the full `{ current, max }` tier at
+ *      `spellSlots.<key>`, so a sheet that never tracked a tier stores a valid
+ *      one instead of a lone `current`.
+ * 3. `Table Flows Need The Table`:
+ *    - `CAST_SPELL` carries `onTable`; the sheet dispatcher opens the attack,
+ *      save or area resolution only then. An area spell cast away from the
+ *      table spends nothing and shows a notice instead.
+ * ============================================================================
+ */
 import { h, type VNode } from 'preact';
+import { CompendiumResolver } from '../../../../game-systems/dnd5e/src/index.ts';
 import { t } from '../../i18n/index.ts';
 import { useSafeState } from '../safeHooks.ts';
-import { TrameCommand } from '../types.ts';
+import { TrameCommand, type SpentSlot } from '../types.ts';
 import type { WidgetProps } from '../WidgetRegistry.ts';
 import { CompendiumDragDropManager } from '../../compendium/CompendiumDragDropManager.ts';
 
-function resolveSlotsBasePath(bindingPath: string | undefined): string {
-  if (!bindingPath || typeof bindingPath !== 'string') {
-    return 'spellSlots';
-  }
+/** Slot tier as shown on the sheet. */
+export interface SlotTierView {
+  current: number;
+  max: number;
+  /** Casting level of Pact Magic slots. */
+  slotLevel?: number;
+}
+
+/** Spell row of the widget. */
+interface SpellView {
+  id: string;
+  name: string;
+  level: number;
+  isAoE: boolean;
+}
+
+function slotsBasePath(bindingPath: string | undefined): string {
+  if (!bindingPath) return 'spellSlots';
   return bindingPath.startsWith('sheet.') ? bindingPath.slice(6) : bindingPath;
 }
 
+function record(value: unknown): Record<string, any> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, any>) : null;
+}
+
+/**
+ * Slot a cast of a level-`level` spell spends (invariant 1): the spell's own
+ * level first, then Pact Magic at or above it; `null` when none is left.
+ */
+export function pickCastSlot(
+  level: number,
+  slots: Readonly<Record<string, SlotTierView>>,
+  pact: SlotTierView | null,
+): SpentSlot | null {
+  const own = slots[`level${level}`];
+  if (own && own.current > 0) return { key: `level${level}`, tier: { current: own.current - 1, max: own.max } };
+  if (pact && pact.current > 0 && (pact.slotLevel ?? 1) >= level) {
+    return { key: 'pact', tier: { current: pact.current - 1, max: pact.max, slotLevel: pact.slotLevel ?? 1 } };
+  }
+  return null;
+}
+
+/** Slots and spells from `derived.spells` (`DerivedSpellcasting`) or the legacy list binding. */
+function readSpellbook(boundValues: Record<string, unknown>) {
+  const casting = record(boundValues.spells);
+  const stored = record(boundValues.slots) ?? record(boundValues.spellSlots) ?? {};
+  const slots: Record<string, SlotTierView> = {};
+  let pact: SlotTierView | null = null;
+  let rawSpells: any[] = Array.isArray(boundValues.spells) ? (boundValues.spells as any[]) : [];
+  if (casting) {
+    for (const slot of (casting.slots ?? []) as Array<{ level: number; max: number; current: number }>) {
+      slots[`level${slot.level}`] = { current: slot.current, max: slot.max };
+    }
+    const pm = record(casting.pactMagic);
+    if (pm && Number(pm.slots) > 0) pact = { current: Number(pm.current), max: Number(pm.slots), slotLevel: Number(pm.slotLevel ?? 1) };
+    const feat = ((casting.featSpells ?? []) as Array<{ spells: any[] }>).flatMap((f) => f.spells ?? []);
+    rawSpells = [...(casting.cantrips ?? []), ...(casting.prepared ?? []), ...feat];
+  } else {
+    for (const [key, tier] of Object.entries(stored)) {
+      const rec = record(tier);
+      if (!rec || !/^level\d$/.test(key)) continue;
+      const max = Number(rec.max ?? 0);
+      slots[key] = { max, current: Number(rec.current ?? max) };
+    }
+    const pm = record(boundValues.pactMagic) ?? record(stored.pact);
+    const max = Number(pm?.max ?? 0);
+    if (pm && max > 0) pact = { max, current: Number(pm.current ?? max), slotLevel: Number(pm.slotLevel ?? pm.level ?? 1) };
+  }
+  const resolver = CompendiumResolver.getDefault();
+  const seen = new Set<string>();
+  const spells: SpellView[] = [];
+  for (const s of rawSpells) {
+    const id = String(s?.id ?? '');
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const entry = resolver.get(id);
+    spells.push({
+      id,
+      name: String(s.name ?? entry?.name ?? id),
+      level: Number(s.level ?? entry?.data.level ?? 0),
+      isAoE: Boolean(s.requiresAoE || s.isAoE || s.aoeTemplate || entry?.data.area),
+    });
+  }
+  return { slots, pact, spells };
+}
+
 export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
-  const rawSlots = (props.boundValues?.slots as Record<string, any>) ?? (props.boundValues?.spellSlots as Record<string, any>) ?? {};
-  const rawPactMagic = (props.boundValues?.pactMagic as Record<string, any>) ?? rawSlots.pact ?? rawSlots.pactMagic ?? {};
-  const rawSpells = Array.isArray(props.boundValues?.spells) ? props.boundValues.spells : [];
+  const boundValues = props.boundValues ?? {};
+  const { slots, pact, spells } = readSpellbook(boundValues);
   const autoDeductSlots = props.options?.autoDeductSlots !== false;
-  const slotsBasePath = resolveSlotsBasePath(props.bindings?.slots);
-  const pactBasePath = resolveSlotsBasePath(props.bindings?.pactMagic ?? 'pactMagic');
+  const basePath = slotsBasePath(props.bindings?.slots);
+  const onTable = props.isTableCanvasMounted === true;
 
-  const spells = rawSpells.map((s: any) => ({
-    id: String(s.id ?? ''),
-    name: String(s.name ?? 'Spell'),
-    level: Number(s.level ?? 0),
-    isPact: Boolean(s.isPact || s.pactMagic),
-    isAoE: Boolean(s.requiresAoE || s.isAoE || s.aoeTemplate),
-    aoeTemplate: s.aoeTemplate ?? (s.requiresAoE ? { shape: 'circle', radiusFeet: 20 } : undefined),
-  }));
+  const writeTier = (key: string, tier: SlotTierView) => {
+    props.dispatchCommand?.(TrameCommand.UpdateActorSheet({ path: `${basePath}.${key}`, value: tier }));
+  };
 
-  const handleCast = (spell: (typeof spells)[0]) => {
-    if (spell.isAoE) {
-      if (!props.isTableCanvasMounted) {
-        props.dispatchCommand?.({
-          cmd: 'NOTIFICATION',
-          type: 'warning',
-          message: t('sheet.spells.canvasNotMounted'),
-        });
-        return;
-      }
-      props.dispatchCommand?.(
-        TrameCommand.ProjectAoE({
-          spellId: spell.id,
-          name: spell.name,
-          level: spell.level,
-          aoeShape: spell.aoeTemplate,
-          template: spell.aoeTemplate,
-        }),
-      );
-      props.onCloseDrawer?.();
-    } else {
-      props.dispatchCommand?.(
-        TrameCommand.RollDice({
-          formula: '1d20',
-          expression: '1d20',
-          spellId: spell.id,
-          name: spell.name,
-          visibility: 'PUBLIC',
-          reason: `Cast spell: ${spell.name}`,
-        }),
-      );
+  const handleCast = (spell: SpellView) => {
+    if (spell.isAoE && !onTable) {
+      props.dispatchCommand?.({ cmd: 'NOTIFICATION', type: 'warning', message: t('sheet.spells.canvasNotMounted') });
+      return;
     }
-
-    if (autoDeductSlots && spell.level > 0) {
-      const slotKey = `level${spell.level}`;
-      const currentSlot = rawSlots[slotKey]?.current ?? 1;
-      const nextVal = Math.max(0, currentSlot - 1);
-      props.dispatchCommand?.(
-        TrameCommand.UpdateActorSheet({
-          path: `${slotsBasePath}.${slotKey}.current`,
-          slotLevel: spell.level,
-          current: nextVal,
-          value: nextVal,
-          delta: -1,
-        }),
-      );
-    }
+    const slot = spell.level > 0 && autoDeductSlots ? pickCastSlot(spell.level, slots, pact) : null;
+    if (spell.level > 0 && autoDeductSlots && !slot) return;
+    props.dispatchCommand?.(TrameCommand.CastSpell({ spellId: spell.id, slot, onTable }));
+    if (onTable) props.onCloseDrawer?.();
   };
 
   const [expandedLevels, setExpandedLevels] = useSafeState<number[]>([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -89,31 +153,8 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
     setExpandedLevels((prev) => (prev.includes(lvl) ? prev.filter((l) => l !== lvl) : [...prev, lvl]));
   };
 
-  const handleToggleSlotPip = (slotKey: string, lvl: number, currentVal: number, idx: number) => {
-    const isFilled = idx < currentVal;
-    const nextVal = isFilled ? idx : idx + 1;
-    props.dispatchCommand?.(
-      TrameCommand.UpdateActorSheet({
-        path: `${slotsBasePath}.${slotKey}.current`,
-        slotLevel: lvl,
-        current: nextVal,
-        value: nextVal,
-      }),
-    );
-  };
-
-  const handleTogglePactPip = (currentVal: number, idx: number) => {
-    const isFilled = idx < currentVal;
-    const nextVal = isFilled ? idx : idx + 1;
-    props.dispatchCommand?.(
-      TrameCommand.UpdateActorSheet({
-        path: `${pactBasePath}.current`,
-        slotType: 'pactMagic',
-        current: nextVal,
-        value: nextVal,
-      }),
-    );
-  };
+  /** Clicking an available pip expends it; clicking an expended pip restores up to it. */
+  const pipValue = (current: number, idx: number) => (idx < current ? idx : idx + 1);
 
   const handleDrop = (e: DragEvent) => {
     e.preventDefault();
@@ -125,24 +166,50 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
     }
   };
 
-  const spellsByLevel = new Map<number, typeof spells>();
-  for (let lvl = 0; lvl <= 9; lvl++) {
-    spellsByLevel.set(lvl, []);
-  }
-  for (const spell of spells) {
-    const list = spellsByLevel.get(spell.level) ?? [];
-    list.push(spell);
-    spellsByLevel.set(spell.level, list);
-  }
-
-  const pactMax = Number(rawPactMagic?.max ?? 0);
-  const pactCurrent = Number(rawPactMagic?.current ?? pactMax);
-  const pactLevel = Number(rawPactMagic?.slotLevel ?? rawPactMagic?.level ?? 1);
-  const rawSpellSaveDc = props.boundValues?.spellSaveDc ?? (props.boundValues?.attributes as any)?.spellSaveDc;
-  const rawSpellAttackBonus = props.boundValues?.spellAttackBonus ?? (props.boundValues?.attributes as any)?.spellAttackBonus;
-  const spellSaveDc = typeof rawSpellSaveDc === 'number' ? rawSpellSaveDc : Number(rawSpellSaveDc ?? 10);
-  const spellAttackBonus = typeof rawSpellAttackBonus === 'number' ? rawSpellAttackBonus : Number(rawSpellAttackBonus ?? 0);
+  const rawSpellSaveDc = boundValues.spellSaveDc ?? (boundValues.attributes as any)?.spellSaveDc;
+  const rawSpellAttackBonus = boundValues.spellAttackBonus ?? (boundValues.attributes as any)?.spellAttackBonus;
+  const spellSaveDc = Number(rawSpellSaveDc ?? 10);
+  const spellAttackBonus = Number(rawSpellAttackBonus ?? 0);
   const formattedSpellAttack = spellAttackBonus >= 0 ? `+${spellAttackBonus}` : `${spellAttackBonus}`;
+
+  const levels = Array.from({ length: 10 }, (_, lvl) => lvl).filter(
+    (lvl) => lvl === 0 || spells.some((s) => s.level === lvl) || (slots[`level${lvl}`]?.max ?? 0) > 0,
+  );
+
+  const pip = (testId: string, filled: boolean, label: string, onClick: () => void) =>
+    h(
+      'button',
+      {
+        key: testId,
+        type: 'button',
+        class: `ds-slot-pip atlas-tabular-nums ${filled ? 'is-filled' : 'is-expended'}`,
+        'data-testid': testId,
+        'aria-label': label,
+        'aria-pressed': filled ? 'true' : 'false',
+        onClick: (e: Event) => {
+          e.stopPropagation();
+          onClick();
+        },
+      },
+      filled ? '[*]' : '[ ]',
+    );
+
+  const castButton = (spell: SpellView) => {
+    const slot = spell.level > 0 && autoDeductSlots ? pickCastSlot(spell.level, slots, pact) : null;
+    const noSlot = spell.level > 0 && autoDeductSlots && !slot;
+    return h(
+      'button',
+      {
+        type: 'button',
+        class: 'ds-btn ds-btn-secondary ds-btn-sm ds-btn-cast-spell',
+        'data-testid': `btn-cast-spell-${spell.id}`,
+        'aria-label': t(spell.isAoE ? 'sheet.spells.castAoeAria' : 'sheet.spells.castAria', { name: spell.name }),
+        disabled: noSlot,
+        onClick: () => handleCast(spell),
+      },
+      noSlot ? t('sheet.spells.noSlot') : t(spell.isAoE ? 'sheet.spells.castAoe' : 'sheet.spells.cast'),
+    );
+  };
 
   return h(
     'div',
@@ -156,65 +223,44 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
     h(
       'div',
       { class: 'ds-spellcasting-metrics atlas-tabular-nums', 'data-testid': 'spellcasting-metrics' },
-      h(
-        'span',
-        { class: 'ds-spell-save-dc atlas-tabular-nums', 'data-testid': 'spell-save-dc-badge' },
-        t('sheet.spells.saveDc', { value: spellSaveDc }),
-      ),
+      h('span', { class: 'ds-spell-save-dc atlas-tabular-nums', 'data-testid': 'spell-save-dc-badge' }, t('sheet.spells.saveDc', { value: spellSaveDc })),
       h(
         'span',
         { class: 'ds-spell-attack-bonus atlas-tabular-nums', 'data-testid': 'spell-attack-bonus-badge' },
         t('sheet.spells.attackBonus', { value: formattedSpellAttack }),
       ),
     ),
-    h(
-      'div',
-      { class: 'ds-pact-magic-section', 'data-testid': 'pact-magic-section' },
-      h(
-        'span',
-        { class: 'ds-pact-magic-label atlas-tabular-nums' },
-        t('sheet.spells.pactMagic', { level: pactLevel, current: pactCurrent, max: pactMax }),
-      ),
-      pactMax > 0
-        ? h(
+    pact
+      ? h(
+          'div',
+          { class: 'ds-pact-magic-section', 'data-testid': 'pact-magic-section' },
+          h(
+            'span',
+            { class: 'ds-pact-magic-label atlas-tabular-nums', 'data-testid': 'pact-magic-label' },
+            t('sheet.spells.pactMagic', { level: pact.slotLevel ?? 1, current: pact.current, max: pact.max }),
+          ),
+          h(
             'div',
             { class: 'ds-slot-pips-container atlas-tabular-nums', 'data-testid': 'slot-pips-pact' },
-            Array.from({ length: pactMax }, (_, idx) => {
-              const isFilled = idx < pactCurrent;
-              return h(
-                'button',
-                {
-                  key: `pact-pip-${idx}`,
-                  type: 'button',
-                  class: `ds-slot-pip atlas-tabular-nums ${isFilled ? 'is-filled' : 'is-expended'}`,
-                  'data-testid': `slot-pip-pact-${idx}`,
-                  'aria-label': t('sheet.spells.pactPipAria', {
-                    index: idx + 1,
-                    state: t(isFilled ? 'sheet.slot.available' : 'sheet.slot.expended'),
-                  }),
-                  'aria-pressed': isFilled ? 'true' : 'false',
-                  onClick: (e: Event) => {
-                    e.stopPropagation();
-                    handleTogglePactPip(pactCurrent, idx);
-                  },
-                },
-                isFilled ? '[*]' : '[ ]',
-              );
-            }),
-          )
-        : null,
-    ),
+            Array.from({ length: pact.max }, (_, idx) =>
+              pip(
+                `slot-pip-pact-${idx}`,
+                idx < pact.current,
+                t('sheet.spells.pactPipAria', { index: idx + 1, state: t(idx < pact.current ? 'sheet.slot.available' : 'sheet.slot.expended') }),
+                () => writeTier('pact', { current: pipValue(pact.current, idx), max: pact.max, slotLevel: pact.slotLevel ?? 1 }),
+              ),
+            ),
+          ),
+        )
+      : null,
     h(
       'div',
       { class: 'ds-spell-levels-accordion' },
-      Array.from({ length: 10 }, (_, lvl) => {
-        const levelSpells = spellsByLevel.get(lvl) ?? [];
+      levels.map((lvl) => {
+        const levelSpells = spells.filter((s) => s.level === lvl);
         const isExpanded = expandedLevels.includes(lvl);
         const slotKey = `level${lvl}`;
-        const slotData = rawSlots[slotKey] ?? rawSlots[`slot_${lvl}`];
-        const maxSlots = Number(slotData?.max ?? 0);
-        const currentSlots = Number(slotData?.current ?? maxSlots);
-
+        const tier = slots[slotKey];
         return h(
           'div',
           { key: `lvl-${lvl}`, class: 'ds-spell-level-group', 'data-testid': `spell-level-group-${lvl}` },
@@ -233,33 +279,19 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
               },
               h('span', { class: 'ds-level-title' }, lvl === 0 ? t('sheet.spells.cantrips') : t('sheet.spells.level', { level: lvl })),
             ),
-            lvl > 0 && maxSlots > 0
+            lvl > 0 && tier && tier.max > 0
               ? h(
                   'div',
                   { class: 'ds-slot-pips-container atlas-tabular-nums', 'data-testid': `slot-pips-lvl-${lvl}` },
-                  Array.from({ length: maxSlots }, (_, idx) => {
-                    const isFilled = idx < currentSlots;
-                    return h(
-                      'button',
-                      {
-                        key: `pip-${idx}`,
-                        type: 'button',
-                        class: `ds-slot-pip atlas-tabular-nums ${isFilled ? 'is-filled' : 'is-expended'}`,
-                        'data-testid': `slot-pip-${lvl}-${idx}`,
-                        'aria-label': t('sheet.spells.slotPipAria', {
-                          level: lvl,
-                          index: idx + 1,
-                          state: t(isFilled ? 'sheet.slot.available' : 'sheet.slot.expended'),
-                        }),
-                        'aria-pressed': isFilled ? 'true' : 'false',
-                        onClick: (e: Event) => {
-                          e.stopPropagation();
-                          handleToggleSlotPip(slotKey, lvl, currentSlots, idx);
-                        },
-                      },
-                      isFilled ? '[*]' : '[ ]',
-                    );
-                  }),
+                  h('span', { class: 'ds-meta', 'data-testid': `slot-count-${lvl}` }, t('sheet.spells.slotCount', { current: tier.current, max: tier.max })),
+                  Array.from({ length: tier.max }, (_, idx) =>
+                    pip(
+                      `slot-pip-${lvl}-${idx}`,
+                      idx < tier.current,
+                      t('sheet.spells.slotPipAria', { level: lvl, index: idx + 1, state: t(idx < tier.current ? 'sheet.slot.available' : 'sheet.slot.expended') }),
+                      () => writeTier(slotKey, { current: pipValue(tier.current, idx), max: tier.max }),
+                    ),
+                  ),
                 )
               : null,
           ),
@@ -274,17 +306,7 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
                         'div',
                         { key: spell.id, class: 'ds-spell-item', 'data-testid': `spell-item-${spell.id}` },
                         h('span', { class: 'ds-spell-title atlas-tabular-nums' }, t('sheet.spells.itemTitle', { name: spell.name, level: spell.level })),
-                        h(
-                          'button',
-                          {
-                            type: 'button',
-                            class: 'ds-btn-cast-spell',
-                            'data-testid': `btn-cast-spell-${spell.id}`,
-                            'aria-label': t(spell.isAoE ? 'sheet.spells.castAoeAria' : 'sheet.spells.castAria', { name: spell.name }),
-                            onClick: () => handleCast(spell),
-                          },
-                          t(spell.isAoE ? 'sheet.spells.castAoe' : 'sheet.spells.cast'),
-                        ),
+                        castButton(spell),
                       ),
                     ),
               )
