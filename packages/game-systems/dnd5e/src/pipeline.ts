@@ -71,6 +71,7 @@ import type {
   SkillId,
   TurnTrigger,
 } from "./types.ts";
+import type { DerivedFeatureRules, DerivedResourcePool } from "./classFeatures.ts";
 import { computeDnd5eSheetDerived, type ProficiencyRankString } from "./manifest.ts";
 import { decrementConditionDurations } from "./progression.ts";
 import {
@@ -251,6 +252,10 @@ export interface Dnd5eDerivedStats {
   spells?: DerivedSpellcasting;
   /** Class, subclass, species, background and feat features with their level. */
   features?: DerivedFeature[];
+  /** `ClassFeature` use counters with `current` / `max` (`Dnd5eActorData` with an SRD class only). */
+  resourcePools?: DerivedResourcePool[];
+  /** Attacks per action, critical range, roll rules and resistances of the features in force (same scope). */
+  featureRules?: DerivedFeatureRules;
   /**
    * Condition effects in force after the `ConditionOverride` rulings passed to
    * `computeDnd5eSheetDerived` (`speedZero` means the creature cannot move;

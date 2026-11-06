@@ -7,7 +7,7 @@
  * --------
  * Aggregates and re-exports the complete public surface of `@trame/game-system-dnd5e`
  * (`types`, `formulaEvaluator`, `manifest`, `pipeline`, `progression`, `origins`,
- * `classRules`, `derivations`, `builderChoices`, `compendium`, `monsterStatBlock`,
+ * `classRules`, `classFeatures`, `derivations`, `builderChoices`, `compendium`, `monsterStatBlock`,
  * `srdPacks`, `sheetLayout`, `rest`, and `conditions`) behind a
  * single deterministic entry point for both the server authority and web client.
  *
@@ -28,6 +28,7 @@ export * from "./pipeline.ts";
 export * from "./progression.ts";
 export * from "./origins.ts";
 export * from "./classRules.ts";
+export * from "./classFeatures.ts";
 export * from "./derivations.ts";
 export * from "./builderChoices.ts";
 export * from "./compendium.ts";

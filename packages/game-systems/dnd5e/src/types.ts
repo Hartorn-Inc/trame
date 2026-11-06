@@ -138,6 +138,8 @@ export interface ResourcePool {
   max: number;
   /** Rest boundary that resets `current` back to `max`. */
   resetOn: RestType;
+  /** Uses regained on a Short Rest when `resetOn` is `"LONG_REST"` (Rage, Channel Divinity). */
+  shortRestRegain?: number;
 }
 
 /**
@@ -425,6 +427,8 @@ export interface DerivedAttack {
   versatileDamageDice?: string;
   /** Damage type. */
   damageType: DamageType;
+  /** Natural d20 roll from which a weapon attack crits, present only below `20` (Champion). */
+  criticalRange?: number;
   /** Melee reach in feet (`5`, or `10` with the Reach property). */
   reachFt?: number;
   /** Normal and long range in feet for ranged, thrown and spell attacks. */
@@ -503,8 +507,16 @@ export interface DerivedFeature {
   source: "class" | "subclass" | "species" | "background" | "feat" | "other";
   /** Character level at which it was gained, `null` when unknown. */
   level: number | null;
-  /** Compendium id for feats, subclasses and backgrounds. */
+  /** Compendium id for feats, subclasses and backgrounds; `ClassFeature` id for class features. */
   id?: string;
+  /** D12 classification of class and subclass features (`classFeatures.ts`). */
+  automation?: "automated" | "described";
+  /** Use counter with its tracked value (`current` in `0..=max`). */
+  pool?: { id: string; current: number; max: number; resetOn: RestType; shortRestRegain?: number };
+  /** Level-dependent value (`{ label: "Rage Damage", value: "+2" }`). */
+  scaling?: { label: string; value: string };
+  /** Present on toggle features (Rage): whether its id is in `activeFeatureIds`. */
+  active?: boolean;
 }
 
 /** Builder selections: option ids keyed by `BuilderChoice.id`. */
@@ -613,6 +625,8 @@ export interface Dnd5eActorData {
   conditions: ActiveConditionState[];
   /** Named class/monster resource pools indexed by resource key. */
   resources?: Record<string, ResourcePool>;
+  /** Toggle `ClassFeature` ids currently in force (e.g. `"barbarian:rage"`). */
+  activeFeatureIds?: string[];
   /** Spell slot pools across standard spell levels 1–9 and Pact Magic. */
   spellSlots?: SpellSlotsState;
   /** Identifier of the spell currently maintained via Concentration, if any. */

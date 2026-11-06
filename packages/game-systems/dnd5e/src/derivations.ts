@@ -39,10 +39,20 @@
  *     ├── 2. The DAG is evaluated (WASM).
  *     ├── 3. `deriveSpellcasting` -> slots, spell lists, feat spells.
  *     ├── 4. `deriveAttacks` -> weapons, then damaging spells.
- *     └── 5. `deriveFeatures` -> class, subclass, species, background, feats.
+ *     └── 5. `deriveFeatures` -> class and subclass `ClassFeature`s (pools,
+ *            scaling, toggles), species, background, feats.
  * ============================================================================
  */
 
+import {
+  classFeaturesFor,
+  deriveFeatureRules,
+  deriveResourcePools,
+  isFeatureActive,
+  type ClassFeatureSpec,
+  type DerivedFeatureRules,
+  type DerivedResourcePool,
+} from "./classFeatures.ts";
 import { getActorClassId, getActorProficiencies, getCantripsKnown, getPreparedSpellCount } from "./classRules.ts";
 import { CompendiumResolver, type CompendiumEntry } from "./compendium.ts";
 import { getBackgroundRules, getSpeciesRules, srdFeatKey } from "./origins.ts";
@@ -162,7 +172,13 @@ export function isWeaponProficient(tokens: readonly WeaponProficiency[], entry: 
   );
 }
 
-function weaponAttack(item: ActorItem, entry: CompendiumEntry, actor: Dnd5eActorData, v: EvaluatedDag): DerivedAttack {
+function weaponAttack(
+  item: ActorItem,
+  entry: CompendiumEntry,
+  actor: Dnd5eActorData,
+  v: EvaluatedDag,
+  rules: DerivedFeatureRules
+): DerivedAttack {
   const data = entry.data;
   const properties = (data.properties as string[] | undefined) ?? [];
   const ranged = data.weaponType === "ranged" || properties.includes("ammunition");
@@ -170,14 +186,17 @@ function weaponAttack(item: ActorItem, entry: CompendiumEntry, actor: Dnd5eActor
   const ability: AbilityId = ranged || (finesse && v.dex_mod > v.str_mod) ? "dex" : "str";
   const proficient = isWeaponProficient(getActorProficiencies(actor).weapons, entry);
   const rangeFt = parseRangeFt(data.range);
+  const featureAttackBonus = rules.weaponAttackBonusAbility ? Math.max(1, v[`${rules.weaponAttackBonusAbility}_mod`]) : 0;
+  const rageBonus = !ranged && ability === "str" ? rules.strMeleeDamageBonus : 0;
   return {
     id: item.id,
     name: item.name,
     source: "weapon",
     delivery: ranged ? "ranged" : "melee",
-    attackBonus: v[`${ability}_mod`] + (proficient ? v.prof_bonus : 0) - v.exhaustion_penalty,
+    attackBonus: v[`${ability}_mod`] + (proficient ? v.prof_bonus : 0) - v.exhaustion_penalty + featureAttackBonus,
     damageDice: String(data.damage),
-    damageModifier: v[`${ability}_mod`],
+    damageModifier: v[`${ability}_mod`] + rageBonus,
+    ...(rules.criticalRange < 20 ? { criticalRange: rules.criticalRange } : {}),
     ...(typeof data.versatileDamage === "string" ? { versatileDamageDice: data.versatileDamage } : {}),
     damageType: data.damageType as DamageType,
     ...(ranged ? {} : { reachFt: properties.includes("reach") ? 10 : 5 }),
@@ -298,16 +317,19 @@ export function deriveSpellcasting(
 /**
  * Attacks of `actor`: each equipped weapon (STR, DEX for ranged weapons, the
  * better of both for Finesse), then each damaging class or feat spell
- * (attack roll or saving throw).
+ * (attack roll or saving throw). Weapon attacks carry the `ClassFeature`
+ * rules in force: Rage Damage on Strength melee damage, the Sacred Weapon
+ * attack bonus and a Champion critical range below `20`.
  */
 export function deriveAttacks(
   actor: Dnd5eActorData,
   v: EvaluatedDag,
   spells: DerivedSpellcasting | undefined
 ): DerivedAttack[] {
+  const rules = deriveFeatureRules(actor);
   const weapons = equippedEntries(actor)
     .filter(({ entry }) => entry.data.itemType === "weapon")
-    .map(({ item, entry }) => weaponAttack(item, entry, actor, v));
+    .map(({ item, entry }) => weaponAttack(item, entry, actor, v, rules));
   if (!spells) return weapons;
   const resolver = CompendiumResolver.getDefault();
   const sources = [
@@ -340,27 +362,60 @@ function isFeatId(id: string): boolean {
   return srdFeatKey(id) !== undefined || id.includes(":feat:");
 }
 
-/**
- * Features of `actor` in sheet order: class features up to its level, the
- * subclass (at the class's subclass level), species traits and the
- * background (level 1), then feats with the level recorded in `featsTaken`
- * (origin feats default to level 1). Other `features` strings are kept as
- * `"other"` with an unknown level.
- */
-export function deriveFeatures(actor: Dnd5eActorData): DerivedFeature[] {
-  const resolver = CompendiumResolver.getDefault();
+const ABILITY_IDS: readonly AbilityId[] = ["str", "dex", "con", "int", "wis", "cha"];
+
+/** `<ability>_mod` DAG outputs (after effects) by ability. */
+export function abilityModsOf(v: EvaluatedDag): Record<AbilityId, number> {
+  return Object.fromEntries(ABILITY_IDS.map((ab) => [ab, v[`${ab}_mod`]])) as Record<AbilityId, number>;
+}
+
+function classFeature(spec: ClassFeatureSpec, actor: Dnd5eActorData, pools: ReadonlyMap<string, DerivedResourcePool>): DerivedFeature {
   const level = actor.attributes.level;
-  const classId = getActorClassId(actor);
-  const progression = getClassProgression(classId);
-  const features: DerivedFeature[] = [];
-  for (const [featureLevel, names] of Object.entries(progression?.features ?? {})) {
-    if (Number(featureLevel) > level) continue;
-    for (const name of names) features.push({ name, source: "class", level: Number(featureLevel) });
-  }
+  const pool = spec.pool ? pools.get(spec.pool.id) : undefined;
+  return {
+    name: spec.name,
+    source: spec.subclassId ? "subclass" : "class",
+    level: spec.level,
+    id: spec.id,
+    automation: spec.automation,
+    ...(pool
+      ? {
+          pool: {
+            id: pool.id,
+            current: pool.current,
+            max: pool.max,
+            resetOn: pool.resetOn,
+            ...(pool.shortRestRegain ? { shortRestRegain: pool.shortRestRegain } : {}),
+          },
+        }
+      : {}),
+    ...(spec.scaling ? { scaling: { label: spec.scaling.label, value: spec.scaling.at(level) } } : {}),
+    ...(spec.toggle ? { active: isFeatureActive(actor, spec) } : {}),
+  };
+}
+
+/**
+ * Features of `actor` in sheet order: class features up to its level (from
+ * the `ClassFeature` catalogue, with D12 automation, pool and scaling), the
+ * subclass (at the class's subclass level) followed by its features, species
+ * traits and the background (level 1), then feats with the level recorded in
+ * `featsTaken` (origin feats default to level 1). Other `features` strings
+ * are kept as `"other"` with an unknown level. Pool maxima read the ability
+ * modifiers of `v`.
+ */
+export function deriveFeatures(actor: Dnd5eActorData, v: EvaluatedDag): DerivedFeature[] {
+  const resolver = CompendiumResolver.getDefault();
+  const progression = getClassProgression(getActorClassId(actor));
+  const pools = new Map(deriveResourcePools(actor, abilityModsOf(v)).map((pool) => [pool.id, pool]));
+  const catalogue = classFeaturesFor(actor);
+  const features: DerivedFeature[] = catalogue
+    .filter((spec) => !spec.subclassId)
+    .map((spec) => classFeature(spec, actor, pools));
   const subclassId = actor.subclassId ?? actor.attributes.subclassId;
   if (subclassId) {
     const entry = resolver.get(subclassId) ?? resolver.get(`srd:subclass:${subclassId}`);
     features.push({ name: entry?.name ?? subclassId, source: "subclass", level: progression?.subclassLevel ?? 3, id: entry?.id ?? subclassId });
+    features.push(...catalogue.filter((spec) => spec.subclassId).map((spec) => classFeature(spec, actor, pools)));
   }
   const traits = getSpeciesRules(actor.speciesId)?.traits ?? [];
   for (const name of traits) features.push({ name, source: "species", level: 1 });

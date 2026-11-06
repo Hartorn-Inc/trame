@@ -47,11 +47,14 @@
  *   `computeDnd5eSheetDerived(actor, activeEffects?)`
  *     ├── 1. Map the actor to the `derivedInputs` record (`level`, scores, flags).
  *     │      Equipped armor and shields override the armor inputs (`derivations.ts`).
- *     ├── 2. `evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, activeEffects)` (WASM).
+ *     ├── 2. `evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, effects)` (WASM),
+ *     │      `effects` = `ClassFeature` effects (`classFeatures.ts`) then the
+ *     │      caller's `activeEffects`, all in the 5-phase order.
  *     │      `ConditionOverride` rulings (options) can suspend exhaustion first.
  *     ├── 3. Project the evaluated attributes onto `Dnd5eDerivedStats`.
- *     └── 4. Add `attacks`, `spells` and `features` (`derivations.ts`) from the
- *            evaluated values; Magic Initiate abilities re-run the DAG.
+ *     └── 4. Add `attacks`, `spells`, `features`, `resourcePools` and
+ *            `featureRules` from the evaluated values; Magic Initiate
+ *            abilities re-run the DAG.
  * ============================================================================
  */
 
@@ -67,7 +70,9 @@ import type {
   Dnd5eDerivedStats,
 } from "./pipeline.ts";
 import { evaluateDerivedDag, extractFormulaIdentifiers } from "./formulaEvaluator.ts";
+import { classFeatureEffects, classFeaturesFor, deriveFeatureRules, deriveResourcePools } from "./classFeatures.ts";
 import {
+  abilityModsOf,
   deriveAttacks,
   deriveFeatures,
   deriveSheetFeatures,
@@ -344,17 +349,26 @@ export function computeDnd5eSheetDerived(
     overrides: options.conditionOverrides,
   });
   if (!conditionEffects.exhaustionApplies) inputs.exhaustion = 0;
-  const v = evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, activeEffects);
+  const effects = "attributes" in actor ? [...classFeatureEffects(actor), ...(activeEffects ?? [])] : activeEffects;
+  const v = evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, effects);
 
-  let extras: Pick<Dnd5eDerivedStats, "attacks" | "spells" | "features">;
+  let extras: Pick<Dnd5eDerivedStats, "attacks" | "spells" | "features" | "resourcePools" | "featureRules">;
   if ("attributes" in actor) {
     const spellNumbersFor = (ability: AbilityId) => {
       const flags = Object.fromEntries(ABILITY_IDS.map((ab) => [`spell_ability_${ab}`, ab === ability ? 1 : 0]));
-      const r = evaluateDerivedDag({ ...inputs, ...flags }, DND5E_DERIVED_FORMULAS, activeEffects);
+      const r = evaluateDerivedDag({ ...inputs, ...flags }, DND5E_DERIVED_FORMULAS, effects);
       return { spellSaveDc: r.spell_save_dc, spellAttackBonus: r.spell_attack_bonus };
     };
     const spells = deriveSpellcasting(actor, v, spellNumbersFor);
-    extras = { attacks: deriveAttacks(actor, v, spells), ...(spells ? { spells } : {}), features: deriveFeatures(actor) };
+    const classFeatures = classFeaturesFor(actor).length > 0
+      ? { resourcePools: deriveResourcePools(actor, abilityModsOf(v)), featureRules: deriveFeatureRules(actor) }
+      : {};
+    extras = {
+      attacks: deriveAttacks(actor, v, spells),
+      ...(spells ? { spells } : {}),
+      features: deriveFeatures(actor, v),
+      ...classFeatures,
+    };
   } else {
     extras = { attacks: [], features: deriveSheetFeatures(actor.features) };
   }

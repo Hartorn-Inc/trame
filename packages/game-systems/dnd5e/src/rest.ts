@@ -28,7 +28,13 @@
  *      - SRD 5.2.1 Long Rest: "You regain all spent Hit Dice". `applyLongRest`
  *        sets `hitDiceCurrent` to `hitDiceMax` (the SRD 5.1 half-max rule is gone).
  *   4. `Deterministic Rest Boundary Replenishment`:
- *      - Short rests reset only `"SHORT_REST"` pools and Pact Magic slots.
+ *      - Short rests reset only `"SHORT_REST"` pools and Pact Magic slots,
+ *        and add `shortRestRegain` uses to `"LONG_REST"` class feature pools
+ *        (Rage, Channel Divinity, Wild Shape, Second Wind).
+ *      - `ClassFeature` pools are re-derived from the level first
+ *        (`recoverClassFeaturePools`), so a pool gained or grown since the
+ *        last rest appears with its new maximum and reset cadence
+ *        (Font of Inspiration turns Bardic Inspiration into a Short Rest pool).
  *      - Long rests reset all standard spell slots (levels 1-9), Pact Magic, and
  *        both `"SHORT_REST"` and `"LONG_REST"` resource pools, while clearing
  *        `hp.temp` to `0` and decrementing exhaustion by exactly `1` when `> 0`.
@@ -57,11 +63,24 @@
  * ============================================================================
  */
 
+import { classFeaturesFor, recoverClassFeaturePools } from "./classFeatures.ts";
+import { computeDnd5eSheetDerived } from "./manifest.ts";
 import type {
   Dnd5eActorData,
+  RestType,
   SpellSlotsState,
 } from "./types.ts";
 import type { Dnd5eActorSheet } from "./pipeline.ts";
+
+/**
+ * Writes the actor's `ClassFeature` pools into `resources` for `rest`, with
+ * maxima from the current level and evaluated ability modifiers. Skips the
+ * DAG evaluation when no feature of the actor has a pool.
+ */
+function recoverFeaturePools(actor: Dnd5eActorData, rest: RestType): void {
+  if (!classFeaturesFor(actor).some((spec) => spec.pool)) return;
+  actor.resources = recoverClassFeaturePools(actor, rest, computeDnd5eSheetDerived(actor).abilityMods);
+}
 
 /**
  * Hit Die expenditure request specification.
@@ -185,6 +204,7 @@ export function applyShortRest(
         }
       }
     }
+    recoverFeaturePools(clone, "SHORT_REST");
 
     if (clone.spellSlots?.pact) {
       clone.spellSlots.pact.current = clone.spellSlots.pact.max;
@@ -290,6 +310,7 @@ export function applyLongRest(
         }
       }
     }
+    recoverFeaturePools(clone, "LONG_REST");
 
     clone.concentratingOnSpellId = undefined;
 
