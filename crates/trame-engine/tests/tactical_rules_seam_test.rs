@@ -938,6 +938,121 @@ fn condition_rulings_decide_whether_a_reactor_is_incapacitated() {
     }
 }
 
+#[test]
+fn speed_zero_conditions_block_moves_unless_ruled_away_or_teleported() {
+    use trame_engine::{OverrideMode, OverrideSubject};
+    struct Case {
+        id: &'static str,
+        conditions: Vec<&'static str>,
+        ruling: Option<(OverrideSubject, &'static str, OverrideMode)>,
+        actor: CommandActor,
+        gm_teleport: bool,
+        expect_moved: bool,
+    }
+    let cases = [
+        Case {
+            id: "grappled_player_cannot_move",
+            conditions: vec!["grappled"],
+            ruling: None,
+            actor: player(),
+            gm_teleport: false,
+            expect_moved: false,
+        },
+        Case {
+            id: "restrained_token_cannot_be_walked_by_the_gm",
+            conditions: vec!["restrained"],
+            ruling: None,
+            actor: gm(),
+            gm_teleport: false,
+            expect_moved: false,
+        },
+        Case {
+            id: "gm_teleport_moves_a_paralyzed_token",
+            conditions: vec!["paralyzed"],
+            ruling: None,
+            actor: gm(),
+            gm_teleport: true,
+            expect_moved: true,
+        },
+        Case {
+            id: "stunned_token_still_moves",
+            conditions: vec!["stunned"],
+            ruling: None,
+            actor: player(),
+            gm_teleport: false,
+            expect_moved: true,
+        },
+        Case {
+            id: "removed_speed_zero_effect_lets_a_grappled_token_move",
+            conditions: vec!["grappled"],
+            ruling: Some((
+                OverrideSubject::Effect,
+                "grappled.speed_zero",
+                OverrideMode::Remove,
+            )),
+            actor: player(),
+            gm_teleport: false,
+            expect_moved: true,
+        },
+        Case {
+            id: "forced_speed_zero_effect_stops_a_free_token",
+            conditions: vec![],
+            ruling: Some((
+                OverrideSubject::Effect,
+                "restrained.speed_zero",
+                OverrideMode::Force,
+            )),
+            actor: player(),
+            gm_teleport: false,
+            expect_moved: false,
+        },
+    ];
+    for c in cases {
+        let mut hero = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+        hero.conditions = c.conditions.iter().map(|s| s.to_string()).collect();
+        let mut state = table(vec![hero]);
+        if let Some((subject, id, mode)) = c.ruling {
+            state
+                .apply_command(
+                    &gm(),
+                    TrameCommand::ConditionOverride {
+                        token_id: HERO_ID,
+                        subject,
+                        id: id.to_string(),
+                        mode: Some(mode),
+                    },
+                )
+                .unwrap();
+        }
+        state.undo_stack.clear();
+        let result = state.apply_command(
+            &c.actor,
+            TrameCommand::MoveToken {
+                token_id: HERO_ID,
+                to_top_left: Point2D::new(100.0, 0.0),
+                to_elevation_ft: None,
+                gm_teleport: c.gm_teleport,
+            },
+        );
+        if c.expect_moved {
+            result.unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+            assert_eq!(
+                state.data.tokens[&HERO_ID].top_left.x, 100.0,
+                "case {}",
+                c.id
+            );
+        } else {
+            assert_eq!(
+                result.unwrap_err(),
+                CommandError::SpeedZero,
+                "case {}",
+                c.id
+            );
+            assert!(state.undo_stack.is_empty(), "case {} no undo", c.id);
+        }
+    }
+}
+
 /// Vertical wall at `x` spanning `y0..y1` (pixels) with the given `kind` JSON (full height
 /// unless `top_ft` is set).
 fn vertical_wall(x: f64, y0: f64, y1: f64, kind: Value, top_ft: Option<f64>) -> Value {

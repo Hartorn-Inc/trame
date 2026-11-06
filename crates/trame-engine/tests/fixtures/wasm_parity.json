@@ -1896,5 +1896,212 @@
       },
       "walls": []
     }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "grappled"
+        ],
+        "incapacitated": false,
+        "resistsAllDamage": false,
+        "speedZero": true
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_grappled_sets_speed_zero",
+    "request": {
+      "conditions": [
+        "Grappled"
+      ],
+      "overrides": []
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "stunned"
+        ],
+        "incapacitated": true,
+        "resistsAllDamage": false,
+        "speedZero": false
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_stunned_is_incapacitated_but_can_move",
+    "request": {
+      "conditions": [
+        "stunned"
+      ],
+      "overrides": []
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "unconscious",
+          "prone"
+        ],
+        "incapacitated": true,
+        "resistsAllDamage": false,
+        "speedZero": true
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_unconscious_is_incapacitated_with_speed_zero",
+    "request": {
+      "conditions": [
+        "unconscious",
+        "prone"
+      ],
+      "overrides": []
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [],
+        "incapacitated": false,
+        "resistsAllDamage": false,
+        "speedZero": false
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_removed_condition_lifts_its_effects",
+    "request": {
+      "conditions": [
+        "restrained"
+      ],
+      "overrides": [
+        {
+          "id": "restrained",
+          "mode": "REMOVE",
+          "subject": "CONDITION"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "grappled"
+        ],
+        "incapacitated": false,
+        "resistsAllDamage": false,
+        "speedZero": false
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_removed_effect_keeps_the_condition",
+    "request": {
+      "conditions": [
+        "grappled"
+      ],
+      "overrides": [
+        {
+          "id": "grappled.speed_zero",
+          "mode": "REMOVE",
+          "subject": "EFFECT"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "paralyzed",
+          "grappled"
+        ],
+        "incapacitated": true,
+        "resistsAllDamage": false,
+        "speedZero": true
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_removed_effect_keeps_other_sources",
+    "request": {
+      "conditions": [
+        "paralyzed",
+        "grappled"
+      ],
+      "overrides": [
+        {
+          "id": "grappled.speed_zero",
+          "mode": "REMOVE",
+          "subject": "EFFECT"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [],
+        "incapacitated": false,
+        "resistsAllDamage": false,
+        "speedZero": true
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_forced_effect_applies_without_condition",
+    "request": {
+      "conditions": [],
+      "overrides": [
+        {
+          "id": "paralyzed.speed_zero",
+          "mode": "FORCE",
+          "subject": "EFFECT"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "petrified"
+        ],
+        "incapacitated": true,
+        "resistsAllDamage": true,
+        "speedZero": true
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_forced_condition_brings_its_effects",
+    "request": {
+      "conditions": [],
+      "overrides": [
+        {
+          "id": "petrified",
+          "mode": "FORCE",
+          "subject": "CONDITION"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "unconscious"
+        ],
+        "incapacitated": true,
+        "resistsAllDamage": false,
+        "speedZero": true
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_compendium_condition_id_is_normalized",
+    "request": {
+      "conditions": [
+        "srd:condition:unconscious",
+        "Unconscious"
+      ],
+      "overrides": []
+    }
   }
 ]

@@ -1273,6 +1273,7 @@ fn typed_damage_derives_affinity_from_the_target_token() {
         resist: &'static [&'static str],
         immune: &'static [&'static str],
         vulnerable: &'static [&'static str],
+        conditions: &'static [&'static str],
         damage_type: Option<&'static str>,
         claimed: trame_engine::DamageAffinity,
         expected_hp: i32,
@@ -1284,6 +1285,7 @@ fn typed_damage_derives_affinity_from_the_target_token() {
             resist: &["fire"],
             immune: &[],
             vulnerable: &[],
+            conditions: &[],
             damage_type: None,
             claimed: trame_engine::DamageAffinity::Normal,
             expected_hp: 10,
@@ -1293,6 +1295,7 @@ fn typed_damage_derives_affinity_from_the_target_token() {
             resist: &["fire"],
             immune: &[],
             vulnerable: &[],
+            conditions: &[],
             damage_type: Some("Fire"),
             claimed: trame_engine::DamageAffinity::Normal,
             expected_hp: 15,
@@ -1302,6 +1305,7 @@ fn typed_damage_derives_affinity_from_the_target_token() {
             resist: &[],
             immune: &["poison"],
             vulnerable: &[],
+            conditions: &[],
             damage_type: Some("poison"),
             claimed: trame_engine::DamageAffinity::Vulnerable,
             expected_hp: 20,
@@ -1311,6 +1315,7 @@ fn typed_damage_derives_affinity_from_the_target_token() {
             resist: &[],
             immune: &[],
             vulnerable: &[],
+            conditions: &[],
             damage_type: Some("cold"),
             claimed: trame_engine::DamageAffinity::Immune,
             expected_hp: 10,
@@ -1320,6 +1325,7 @@ fn typed_damage_derives_affinity_from_the_target_token() {
             resist: &["fire"],
             immune: &[],
             vulnerable: &["fire"],
+            conditions: &[],
             damage_type: Some("fire"),
             claimed: trame_engine::DamageAffinity::Normal,
             expected_hp: 10,
@@ -1329,9 +1335,30 @@ fn typed_damage_derives_affinity_from_the_target_token() {
             resist: &[],
             immune: &[],
             vulnerable: &["radiant"],
+            conditions: &[],
             damage_type: Some("radiant"),
             claimed: trame_engine::DamageAffinity::Resistant,
             expected_hp: 0,
+        },
+        Case {
+            id: "petrified_target_resists_every_damage_type",
+            resist: &[],
+            immune: &[],
+            vulnerable: &[],
+            conditions: &["petrified"],
+            damage_type: Some("force"),
+            claimed: trame_engine::DamageAffinity::Normal,
+            expected_hp: 15,
+        },
+        Case {
+            id: "petrified_resistance_cancels_a_vulnerability",
+            resist: &[],
+            immune: &[],
+            vulnerable: &["bludgeoning"],
+            conditions: &["petrified"],
+            damage_type: Some("bludgeoning"),
+            claimed: trame_engine::DamageAffinity::Normal,
+            expected_hp: 10,
         },
     ];
 
@@ -1340,6 +1367,7 @@ fn typed_damage_derives_affinity_from_the_target_token() {
         target.damage_resistances = to_vec(c.resist);
         target.damage_immunities = to_vec(c.immune);
         target.damage_vulnerabilities = to_vec(c.vulnerable);
+        target.conditions = to_vec(c.conditions);
         let mut state = table(vec![target], vec![]);
         state
             .apply_command(

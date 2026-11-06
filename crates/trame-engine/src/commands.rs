@@ -74,7 +74,12 @@
 //!        (`1..=64` bytes, at most 32 per token) before pushing an `UndoEntry`.
 //!      - `TokenState::effective_conditions` applies the rulings (`Remove`
 //!        wins over the token's own conditions, `Force` adds); engine checks
-//!        such as Incapacitated read effective conditions only.
+//!        read effective conditions only.
+//!      - `condition_effects` derives the effects the engine enforces:
+//!        Incapacitated (no reaction prompts) and Speed 0 (`MoveToken`
+//!        rejected with `SpeedZero` except for a GM teleport). Each is an
+//!        `"<condition>.<effect>"` id that an `Effect` ruling can force or
+//!        remove; the `dnd5e` pack resolves the same ids (parity fixtures).
 //!   9. `Shared Movement Pricing`:
 //!      - `MoveToken` budgets, `preview_move`, and the `previewMove` WASM export
 //!        all price moves with `MovementGrid::movement_cost_ft` (Chebyshev
@@ -395,12 +400,109 @@ const INCAPACITATING_CONDITIONS: [&str; 5] = [
     "unconscious",
 ];
 
-/// `true` when `token`'s effective conditions (overrides applied) include Incapacitated.
+/// SRD 5.2.1 condition IDs whose rules set the creature's Speed to 0.
+pub const SPEED_ZERO_CONDITIONS: [&str; 5] = [
+    "grappled",
+    "paralyzed",
+    "petrified",
+    "restrained",
+    "unconscious",
+];
+
+/// SRD 5.2.1 condition IDs granting resistance to all damage.
+pub const RESIST_ALL_DAMAGE_CONDITIONS: [&str; 1] = ["petrified"];
+
+/// Effect id suffix of the Incapacitated part of a condition (`"<condition>.incapacitated"`).
+pub const EFFECT_INCAPACITATED: &str = "incapacitated";
+/// Effect id suffix of the Speed 0 part of a condition (`"<condition>.speed_zero"`).
+pub const EFFECT_SPEED_ZERO: &str = "speed_zero";
+/// Effect id suffix of the all-damage resistance of a condition
+/// (`"<condition>.resistance_all_damage"`).
+pub const EFFECT_RESISTANCE_ALL_DAMAGE: &str = "resistance_all_damage";
+
+/// `true` when `token` is Incapacitated after the `ConditionOverride` rulings.
 fn is_incapacitated(token: &TokenState) -> bool {
-    token
-        .effective_conditions()
+    token.condition_effects().incapacitated
+}
+
+/// Condition effects the engine enforces itself, after the `ConditionOverride` rulings. The
+/// `dnd5e` game system computes the same values (`resolveConditionEffects`); the shared parity
+/// fixtures (`conditionEffects` export) keep both in agreement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConditionEffects {
+    /// Conditions in force (see `effective_condition_ids`).
+    pub effective_conditions: Vec<String>,
+    /// No actions, bonus actions or reactions (opportunity prompts are skipped).
+    pub incapacitated: bool,
+    /// Speed 0: `MoveToken` is rejected unless it is a Game Master teleport.
+    pub speed_zero: bool,
+    /// Resistance to every damage type (`damage_affinity_for`).
+    pub resists_all_damage: bool,
+}
+
+/// Conditions in force after the rulings: `conditions` (lowercased, compendium prefix
+/// `srd:condition:` dropped so sheet-synced ids match, deduplicated, in order) minus the
+/// `Remove`d ones, then the `Force`d ones not already present, in ruling order.
+pub fn effective_condition_ids(
+    conditions: &[String],
+    overrides: &[ConditionOverrideEntry],
+) -> Vec<String> {
+    let ruled = |id: &str, mode: OverrideMode| {
+        overrides
+            .iter()
+            .any(|o| o.subject == OverrideSubject::Condition && o.mode == mode && o.id == id)
+    };
+    let own = conditions.iter().map(|c| {
+        let id = c.trim().to_ascii_lowercase();
+        id.strip_prefix("srd:condition:")
+            .map(str::to_string)
+            .unwrap_or(id)
+    });
+    let forced = overrides
         .iter()
-        .any(|c| INCAPACITATING_CONDITIONS.contains(&c.as_str()))
+        .filter(|o| o.subject == OverrideSubject::Condition && o.mode == OverrideMode::Force)
+        .map(|o| o.id.clone());
+    let mut out: Vec<String> = Vec::new();
+    for id in own.chain(forced) {
+        if !ruled(&id, OverrideMode::Remove) && !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// Resolves the engine-enforced condition effects. An effect `"<condition>.<effect>"` applies
+/// when a `Force` effect ruling names it, or when `<condition>` is in force, carries that effect,
+/// and no `Remove` effect ruling names it.
+pub fn condition_effects(
+    conditions: &[String],
+    overrides: &[ConditionOverrideEntry],
+) -> ConditionEffects {
+    let effective_conditions = effective_condition_ids(conditions, overrides);
+    let effect = |suffix: &str, sources: &[&str]| {
+        let ruled = |mode: OverrideMode, id: &str| {
+            overrides
+                .iter()
+                .any(|o| o.subject == OverrideSubject::Effect && o.mode == mode && o.id == id)
+        };
+        let forced = overrides.iter().any(|o| {
+            o.subject == OverrideSubject::Effect
+                && o.mode == OverrideMode::Force
+                && o.id.rsplit_once('.').map(|(_, s)| s) == Some(suffix)
+        });
+        forced
+            || effective_conditions.iter().any(|c| {
+                sources.contains(&c.as_str())
+                    && !ruled(OverrideMode::Remove, &format!("{c}.{suffix}"))
+            })
+    };
+    ConditionEffects {
+        incapacitated: effect(EFFECT_INCAPACITATED, &INCAPACITATING_CONDITIONS),
+        speed_zero: effect(EFFECT_SPEED_ZERO, &SPEED_ZERO_CONDITIONS),
+        resists_all_damage: effect(EFFECT_RESISTANCE_ALL_DAMAGE, &RESIST_ALL_DAMAGE_CONDITIONS),
+        effective_conditions,
+    }
 }
 
 /// Maximum number of conditions on a token, and of `ConditionOverride` entries per token.
@@ -604,27 +706,13 @@ impl TokenState {
     /// deduplicated, in order) minus the `Remove`d ones, then the `Force`d ones not already
     /// present, in ruling order.
     pub fn effective_conditions(&self) -> Vec<String> {
-        let ruled = |id: &str, mode: OverrideMode| {
-            self.condition_overrides
-                .iter()
-                .any(|o| o.subject == OverrideSubject::Condition && o.mode == mode && o.id == id)
-        };
-        let mut out: Vec<String> = Vec::new();
-        let own = self
-            .conditions
-            .iter()
-            .map(|c| c.trim().to_ascii_lowercase());
-        let forced = self
-            .condition_overrides
-            .iter()
-            .filter(|o| o.subject == OverrideSubject::Condition && o.mode == OverrideMode::Force)
-            .map(|o| o.id.clone());
-        for id in own.chain(forced) {
-            if !ruled(&id, OverrideMode::Remove) && !out.contains(&id) {
-                out.push(id);
-            }
-        }
-        out
+        effective_condition_ids(&self.conditions, &self.condition_overrides)
+    }
+
+    /// Engine-enforced condition effects (Incapacitated, Speed 0, all-damage resistance)
+    /// after the rulings.
+    pub fn condition_effects(&self) -> ConditionEffects {
+        condition_effects(&self.conditions, &self.condition_overrides)
     }
 
     /// Modifier added to the server's `1d20` initiative roll (`AuthoritativeInitiativeRoll`).
@@ -637,13 +725,14 @@ impl TokenState {
     ///
     /// Resolution order: immunity wins; resistance and vulnerability to the same type cancel
     /// out (SRD: halve, then double) to `Normal`; otherwise the single matching list applies.
+    /// A condition granting resistance to all damage (Petrified) counts as a resistance.
     pub fn damage_affinity_for(&self, damage_type: &str) -> DamageAffinity {
         let has = |list: &[String]| list.iter().any(|t| t.eq_ignore_ascii_case(damage_type));
         if has(&self.damage_immunities) {
             return DamageAffinity::Immune;
         }
         match (
-            has(&self.damage_resistances),
+            has(&self.damage_resistances) || self.condition_effects().resists_all_damage,
             has(&self.damage_vulnerabilities),
         ) {
             (true, false) => DamageAffinity::Resistant,
@@ -1396,6 +1485,10 @@ pub enum CommandError {
         /// Remaining movement budget on the token in feet (`ft`).
         remaining_ft: f64,
     },
+    /// The token's Speed is 0 (Grappled, Paralyzed, Petrified, Restrained or Unconscious after
+    /// the `ConditionOverride` rulings); only a Game Master teleport can move it.
+    #[error("speed is 0: a condition prevents this token from moving")]
+    SpeedZero,
     /// The movement path intersected a movement-blocking `WallSegment` at `(x, y)` in pixels (`px`).
     #[error("movement blocked by wall at ({x:.1}, {y:.1})")]
     WallCollision {
@@ -2087,6 +2180,9 @@ impl TableState {
                 let new_elev = to_elevation_ft.unwrap_or(token.elevation_ft);
                 let in_combat = self.data.mode == TableMode::TurnByTurn;
                 if !is_gm_teleport {
+                    if token.condition_effects().speed_zero {
+                        return Err(CommandError::SpeedZero);
+                    }
                     self.check_wall_collision(&token, to_top_left, new_elev)?;
                     let cost_ft = self.movement_cost_ft(&token, to_top_left, new_elev);
                     if in_combat && cost_ft > token.speed_remaining_ft + 1e-6 {

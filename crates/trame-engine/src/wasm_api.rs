@@ -6,8 +6,8 @@
 //! --------
 //! One JSON-in / JSON-out function per engine capability the browser and Node
 //! consumers need: visibility polygon, wall-clipped AoE cells, move preview with
-//! wall collision, cover suggestion, sound occlusion count, and `derivedDAG` evaluation (G1: the
-//! single formula evaluator). `lib.rs` wraps each function in a thin
+//! wall collision, cover suggestion, sound occlusion count, `derivedDAG` evaluation (G1: the
+//! single formula evaluator), and the engine-enforced condition effects. `lib.rs` wraps each function in a thin
 //! `#[wasm_bindgen]` export; native tests call the same functions directly, so
 //! the shared parity fixtures (`tests/fixtures/wasm_parity.json`) prove that
 //! native and WASM outputs are identical without a second implementation in
@@ -33,7 +33,10 @@
 //! ============================================================================
 
 use crate::aoe::{AoeTemplate, GridCell};
-use crate::commands::{AmbientLightingPreset, MovePreview, TableState, TokenState};
+use crate::commands::{
+    AmbientLightingPreset, ConditionOverrideEntry, MovePreview, TableState, TokenState,
+    condition_effects,
+};
 use crate::cover::{CoverLevel, suggest_cover};
 use crate::geometry::{
     Bvh2D, CHANNEL_ETHEREAL, Point2D, SenseProfile, WallSegment, count_sound_occluding_walls,
@@ -321,6 +324,24 @@ pub fn evaluate_derived_dag_json(request_json: &str) -> Result<String, String> {
     to_json(&values)
 }
 
+/// Request for `condition_effects_json`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConditionEffectsRequest {
+    /// Token condition ids (any case).
+    conditions: Vec<String>,
+    /// `ConditionOverride` rulings in their engine shape (`{ subject, id, mode }`).
+    #[serde(default)]
+    overrides: Vec<ConditionOverrideEntry>,
+}
+
+/// Condition effects: `{ conditions, overrides? }` -> `{ effectiveConditions, incapacitated,
+/// speedZero }`, the values `MoveToken` and reaction prompts enforce.
+pub fn condition_effects_json(request_json: &str) -> Result<String, String> {
+    let req: ConditionEffectsRequest = parse(request_json)?;
+    to_json(&condition_effects(&req.conditions, &req.overrides))
+}
+
 /// Dispatches `export` (the JS export name) to its JSON function; used by the parity fixtures.
 pub fn call_export(export: &str, request_json: &str) -> Result<String, String> {
     match export {
@@ -330,6 +351,7 @@ pub fn call_export(export: &str, request_json: &str) -> Result<String, String> {
         "suggestCover" => suggest_cover_json(request_json),
         "countSoundOccludingWalls" => count_sound_occluding_walls_json(request_json),
         "evaluateDerivedDag" => evaluate_derived_dag_json(request_json),
+        "conditionEffects" => condition_effects_json(request_json),
         other => Err(format!("unknown export '{other}'")),
     }
 }
