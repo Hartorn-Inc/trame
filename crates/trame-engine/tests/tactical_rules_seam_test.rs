@@ -1320,3 +1320,400 @@ fn vision_request_without_a_range_fails_closed() {
     .unwrap_err();
     assert!(err.contains("maxRangePx or sight"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// UA8 death saving throws and UA7 concentration without a zone
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolve_death_save_follows_srd_counters() {
+    use trame_engine::{DeathSaveOutcome, resolve_death_save};
+    // (case_id, successes, failures, d20, expected outcome)
+    let outcome = |successes, failures, regains_hp, stable, dead| DeathSaveOutcome {
+        successes,
+        failures,
+        regains_hp,
+        stable,
+        dead,
+    };
+    let cases = [
+        (
+            "ten_is_a_success",
+            0,
+            0,
+            10,
+            outcome(1, 0, false, false, false),
+        ),
+        (
+            "nineteen_is_a_success",
+            1,
+            1,
+            19,
+            outcome(2, 1, false, false, false),
+        ),
+        (
+            "nine_is_a_failure",
+            0,
+            0,
+            9,
+            outcome(0, 1, false, false, false),
+        ),
+        (
+            "two_is_a_failure",
+            2,
+            1,
+            2,
+            outcome(2, 2, false, false, false),
+        ),
+        (
+            "natural_one_is_two_failures",
+            0,
+            0,
+            1,
+            outcome(0, 2, false, false, false),
+        ),
+        (
+            "natural_one_at_two_failures_kills_capped_at_three",
+            1,
+            2,
+            1,
+            outcome(1, 3, false, false, true),
+        ),
+        (
+            "third_failure_kills",
+            2,
+            2,
+            5,
+            outcome(2, 3, false, false, true),
+        ),
+        (
+            "third_success_stabilizes_and_resets",
+            2,
+            2,
+            15,
+            outcome(0, 0, false, true, false),
+        ),
+        (
+            "natural_twenty_regains_one_hp_and_resets",
+            2,
+            2,
+            20,
+            outcome(0, 0, true, false, false),
+        ),
+        (
+            "out_of_range_low_clamps_to_natural_one",
+            0,
+            0,
+            0,
+            outcome(0, 2, false, false, false),
+        ),
+        (
+            "out_of_range_high_clamps_to_natural_twenty",
+            0,
+            1,
+            25,
+            outcome(0, 0, true, false, false),
+        ),
+    ];
+    for (id, successes, failures, d20, expected) in cases {
+        assert_eq!(
+            resolve_death_save(successes, failures, d20),
+            expected,
+            "case {id}"
+        );
+    }
+}
+
+/// Hero owned by `PLAYER_ID`, down at 0 HP with the given counters.
+fn dying_hero(successes: u8, failures: u8) -> TokenState {
+    let mut hero = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+    hero.hp = 0;
+    hero.death_save_successes = successes;
+    hero.death_save_failures = failures;
+    hero
+}
+
+#[test]
+fn record_death_save_updates_the_token_and_is_undoable() {
+    struct Case {
+        id: &'static str,
+        actor: CommandActor,
+        hero: TokenState,
+        d20: Option<u8>,
+        /// `Some((successes, failures, hp, stable, dead))` when accepted.
+        expected: Option<(u8, u8, i32, bool, bool)>,
+    }
+    let stable = {
+        let mut h = dying_hero(0, 0);
+        h.is_stable = true;
+        h
+    };
+    let dead = {
+        let mut h = dying_hero(0, 3);
+        h.is_dead = true;
+        h
+    };
+    let conscious = {
+        let mut h = dying_hero(0, 0);
+        h.hp = 4;
+        h
+    };
+    let cases = vec![
+        Case {
+            id: "player_rolls_for_own_token",
+            actor: player(),
+            hero: dying_hero(0, 0),
+            d20: Some(12),
+            expected: Some((1, 0, 0, false, false)),
+        },
+        Case {
+            id: "gm_rolls_for_any_token",
+            actor: gm(),
+            hero: dying_hero(1, 1),
+            d20: Some(4),
+            expected: Some((1, 2, 0, false, false)),
+        },
+        Case {
+            id: "third_success_marks_stable",
+            actor: player(),
+            hero: dying_hero(2, 1),
+            d20: Some(10),
+            expected: Some((0, 0, 0, true, false)),
+        },
+        Case {
+            id: "natural_twenty_wakes_at_one_hp",
+            actor: player(),
+            hero: dying_hero(1, 2),
+            d20: Some(20),
+            expected: Some((0, 0, 1, false, false)),
+        },
+        Case {
+            id: "third_failure_kills",
+            actor: player(),
+            hero: dying_hero(0, 2),
+            d20: Some(3),
+            expected: Some((0, 3, 0, false, true)),
+        },
+        Case {
+            id: "spectator_is_refused",
+            actor: spectator(),
+            hero: dying_hero(0, 0),
+            d20: Some(12),
+            expected: None,
+        },
+        Case {
+            id: "missing_d20_is_refused",
+            actor: gm(),
+            hero: dying_hero(0, 0),
+            d20: None,
+            expected: None,
+        },
+        Case {
+            id: "zero_d20_is_refused",
+            actor: gm(),
+            hero: dying_hero(0, 0),
+            d20: Some(0),
+            expected: None,
+        },
+        Case {
+            id: "conscious_token_is_refused",
+            actor: gm(),
+            hero: conscious,
+            d20: Some(12),
+            expected: None,
+        },
+        Case {
+            id: "stable_token_is_refused",
+            actor: gm(),
+            hero: stable,
+            d20: Some(12),
+            expected: None,
+        },
+        Case {
+            id: "dead_token_is_refused",
+            actor: gm(),
+            hero: dead,
+            d20: Some(12),
+            expected: None,
+        },
+    ];
+    for c in cases {
+        let mut state = table(vec![c.hero.clone()]);
+        let result = state.apply_command(
+            &c.actor,
+            TrameCommand::RecordDeathSave {
+                token_id: HERO_ID,
+                d20: c.d20,
+            },
+        );
+        let Some((successes, failures, hp, is_stable, is_dead)) = c.expected else {
+            assert!(result.is_err(), "case {} should be refused", c.id);
+            assert_eq!(
+                state.data.tokens[&HERO_ID], c.hero,
+                "case {} unchanged",
+                c.id
+            );
+            continue;
+        };
+        let events = result.unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+        assert!(
+            matches!(events.as_slice(), [TrameEvent::DeathSaveRecorded { token_id, .. }] if *token_id == HERO_ID),
+            "case {} event",
+            c.id
+        );
+        let t = &state.data.tokens[&HERO_ID];
+        assert_eq!(
+            (
+                t.death_save_successes,
+                t.death_save_failures,
+                t.hp,
+                t.is_stable,
+                t.is_dead
+            ),
+            (successes, failures, hp, is_stable, is_dead),
+            "case {} token",
+            c.id
+        );
+        state
+            .apply_command(&gm(), TrameCommand::UndoLastAction)
+            .unwrap();
+        assert_eq!(state.data.tokens[&HERO_ID], c.hero, "case {} undo", c.id);
+    }
+}
+
+#[test]
+fn damage_at_zero_hp_ends_stable_and_adds_failures() {
+    // (case_id, is_critical, expected failures)
+    let cases = [
+        ("hit_adds_one_failure", false, 1),
+        ("critical_adds_two_failures", true, 2),
+    ];
+    for (id, is_critical, failures) in cases {
+        let mut hero = dying_hero(0, 0);
+        hero.is_stable = true;
+        let mut state = table(vec![hero]);
+        state
+            .apply_command(
+                &gm(),
+                TrameCommand::ApplyDamage {
+                    token_id: HERO_ID,
+                    raw_damage: 1,
+                    affinity: DamageAffinity::Normal,
+                    is_critical,
+                    damage_type: None,
+                },
+            )
+            .unwrap_or_else(|e| panic!("case {id}: {e}"));
+        let t = &state.data.tokens[&HERO_ID];
+        assert!(!t.is_stable, "case {id}: no longer stable");
+        assert_eq!(t.death_save_failures, failures, "case {id}");
+    }
+}
+
+#[test]
+fn set_concentration_drives_checks_and_breaks_at_zero_hp() {
+    struct Case {
+        id: &'static str,
+        actor: CommandActor,
+        damage: i32,
+        accepted: bool,
+        /// Concentration check DC opened by the damage, when accepted.
+        dc: Option<i32>,
+        /// Concentration still held after the damage.
+        still_concentrating: bool,
+    }
+    let cases = [
+        Case {
+            id: "player_concentrates_and_rolls_dc_10",
+            actor: player(),
+            damage: 5,
+            accepted: true,
+            dc: Some(10),
+            still_concentrating: true,
+        },
+        Case {
+            id: "gm_sets_concentration_on_any_token",
+            actor: gm(),
+            damage: 30,
+            accepted: true,
+            dc: Some(15),
+            still_concentrating: true,
+        },
+        Case {
+            id: "dropping_to_zero_breaks_without_a_check",
+            actor: player(),
+            damage: 50,
+            accepted: true,
+            dc: None,
+            still_concentrating: false,
+        },
+        Case {
+            id: "spectator_cannot_set_concentration",
+            actor: spectator(),
+            damage: 0,
+            accepted: false,
+            dc: None,
+            still_concentrating: false,
+        },
+    ];
+    for c in cases {
+        let mut hero = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+        hero.max_hp = 40;
+        hero.hp = 40;
+        let mut state = table(vec![hero]);
+        let set = state.apply_command(
+            &c.actor,
+            TrameCommand::SetConcentration {
+                token_id: HERO_ID,
+                concentrating: true,
+            },
+        );
+        assert_eq!(set.is_ok(), c.accepted, "case {} acceptance", c.id);
+        if !c.accepted {
+            assert!(!state.data.tokens[&HERO_ID].concentrating, "case {}", c.id);
+            continue;
+        }
+        let events = state
+            .apply_command(
+                &gm(),
+                TrameCommand::ApplyDamage {
+                    token_id: HERO_ID,
+                    raw_damage: c.damage,
+                    affinity: DamageAffinity::Normal,
+                    is_critical: false,
+                    damage_type: None,
+                },
+            )
+            .unwrap();
+        let dc = events.iter().find_map(|e| match e {
+            TrameEvent::DamageApplied { resolution, .. } => resolution.concentration_check_dc,
+            _ => None,
+        });
+        assert_eq!(dc, c.dc, "case {} DC", c.id);
+        assert_eq!(
+            state.data.tokens[&HERO_ID].concentrating, c.still_concentrating,
+            "case {}",
+            c.id
+        );
+        let broke = events
+            .iter()
+            .any(|e| matches!(e, TrameEvent::ConcentrationBroken { .. }));
+        assert_eq!(broke, !c.still_concentrating, "case {} break event", c.id);
+    }
+}
+
+#[test]
+fn break_concentration_clears_the_spell_flag() {
+    let mut hero = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+    hero.concentrating = true;
+    let mut state = table(vec![hero]);
+    state
+        .apply_command(
+            &player(),
+            TrameCommand::BreakConcentration {
+                caster_token_id: HERO_ID,
+            },
+        )
+        .unwrap();
+    assert!(!state.data.tokens[&HERO_ID].concentrating);
+}

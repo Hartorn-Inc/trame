@@ -58,9 +58,10 @@ pub use crate::commands::{
 pub use crate::cover::CoverLevel;
 pub use crate::geometry::{Bvh2D, Point2D, SenseProfile, WallKind, WallSegment};
 pub use crate::rules::{
-    ActiveEffect, AttributeModifier, DEATH_SAVE_FAILURES_TO_DIE, DamageAffinity, DamageResolution,
-    FormulaError, ModifierPhase, RulesEngineError, evaluate_actor_attributes, evaluate_derived_dag,
-    resolve_damage_application,
+    ActiveEffect, AttributeModifier, DEATH_SAVE_FAILURES_TO_DIE, DEATH_SAVE_SUCCESSES_TO_STABILIZE,
+    DamageAffinity, DamageResolution, DeathSaveOutcome, FormulaError, ModifierPhase,
+    RulesEngineError, evaluate_actor_attributes, evaluate_derived_dag, resolve_damage_application,
+    resolve_death_save,
 };
 use wasm_bindgen::prelude::*;
 

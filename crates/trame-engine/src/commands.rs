@@ -109,7 +109,9 @@ use crate::geometry::{
     WallSegment, can_token_see_target, segment_intersection, segment_intersects_segment,
 };
 use crate::movement::MovementGrid;
-use crate::rules::{ActiveEffect, DamageAffinity, DamageResolution, resolve_damage_application};
+use crate::rules::{
+    ActiveEffect, DamageAffinity, DamageResolution, resolve_damage_application, resolve_death_save,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -644,6 +646,17 @@ pub struct TokenState {
     /// `true` after `InstantDeath` or a third death saving throw failure; dead tokens cannot be healed.
     #[serde(default)]
     pub is_dead: bool,
+    /// `true` after a third death saving throw success: Stable at 0 HP, no more death saving throws.
+    /// Cleared when the token regains HP or takes damage at 0 HP; omitted from the wire when
+    /// `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_stable: bool,
+    /// `true` while the token concentrates on a spell that has no persistent zone (set by
+    /// `SetConcentration`); damage then opens a Concentration check like
+    /// `concentrating_on_aoe_id`. Cleared by `BreakConcentration` and at 0 HP; omitted from the
+    /// wire when `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub concentrating: bool,
     /// Damage types this token takes half damage from (lowercase SRD ids, e.g. `"fire"`).
     #[serde(default)]
     pub damage_resistances: Vec<String>,
@@ -702,6 +715,8 @@ impl TokenState {
             death_save_successes: 0,
             death_save_failures: 0,
             is_dead: false,
+            is_stable: false,
+            concentrating: false,
             damage_resistances: Vec::new(),
             damage_immunities: Vec::new(),
             damage_vulnerabilities: Vec::new(),
@@ -794,6 +809,24 @@ pub enum TrameCommand {
         token_id: Uuid,
         /// `true` to take the Disengage action, `false` to withdraw it.
         disengaged: bool,
+    },
+    /// Starts (`true`) or ends (`false`) concentration on a spell without a persistent zone
+    /// (GM: any token; players: owned tokens only). Undoable. `BreakConcentration` also ends it.
+    SetConcentration {
+        /// Concentrating token ID.
+        token_id: Uuid,
+        /// New concentration state.
+        concentrating: bool,
+    },
+    /// Records one `DeathSavingThrow` for a token at 0 HP that is neither Stable nor dead
+    /// (GM: any token; players: owned tokens only), resolved by `resolve_death_save`. Undoable.
+    RecordDeathSave {
+        /// Dying token ID.
+        token_id: Uuid,
+        /// Natural d20 (`1..=20`). The room replaces it with a server roll for players and
+        /// when it is `None`; the engine rejects `None`.
+        #[serde(default)]
+        d20: Option<u8>,
     },
     /// Replaces a token's conditions (GM: any token; players: owned tokens only). Ids are
     /// trimmed, lowercased, and deduplicated; at most `MAX_TOKEN_CONDITIONS` ids of
@@ -1103,6 +1136,22 @@ pub enum TrameEvent {
         token_id: Uuid,
         /// Updated Disengage flag.
         disengaged: bool,
+    },
+    /// Emitted when `SetConcentration` starts or ends concentration without a zone.
+    ConcentrationChanged {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Updated concentration state.
+        concentrating: bool,
+    },
+    /// Emitted when `RecordDeathSave` resolves a death saving throw.
+    DeathSaveRecorded {
+        /// Dying token ID.
+        token_id: Uuid,
+        /// Natural d20 that was resolved (`1..=20`).
+        d20: u8,
+        /// Counters, Stable, revival, and death after the roll.
+        outcome: crate::rules::DeathSaveOutcome,
     },
     /// Emitted when `SetTokenConditions` replaces a token's conditions.
     TokenConditionsChanged {
@@ -2234,6 +2283,56 @@ impl TableState {
                 }])
             }
 
+            TrameCommand::SetConcentration {
+                token_id,
+                concentrating,
+            } => {
+                let token = self.require_token_control(actor, token_id)?.clone();
+                if concentrating && (token.is_dead || token.hp <= 0) {
+                    return Err(CommandError::InvalidConfiguration(
+                        "a token at 0 HP cannot concentrate".to_string(),
+                    ));
+                }
+                self.push_undo(format!("Set concentration for {}", token.name));
+                let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
+                tok_mut.concentrating = concentrating;
+                Ok(vec![TrameEvent::ConcentrationChanged {
+                    token_id,
+                    concentrating,
+                }])
+            }
+
+            TrameCommand::RecordDeathSave { token_id, d20 } => {
+                let token = self.require_token_control(actor, token_id)?.clone();
+                let Some(d20) = d20.filter(|d| (1..=20).contains(d)) else {
+                    return Err(CommandError::InvalidConfiguration(
+                        "death saving throw d20 must be within 1..=20".to_string(),
+                    ));
+                };
+                if token.hp > 0 || token.is_dead || token.is_stable {
+                    return Err(CommandError::InvalidConfiguration(
+                        "only a dying token (0 HP, not Stable, not dead) makes death saving throws"
+                            .to_string(),
+                    ));
+                }
+                let outcome =
+                    resolve_death_save(token.death_save_successes, token.death_save_failures, d20);
+                self.push_undo(format!("Death saving throw for {}", token.name));
+                let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
+                tok_mut.death_save_successes = outcome.successes;
+                tok_mut.death_save_failures = outcome.failures;
+                tok_mut.is_stable = outcome.stable;
+                tok_mut.is_dead |= outcome.dead;
+                if outcome.regains_hp {
+                    tok_mut.hp = 1;
+                }
+                Ok(vec![TrameEvent::DeathSaveRecorded {
+                    token_id,
+                    d20,
+                    outcome,
+                }])
+            }
+
             TrameCommand::SetTokenConditions {
                 token_id,
                 conditions,
@@ -2500,7 +2599,8 @@ impl TableState {
                     .map_or(affinity, |t| token.damage_affinity_for(t));
 
                 self.push_undo(format!("Apply {raw_damage} damage to {}", token.name));
-                let is_concentrating = token.concentrating_on_aoe_id.is_some();
+                let is_concentrating =
+                    token.concentrating_on_aoe_id.is_some() || token.concentrating;
                 let mut resolution = resolve_damage_application(
                     raw_damage,
                     affinity,
@@ -2527,6 +2627,9 @@ impl TableState {
                 tok_mut.temp_hp = resolution.new_temp_hp;
                 tok_mut.death_save_failures = resolution.new_death_save_failures;
                 tok_mut.is_dead |= resolution.dead;
+                if resolution.death_save_failures_added > 0 {
+                    tok_mut.is_stable = false;
+                }
 
                 let mut events = vec![TrameEvent::DamageApplied {
                     token_id,
@@ -2535,12 +2638,16 @@ impl TableState {
 
                 // If the caster dropped to 0 HP, concentration breaks automatically
                 if resolution.new_hp == 0
-                    && let Some(aoe_id) = tok_mut.concentrating_on_aoe_id.take()
+                    && (tok_mut.concentrating || tok_mut.concentrating_on_aoe_id.is_some())
                 {
-                    self.data.persistent_aoes.remove(&aoe_id);
+                    tok_mut.concentrating = false;
+                    let removed_aoe_id = tok_mut.concentrating_on_aoe_id.take();
+                    if let Some(aoe_id) = removed_aoe_id {
+                        self.data.persistent_aoes.remove(&aoe_id);
+                    }
                     events.push(TrameEvent::ConcentrationBroken {
                         caster_token_id: token_id,
-                        removed_aoe_id: Some(aoe_id),
+                        removed_aoe_id,
                     });
                 }
 
@@ -2567,6 +2674,7 @@ impl TableState {
                     tok.hp = new_hp;
                     tok.death_save_successes = 0;
                     tok.death_save_failures = 0;
+                    tok.is_stable = false;
                 }
                 Ok(vec![TrameEvent::TokenHealed {
                     token_id,
@@ -2643,6 +2751,7 @@ impl TableState {
                     tok.hp = v.clamp(0, tok.max_hp);
                     if tok.hp > 0 {
                         tok.is_dead = false;
+                        tok.is_stable = false;
                         tok.death_save_successes = 0;
                         tok.death_save_failures = 0;
                     }
@@ -2732,6 +2841,7 @@ impl TableState {
                     .tokens
                     .get_mut(&caster_token_id)
                     .expect("token exists");
+                tok.concentrating = false;
                 let removed_aoe_id = tok.concentrating_on_aoe_id.take();
                 if let Some(aoe_id) = removed_aoe_id {
                     self.data.persistent_aoes.remove(&aoe_id);

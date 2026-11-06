@@ -8,9 +8,10 @@
 //! monster attributes: Kahn's topological sort over `derivedDAG` formulas, a
 //! safe recursive-descent arithmetic expression evaluator (`eval_formula_expr`),
 //! the deterministic 5-phase `ActiveEffect` modifier pipeline
-//! (`BASE -> ADD -> MULTIPLY -> OVERRIDE -> CLAMP`), and the D&D 5e damage,
+//! (`BASE -> ADD -> MULTIPLY -> OVERRIDE -> CLAMP`), the D&D 5e damage,
 //! Temporary HP, Instant Death, and Concentration DC calculator
-//! (`resolve_damage_application`).
+//! (`resolve_damage_application`), and the death saving throw state machine
+//! (`resolve_death_save`).
 //!
 //! INVARIANTS & SAFETY BOUNDARIES:
 //! -------------------------------
@@ -709,6 +710,65 @@ pub struct DamageResolution {
 
 /// Number of failed `DeathSavingThrow`s at which a creature dies.
 pub const DEATH_SAVE_FAILURES_TO_DIE: u8 = 3;
+
+/// Number of successful `DeathSavingThrow`s at which a creature becomes Stable.
+pub const DEATH_SAVE_SUCCESSES_TO_STABILIZE: u8 = 3;
+
+/// Result of one `DeathSavingThrow` d20 (`resolve_death_save`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct DeathSaveOutcome {
+    /// Success counter after the roll (`0..=3`; reset to `0` on Stable or a natural 20).
+    pub successes: u8,
+    /// Failure counter after the roll (`0..=3`; reset to `0` on Stable or a natural 20).
+    pub failures: u8,
+    /// Natural 20: the creature regains 1 Hit Point and wakes up.
+    pub regains_hp: bool,
+    /// Third success: the creature is Stable at 0 HP and stops rolling.
+    pub stable: bool,
+    /// Third failure: the creature dies.
+    pub dead: bool,
+}
+
+/// Resolves one `DeathSavingThrow` d20 (SRD 5.2.1) from the current counters.
+///
+/// Resolution order: natural 20 regains 1 HP and resets both counters; natural 1 adds two
+/// failures; `2..=9` adds one failure; `10..=19` adds one success. Counters cap at 3. Three
+/// failures kill; three successes make the creature Stable, and becoming Stable resets both
+/// counters to `0` (SRD: "reset to zero when you regain any Hit Points or become Stable").
+/// `d20` outside `1..=20` is clamped, so a malformed value can never skip the rules.
+pub fn resolve_death_save(successes: u8, failures: u8, d20: u8) -> DeathSaveOutcome {
+    let d20 = d20.clamp(1, 20);
+    if d20 == 20 {
+        return DeathSaveOutcome {
+            successes: 0,
+            failures: 0,
+            regains_hp: true,
+            stable: false,
+            dead: false,
+        };
+    }
+    let (added_successes, added_failures) = match d20 {
+        1 => (0, 2),
+        2..=9 => (0, 1),
+        _ => (1, 0),
+    };
+    let failures = failures
+        .saturating_add(added_failures)
+        .min(DEATH_SAVE_FAILURES_TO_DIE);
+    let successes = successes
+        .saturating_add(added_successes)
+        .min(DEATH_SAVE_SUCCESSES_TO_STABILIZE);
+    let dead = failures >= DEATH_SAVE_FAILURES_TO_DIE;
+    let stable = !dead && successes >= DEATH_SAVE_SUCCESSES_TO_STABILIZE;
+    DeathSaveOutcome {
+        successes: if stable { 0 } else { successes },
+        failures: if stable { 0 } else { failures },
+        regains_hp: false,
+        stable,
+        dead,
+    }
+}
 
 /// Lowest `ConcentrationCheckPrompt` DC (`10`), used when half the damage is smaller.
 pub const MIN_CONCENTRATION_DC: i32 = 10;

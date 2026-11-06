@@ -84,6 +84,8 @@
 //!      - Stored player rolls are dropped on every committed transition into or
 //!        out of `TurnByTurn`, whatever supplied the initiative order, so a roll
 //!        made for one encounter never carries over to the next.
+//!      - `RecordDeathSave` follows the same rule: a player's d20 is replaced by
+//!        a server `1d20` (`resolve_death_save_roll`), broadcast after commit.
 //!   9. `Bounded Fan-Out & Pointer Pings (RT2)`:
 //!      - Each client has a `CLIENT_OUTBOUND_QUEUE_FRAMES`-deep queue the actor
 //!        fills without waiting (`ClientSender`). A full queue drops the frame
@@ -1227,6 +1229,9 @@ impl TableRoomActor {
         let initiative_checkpoint = self.player_initiative_rolls.clone();
         let prior_mode = self.state.data.mode;
         let (resolved_cmd, initiative_rolls) = self.resolve_authoritative_initiative(&actor, cmd);
+        let (resolved_cmd, death_save_roll) = self
+            .resolve_death_save_roll(&actor, resolved_cmd)
+            .map_err(RoomError::CommandRejected)?;
         let prior_vitals = self.linked_vitals();
         let is_undo = matches!(resolved_cmd, TrameCommand::UndoLastAction);
         let persisted = match self.state.apply_command(&actor, resolved_cmd.clone()) {
@@ -1269,8 +1274,50 @@ impl TableRoomActor {
             self.fan_out_initiative_roll(*token_id, outcome);
             self.note_timeline(roll_timeline_note(self.campaign_id, outcome));
         }
+        if let Some(outcome) = &death_save_roll {
+            self.fan_out_roll(outcome);
+            self.note_timeline(roll_timeline_note(self.campaign_id, outcome));
+        }
         self.after_accepted(&events, &checkpoint, &prior_vitals);
         Ok((self.seq_id, events))
+    }
+
+    /// Server-rolled `RecordDeathSave` d20, like `AuthoritativeInitiativeRoll`: a player's
+    /// submitted value is ignored and `1d20` is rolled for them; a Game Master may enter a
+    /// physical die result or leave `d20` empty to have it rolled. The roll is broadcast only
+    /// after the command commits, with the initiative privacy rule (`GmOnly` when some player
+    /// cannot see the token). Unknown tokens pass through so the engine reports `NotFound`.
+    fn resolve_death_save_roll(
+        &mut self,
+        actor: &CommandActor,
+        cmd: TrameCommand,
+    ) -> Result<(TrameCommand, Option<DiceRollOutcome>), String> {
+        let TrameCommand::RecordDeathSave { token_id, d20 } = cmd else {
+            return Ok((cmd, None));
+        };
+        if actor.role == CampaignRole::Gm && d20.is_some() {
+            return Ok((TrameCommand::RecordDeathSave { token_id, d20 }, None));
+        }
+        let Some(token) = self.state.data.tokens.get(&token_id) else {
+            return Ok((
+                TrameCommand::RecordDeathSave {
+                    token_id,
+                    d20: None,
+                },
+                None,
+            ));
+        };
+        let visibility = initiative_roll_visibility(token, &self.player_views());
+        let reason = format!("Death Saving Throw: {}", token.name);
+        let outcome = self
+            .dice_roller
+            .roll(actor.user_id, "1d20", visibility, reason)
+            .map_err(|err| err.to_string())?;
+        let d20 = u8::try_from(outcome.total).ok();
+        Ok((
+            TrameCommand::RecordDeathSave { token_id, d20 },
+            Some(outcome),
+        ))
     }
 
     /// Applies an atomic batch (`TableState::apply_batch`). Durability comes from a snapshot at

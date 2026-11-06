@@ -70,7 +70,7 @@
 use crate::dice::{ProjectedDiceRoll, RollVisibility};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
-use trame_engine::aoe::AoeTemplate;
+use trame_engine::aoe::{AoeTemplate, GridCell};
 pub use trame_engine::commands::McpStagingProposal;
 use trame_engine::commands::{
     AmbientLightingPreset, CampaignRole, FogOverrideCell, LightSource, ReactionPrompt, TableMode,
@@ -210,6 +210,10 @@ pub struct ProjectedTableState {
     /// `PointerPing.scene_id`.
     #[serde(default)]
     pub active_scene_id: Option<Uuid>,
+    /// Difficult-terrain grid cells of the active map (public map knowledge: every recipient
+    /// gets the whole set), so clients draw them and preview movement cost.
+    #[serde(default)]
+    pub difficult_terrain: Vec<GridCell>,
     /// Queued MCP dry-run staging proposals keyed by `proposal_id` (included only for `Gm` recipients).
     #[serde(default)]
     pub mcp_staging_proposals: BTreeMap<Uuid, McpStagingProposal>,
@@ -637,6 +641,7 @@ pub fn project_state_for_recipient(
         map_height_px: state.data.map_height_px,
         active_reaction_prompts,
         active_scene_id: state.data.active_scene_id,
+        difficult_terrain: state.data.difficult_terrain.iter().copied().collect(),
         mcp_staging_proposals: if is_gm {
             state.data.mcp_staging_proposals.clone()
         } else {
@@ -748,6 +753,8 @@ pub fn filter_events_for_recipient(
                 }
             }),
             TrameEvent::TokenDisengaged { token_id, .. }
+            | TrameEvent::ConcentrationChanged { token_id, .. }
+            | TrameEvent::DeathSaveRecorded { token_id, .. }
             | TrameEvent::TokenConditionsChanged { token_id, .. }
             | TrameEvent::TokenVisibilityChanged { token_id, .. }
             | TrameEvent::TokenOwnerAssigned { token_id, .. } => {

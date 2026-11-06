@@ -1994,3 +1994,141 @@ async fn sec16_legacy_webp_assets_land_in_the_asset_store() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// UA8 — server-rolled death saving throws; difficult terrain reaches every client
+// ---------------------------------------------------------------------------
+
+/// Last `CommandAccepted` state in `frames`.
+fn accepted_state(frames: &[ServerEnvelope]) -> &trame_server::sync::ProjectedTableState {
+    frames
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            ServerEnvelope::CommandAccepted { state, .. } => Some(state),
+            _ => None,
+        })
+        .expect("expected CommandAccepted")
+}
+
+#[tokio::test]
+async fn ua8_death_save_d20_is_rolled_by_the_server_for_players() {
+    struct Case {
+        id: &'static str,
+        as_gm: bool,
+        submitted_d20: Option<u8>,
+        /// `Some(d20)` when the submitted value must be used as-is (GM physical die).
+        kept_d20: Option<u8>,
+    }
+    let cases = [
+        Case {
+            id: "player_value_is_ignored",
+            as_gm: false,
+            submitted_d20: Some(20),
+            kept_d20: None,
+        },
+        Case {
+            id: "player_without_value_gets_a_roll",
+            as_gm: false,
+            submitted_d20: None,
+            kept_d20: None,
+        },
+        Case {
+            id: "gm_without_value_gets_a_roll",
+            as_gm: true,
+            submitted_d20: None,
+            kept_d20: None,
+        },
+        Case {
+            id: "gm_physical_die_is_kept",
+            as_gm: true,
+            submitted_d20: Some(7),
+            kept_d20: Some(7),
+        },
+    ];
+    for c in cases {
+        let player_user = Uuid::new_v4();
+        let hero = Uuid::new_v4();
+        let mut t = token(hero, "Hero", Some(player_user));
+        t.hp = 0;
+        let mut state = TableState::new(100.0, 5.0, Vec::new());
+        state.data.tokens.insert(hero, t);
+        let mut table = Table::open(state, player_user).await;
+
+        table
+            .submit(
+                c.as_gm,
+                ClientEnvelope::SubmitCommand(Box::new(CommandSubmission {
+                    command: TrameCommand::RecordDeathSave {
+                        token_id: hero,
+                        d20: c.submitted_d20,
+                    },
+                    correlation_id: None,
+                })),
+            )
+            .await;
+        let frames = Table::drain(&mut table.player.1);
+        assert!(!rejected(&frames), "case {}", c.id);
+        let recorded = frames
+            .iter()
+            .find_map(|e| match e {
+                ServerEnvelope::CommandAccepted { events, .. } => {
+                    events.iter().find_map(|ev| match ev {
+                        TrameEvent::DeathSaveRecorded { d20, outcome, .. } => {
+                            Some((*d20, *outcome))
+                        }
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("case {}: DeathSaveRecorded", c.id));
+        let server_rolls = rolls(&frames);
+        match c.kept_d20 {
+            Some(d20) => {
+                assert_eq!(recorded.0, d20, "case {}", c.id);
+                assert!(server_rolls.is_empty(), "case {}: no server roll", c.id);
+            }
+            None => {
+                assert_eq!(server_rolls.len(), 1, "case {}: {server_rolls:?}", c.id);
+                let (reason, expression, total) = &server_rolls[0];
+                assert_eq!(reason, "Death Saving Throw: Hero", "case {}", c.id);
+                assert_eq!(expression, "1d20", "case {}", c.id);
+                assert_eq!(*total, Some(i32::from(recorded.0)), "case {}", c.id);
+            }
+        }
+        let projected = &accepted_state(&frames).tokens[&hero];
+        let expected = trame_engine::resolve_death_save(0, 0, recorded.0);
+        assert_eq!(
+            (
+                projected.death_save_successes,
+                projected.death_save_failures,
+                projected.is_stable
+            ),
+            (expected.successes, expected.failures, expected.stable),
+            "case {}",
+            c.id
+        );
+    }
+}
+
+#[tokio::test]
+async fn ua8_difficult_terrain_is_projected_to_players() {
+    let player_user = Uuid::new_v4();
+    let mut state = TableState::new(100.0, 5.0, Vec::new());
+    state.data.map_width_px = 1000;
+    state.data.map_height_px = 1000;
+    let mut table = Table::open(state, player_user).await;
+    let cells = vec![
+        trame_engine::aoe::GridCell { col: 1, row: 2 },
+        trame_engine::aoe::GridCell { col: 3, row: 4 },
+    ];
+    table
+        .command(TrameCommand::SetDifficultTerrain {
+            cells: cells.clone(),
+            difficult: true,
+        })
+        .await;
+    let frames = Table::drain(&mut table.player.1);
+    assert_eq!(accepted_state(&frames).difficult_terrain, cells);
+}

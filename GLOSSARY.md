@@ -191,7 +191,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### DeathSavingThrow
 
-- **Definition**: Untyped d20 saving throw rolled by an unconscious actor at 0 HP at the start of their turn, tracking successes (`>= 10`) and failures (`< 10`, 2 failures on natural 1, regain 1 HP on natural 20).
+- **Definition**: Untyped d20 saving throw rolled by an unconscious actor at 0 HP at the start of their turn, tracking successes (`>= 10`) and failures (`< 10`, 2 failures on natural 1, regain 1 HP on natural 20). Three successes make the actor Stable (counters reset, no further rolls until damaged); three failures kill it. The server rolls the d20 for players (`RecordDeathSave`).
 - **Allowed Context**: `DeathSavingThrow`, `death saving throw`.
 - **_Avoid_**: `death save`, `dying roll`.
 
