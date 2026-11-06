@@ -653,6 +653,17 @@ function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+/**
+ * `true` when a spell's rules text halves its damage on a successful save.
+ * SRD 5.2.1 words it two ways: "half as much damage on a successful one"
+ * (Fireball) and "On a successful save, a creature takes half as much damage"
+ * (Thunderwave, Moonbeam, "*Successful Save:* Half as much damage."). Missing
+ * the second form made those spells deal nothing on a successful save.
+ */
+export function halvesDamageOnSave(description: string): boolean {
+  return /half as much damage on a successful|successful save\b[^.]*half as much damage/i.test(description);
+}
+
 function spellEntry(record: Open5eRecord): CompendiumEntry {
   const f = record.fields;
   const key = stripPrefix(record.pk);
@@ -703,7 +714,7 @@ function spellEntry(record: Open5eRecord): CompendiumEntry {
       ritual: f.ritual === true,
       ...(attack ? { attackType: attack[1].toLowerCase() } : {}),
       ...(save ? { saveAbility: ABILITY_BY_NAME[save[1].toLowerCase()] } : {}),
-      ...(/half as much damage on a successful/i.test(description) ? { halfDamageOnSave: true } : {}),
+      ...(halvesDamageOnSave(description) ? { halfDamageOnSave: true } : {}),
       ...(damage.length > 0 ? { damageDice: damage[0].dice, damageType: damage[0].type, damage } : {}),
       ...(heal ? { healDice: normalizeDice(heal[1] ?? heal[2]) } : {}),
       ...(area ? { area } : {}),

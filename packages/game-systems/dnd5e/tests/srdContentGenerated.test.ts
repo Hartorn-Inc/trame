@@ -14,7 +14,7 @@ import {
   type MonsterStatBlock,
   type SrdPacks,
 } from "../src/index.ts";
-import { buildSrdPacks, serializePack, type Open5eSnapshot } from "../scripts/open5eTransform.ts";
+import { buildSrdPacks, halvesDamageOnSave, serializePack, type Open5eSnapshot } from "../scripts/open5eTransform.ts";
 import { validateAgainstSchema } from "./support/jsonSchemaSubset.ts";
 
 const readJson = (relative: string): unknown => JSON.parse(readFileSync(new URL(relative, import.meta.url), "utf8"));
@@ -154,6 +154,31 @@ describe("Generated SRD 5.2.1 packs (GS7, GS8, GS9, D8)", () => {
       assert.deepEqual(fireball?.area, { shape: "sphere", sizeFt: 20 });
       assert.equal(fireball?.concentration, false);
     });
+
+    const halfOnSaveTextCases: { id: string; text: string; half: boolean }[] = [
+      { id: "on-a-successful-one", text: "taking 8d6 Fire damage on a failed save or half as much damage on a successful one.", half: true },
+      { id: "successful-save-takes-half", text: "On a successful save, a creature takes half as much damage only.", half: true },
+      { id: "successful-save-heading", text: "*Successful Save:* Half as much damage.", half: true },
+      { id: "success-negates", text: "On a failed save, the target takes 3d6 Psychic damage. On a successful save, nothing happens.", half: false },
+    ];
+    for (const { id, text, half } of halfOnSaveTextCases) {
+      it(`[half-on-save-text-${id}] halvesDamageOnSave is ${half}`, () => {
+        assert.equal(halvesDamageOnSave(text), half);
+      });
+    }
+
+    const halfOnSaveSpellCases: { id: string; spell: string }[] = [
+      { id: "thunderwave", spell: "srd:spell:thunderwave" },
+      { id: "moonbeam", spell: "srd:spell:moonbeam" },
+      { id: "spirit-guardians", spell: "srd:spell:spirit_guardians" },
+      { id: "prismatic-spray", spell: "srd:spell:prismatic_spray" },
+      { id: "burning-hands", spell: "srd:spell:burning_hands" },
+    ];
+    for (const { id, spell } of halfOnSaveSpellCases) {
+      it(`[half-on-save-pack-${id}] ${spell} halves its damage on a successful save`, () => {
+        assert.equal(byId.get(spell)?.data.halfDamageOnSave, true);
+      });
+    }
 
     const flagCases: { id: string; spell: string; concentration: boolean; ritual: boolean }[] = [
       { id: "bless-concentration", spell: "srd:spell:bless", concentration: true, ritual: false },

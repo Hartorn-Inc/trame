@@ -54,8 +54,8 @@
   "packs": [
     {
       "file": "spells.json",
-      "sha256": "6d2b80a3a558bda768c8938c620f4840df60b639536961cca03b22ae7d67f77f",
-      "bytes": 386790
+      "sha256": "f98885838b3ee11918f444967e8a6603403daf72dd31f03b849ebd217eb10662",
+      "bytes": 387126
     },
     {
       "file": "monsters.json",
