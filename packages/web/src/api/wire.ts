@@ -279,6 +279,99 @@ export interface ProjectedTableState {
   active_scene_id?: Uuid | null;
   /** Pending MCP proposals; always empty for non-GM recipients. */
   mcp_staging_proposals: Record<Uuid, McpStagingProposal>;
+  /**
+   * Server-rolled actions waiting for their Apply (ADR-0042): every one for GMs, only the
+   * recipient's own for players, with the d20s and totals of targets they do not control removed.
+   */
+  pending_resolutions?: Record<Uuid, WirePendingResolution>;
+  /** Open Concentration check DCs (oldest first) by token: every token for GMs, controlled ones otherwise. */
+  pending_concentration_checks?: Record<Uuid, number[]>;
+}
+
+/** Advantage state of a server d20 roll (`RollMode` in `resolution.rs`). */
+export type WireRollMode = "NORMAL" | "ADVANTAGE" | "DISADVANTAGE";
+
+/** Cover accepted for a target (`CoverLevel`). */
+export type WireCoverLevel = "NONE" | "HALF" | "THREE_QUARTERS" | "TOTAL";
+
+/** How the targets of an action are checked (`ResolutionCheck`, tagged by `kind`). */
+export type WireResolutionCheck =
+  /** One attack roll per target against its AC; `attack_bonus` in `-10..=30`, `critical_range` in `18..=20`. */
+  | { kind: "ATTACK"; attack_bonus: number; critical_range: number }
+  /** One save per target against `dc` (`1..=30`); damage rolled once. */
+  | { kind: "SAVE"; ability: string; dc: number; half_on_success: boolean }
+  /** Every target takes the damage (Magic Missile). */
+  | { kind: "AUTOMATIC" };
+
+/** One target of a `RESOLVE_ACTION` request (`ActionTargetRequest`). */
+export interface WireActionTargetRequest {
+  token_id: Uuid;
+  /** Client-computed advantage state; the server ignores it for saves of targets the issuer does not control. */
+  roll_mode: WireRollMode;
+  cover: WireCoverLevel;
+}
+
+/** What the client asks the server to roll (`ActionRequest`). */
+export interface WireActionRequest {
+  /** Client-chosen UUID; the card follows the `ACTION_RESOLVED` event carrying it. */
+  resolution_id: Uuid;
+  /** Attacker or caster token (`null`: none on the table, no automatic critical hit). */
+  attacker_token_id: Uuid | null;
+  /** `1..=120` characters. */
+  action_name: string;
+  check: WireResolutionCheck;
+  /** Dice terms only (`"2d6"`, `"1d8+1d6"`), `""` for none. */
+  damage_dice: string;
+  /** Flat damage added once (`-20..=50`). */
+  damage_modifier: number;
+  /** Lowercase SRD damage type, `null` for untyped damage. */
+  damage_type: string | null;
+  /** `1..=32` distinct targets. */
+  targets: WireActionTargetRequest[];
+}
+
+/** Result of one target (`TargetOutcome`). */
+export type WireTargetOutcome = "HIT" | "CRITICAL" | "MISS" | "BLOCKED" | "SAVE_SUCCESS" | "SAVE_FAILURE";
+
+/** Server-rolled result of one target (`ResolvedTarget`). */
+export interface WireResolvedTarget {
+  token_id: Uuid;
+  roll_mode: WireRollMode;
+  outcome: WireTargetOutcome;
+  /** Natural d20s; empty when nothing was rolled or the recipient may not see them (hidden numbers). */
+  d20_rolls: number[];
+  /** Attack or save total; `null` when nothing was rolled or hidden from the recipient. */
+  total: number | null;
+  /** Damage to apply (`>= 0`), after save-for-half and before the target's affinity. */
+  damage: number;
+  is_critical: boolean;
+  /** Already applied (or nothing to apply); never applied twice. */
+  applied: boolean;
+}
+
+/** Server-held result waiting for `APPLY_RESOLUTION` (`PendingResolution`, ADR-0042). */
+export interface WirePendingResolution {
+  id: Uuid;
+  /** User who requested it; they may apply it as rolled. */
+  issuer_user_id: Uuid;
+  attacker_token_id: Uuid | null;
+  action_name: string;
+  check: WireResolutionCheck;
+  damage_type: string | null;
+  /** Damage expression rolled (`"1d8+3"`; critical hits doubled the dice). */
+  damage_expression: string;
+  targets: WireResolvedTarget[];
+  /** Creation order on the table. */
+  sequence: number;
+}
+
+/** Game Master changes before applying (`ResolutionAdjustment`); every field optional. */
+export interface WireResolutionAdjustment {
+  /** New amount (`>= 0`); only with a single target. */
+  damage?: number | null;
+  /** New damage type; `""` makes the damage untyped. */
+  damage_type?: string | null;
+  is_critical?: boolean | null;
 }
 
 /** Recipient-projected dice roll (`ProjectedDiceRoll` in `dice.rs`). */

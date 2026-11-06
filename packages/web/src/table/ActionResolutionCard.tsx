@@ -5,80 +5,72 @@
  *
  * PURPOSE:
  * -----
- * The table side of decision D6. When a sheet attack or spell is pending
- * (`pendingActionSignal`), this card collects its targets (board clicks or the
- * checklist) or places its area (board click or "centre on token", then
- * `PROJECT_AOE`), rolls through the server, and shows each target's outcome
- * and damage for review. Only an explicit Apply sends `APPLY_DAMAGE` with the
- * damage type and the critical flag, so a misclick never changes HP.
+ * The table side of decision D6. When a sheet attack or spell, or a monster's
+ * stat block action, is pending (`pendingActionSignal`), this card collects
+ * its targets (board clicks or the checklist) or places its area (board click
+ * or "centre on token", then `PROJECT_AOE`), asks the server to roll it with
+ * `RESOLVE_ACTION`, and shows the server's `PendingResolution` for review and
+ * the explicit Apply (`ResolutionReview`).
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
- * 1. `Explicit Apply`:
- *    - Rolling never touches HP. Apply is disabled while any outcome is
- *      `unknown` (hidden AC or save bonus); the user rules it with buttons.
- * 2. `GM Adjusts, Server Decides Affinity`:
- *    - The GM can edit every amount and the damage type before Apply; the
- *      server derives resistance, vulnerability and immunity from the type.
- * 3. `Room Authority`:
- *    - A player's Apply is sent only for tokens they control (the room
- *      refuses the rest); other targets say the GM applies them, and every
- *      roll is public in the dice log so the GM sees the numbers.
- * 4. `Engine Targets For Areas`:
+ * 1. `Server Rolls, Client Reviews`:
+ *    - The card never rolls dice or compares numbers. A player attacking a
+ *      monster sees hit / miss / critical and the damage, never its AC; an
+ *      area shows success / failure per monster, never its save bonus.
+ * 2. `Explicit Apply, Once`:
+ *    - Rolling never touches HP; Apply references the resolution id, and the
+ *      engine applies each target at most once (`ResolutionReview`).
+ * 3. `Engine Targets For Areas`:
  *    - Area targets are the `affected_token_ids` of the engine's
  *      `AOE_PROJECTED` event for this template id, never a client guess.
  *      A concentration spell projects a persistent zone bound to the caster.
- * 5. `Keyboard Reachable`:
+ * 4. `Keyboard Reachable, Announced`:
  *    - Every board gesture has a form control twin (target checklist,
  *      "centre on token" select); the heading takes focus when the card
- *      opens so keyboard users land on it.
+ *      opens and again when the result arrives, and the outcome summary is a
+ *      polite live region.
  *
  * EXECUTION LIFECYCLE:
  * -----
  * `ActionResolutionCard` (keyed by the pending template id)
- * ├── attack: targets -> Roll -> `resolveTargets` -> review.
- * ├── area:   place -> Project (`PROJECT_AOE`) -> `AOE_PROJECTED` -> `resolveTargets`.
- * ├── review: rule unknown outcomes, GM edits amounts / type.
- * └── Apply -> `APPLY_DAMAGE` per applicable target -> `cancelAction()`.
+ * ├── attack / monster: targets -> Roll -> `RESOLVE_ACTION`.
+ * ├── area: place -> Project (`PROJECT_AOE`) -> `AOE_PROJECTED` -> `RESOLVE_ACTION`.
+ * ├── `ACTION_RESOLVED` (projection) -> `ResolutionReview`.
+ * └── Apply -> `APPLY_RESOLUTION` -> `cancelAction()`.
  * ============================================================================
  */
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ApiClient } from '../api/client.ts';
-import type { Uuid } from '../api/wire.ts';
+import type { Uuid, WirePendingResolution } from '../api/wire.ts';
 import { t, type MessageKey } from '../i18n/index.ts';
 import {
   actionTargetIdsSignal,
+  activeResolutionIdSignal,
   areaOriginSignal,
   areaProjectedSignal,
   areaTemplateIdSignal,
   attackerContext,
+  buildActionRequest,
   cancelAction,
-  deriveSheet,
-  isReadyToApply,
+  newUuid,
   pendingActionSignal,
   pendingAreaTemplate,
-  resolvableFor,
-  resolveTargets,
-  restDiceRoller,
-  ruleAttack,
-  ruleSave,
+  pendingResolvable,
   targetContext,
+  targetRollMode,
   toggleActionTarget,
-  type DiceRoller,
   type PendingAction,
   type ResolvableAction,
-  type TargetResolution,
 } from './actionResolution.ts';
-import { applyDamage, DAMAGE_TYPES, projectAoe, type DamageType } from './commands.ts';
+import { projectAoe, resolveAction } from './commands.ts';
+import { OUTCOME_KEYS, ResolutionReview } from './ResolutionReview.tsx';
 import { boardMetrics } from './scene/tableScene.ts';
 import { listTableTokens, type TableToken } from './tableView.ts';
 
 export interface ActionResolutionCardProps {
-  campaignId: Uuid;
   client: ApiClient;
   isGm: boolean;
-  /** Dice roller; defaults to public REST rolls (tests inject a scripted one). */
-  roller?: DiceRoller;
 }
 
 /** Renders the card while an action is pending; a new action remounts it with fresh state. */
@@ -92,62 +84,84 @@ function tokenCenter(token: TableToken, cellPx: number) {
   return { x: token.topLeft.x + (token.gridW * cellPx) / 2, y: token.topLeft.y + (token.gridH * cellPx) / 2 };
 }
 
-function outcomeLabel(result: TargetResolution): string {
-  return t(`resolution.outcome.${result.outcome}` as MessageKey);
-}
-
-function rollLine(result: TargetResolution): string | null {
-  if (result.total === null) return null;
-  const line = result.natural === null ? t('resolution.rollTotal', { total: result.total }) : t('resolution.rollLine', { total: result.total, natural: result.natural });
-  if (result.mode === 'normal') return line;
-  const sources = result.mode === 'advantage' ? result.advantageSources : result.disadvantageSources;
-  const mode = t(`resolution.mode.${result.mode}` as MessageKey);
-  return `${line}, ${sources.length ? t('resolution.modeSources', { mode, sources: sources.join(', ') }) : mode}`;
+function signed(value: number): string {
+  return value >= 0 ? `+${value}` : String(value);
 }
 
 function actionSummary(action: ResolvableAction): string {
-  if (action.attackBonus !== null) return t('resolution.attackBonus', { bonus: action.attackBonus >= 0 ? `+${action.attackBonus}` : String(action.attackBonus) });
+  if (action.attackBonus !== null) return t('resolution.attackBonus', { bonus: signed(action.attackBonus) });
   if (action.save) return t('resolution.save', { ability: action.save.ability.toUpperCase(), dc: action.save.dc });
   return t('resolution.autoHit');
 }
 
-function PendingActionCard({ campaignId, client, isGm, roller, pending }: ActionResolutionCardProps & { pending: PendingAction }) {
+/** One sentence for the live region: "Goblin: hit. Orc: miss." */
+function outcomeAnnouncement(resolution: WirePendingResolution, names: Map<Uuid, string>): string {
+  return resolution.targets
+    .map((target) => `${names.get(target.token_id) || t('resolution.unknownTarget')}: ${t(OUTCOME_KEYS[target.outcome])}`)
+    .join('. ');
+}
+
+function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps & { pending: PendingAction }) {
   const state = client.state.table.value;
   const tokens = listTableTokens(state);
-  const sheets = client.state.actors.value;
-  const derived = deriveSheet(sheets[pending.actorId]?.data);
-  const action = derived ? resolvableFor(pending, derived) : null;
-  const roll = roller ?? restDiceRoller(client, campaignId);
-  const sources = { state, tokens, sheets };
-  const attacker = attackerContext(sources, pending.actorId);
+  const sources = { state, tokens, sheets: client.state.actors.value };
+  const action = pendingResolvable(sources, pending);
+  const attacker = attackerContext(sources, pending);
   const { cellPx } = boardMetrics(state);
+  const names = new Map(tokens.map((tok) => [tok.id, tok.name]));
 
-  const [results, setResults] = useState<TargetResolution[] | null>(null);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [damageType, setDamageType] = useState<DamageType | ''>((action?.damageType as DamageType | null) ?? '');
+  const [sent, setSent] = useState(false);
+  const [noneAffected, setNoneAffected] = useState(false);
+  const [modeSources, setModeSources] = useState<Record<Uuid, string[]>>({});
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const resolutionId = activeResolutionIdSignal.value;
+  const events = client.state.lastEvents.value;
+  const resolved =
+    (resolutionId ? state?.pending_resolutions?.[resolutionId] : undefined) ??
+    (events.find((ev) => ev.event === 'ACTION_RESOLVED' && (ev.resolution as WirePendingResolution | undefined)?.id === resolutionId)?.resolution as
+      | WirePendingResolution
+      | undefined);
 
-  useEffect(() => headingRef.current?.focus(), []);
+  useEffect(() => headingRef.current?.focus(), [resolved !== undefined]);
 
-  const run = async (work: () => Promise<TargetResolution[]>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      setResults(await work());
-    } catch {
-      setError(t('resolution.rollFailed'));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const feedback = client.state.commandFeedback.value;
+  const feedbackSeen = useRef(feedback.length ? feedback[feedback.length - 1].id : -1);
+  useEffect(() => {
+    const rejected = feedback.find((f) => f.id > feedbackSeen.current && f.action === 'RESOLVE_ACTION');
+    if (feedback.length) feedbackSeen.current = Math.max(feedbackSeen.current, ...feedback.map((f) => f.id));
+    if (!rejected || resolved) return;
+    setSent(false);
+    activeResolutionIdSignal.value = null;
+    setError(t('resolution.rejected'));
+  }, [feedback]);
 
   const resolveFor = (targets: TableToken[]) => {
     if (!action) return;
-    void run(() => resolveTargets(action, attacker, targets.map((tok) => targetContext(sources, tok, attacker.tokenId)), roll));
+    setSent(true);
+    if (targets.length === 0) {
+      setNoneAffected(true);
+      return;
+    }
+    const contexts = targets.map((tok) => targetContext(sources, tok, attacker.tokenId));
+    const id = newUuid();
+    setModeSources(
+      Object.fromEntries(
+        contexts.map((target) => {
+          const mode = targetRollMode(action, attacker, target);
+          return [target.tokenId, mode.mode === 'advantage' ? mode.advantageSources : mode.disadvantageSources];
+        }),
+      ),
+    );
+    if (!client.submitCommand(resolveAction(buildActionRequest(action, attacker, contexts, id)))) {
+      setSent(false);
+      setError(t('resolution.offline'));
+      return;
+    }
+    setError(null);
+    activeResolutionIdSignal.value = id;
   };
 
-  const events = client.state.lastEvents.value;
   const templateId = areaTemplateIdSignal.value;
   const projected = areaProjectedSignal.value;
   const areaResolved = useRef(false);
@@ -163,7 +177,7 @@ function PendingActionCard({ campaignId, client, isGm, roller, pending }: Action
 
   const close = (
     <button type="button" class="ds-btn ds-btn-ghost" data-testid="action-cancel" onClick={cancelAction}>
-      {t(results ? 'resolution.close' : 'resolution.cancel')}
+      {t(sent ? 'resolution.close' : 'resolution.cancel')}
     </button>
   );
 
@@ -183,40 +197,26 @@ function PendingActionCard({ campaignId, client, isGm, roller, pending }: Action
     if (client.submitCommand(projectAoe(template, action.concentration))) areaProjectedSignal.value = true;
     else setError(t('resolution.offline'));
   };
-
-  const canApplyTo = (tokenId: Uuid) => isGm || tokens.some((tok) => tok.id === tokenId && tok.controlled);
-  const applicable = (results ?? []).filter((r) => r.damage > 0 && canApplyTo(r.tokenId));
-  const apply = () => {
-    for (const r of applicable) {
-      if (!client.submitCommand(applyDamage(r.tokenId, r.damage, { damageType: damageType || null, critical: r.critical }))) {
-        setError(t('resolution.offline'));
-        return;
-      }
-    }
-    cancelAction();
-  };
-
-  const update = (next: TargetResolution) => setResults((prev) => (prev ?? []).map((r) => (r.tokenId === next.tokenId ? next : r)));
-  const ruleUnknown = (result: TargetResolution, outcome: 'hit' | 'critical' | 'miss' | 'success' | 'failure') => {
-    if (outcome === 'success' || outcome === 'failure') {
-      update(ruleSave(result, outcome, action));
-      return;
-    }
-    setBusy(true);
-    ruleAttack(result, outcome, action, roll)
-      .then(update)
-      .catch(() => setError(t('resolution.rollFailed')))
-      .finally(() => setBusy(false));
-  };
+  const picking = !sent && pending.kind !== 'area';
 
   return (
-    <section class="ds-panel ds-stack-sm" aria-label={t('resolution.region')} data-testid="action-card" aria-busy={busy ? 'true' : 'false'}>
+    <section class="ds-panel ds-stack-sm" aria-label={t('resolution.region')} data-testid="action-card" aria-busy={sent && !resolved ? 'true' : 'false'}>
       <h3 class="ds-panel-title" tabIndex={-1} ref={headingRef}>
         {t('resolution.title', { name: action.name })}
       </h3>
       <p class="ds-hint" data-testid="action-summary">{actionSummary(action)}</p>
+      {action.secondarySave ? (
+        <p class="ds-hint" data-testid="action-secondary-save">
+          {t('resolution.secondarySave', { ability: action.secondarySave.ability.toUpperCase(), dc: action.secondarySave.dc })}
+        </p>
+      ) : null}
+      {action.otherDamageTypes?.length ? (
+        <p class="ds-hint" data-testid="action-other-damage">
+          {t('resolution.otherDamage', { types: action.otherDamageTypes.map((type) => t(`damage.type.${type}` as MessageKey)).join(', ') })}
+        </p>
+      ) : null}
 
-      {!results && pending.kind === 'attack' ? (
+      {picking ? (
         <fieldset class="ds-stack-sm">
           <legend class="ds-field-label">{t('resolution.targets')}</legend>
           <p class="ds-hint">{t('resolution.pickTargets')}</p>
@@ -237,7 +237,7 @@ function PendingActionCard({ campaignId, client, isGm, roller, pending }: Action
             type="button"
             class="ds-btn ds-btn-primary"
             data-testid="action-roll"
-            disabled={busy || targetIds.length === 0}
+            disabled={targetIds.length === 0}
             onClick={() => resolveFor(tokens.filter((tok) => targetIds.includes(tok.id)))}
           >
             {t('resolution.roll')}
@@ -245,7 +245,7 @@ function PendingActionCard({ campaignId, client, isGm, roller, pending }: Action
         </fieldset>
       ) : null}
 
-      {!results && pending.kind === 'area' ? (
+      {!sent && pending.kind === 'area' ? (
         <div class="ds-stack-sm">
           <p class="ds-hint" data-testid="action-area-hint" role="status">
             {projected ? t('resolution.waiting') : template ? t('resolution.areaPlaced') : t('resolution.placeArea')}
@@ -268,7 +268,7 @@ function PendingActionCard({ campaignId, client, isGm, roller, pending }: Action
                   <option key={tok.id} value={tok.id}>{tok.name}</option>
                 ))}
               </select>
-              <button type="button" class="ds-btn ds-btn-primary" data-testid="action-area-project" disabled={!template || busy} onClick={project}>
+              <button type="button" class="ds-btn ds-btn-primary" data-testid="action-area-project" disabled={!template} onClick={project}>
                 {t('resolution.project')}
               </button>
             </>
@@ -276,91 +276,12 @@ function PendingActionCard({ campaignId, client, isGm, roller, pending }: Action
         </div>
       ) : null}
 
-      {busy ? <p class="ds-hint" role="status">{t('resolution.rolling')}</p> : null}
+      <p class="ds-hint" role="status" aria-live="polite" data-testid="action-status">
+        {noneAffected ? t('resolution.noneAffected') : resolved ? outcomeAnnouncement(resolved, names) : sent ? t('resolution.rolling') : ''}
+      </p>
 
-      {results ? (
-        <div class="ds-stack-sm">
-          {results.length === 0 ? <p class="ds-hint" data-testid="action-none-affected">{t('resolution.noneAffected')}</p> : null}
-          <ul class="ds-stack-sm" aria-label={t('resolution.results')}>
-            {results.map((r) => {
-              const line = rollLine(r);
-              const unknownChoices: Array<'hit' | 'critical' | 'miss' | 'success' | 'failure'> =
-                r.outcome !== 'unknown' ? [] : action.attackBonus !== null ? ['hit', 'critical', 'miss'] : ['success', 'failure'];
-              return (
-                <li key={r.tokenId} class="ds-stack-sm" data-testid={`action-result-${r.tokenId}`}>
-                  <p class="ds-value">
-                    <strong>{r.name}</strong>: <span data-testid={`action-outcome-${r.tokenId}`}>{outcomeLabel(r)}</span>
-                    {line ? <span class="ds-hint"> ({line})</span> : null}
-                  </p>
-                  {unknownChoices.length ? (
-                    <div class="ds-cluster" role="group" aria-label={t('resolution.ruleFor', { name: r.name })}>
-                      {unknownChoices.map((choice) => (
-                        <button
-                          key={choice}
-                          type="button"
-                          class="ds-btn ds-btn-secondary ds-btn-sm"
-                          data-testid={`action-rule-${r.tokenId}-${choice}`}
-                          disabled={busy}
-                          onClick={() => ruleUnknown(r, choice)}
-                        >
-                          {t(`resolution.outcome.${choice}` as MessageKey)}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                  {isGm ? (
-                    <label class="ds-cluster">
-                      <span class="ds-field-label">{t('resolution.damageFor', { name: r.name })}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        class="ds-input ds-input-compact"
-                        data-testid={`action-damage-${r.tokenId}`}
-                        value={String(r.damage)}
-                        onInput={(e) => update({ ...r, damage: Math.max(0, Math.trunc(Number((e.target as HTMLInputElement).value) || 0)) })}
-                      />
-                    </label>
-                  ) : (
-                    <p class="ds-value" data-testid={`action-damage-${r.tokenId}`}>
-                      {t('resolution.damageValue', { damage: r.damage })}
-                    </p>
-                  )}
-                  {!canApplyTo(r.tokenId) && r.damage > 0 ? <p class="ds-hint">{t('resolution.gmApplies')}</p> : null}
-                </li>
-              );
-            })}
-          </ul>
-          {isGm ? (
-            <>
-              <label class="ds-field-label" for="action-damage-type">{t('resolution.damageType')}</label>
-              <select
-                id="action-damage-type"
-                class="ds-input"
-                data-testid="action-damage-type"
-                value={damageType}
-                onChange={(e) => setDamageType((e.target as HTMLSelectElement).value as DamageType | '')}
-              >
-                <option value="">{t('resolution.untyped')}</option>
-                {DAMAGE_TYPES.map((type) => (
-                  <option key={type} value={type}>{t(`damage.type.${type}` as MessageKey)}</option>
-                ))}
-              </select>
-            </>
-          ) : (
-            <p class="ds-hint" data-testid="action-damage-type">
-              {t('resolution.damageTypeValue', { type: damageType ? t(`damage.type.${damageType}` as MessageKey) : t('resolution.untyped') })}
-            </p>
-          )}
-          <button
-            type="button"
-            class="ds-btn ds-btn-primary"
-            data-testid="action-apply"
-            disabled={busy || !isReadyToApply(results) || applicable.length === 0}
-            onClick={apply}
-          >
-            {t('resolution.apply')}
-          </button>
-        </div>
+      {resolved ? (
+        <ResolutionReview client={client} isGm={isGm} resolution={resolved} testIdPrefix="action" modeSources={modeSources} onDone={cancelAction} />
       ) : null}
 
       {error ? (

@@ -6,8 +6,10 @@
  * PURPOSE:
  * -----
  * Composes the live table: GM toolbar, combat tracker, reaction prompts,
- * board, the pending attack / spell resolution card, selected-token vitals,
- * conditions and cover suggestion, and dice tray (the sheet/compendium drawers
+ * board, the pending attack / spell resolution card, concentration check
+ * prompts, the pending resolutions list, selected-token vitals, the selected
+ * monster's stat block (GM), conditions and cover suggestion, and dice tray
+ * (the sheet/compendium drawers
  * are mounted by the workspace). Each child reads the session signals itself;
  * this module only lays them out.
  *
@@ -27,8 +29,11 @@ import { isCompendiumDrawerOpenSignal } from '../hud/HudDrawers.tsx';
 import { t } from '../i18n/index.ts';
 import { ActionResolutionCard } from './ActionResolutionCard.tsx';
 import { CombatTrackerBar } from './CombatTrackerBar.tsx';
+import { ConcentrationCheckPrompt } from './ConcentrationCheckPrompt.tsx';
 import { DiceTray } from './DiceTray.tsx';
 import { GmOverrideToolbar } from './GmOverrideToolbar.tsx';
+import { MonsterTurnPanel } from './MonsterTurnPanel.tsx';
+import { PendingResolutionsPanel } from './PendingResolutionsPanel.tsx';
 import { ReactionBanner } from './ReactionBanner.tsx';
 import { TableCanvas } from './TableCanvas.tsx';
 import { CoverSuggestionPanel } from './CoverSuggestionPanel.tsx';
@@ -58,8 +63,11 @@ export function TableTab({ campaignId, client, isGm }: TableTabProps) {
         <TableCanvas campaignId={campaignId} client={client} isGm={isGm} />
       </div>
       <aside class="ds-stack-sm ds-table-side" aria-label={t('table.sidebar')}>
-        <ActionResolutionCard campaignId={campaignId} client={client} isGm={isGm} />
+        <ActionResolutionCard client={client} isGm={isGm} />
+        <ConcentrationCheckPrompt client={client} />
+        <PendingResolutionsPanel client={client} isGm={isGm} />
         <TokenVitalsPanel client={client} isGm={isGm} />
+        <MonsterTurnPanel client={client} isGm={isGm} />
         <TokenConditionsPanel client={client} isGm={isGm} />
         <CoverSuggestionPanel client={client} />
         <DiceTray client={client} />

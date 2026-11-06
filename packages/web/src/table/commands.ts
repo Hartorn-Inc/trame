@@ -30,9 +30,20 @@
  * 5. `Server-Rolled Death Saving Throws`:
  *    - `recordDeathSave` sends `d20: null` unless the GM typed a physical die
  *      result; the room rolls the d20 for players whatever they send.
+ * 6. `Server-Rolled Resolutions (ADR-0042)`:
+ *    - `resolveAction` and `rollConcentrationCheck` send `null` for the
+ *      server-filled payload; the room rolls and overwrites it.
  * ============================================================================
  */
-import type { Uuid, WirePoint2D, WireTrameCommand, WireWallSegment } from "../api/wire.ts";
+import type {
+  Uuid,
+  WireActionRequest,
+  WirePoint2D,
+  WireResolutionAdjustment,
+  WireRollMode,
+  WireTrameCommand,
+  WireWallSegment,
+} from "../api/wire.ts";
 import type { AoeTemplateDto, GridCell } from "../engine/wasmBridge.ts";
 
 /** Target affinity toward the damage type (`DamageAffinity`). */
@@ -181,6 +192,32 @@ export function conditionOverride(tokenId: Uuid, subject: ConditionOverrideSubje
 /** `SET_CONCENTRATION`: starts or ends concentration without a zone (GM: any; players: owned). */
 export function setConcentration(tokenId: Uuid, concentrating: boolean): WireTrameCommand {
   return { cmd: "SET_CONCENTRATION", token_id: tokenId, concentrating };
+}
+
+/**
+ * `RESOLVE_ACTION`: the room rolls `request` against the targets' server-side AC and save
+ * bonuses and stores a `PendingResolution`; `resolution` is always `null` from a client.
+ */
+export function resolveAction(request: WireActionRequest): WireTrameCommand {
+  return { cmd: "RESOLVE_ACTION", request, resolution: null };
+}
+
+/**
+ * `APPLY_RESOLUTION`: applies the server-rolled damage of one target (`tokenId`) or of every
+ * target not yet applied; `adjustment` is GM-only.
+ */
+export function applyResolution(resolutionId: Uuid, tokenId: Uuid | null = null, adjustment: WireResolutionAdjustment | null = null): WireTrameCommand {
+  return { cmd: "APPLY_RESOLUTION", resolution_id: resolutionId, token_id: tokenId, adjustment };
+}
+
+/** `DISMISS_RESOLUTION`: GM-only; drops a pending resolution without damage. */
+export function dismissResolution(resolutionId: Uuid): WireTrameCommand {
+  return { cmd: "DISMISS_RESOLUTION", resolution_id: resolutionId };
+}
+
+/** `ROLL_CONCENTRATION_CHECK`: the room rolls the token's Constitution save against its oldest open DC. */
+export function rollConcentrationCheck(tokenId: Uuid, rollMode: WireRollMode = "NORMAL"): WireTrameCommand {
+  return { cmd: "ROLL_CONCENTRATION_CHECK", token_id: tokenId, roll_mode: rollMode, roll: null };
 }
 
 /** `RECORD_DEATH_SAVE`: `d20` is a GM's physical die (`1..=20`), else `null` for a server roll. */

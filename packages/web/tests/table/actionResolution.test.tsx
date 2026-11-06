@@ -3,52 +3,48 @@ import { beforeEach, describe, it } from "node:test";
 import { h } from "preact";
 import {
   applyClassChoices,
+  CompendiumResolver,
   computeDnd5eSheetDerived,
   createDefaultActorData,
   getClassChoices,
   type DerivedFeatureRollRule,
   type Dnd5eActorData,
+  type MonsterAction,
+  type MonsterStatBlock,
 } from "../../../game-systems/dnd5e/src/index.ts";
+import { selectedTokenIdSignal } from "../../src/api/session.ts";
+import type { ProjectedTableState, WirePendingResolution, WireResolvedTarget } from "../../src/api/wire.ts";
+import { monsterStatBlockOf, type CompendiumEntry } from "../../src/compendium/CompendiumDrawer.tsx";
 import { localeSignal } from "../../src/i18n/index.ts";
 import { ActionResolutionCard } from "../../src/table/ActionResolutionCard.tsx";
 import {
   areaOriginSignal,
   areaTemplate,
+  buildActionRequest,
   cancelAction,
-  isReadyToApply,
+  footprintDistanceFt,
   pendingActionSignal,
   pendingAreaTemplate,
-  resolveTargets,
-  ruleAttack,
-  ruleSave,
+  resolvableFromMonsterAction,
+  splitDamage,
   startAction,
   type AttackerContext,
-  type DiceRoller,
   type ResolvableAction,
   type TargetContext,
-  type TargetResolution,
 } from "../../src/table/actionResolution.ts";
+import { ConcentrationCheckPrompt } from "../../src/table/ConcentrationCheckPrompt.tsx";
 import { acceptedCoverSignal, targetTokenIdSignal } from "../../src/table/CoverSuggestionPanel.tsx";
+import { MonsterTurnPanel } from "../../src/table/MonsterTurnPanel.tsx";
+import { PendingResolutionsPanel } from "../../src/table/PendingResolutionsPanel.tsx";
 import { TableCanvas } from "../../src/table/TableCanvas.tsx";
+import type { TableToken } from "../../src/table/tableView.ts";
 import { assertAbsent, assertPresent } from "../helpers/domAssert.ts";
-import { CAMPAIGN, GM_ID, GOBLIN, HERO, HERO_ACTOR, PLAYER_ID, fullToken, liveTable, mount, publicToken, tableState } from "../helpers/liveTable.ts";
+import { CAMPAIGN, GM_ID, GOBLIN, HERO, HERO_ACTOR, PLAYER_ID, fullToken, liveTable, mount, publicToken, tableState, type LiveTable } from "../helpers/liveTable.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
 import { flush } from "../helpers/mockTransport.ts";
 
 setupMockDom();
 localeSignal.value = "en";
-
-/** Scripted server roller: answers each roll from `results` in order and records the expressions. */
-function scripted(results: Array<{ total: number; natural?: number }>) {
-  const calls: string[] = [];
-  const roller: DiceRoller = async (expression) => {
-    calls.push(expression);
-    const next = results.shift();
-    if (!next) throw new Error(`unexpected roll ${expression}`);
-    return { total: next.total, natural: next.natural ?? null };
-  };
-  return { roller, calls };
-}
 
 function barbarianRolls(active: string[]): DerivedFeatureRollRule[] {
   const actor = createDefaultActorData("barbarian", "Brakka");
@@ -92,170 +88,117 @@ const attacker = (over: Partial<AttackerContext> = {}): AttackerContext => ({ to
 const target = (over: Partial<TargetContext> = {}): TargetContext => ({
   tokenId: GOBLIN,
   name: "Goblin",
-  ac: 15,
   conditions: { conditions: [] },
   featureRolls: [],
-  saveBonuses: { str: -1, dex: 2, con: 0, int: 0, wis: -1, cha: -1 },
   distanceFt: 5,
   cover: "NONE",
   ...over,
 });
 
-describe("resolveTargets: attack rolls", () => {
+describe("buildActionRequest: what the client sends the server", () => {
   const cases: Array<{
     id: string;
-    action?: Partial<ResolvableAction>;
+    action: ResolvableAction;
     attacker?: Partial<AttackerContext>;
     target?: Partial<TargetContext>;
-    rolls: Array<{ total: number; natural?: number }>;
-    outcome: string;
-    damage: number;
-    calls: string[];
+    check: Record<string, unknown>;
+    rollMode: string;
+    cover?: string;
   }> = [
-    { id: "a total meeting AC hits and rolls damage", rolls: [{ total: 15, natural: 10 }, { total: 7 }], outcome: "hit", damage: 7, calls: ["1d20+5", "1d8+3"] },
-    { id: "a total below AC misses without damage", rolls: [{ total: 14, natural: 9 }], outcome: "miss", damage: 0, calls: ["1d20+5"] },
-    { id: "a natural 20 crits and doubles the dice only", rolls: [{ total: 25, natural: 20 }, { total: 12 }], outcome: "critical", damage: 12, calls: ["1d20+5", "2d8+3"] },
-    { id: "Champion range 19 crits on a natural 19", action: { criticalRange: 19 }, rolls: [{ total: 24, natural: 19 }, { total: 11 }], outcome: "critical", damage: 11, calls: ["1d20+5", "2d8+3"] },
-    { id: "a natural 19 is a plain hit without the Champion range", rolls: [{ total: 24, natural: 19 }, { total: 6 }], outcome: "hit", damage: 6, calls: ["1d20+5", "1d8+3"] },
-    { id: "a natural 1 misses whatever the total", target: { ac: 5 }, rolls: [{ total: 6, natural: 1 }], outcome: "miss", damage: 0, calls: ["1d20+5"] },
-    { id: "half cover adds 2 to AC", target: { cover: "HALF" }, rolls: [{ total: 16, natural: 11 }], outcome: "miss", damage: 0, calls: ["1d20+5"] },
-    { id: "total cover blocks the attack without rolling", target: { cover: "TOTAL" }, rolls: [], outcome: "blocked", damage: 0, calls: [] },
-    { id: "a hidden AC leaves the outcome to the user", target: { ac: null }, rolls: [{ total: 15, natural: 10 }], outcome: "unknown", damage: 0, calls: ["1d20+5"] },
-    {
-      id: "Reckless Attack gives advantage on Strength weapon attacks",
-      attacker: { featureRolls: barbarianRolls(["barbarian:reckless_attack"]) },
-      rolls: [{ total: 9, natural: 4 }],
-      outcome: "miss",
-      damage: 0,
-      calls: ["2d20kh1+5"],
-    },
-    {
-      id: "Reckless Attack advantage cancels against a prone target at range",
-      attacker: { featureRolls: barbarianRolls(["barbarian:reckless_attack"]) },
-      target: { conditions: { conditions: ["prone"] }, distanceFt: 30 },
-      rolls: [{ total: 9, natural: 4 }],
-      outcome: "miss",
-      damage: 0,
-      calls: ["1d20+5"],
-    },
-    {
-      id: "a reckless target grants advantage to its attackers",
-      target: { featureRolls: barbarianRolls(["barbarian:reckless_attack"]) },
-      rolls: [{ total: 9, natural: 4 }],
-      outcome: "miss",
-      damage: 0,
-      calls: ["2d20kh1+5"],
-    },
-    { id: "Reckless Attack does not help a spell attack", action: { source: "spell" }, attacker: { featureRolls: barbarianRolls(["barbarian:reckless_attack"]) }, rolls: [{ total: 9, natural: 4 }], outcome: "miss", damage: 0, calls: ["1d20+5"] },
+    { id: "an attack sends the sheet bonus and crit range, never a target AC", action: longsword, check: { kind: "ATTACK", attack_bonus: 5, critical_range: 20 }, rollMode: "NORMAL" },
+    { id: "Champion crit range travels with the attack", action: { ...longsword, criticalRange: 19 }, check: { kind: "ATTACK", attack_bonus: 5, critical_range: 19 }, rollMode: "NORMAL" },
+    { id: "Reckless Attack sends advantage on a Strength weapon attack", action: longsword, attacker: { featureRolls: barbarianRolls(["barbarian:reckless_attack"]) }, check: { kind: "ATTACK", attack_bonus: 5, critical_range: 20 }, rollMode: "ADVANTAGE" },
+    { id: "a prone target within 5 ft gives advantage", action: longsword, target: { conditions: { conditions: ["prone"] }, distanceFt: 5 }, check: { kind: "ATTACK", attack_bonus: 5, critical_range: 20 }, rollMode: "ADVANTAGE" },
+    { id: "a prone target beyond 5 ft gives disadvantage", action: longsword, target: { conditions: { conditions: ["prone"] }, distanceFt: 30 }, check: { kind: "ATTACK", attack_bonus: 5, critical_range: 20 }, rollMode: "DISADVANTAGE" },
+    { id: "a prone target at an unknown distance changes nothing", action: longsword, target: { conditions: { conditions: ["prone"] }, distanceFt: null }, check: { kind: "ATTACK", attack_bonus: 5, critical_range: 20 }, rollMode: "NORMAL" },
+    { id: "the accepted cover is sent for the server to add", action: longsword, target: { cover: "HALF" }, check: { kind: "ATTACK", attack_bonus: 5, critical_range: 20 }, rollMode: "NORMAL", cover: "HALF" },
+    { id: "a save sends the DC and save-for-half, never a save bonus", action: burningHands, check: { kind: "SAVE", ability: "dex", dc: 13, half_on_success: true }, rollMode: "NORMAL" },
+    { id: "Danger Sense sends advantage on a Dexterity save", action: burningHands, target: { featureRolls: barbarianRolls([]) }, check: { kind: "SAVE", ability: "dex", dc: 13, half_on_success: true }, rollMode: "ADVANTAGE" },
+    { id: "an action without attack or save hits automatically", action: { ...burningHands, save: null }, check: { kind: "AUTOMATIC" }, rollMode: "NORMAL" },
   ];
   for (const c of cases) {
-    it(c.id, async () => {
-      const { roller, calls } = scripted([...c.rolls]);
-      const [result] = await resolveTargets({ ...longsword, ...c.action }, attacker(c.attacker), [target(c.target)], roller);
-      assert.equal(result.outcome, c.outcome);
-      assert.equal(result.damage, c.damage);
-      assert.deepEqual(calls, c.calls);
-    });
-  }
-});
-
-describe("resolveTargets: saving throws", () => {
-  const cases: Array<{
-    id: string;
-    action?: Partial<ResolvableAction>;
-    target?: Partial<TargetContext>;
-    rolls: Array<{ total: number; natural?: number }>;
-    outcome: string;
-    damage: number;
-    calls: string[];
-  }> = [
-    { id: "a failed save takes the full damage", rolls: [{ total: 10 }, { total: 9, natural: 7 }], outcome: "failure", damage: 10, calls: ["3d6", "1d20+2"] },
-    { id: "a successful save halves the damage (rounded down)", rolls: [{ total: 11 }, { total: 14, natural: 12 }], outcome: "success", damage: 5, calls: ["3d6", "1d20+2"] },
-    { id: "a successful save negates damage without save-for-half", action: { halfDamageOnSave: false }, rolls: [{ total: 11 }, { total: 14, natural: 12 }], outcome: "success", damage: 0, calls: ["3d6", "1d20+2"] },
-    { id: "Danger Sense gives advantage on Dexterity saves", target: { featureRolls: barbarianRolls([]) }, rolls: [{ total: 10 }, { total: 9, natural: 7 }], outcome: "failure", damage: 10, calls: ["3d6", "2d20kh1+2"] },
-    {
-      id: "Danger Sense cancels the Restrained Dexterity save disadvantage",
-      target: { featureRolls: barbarianRolls([]), conditions: { conditions: ["restrained"] } },
-      rolls: [{ total: 10 }, { total: 9, natural: 7 }],
-      outcome: "failure",
-      damage: 10,
-      calls: ["3d6", "1d20+2"],
-    },
-    { id: "half cover adds 2 to a Dexterity save", target: { cover: "HALF" }, rolls: [{ total: 10 }, { total: 13, natural: 9 }], outcome: "success", damage: 5, calls: ["3d6", "1d20+4"] },
-    { id: "cover does not help a Constitution save", action: { save: { ability: "con", dc: 13 } }, target: { cover: "HALF" }, rolls: [{ total: 10 }, { total: 9, natural: 9 }], outcome: "failure", damage: 10, calls: ["3d6", "1d20"] },
-    { id: "a paralyzed target fails a Dexterity save without rolling", target: { conditions: { conditions: ["paralyzed"] } }, rolls: [{ total: 10 }], outcome: "failure", damage: 10, calls: ["3d6"] },
-    { id: "an unknown save bonus leaves the outcome to the user", target: { saveBonuses: null }, rolls: [{ total: 10 }], outcome: "unknown", damage: 10, calls: ["3d6"] },
-    { id: "an area without a save hits for the full damage", action: { save: null }, rolls: [{ total: 10 }], outcome: "hit", damage: 10, calls: ["3d6"] },
-  ];
-  for (const c of cases) {
-    it(c.id, async () => {
-      const { roller, calls } = scripted([...c.rolls]);
-      const [result] = await resolveTargets({ ...burningHands, ...c.action }, attacker(), [target(c.target)], roller);
-      assert.equal(result.outcome, c.outcome);
-      assert.equal(result.damage, c.damage);
-      assert.deepEqual(calls, c.calls);
-    });
-  }
-
-  it("the damage is rolled once for every target of an area", async () => {
-    const { roller, calls } = scripted([{ total: 12 }, { total: 5, natural: 3 }, { total: 18, natural: 16 }]);
-    const results = await resolveTargets(burningHands, attacker(), [target(), target({ tokenId: HERO, name: "Mira" })], roller);
-    assert.deepEqual(results.map((r) => [r.outcome, r.damage]), [["failure", 12], ["success", 6]]);
-    assert.deepEqual(calls, ["3d6", "1d20+2", "1d20+2"]);
-  });
-});
-
-describe("user rulings and the Apply gate", () => {
-  const unknown = (over: Partial<TargetResolution> = {}): TargetResolution => ({
-    tokenId: GOBLIN,
-    name: "Goblin",
-    mode: "normal",
-    advantageSources: [],
-    disadvantageSources: [],
-    expression: "1d20+5",
-    natural: 10,
-    total: 15,
-    outcome: "unknown",
-    critical: false,
-    rolledDamage: null,
-    damage: 0,
-    ...over,
-  });
-
-  const attackRulings = [
-    { id: "ruled hit rolls normal damage", outcome: "hit", calls: ["1d8+3"], damage: 6, critical: false },
-    { id: "ruled critical hit doubles the dice", outcome: "critical", calls: ["2d8+3"], damage: 6, critical: true },
-    { id: "ruled miss rolls nothing", outcome: "miss", calls: [], damage: 0, critical: false },
-  ] as const;
-  for (const c of attackRulings) {
-    it(c.id, async () => {
-      const { roller, calls } = scripted([{ total: 6 }]);
-      const ruled = await ruleAttack(unknown(), c.outcome, longsword, roller);
-      assert.equal(ruled.outcome, c.outcome);
-      assert.equal(ruled.damage, c.damage);
-      assert.equal(ruled.critical, c.critical);
-      assert.deepEqual(calls, c.calls);
-    });
-  }
-
-  const saveRulings = [
-    { id: "ruled save success halves the rolled damage", outcome: "success", damage: 5 },
-    { id: "ruled save failure keeps the rolled damage", outcome: "failure", damage: 11 },
-  ] as const;
-  for (const c of saveRulings) {
     it(c.id, () => {
-      const ruled = ruleSave(unknown({ rolledDamage: 11, damage: 11 }), c.outcome, burningHands);
-      assert.equal(ruled.damage, c.damage);
+      const request = buildActionRequest(c.action, attacker(c.attacker), [target(c.target)], "res-1");
+      assert.deepEqual(request.check, c.check);
+      assert.deepEqual(request.targets, [{ token_id: GOBLIN, roll_mode: c.rollMode, cover: c.cover ?? "NONE" }]);
+      assert.equal(request.resolution_id, "res-1");
+      assert.equal(request.attacker_token_id, HERO);
     });
   }
 
-  const gates = [
-    { id: "no result cannot be applied", results: [], ready: false },
-    { id: "an unknown outcome blocks Apply", results: [unknown(), unknown({ outcome: "hit" })], ready: false },
-    { id: "every outcome known allows Apply", results: [unknown({ outcome: "hit" }), unknown({ outcome: "miss" })], ready: true },
+  it("flat damage terms move into the modifier", () => {
+    const request = buildActionRequest({ ...longsword, damageDice: "2d6+1d8-1" }, attacker(), [target()], "res-1");
+    assert.equal(request.damage_dice, "2d6+1d8");
+    assert.equal(request.damage_modifier, 2);
+  });
+});
+
+describe("splitDamage", () => {
+  const cases = [
+    { id: "dice plus a flat bonus", expression: "1d10 + 8", dice: "1d10", modifier: 8 },
+    { id: "several dice terms and a penalty", expression: "2d6+1d8-1", dice: "2d6+1d8", modifier: -1 },
+    { id: "a flat number only", expression: "1", dice: "", modifier: 1 },
+    { id: "a bare d6 gets an explicit count", expression: "d6", dice: "1d6", modifier: 0 },
   ];
-  for (const c of gates) {
-    it(c.id, () => assert.equal(isReadyToApply(c.results), c.ready));
+  for (const c of cases) {
+    it(c.id, () => assert.deepEqual(splitDamage(c.expression), { dice: c.dice, modifier: c.modifier }));
+  }
+});
+
+describe("footprintDistanceFt: 3D distance between tokens", () => {
+  const token = (x: number, y: number, elevationFt = 0, size = 1) =>
+    ({ topLeft: { x, y }, gridW: size, gridH: size, elevationFt }) as TableToken;
+  const cases = [
+    { id: "adjacent tokens are 5 ft apart", a: token(0, 0), b: token(50, 0), feet: 5 },
+    { id: "one empty cell between tokens is 10 ft", a: token(0, 0), b: token(100, 0), feet: 10 },
+    { id: "an adjacent flyer 30 ft up is 30 ft away", a: token(0, 0), b: token(50, 0, 30), feet: 30 },
+    { id: "an adjacent token 5 ft up stays within 5 ft", a: token(0, 0), b: token(50, 0, 5), feet: 5 },
+    { id: "a large token touching a small one is 5 ft away", a: token(0, 0, 0, 2), b: token(100, 50), feet: 5 },
+  ];
+  for (const c of cases) {
+    it(c.id, () => assert.equal(footprintDistanceFt(c.a, c.b, 50, 5), c.feet));
+  }
+});
+
+describe("resolvableFromMonsterAction", () => {
+  const base: MonsterAction = { id: "a", name: "A", description: "", automation: "full" };
+  const cases: Array<{ id: string; action: MonsterAction; expect: Partial<ResolvableAction> | null }> = [
+    {
+      id: "a melee attack keeps its to-hit and splits the damage",
+      action: { ...base, attack: { kind: "melee", toHit: 4 }, damage: [{ dice: "1d6 + 2", average: 5, type: "slashing" }] },
+      expect: { attackBonus: 4, save: null, damageDice: "1d6", damageModifier: 2, damageType: "slashing", source: "weapon_str" },
+    },
+    {
+      id: "a ranged attack counts as a Dexterity weapon",
+      action: { ...base, attack: { kind: "ranged", toHit: 4 }, damage: [{ dice: "1d6 + 2", average: 5, type: "piercing" }] },
+      expect: { source: "weapon_dex" },
+    },
+    {
+      id: "a breath weapon is a save with half damage",
+      action: { ...base, save: { ability: "dex", dc: 13, onSuccess: "half" }, damage: [{ dice: "7d6", average: 24, type: "fire" }] },
+      expect: { attackBonus: null, save: { ability: "dex", dc: 13 }, halfDamageOnSave: true, damageDice: "7d6", damageModifier: 0 },
+    },
+    {
+      id: "an attack with a rider save keeps the attack and describes the save",
+      action: { ...base, attack: { kind: "melee", toHit: 5 }, save: { ability: "con", dc: 11, onSuccess: "none" }, damage: [{ dice: "1d8 + 3", average: 7, type: "piercing" }] },
+      expect: { attackBonus: 5, save: null, secondarySave: { ability: "con", dc: 11 } },
+    },
+    {
+      id: "a second damage type is left to the text",
+      action: { ...base, attack: { kind: "melee", toHit: 5 }, damage: [{ dice: "1d8 + 3", average: 7, type: "piercing" }, { dice: "2d6", average: 7, type: "poison" }] },
+      expect: { damageDice: "1d8", damageModifier: 3, damageType: "piercing", otherDamageTypes: ["poison"] },
+    },
+    { id: "a prose-only action (Multiattack) cannot be resolved", action: { ...base, automation: "text" }, expect: null },
+  ];
+  for (const c of cases) {
+    it(c.id, () => {
+      const resolvable = resolvableFromMonsterAction(c.action);
+      if (c.expect === null) {
+        assert.equal(resolvable, null);
+        return;
+      }
+      for (const [key, value] of Object.entries(c.expect)) assert.deepEqual((resolvable as unknown as Record<string, unknown>)[key], value, key);
+    });
   }
 });
 
@@ -316,17 +259,67 @@ function wizard(): Dnd5eActorData {
   return applyClassChoices(base, "wizard", selections);
 }
 
-const GOBLIN_BLOCK = { name: "Goblin", abilities: { str: 8, dex: 14, con: 10, int: 10, wis: 8, cha: 8 } };
+const GOBLIN_BLOCK = monsterStatBlockOf(CompendiumResolver.getDefault().get("srd:monster:goblin") as CompendiumEntry) as MonsterStatBlock;
+const GOBLIN_ATTACK = GOBLIN_BLOCK.actions.find((a) => a.attack)!;
 const hero = () => fullToken(HERO, "Mira", { owner_user_id: PLAYER_ID, actor_id: HERO_ACTOR, top_left: { x: 100, y: 50 } });
-const gmView = () => tableState({ tokens: { [HERO]: hero(), [GOBLIN]: fullToken(GOBLIN, "Goblin", { top_left: { x: 300, y: 300 }, ac: 13, stat_block: GOBLIN_BLOCK }) } });
-const playerView = () => tableState({ tokens: { [HERO]: hero() }, public_tokens: { [GOBLIN]: publicToken(GOBLIN, "Goblin", { top_left: { x: 300, y: 300 } }) } });
+const gmView = (over: Partial<ProjectedTableState> = {}) =>
+  tableState({ tokens: { [HERO]: hero(), [GOBLIN]: fullToken(GOBLIN, "Goblin", { top_left: { x: 300, y: 300 }, ac: 15, stat_block: GOBLIN_BLOCK as unknown as Record<string, unknown> }) }, ...over });
+const playerView = (over: Partial<ProjectedTableState> = {}) =>
+  tableState({ tokens: { [HERO]: hero() }, public_tokens: { [GOBLIN]: publicToken(GOBLIN, "Goblin", { top_left: { x: 300, y: 300 } }) }, ...over });
 
-function table(role: "GM" | "player", roller: DiceRoller) {
+const resolvedTarget = (over: Partial<WireResolvedTarget> = {}): WireResolvedTarget => ({
+  token_id: GOBLIN,
+  roll_mode: "NORMAL",
+  outcome: "HIT",
+  d20_rolls: [],
+  total: null,
+  damage: 7,
+  is_critical: false,
+  applied: false,
+  ...over,
+});
+
+const pendingResolution = (id: string, targets: WireResolvedTarget[], over: Partial<WirePendingResolution> = {}): WirePendingResolution => ({
+  id,
+  issuer_user_id: PLAYER_ID,
+  attacker_token_id: HERO,
+  action_name: "Fire Bolt",
+  check: { kind: "ATTACK", attack_bonus: 5, critical_range: 20 },
+  damage_type: "fire",
+  damage_expression: "1d10",
+  targets,
+  sequence: 1,
+  ...over,
+});
+
+let seq = 50;
+/** Answers the last `RESOLVE_ACTION` as the room would: the projected entry and its `ACTION_RESOLVED` event. */
+function answer(live: LiveTable, view: (over: Partial<ProjectedTableState>) => ProjectedTableState, targets: WireResolvedTarget[]) {
+  const request = live.commands().filter((c) => c.cmd === "RESOLVE_ACTION").at(-1)!.request;
+  const resolution = pendingResolution(request.resolution_id, targets);
+  live.client.applyServerEnvelope({
+    type: "CommandAccepted",
+    seqId: seq++,
+    state: view({ pending_resolutions: { [resolution.id]: resolution } }),
+    events: [{ event: "ACTION_RESOLVED", resolution }],
+  } as any);
+  return request;
+}
+
+function table(role: "GM" | "player", state?: ProjectedTableState) {
   const isGm = role === "GM";
-  const live = liveTable(isGm ? GM_ID : PLAYER_ID, isGm ? gmView() : playerView());
+  const live = liveTable(isGm ? GM_ID : PLAYER_ID, state ?? (isGm ? gmView() : playerView()));
   live.client.state.actors.value = { [HERO_ACTOR]: { version: 1, data: wizard() } as any };
   const ui = mount(
-    h("div", null, h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm }), h(ActionResolutionCard, { campaignId: CAMPAIGN, client: live.client, isGm, roller })),
+    h(
+      "div",
+      null,
+      h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm }),
+      h(ActionResolutionCard, { client: live.client, isGm }),
+      h(PendingResolutionsPanel, { client: live.client, isGm }),
+      h(MonsterTurnPanel, { client: live.client, isGm }),
+      h(ConcentrationCheckPrompt, { client: live.client }),
+    ),
   );
   return { live, ui };
 }
@@ -335,104 +328,202 @@ beforeEach(() => {
   cancelAction();
   targetTokenIdSignal.value = null;
   acceptedCoverSignal.value = null;
+  selectedTokenIdSignal.value = null;
 });
 
-describe("ActionResolutionCard: attacks from the sheet", () => {
-  it("GM targets by clicking the board, rolls, adjusts and applies typed damage", async () => {
-    const { roller } = scripted([{ total: 17, natural: 12 }, { total: 6 }]);
-    const { live, ui } = table("GM", roller);
-    startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:fire_bolt" });
-    ui.click(`token-${GOBLIN}`);
-    assert.match(ui.byTestId(`token-${GOBLIN}`).getAttribute("aria-label"), /targeted/);
-    assert.equal(ui.byTestId(`action-target-${GOBLIN}`).checked, true);
-    ui.click("action-roll");
-    await flush(6);
-    assert.equal(ui.byTestId(`action-outcome-${GOBLIN}`).textContent, "Hit");
-    assert.equal(ui.byTestId(`action-damage-${GOBLIN}`).value, "6");
-    ui.input(`action-damage-${GOBLIN}`, "4");
-    ui.click("action-apply");
-    assert.deepEqual(live.commands(), [{ cmd: "APPLY_DAMAGE", token_id: GOBLIN, raw_damage: 4, affinity: "NORMAL", is_critical: false, damage_type: "fire" }]);
-    assert.equal(pendingActionSignal.value, null);
-    assertAbsent(ui.byTestId("action-card"), "action-card");
-    ui.unmount();
-  });
-
-  it("player rules a hidden AC and leaves damage to an enemy to the GM", async () => {
-    const { roller } = scripted([{ total: 17, natural: 12 }, { total: 6 }]);
-    const { live, ui } = table("player", roller);
+describe("ActionResolutionCard: a player attacks a monster", () => {
+  it("the server rolls against the hidden AC; the player sees the hit and applies it", () => {
+    const { live, ui } = table("player");
     startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:fire_bolt" });
     ui.input(`action-target-${GOBLIN}`, "on", "change");
-    assert.match(ui.byTestId(`token-${GOBLIN}`).getAttribute("aria-label"), /targeted/);
     ui.click("action-roll");
-    await flush(6);
-    assert.equal(ui.byTestId(`action-outcome-${GOBLIN}`).textContent, "Unknown: rule it");
-    assert.equal(ui.byTestId("action-apply").disabled, true);
-    ui.click(`action-rule-${GOBLIN}-hit`);
-    await flush(6);
+    const [sent] = live.commands();
+    assert.equal(sent.cmd, "RESOLVE_ACTION");
+    assert.equal(sent.request.check.kind, "ATTACK");
+    assert.deepEqual(sent.request.targets, [{ token_id: GOBLIN, roll_mode: "NORMAL", cover: "NONE" }]);
+    assert.equal(sent.request.damage_type, "fire");
+    assert.equal(ui.byTestId("action-status").textContent, "Rolling…");
+
+    answer(live, playerView, [resolvedTarget({ outcome: "HIT", damage: 7 })]);
     assert.equal(ui.byTestId(`action-outcome-${GOBLIN}`).textContent, "Hit");
-    assert.equal(ui.byTestId(`action-damage-${GOBLIN}`).textContent, "6 damage");
-    assert.match(ui.byTestId(`action-result-${GOBLIN}`).textContent, /Game Master applies/);
+    assert.equal(ui.byTestId(`action-damage-${GOBLIN}`).textContent, "7 damage");
+    assert.doesNotMatch(ui.byTestId(`action-result-${GOBLIN}`).textContent, /rolled|d20/);
+    assert.equal(ui.byTestId("action-status").textContent, "Goblin: Hit");
+    assert.notEqual(String(ui.byTestId("action-damage-type").tagName).toUpperCase(), "SELECT");
+    assertAbsent(ui.byTestId(`action-critical-${GOBLIN}`), "player critical toggle");
+    ui.click("action-apply");
+    assert.deepEqual(live.commands()[1], { cmd: "APPLY_RESOLUTION", resolution_id: sent.request.resolution_id, token_id: null, adjustment: null });
+    assert.equal(pendingActionSignal.value, null);
+    ui.unmount();
+  });
+
+  it("a miss leaves nothing to apply", () => {
+    const { live, ui } = table("player");
+    startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:fire_bolt" });
+    ui.input(`action-target-${GOBLIN}`, "on", "change");
+    ui.click("action-roll");
+    answer(live, playerView, [resolvedTarget({ outcome: "MISS", damage: 0, applied: true })]);
+    assert.equal(ui.byTestId(`action-outcome-${GOBLIN}`).textContent, "Miss");
     assert.equal(ui.byTestId("action-apply").disabled, true);
-    assert.deepEqual(live.commands(), []);
+    assertPresent(ui.byTestId("action-nothing-left"), "action-nothing-left");
+    ui.unmount();
+  });
+
+  it("a refused roll explains it and lets the player roll again", async () => {
+    const { live, ui } = table("player");
+    startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:fire_bolt" });
+    ui.input(`action-target-${GOBLIN}`, "on", "change");
+    ui.click("action-roll");
+    live.client.state.commandFeedback.value = [{ id: 99, kind: "rejected", action: "RESOLVE_ACTION", reason: "no" }];
+    await flush(6);
+    assertPresent(ui.byTestId("action-error"), "action-error");
+    assertPresent(ui.byTestId("action-roll"), "action-roll");
     ui.unmount();
   });
 });
 
-describe("ActionResolutionCard: area spells", () => {
-  it("a board click places the area until it is projected", () => {
-    const { ui } = table("player", scripted([]).roller);
-    startAction({ kind: "area", actorId: HERO_ACTOR, spellId: "srd:spell:burning_hands" });
-    ui.byTestId("table-board").getBoundingClientRect = () => ({ left: 10, top: 20 });
-    ui.click("table-board", { clientX: 110, clientY: 220 });
-    assert.deepEqual(areaOriginSignal.value, { x: 100, y: 200 });
-    assert.equal(ui.byTestId("action-area-hint").textContent, "Area placed. Click again to move it, then project it.");
-    ui.unmount();
-  });
-
-  it("GM projects Burning Hands, the engine lists the targets, the save halves the damage", async () => {
-    const { roller, calls } = scripted([{ total: 10 }, { total: 15, natural: 13 }]);
-    const { live, ui } = table("GM", roller);
+describe("ActionResolutionCard: a player's area against monsters", () => {
+  it("the server rolls each monster's save; the player sees success and half damage", async () => {
+    const { live, ui } = table("player");
     startAction({ kind: "area", actorId: HERO_ACTOR, spellId: "srd:spell:burning_hands" });
     ui.input("action-area-token", GOBLIN, "change");
     ui.click("action-area-project");
     const [projected] = live.commands();
     assert.equal(projected.cmd, "PROJECT_AOE");
-    assert.equal(projected.persist_zone, false);
-    assert.equal(projected.template.concentration_caster_id, null);
-    assert.equal(projected.template.shape.shape, "CONE");
-    assert.equal(ui.byTestId("action-area-hint").textContent, "Waiting for the table…");
-
     live.client.applyServerEnvelope({
       type: "CommandAccepted",
-      seqId: 50,
-      state: gmView(),
+      seqId: seq++,
+      state: playerView(),
       events: [{ event: "AOE_PROJECTED", template: projected.template, affected_cells: [], affected_token_ids: [GOBLIN], persisted: false }],
     } as any);
     await flush(6);
-    assert.deepEqual(calls, ["3d6", "1d20+2"]);
+    const request = answer(live, playerView, [resolvedTarget({ outcome: "SAVE_SUCCESS", damage: 5 })]);
+    assert.deepEqual(request.check, { kind: "SAVE", ability: "dex", dc: request.check.dc, half_on_success: true });
     assert.equal(ui.byTestId(`action-outcome-${GOBLIN}`).textContent, "Save succeeded");
+    assert.equal(ui.byTestId(`action-damage-${GOBLIN}`).textContent, "5 damage");
     ui.click("action-apply");
-    assert.deepEqual(live.commands()[1], { cmd: "APPLY_DAMAGE", token_id: GOBLIN, raw_damage: 5, affinity: "NORMAL", is_critical: false, damage_type: "fire" });
+    assert.equal(live.commands().at(-1)!.cmd, "APPLY_RESOLUTION");
     ui.unmount();
   });
 
-  it("an area that reaches nobody says so and Apply stays disabled", async () => {
-    const { live, ui } = table("GM", scripted([{ total: 10 }]).roller);
+  it("an area that reaches nobody says so without asking the server", async () => {
+    const { live, ui } = table("GM");
     startAction({ kind: "area", actorId: HERO_ACTOR, spellId: "srd:spell:burning_hands" });
     ui.input("action-area-token", GOBLIN, "change");
     ui.click("action-area-project");
     const [projected] = live.commands();
     live.client.applyServerEnvelope({
       type: "CommandAccepted",
-      seqId: 50,
+      seqId: seq++,
       state: gmView(),
       events: [{ event: "AOE_PROJECTED", template: projected.template, affected_cells: [], affected_token_ids: [], persisted: false }],
     } as any);
     await flush(6);
-    assertPresent(ui.byTestId("action-none-affected"), "action-none-affected");
-    assert.equal(ui.byTestId("action-apply").disabled, true);
-    ui.click("action-cancel");
-    assertAbsent(ui.byTestId("action-card"), "action-card");
+    assert.equal(ui.byTestId("action-status").textContent, "No token is in the area.");
+    assert.equal(live.commands().length, 1);
+    assertAbsent(ui.byTestId("action-apply"), "action-apply");
+    ui.unmount();
+  });
+});
+
+describe("PendingResolutionsPanel: the GM's list", () => {
+  const ID = "bbbbbbbb-0000-4000-8000-000000000001";
+  const withPending = (targets: WireResolvedTarget[]) => gmView({ pending_resolutions: { [ID]: pendingResolution(ID, targets) } });
+
+  it("shows a player's resolution and applies it as rolled", () => {
+    const { live, ui } = table("GM", withPending([resolvedTarget({ d20_rolls: [14], total: 19 })]));
+    assert.equal(ui.byTestId("pending-resolutions-count").textContent, "Pending resolutions: 1");
+    assert.match(ui.byTestId(`pending-${ID}-result-${GOBLIN}`).textContent, /rolled 19, d20 14/);
+    ui.click(`pending-${ID}-apply`);
+    assert.deepEqual(live.commands(), [{ cmd: "APPLY_RESOLUTION", resolution_id: ID, token_id: null, adjustment: null }]);
+    ui.unmount();
+  });
+
+  const adjustments: Array<{ id: string; edit: (ui: ReturnType<typeof mount>) => void; adjustment: Record<string, unknown> }> = [
+    { id: "a new amount is sent for that target", edit: (ui) => ui.input(`pending-${ID}-damage-${GOBLIN}`, "3"), adjustment: { damage: 3, damage_type: null, is_critical: null } },
+    {
+      id: "a critical flag is sent for that target",
+      edit: (ui) => {
+        ui.byTestId(`pending-${ID}-critical-${GOBLIN}`).checked = true;
+        ui.byTestId(`pending-${ID}-critical-${GOBLIN}`).dispatchEvent({ type: "change" });
+      },
+      adjustment: { damage: null, damage_type: null, is_critical: true },
+    },
+    { id: "a new damage type is sent", edit: (ui) => ui.input(`pending-${ID}-damage-type`, "cold", "change"), adjustment: { damage: null, damage_type: "cold", is_critical: null } },
+  ];
+  for (const c of adjustments) {
+    it(`GM adjust: ${c.id}`, () => {
+      const { live, ui } = table("GM", withPending([resolvedTarget()]));
+      c.edit(ui);
+      ui.click(`pending-${ID}-apply`);
+      assert.deepEqual(live.commands(), [{ cmd: "APPLY_RESOLUTION", resolution_id: ID, token_id: GOBLIN, adjustment: c.adjustment }]);
+      ui.unmount();
+    });
+  }
+
+  it("the GM can dismiss a resolution", () => {
+    const { live, ui } = table("GM", withPending([resolvedTarget()]));
+    ui.click(`pending-${ID}-dismiss`);
+    assert.deepEqual(live.commands(), [{ cmd: "DISMISS_RESOLUTION", resolution_id: ID }]);
+    ui.unmount();
+  });
+
+  it("an already applied target is not offered again", () => {
+    const { ui } = table("GM", withPending([resolvedTarget({ applied: true })]));
+    assert.equal(ui.byTestId(`pending-${ID}-apply`).disabled, true);
+    ui.unmount();
+  });
+
+  it("is absent when nothing is pending", () => {
+    const { ui } = table("GM");
+    assertAbsent(ui.byTestId("pending-resolutions"), "pending-resolutions");
+    ui.unmount();
+  });
+});
+
+describe("MonsterTurnPanel: the GM runs a monster's attack", () => {
+  it("a stat block action rolls against the player's token", () => {
+    const { live, ui } = table("GM");
+    selectedTokenIdSignal.value = GOBLIN;
+    ui.click(`monster-turn-action-${GOBLIN_ATTACK.id}`);
+    assert.deepEqual(pendingActionSignal.value, { kind: "monster", tokenId: GOBLIN, actionId: GOBLIN_ATTACK.id });
+    ui.input(`action-target-${HERO}`, "on", "change");
+    ui.click("action-roll");
+    const [sent] = live.commands();
+    assert.equal(sent.request.attacker_token_id, GOBLIN);
+    assert.deepEqual(sent.request.check, { kind: "ATTACK", attack_bonus: GOBLIN_ATTACK.attack!.toHit, critical_range: 20 });
+    answer(live, gmView, [resolvedTarget({ token_id: HERO, d20_rolls: [13], total: 17 })]);
+    assert.match(ui.byTestId(`action-result-${HERO}`).textContent, /rolled 17, d20 13/);
+    ui.unmount();
+  });
+
+  it("players never get the monster panel", () => {
+    const { ui } = table("player");
+    selectedTokenIdSignal.value = GOBLIN;
+    assertAbsent(ui.byTestId("monster-turn"), "monster-turn");
+    ui.unmount();
+  });
+});
+
+describe("ConcentrationCheckPrompt", () => {
+  it("prompts the oldest DC, rolls on the server and announces a loss", () => {
+    const { live, ui } = table("player", playerView({ pending_concentration_checks: { [HERO]: [12, 15] } }));
+    assert.equal(ui.byTestId(`concentration-check-${HERO}`).textContent.includes("Mira: CON save DC 12"), true);
+    ui.click(`concentration-roll-${HERO}`);
+    assert.deepEqual(live.commands(), [{ cmd: "ROLL_CONCENTRATION_CHECK", token_id: HERO, roll_mode: "NORMAL", roll: null }]);
+    live.client.applyServerEnvelope({
+      type: "CommandAccepted",
+      seqId: seq++,
+      state: playerView({ pending_concentration_checks: { [HERO]: [15] } }),
+      events: [{ event: "CONCENTRATION_CHECK_ROLLED", token_id: HERO, dc: 12, d20_rolls: [5], total: 5, success: false }],
+    } as any);
+    assert.equal(ui.byTestId("concentration-result").textContent, "Mira loses concentration (5 vs DC 12).");
+    ui.unmount();
+  });
+
+  it("stays hidden without a check", () => {
+    const { ui } = table("player");
+    assertAbsent(ui.byTestId("concentration-prompt"), "concentration-prompt");
     ui.unmount();
   });
 });

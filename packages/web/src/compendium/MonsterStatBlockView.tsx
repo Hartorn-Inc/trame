@@ -22,6 +22,11 @@
  * 3. `Plain Text Only`:
  *    - Descriptions render as text nodes (no HTML), so a homebrew stat block
  *      cannot inject markup.
+ * 4. `Actions Feed The Resolution Flow`:
+ *    - With `onAction` (a monster token on the table), every action with an
+ *      attack roll or a saving throw gets a button that starts the same
+ *      server-rolled resolution as a sheet attack; prose-only actions
+ *      (Multiattack) stay text.
  * ============================================================================
  */
 import type { AbilityId, MonsterAction, MonsterStatBlock } from '../../../game-systems/dnd5e/src/index.ts';
@@ -70,21 +75,41 @@ function usageSuffix(action: MonsterAction): string {
   return ' (Recharge after a Short or Long Rest)';
 }
 
-function ActionList({ titleKey, actions, intro }: { titleKey: MessageKey; actions: MonsterAction[]; intro?: string }) {
+interface ActionListProps {
+  titleKey: MessageKey;
+  actions: MonsterAction[];
+  intro?: string;
+  onAction?: (action: MonsterAction) => void;
+  testId?: string;
+}
+
+function ActionList({ titleKey, actions, intro, onAction, testId }: ActionListProps) {
   if (actions.length === 0) return null;
   return (
     <section class="ds-stack-sm">
       <h5 class="ds-meta">{t(titleKey)}</h5>
       {intro ? <p class="ds-hint">{intro}</p> : null}
       {actions.map((action) => (
-        <p key={action.id} lang="en">
-          <strong>
-            {action.name}
-            {usageSuffix(action)}
-            {action.legendaryCost && action.legendaryCost > 1 ? ` (Costs ${action.legendaryCost} Actions)` : ''}.
-          </strong>{' '}
-          {action.description}
-        </p>
+        <div key={action.id} class="ds-stack-sm">
+          <p lang="en">
+            <strong>
+              {action.name}
+              {usageSuffix(action)}
+              {action.legendaryCost && action.legendaryCost > 1 ? ` (Costs ${action.legendaryCost} Actions)` : ''}.
+            </strong>{' '}
+            {action.description}
+          </p>
+          {onAction && (action.attack || action.save) ? (
+            <button
+              type="button"
+              class="ds-btn ds-btn-secondary ds-btn-sm"
+              data-testid={testId ? `${testId}-action-${action.id}` : undefined}
+              onClick={() => onAction(action)}
+            >
+              {t(action.attack ? 'statBlock.attackWith' : 'statBlock.useAction', { name: action.name })}
+            </button>
+          ) : null}
+        </div>
       ))}
     </section>
   );
@@ -106,9 +131,12 @@ export interface MonsterStatBlockViewProps {
   id?: string;
   /** `data-testid` of the root section. */
   testId?: string;
+  /** Starts the resolution of an attack or save action (invariant 4); omitted in the compendium. */
+  onAction?: (action: MonsterAction) => void;
 }
 
-export function MonsterStatBlockView({ statBlock: sb, id, testId }: MonsterStatBlockViewProps) {
+export function MonsterStatBlockView({ statBlock: sb, id, testId, onAction }: MonsterStatBlockViewProps) {
+  const listProps = { onAction, testId };
   const mod = (ability: AbilityId) => Math.floor((sb.abilities[ability] - 10) / 2);
   const saves = ABILITIES.filter((ab) => sb.savingThrows[ab] !== undefined)
     .map((ab) => `${t(`statBlock.ability.${ab}` as MessageKey)} ${signed(sb.savingThrows[ab] as number)}`)
@@ -165,14 +193,15 @@ export function MonsterStatBlockView({ statBlock: sb, id, testId }: MonsterStatB
           ))}
         </section>
       ) : null}
-      <ActionList titleKey="statBlock.actions" actions={sb.actions} />
-      <ActionList titleKey="statBlock.bonusActions" actions={sb.bonusActions} />
-      <ActionList titleKey="statBlock.reactions" actions={sb.reactions} />
+      <ActionList titleKey="statBlock.actions" actions={sb.actions} {...listProps} />
+      <ActionList titleKey="statBlock.bonusActions" actions={sb.bonusActions} {...listProps} />
+      <ActionList titleKey="statBlock.reactions" actions={sb.reactions} {...listProps} />
       {sb.legendaryActions ? (
         <ActionList
           titleKey="statBlock.legendaryActions"
           actions={sb.legendaryActions.options}
           intro={t('statBlock.legendaryUses', { uses: sb.legendaryActions.uses })}
+          {...listProps}
         />
       ) : null}
     </section>
