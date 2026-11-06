@@ -1042,6 +1042,13 @@ button.ds-prof-pip {
   outline-offset: 2px;
 }
 
+/* Targets of a pending attack: a dashed ring (shape, not colour alone) on both renderers. */
+.ds-board .ds-token.is-targeted,
+.ds-board.is-pixi .ds-token.is-targeted {
+  outline: 3px dashed var(--atlas-danger);
+  outline-offset: 3px;
+}
+
 .ds-tracker,
 .ds-gm-toolbar {
   display: flex;

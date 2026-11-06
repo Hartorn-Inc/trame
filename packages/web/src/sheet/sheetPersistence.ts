@@ -144,7 +144,7 @@ export interface SheetDispatcherOptions {
  *   one versioned sheet save (several paths at once, so a toggle and the pool
  *   use it spends cannot race each other's version).
  * - `CAST_SPELL` saves the spent slot, starts concentration on the caster's
- *   token for a concentration spell without an area, and on the table opens
+ *   token for a concentration spell, and on the table opens
  *   the resolution card (area, attack or save spells).
  * - `RESOLVE_ATTACK` opens the resolution card for a sheet attack.
  * Other widget commands (compendium drops, notices) are ignored here.
@@ -193,16 +193,16 @@ export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (
 }
 
 /**
- * Table side of a cast: a concentration spell without an area starts
- * concentration on the caster's token (an area binds it through the
- * template); on the table an area spell opens area placement and a damaging
- * spell opens the attack / save resolution.
+ * Table side of a cast: a concentration spell starts concentration on the
+ * caster's token (an area also binds its persistent zone when projected);
+ * on the table an area spell opens area placement and a damaging spell opens
+ * the attack / save resolution.
  */
 function castOnTable(client: ApiClient, actorId: Uuid, spellId: string, onTable: boolean): void {
   const data = CompendiumResolver.getDefault().get(spellId)?.data;
   if (!data) return;
   const caster = casterTokenId(client.state.table.value, actorId);
-  if (data.concentration === true && !data.area && caster) client.submitCommand(setConcentration(caster, true));
+  if (data.concentration === true && caster) client.submitCommand(setConcentration(caster, true));
   if (!onTable) return;
   if (data.area) startAction({ kind: 'area', actorId, spellId });
   else if (typeof data.damageDice === 'string') startAction({ kind: 'attack', actorId, attackId: spellId });

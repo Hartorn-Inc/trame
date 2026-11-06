@@ -73,6 +73,7 @@ import {
   type SaveOutcome,
 } from '../../../game-systems/dnd5e/src/index.ts';
 import type { ApiClient } from '../api/client.ts';
+import type { AoeShapeDto, AoeTemplateDto } from '../engine/wasmBridge.ts';
 import type { ProjectedTableState, Uuid, WirePoint2D, WireTokenState } from '../api/wire.ts';
 import { acceptedCoverSignal, targetTokenIdSignal } from './CoverSuggestionPanel.tsx';
 import { boardMetrics } from './scene/tableScene.ts';
@@ -92,12 +93,23 @@ export const actionTargetIdsSignal = signal<Uuid[]>([]);
 /** Board point (`px`) where a pending `area` action is centred, once placed. */
 export const areaOriginSignal = signal<WirePoint2D | null>(null);
 
+/** UUID of the area template of the pending action (stable from placement to projection). */
+export const areaTemplateIdSignal = signal<Uuid>(newUuid());
+/** The pending area was sent with `PROJECT_AOE`; its placement is locked. */
+export const areaProjectedSignal = signal<boolean>(false);
+
+function newUuid(): Uuid {
+  return globalThis.crypto.randomUUID();
+}
+
 /** Opens the resolution card; an attack starts on the cover panel's target. */
 export function startAction(action: PendingAction): void {
   pendingActionSignal.value = action;
   const target = targetTokenIdSignal.value;
   actionTargetIdsSignal.value = action.kind === 'attack' && target ? [target] : [];
   areaOriginSignal.value = null;
+  areaTemplateIdSignal.value = newUuid();
+  areaProjectedSignal.value = false;
 }
 
 /** Closes the resolution card without applying anything. */
@@ -105,6 +117,7 @@ export function cancelAction(): void {
   pendingActionSignal.value = null;
   actionTargetIdsSignal.value = [];
   areaOriginSignal.value = null;
+  areaProjectedSignal.value = false;
 }
 
 /** Adds or removes a target of the pending attack. */
@@ -120,7 +133,7 @@ export function isPickingTargets(): boolean {
 
 /** Board clicks place the pending area until it is projected. */
 export function isPlacingArea(): boolean {
-  return pendingActionSignal.value?.kind === 'area';
+  return pendingActionSignal.value?.kind === 'area' && !areaProjectedSignal.value;
 }
 
 /** First token on the table linked to `actorId` (the caster or attacker), `null` when none. */
@@ -425,6 +438,136 @@ export async function resolveSaveTargets(
     });
   }
   return results;
+}
+
+/**
+ * Resolves `action` against every target: one attack roll each, else the
+ * targets' saving throws, else (automatic hits such as Magic Missile) the
+ * full damage.
+ */
+export async function resolveTargets(
+  action: ResolvableAction,
+  attacker: AttackerContext,
+  targets: readonly TargetContext[],
+  roll: DiceRoller,
+): Promise<TargetResolution[]> {
+  if (action.attackBonus !== null) {
+    const results: TargetResolution[] = [];
+    for (const target of targets) results.push(await resolveAttackTarget(action, attacker, target, roll));
+    return results;
+  }
+  if (action.save) return resolveSaveTargets(action, targets, roll);
+  return resolveUnsavedTargets(action, targets, roll);
+}
+
+/** Area targets without a saving throw take the full damage (rolled once). */
+export async function resolveUnsavedTargets(
+  action: ResolvableAction,
+  targets: readonly TargetContext[],
+  roll: DiceRoller,
+): Promise<TargetResolution[]> {
+  const rawDamage = await rollDamage(action, false, roll);
+  return targets.map((target) => ({
+    tokenId: target.tokenId,
+    name: target.name,
+    mode: 'normal',
+    advantageSources: [],
+    disadvantageSources: [],
+    expression: null,
+    natural: null,
+    total: null,
+    outcome: target.cover === 'TOTAL' ? 'blocked' : 'hit',
+    critical: false,
+    rolledDamage: rawDamage,
+    damage: target.cover === 'TOTAL' ? 0 : rawDamage,
+  }));
+}
+
+/** Applies a user ruling on an unknown attack (hidden AC): a hit or critical hit rolls its damage. */
+export async function ruleAttack(
+  result: TargetResolution,
+  outcome: 'hit' | 'critical' | 'miss',
+  action: ResolvableAction,
+  roll: DiceRoller,
+): Promise<TargetResolution> {
+  const critical = outcome === 'critical';
+  const rolledDamage = outcome === 'miss' ? null : await rollDamage(action, critical, roll);
+  return { ...result, outcome, critical, rolledDamage, damage: rolledDamage ?? 0 };
+}
+
+/** SRD cone: its width at any point equals its distance from the origin (`2 * atan(1/2)`). */
+export const SRD_CONE_ANGLE_DEG = (2 * Math.atan(0.5) * 180) / Math.PI;
+
+/** Spell area as stored in the compendium (`AreaOfEffect`). */
+export interface SpellArea {
+  shape: string;
+  sizeFt: number;
+  widthFt?: number;
+  heightFt?: number;
+}
+
+/**
+ * Engine template of a spell area. Spheres, cylinders and cubes are centred
+ * on the placed point; cones and lines start at the caster and aim at it
+ * (from the point, aimed along +X, without a caster token); an emanation is
+ * a sphere around the caster that reaches `sizeFt` past its footprint.
+ */
+export function areaTemplate(
+  area: SpellArea,
+  point: WirePoint2D,
+  caster: { center: WirePoint2D; radiusFt: number } | null,
+  id: Uuid,
+  concentrationCasterId: Uuid | null,
+): AoeTemplateDto {
+  const aimed = area.shape === 'cone' || area.shape === 'line';
+  const origin = caster && (aimed || area.shape === 'emanation') ? caster.center : point;
+  const direction = caster && aimed ? (Math.atan2(point.y - origin.y, point.x - origin.x) * 180) / Math.PI : 0;
+  const shape: AoeShapeDto = (() => {
+    switch (area.shape) {
+      case 'cone':
+        return { shape: 'CONE', length_ft: area.sizeFt, angle_deg: SRD_CONE_ANGLE_DEG, direction_deg: direction };
+      case 'line':
+        return { shape: 'LINE', length_ft: area.sizeFt, width_ft: area.widthFt ?? 5, direction_deg: direction };
+      case 'cube':
+        return { shape: 'CUBE', side_ft: area.sizeFt, rotation_deg: 0 };
+      case 'cylinder':
+        return { shape: 'CYLINDER', radius_ft: area.sizeFt, height_ft: area.heightFt ?? area.sizeFt };
+      case 'emanation':
+        return { shape: 'SPHERE', radius_ft: area.sizeFt + (caster?.radiusFt ?? 0) };
+      default:
+        return { shape: 'SPHERE', radius_ft: area.sizeFt };
+    }
+  })();
+  return {
+    id,
+    origin: { x: origin.x, y: origin.y },
+    origin_elevation_ft: 0,
+    shape,
+    stops_at_walls: true,
+    discretization: 'CENTER_POINT',
+    concentration_caster_id: concentrationCasterId,
+  };
+}
+
+/** Template of the pending area once placed (shared by the card and the board preview). */
+export function pendingAreaTemplate(state: ProjectedTableState | null): AoeTemplateDto | null {
+  const pending = pendingActionSignal.value;
+  const point = areaOriginSignal.value;
+  if (pending?.kind !== 'area' || !point) return null;
+  const data = CompendiumResolver.getDefault().get(pending.spellId)?.data;
+  const area = data?.area as SpellArea | undefined;
+  if (!area) return null;
+  const casterId = casterTokenId(state, pending.actorId);
+  const token = casterId ? (state?.tokens[casterId] ?? state?.public_tokens?.[casterId]) : undefined;
+  const { cellPx } = boardMetrics(state);
+  const feetPerCell = state?.feet_per_cell || 5;
+  const caster = token?.top_left
+    ? {
+        center: { x: token.top_left.x + ((token.grid_w ?? 1) * cellPx) / 2, y: token.top_left.y + ((token.grid_h ?? 1) * cellPx) / 2 },
+        radiusFt: ((token.grid_w ?? 1) * feetPerCell) / 2,
+      }
+    : null;
+  return areaTemplate(area, point, caster, areaTemplateIdSignal.value, data?.concentration === true ? casterId : null);
 }
 
 /** Applies a user ruling on a save outcome: the damage follows `damageAfterSave`. */

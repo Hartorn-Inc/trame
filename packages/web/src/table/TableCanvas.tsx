@@ -48,6 +48,12 @@
  *      board clicks paint instead of moving tokens (`tableTools.ts`).
  * 7. `Map-Art Independence`:
  *    - Neither the battlemap `<img>` nor the canvas carries a filter.
+ * 8. `Pending Action Input`:
+ *    - While a sheet attack waits for targets, token clicks toggle targets
+ *      (marked in the label and by a dashed outline, not colour alone)
+ *      instead of selecting. While an area spell waits for placement, board
+ *      and token clicks place it; the placed template is drawn as a preview
+ *      until the resolution card closes (`actionResolution.ts`).
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -77,6 +83,14 @@ import {
 } from '../engine/wasmBridge.ts';
 import { t, type MessageKey } from '../i18n/index.ts';
 import { resolvedThemeSignal } from '../signals/themeSignal.ts';
+import {
+  actionTargetIdsSignal,
+  areaOriginSignal,
+  isPickingTargets,
+  isPlacingArea,
+  pendingAreaTemplate,
+  toggleActionTarget,
+} from './actionResolution.ts';
 import { moveToken, toggleDoor } from './commands.ts';
 import type { TableRenderer } from './scene/pixiTableRenderer.ts';
 import { buildTableScene, type SceneGeometry, type TableScene } from './scene/tableScene.ts';
@@ -129,6 +143,7 @@ function tokenLabel(token: TableToken): string {
   }
   if (token.gmHidden) label += `, ${t('table.token.hidden')}`;
   if (token.disengaged) label += `, ${t('table.token.disengaged')}`;
+  if (actionTargetIdsSignal.value.includes(token.id)) label += `, ${t('table.token.targeted')}`;
   return label;
 }
 
@@ -164,8 +179,10 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   const [previewPlayerView, setPreviewPlayerView] = useState(false);
   const [, setEngineLoads] = useState(0);
   const palette = getCanvasThemePalette(resolvedThemeSignal.value);
+  const areaPreview = pendingAreaTemplate(table);
+  const targetIds = actionTargetIdsSignal.value;
   const scene: TableScene = buildTableScene({
-    state: table,
+    state: areaPreview && table ? { ...table, persistent_aoes: { ...table.persistent_aoes, [areaPreview.id]: areaPreview } } : table,
     palette,
     isGm,
     selectedTokenId: selectedId,
@@ -302,6 +319,10 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   const onBoardClick = (e: MouseEvent) => {
     if (e.altKey) {
       ping(boardPoint(e));
+      return;
+    }
+    if (isPlacingArea()) {
+      areaOriginSignal.value = boardPoint(e);
       return;
     }
     if (activeTool !== 'select') return;
@@ -519,7 +540,7 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
               <button
                 key={token.id}
                 type="button"
-                class={`ds-token${token.controlled ? '' : ' is-public'}${token.id === selectedId ? ' is-selected' : ''}${token.gmHidden ? ' is-hidden' : ''}`}
+                class={`ds-token${token.controlled ? '' : ' is-public'}${token.id === selectedId ? ' is-selected' : ''}${token.gmHidden ? ' is-hidden' : ''}${targetIds.includes(token.id) ? ' is-targeted' : ''}`}
                 data-testid={`token-${token.id}`}
                 aria-pressed={token.id === selectedId}
                 aria-label={tokenLabel(token)}
@@ -534,6 +555,14 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
                   e.stopPropagation();
                   if (e.altKey) {
                     ping(boardPoint(e));
+                    return;
+                  }
+                  if (isPickingTargets()) {
+                    toggleActionTarget(token.id);
+                    return;
+                  }
+                  if (isPlacingArea()) {
+                    areaOriginSignal.value = { x: token.topLeft.x + (token.gridW * cell) / 2, y: token.topLeft.y + (token.gridH * cell) / 2 };
                     return;
                   }
                   selectToken(token);

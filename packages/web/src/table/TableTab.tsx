@@ -6,8 +6,8 @@
  * PURPOSE:
  * -----
  * Composes the live table: GM toolbar, combat tracker, reaction prompts,
- * board, selected-token vitals, conditions and cover suggestion, and dice
- * tray (the sheet/compendium drawers
+ * board, the pending attack / spell resolution card, selected-token vitals,
+ * conditions and cover suggestion, and dice tray (the sheet/compendium drawers
  * are mounted by the workspace). Each child reads the session signals itself;
  * this module only lays them out.
  *
@@ -25,6 +25,7 @@
 import type { ApiClient } from '../api/client.ts';
 import { isCompendiumDrawerOpenSignal } from '../hud/HudDrawers.tsx';
 import { t } from '../i18n/index.ts';
+import { ActionResolutionCard } from './ActionResolutionCard.tsx';
 import { CombatTrackerBar } from './CombatTrackerBar.tsx';
 import { DiceTray } from './DiceTray.tsx';
 import { GmOverrideToolbar } from './GmOverrideToolbar.tsx';
@@ -57,6 +58,7 @@ export function TableTab({ campaignId, client, isGm }: TableTabProps) {
         <TableCanvas campaignId={campaignId} client={client} isGm={isGm} />
       </div>
       <aside class="ds-stack-sm ds-table-side" aria-label={t('table.sidebar')}>
+        <ActionResolutionCard campaignId={campaignId} client={client} isGm={isGm} />
         <TokenVitalsPanel client={client} isGm={isGm} />
         <TokenConditionsPanel client={client} isGm={isGm} />
         <CoverSuggestionPanel client={client} />

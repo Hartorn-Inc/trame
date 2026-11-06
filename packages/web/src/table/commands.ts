@@ -33,7 +33,7 @@
  * ============================================================================
  */
 import type { Uuid, WirePoint2D, WireTrameCommand, WireWallSegment } from "../api/wire.ts";
-import type { GridCell } from "../engine/wasmBridge.ts";
+import type { AoeTemplateDto, GridCell } from "../engine/wasmBridge.ts";
 
 /** Target affinity toward the damage type (`DamageAffinity`). */
 export type DamageAffinity = "NORMAL" | "RESISTANT" | "VULNERABLE" | "IMMUNE";
@@ -118,6 +118,19 @@ export function applyDamage(tokenId: Uuid, rawDamage: number, options: DamageOpt
     affinity: options.affinity ?? "NORMAL",
     is_critical: options.critical ?? false,
     damage_type: options.damageType ?? null,
+  };
+}
+
+/**
+ * `PROJECT_AOE`: the engine evaluates the wall-clipped template and answers
+ * `AOE_PROJECTED` with the affected tokens; `persistZone` keeps it on the map
+ * (bound to `concentration_caster_id`'s concentration when set).
+ */
+export function projectAoe(template: AoeTemplateDto, persistZone: boolean): WireTrameCommand {
+  return {
+    cmd: "PROJECT_AOE",
+    template: { ...template, concentration_caster_id: template.concentration_caster_id ?? null },
+    persist_zone: persistZone,
   };
 }
 
