@@ -503,7 +503,12 @@ mod tests {
         let mut token = TokenState::new_default(token_id, "Kyra", Point2D::new(100.0, 100.0));
         token.owner_user_id = Some(player_id);
         state
-            .apply_command(&gm, TrameCommand::SpawnToken { token })
+            .apply_command(
+                &gm,
+                TrameCommand::SpawnToken {
+                    token: Box::new(token),
+                },
+            )
             .unwrap();
         assert!(state.data.tokens.contains_key(&token_id));
 
@@ -610,11 +615,11 @@ mod tests {
                 proposal_id,
                 summary: "Spawn Goblin".to_string(),
                 commands: vec![TrameCommand::SpawnToken {
-                    token: TokenState::new_default(
+                    token: Box::new(TokenState::new_default(
                         spawned_by_mcp,
                         "Goblin",
                         Point2D::new(250.0, 250.0),
-                    ),
+                    )),
                 }],
             },
         );

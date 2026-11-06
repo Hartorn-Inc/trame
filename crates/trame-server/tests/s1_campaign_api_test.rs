@@ -233,7 +233,10 @@ fn token(name: &str, owner: Option<Uuid>, actor: Option<Uuid>, x: f64) -> TokenS
 }
 
 fn spawn_cmd(t: &TokenState) -> Value {
-    serde_json::to_value(TrameCommand::SpawnToken { token: t.clone() }).unwrap()
+    serde_json::to_value(TrameCommand::SpawnToken {
+        token: Box::new(t.clone()),
+    })
+    .unwrap()
 }
 
 async fn table(room: &TableRoomHandle) -> TableState {
@@ -373,7 +376,9 @@ async fn a02_actor_update_resyncs_only_linked_tokens() {
     for t in [&linked, &synthetic] {
         room.dispatch_direct_command(
             gm_actor(gm_id),
-            TrameCommand::SpawnToken { token: t.clone() },
+            TrameCommand::SpawnToken {
+                token: Box::new(t.clone()),
+            },
         )
         .await
         .unwrap();
@@ -1240,7 +1245,9 @@ async fn a17_activate_scene_keeps_heroes_and_spawns_synthetic_goblins() {
     for t in [&hero, &old_npc] {
         room.dispatch_direct_command(
             gm_actor(gm_id),
-            TrameCommand::SpawnToken { token: t.clone() },
+            TrameCommand::SpawnToken {
+                token: Box::new(t.clone()),
+            },
         )
         .await
         .unwrap();
@@ -1339,7 +1346,9 @@ async fn a16_damage_persists_only_for_linked_tokens() {
         let room = h.room(campaign_id).await;
         room.dispatch_direct_command(
             gm_actor(gm_id),
-            TrameCommand::SpawnToken { token: t.clone() },
+            TrameCommand::SpawnToken {
+                token: Box::new(t.clone()),
+            },
         )
         .await
         .unwrap();
@@ -1541,7 +1550,9 @@ async fn linked_token_conditions_persist_to_the_actor_sheet() {
         let room = h.room(campaign_id).await;
         room.dispatch_direct_command(
             gm_actor(gm_id),
-            TrameCommand::SpawnToken { token: t.clone() },
+            TrameCommand::SpawnToken {
+                token: Box::new(t.clone()),
+            },
         )
         .await
         .unwrap();
@@ -2322,7 +2333,7 @@ async fn a27_sweeper_hibernates_idle_rooms_and_logs() {
     room.dispatch_direct_command(
         gm_actor(Uuid::new_v4()),
         TrameCommand::SpawnToken {
-            token: token("Goblin", None, None, 0.0),
+            token: Box::new(token("Goblin", None, None, 0.0)),
         },
     )
     .await
@@ -2414,9 +2425,12 @@ async fn a05_auto_rolled_initiative_fills_totals() {
         for (i, dex) in [-1, 2, 4].into_iter().enumerate() {
             let mut t = token(&format!("T{i}"), None, None, f64::from(i as u32) * 70.0);
             t.dex_mod = dex;
-            room.dispatch_direct_command(gm.clone(), TrameCommand::SpawnToken { token: t })
-                .await
-                .unwrap();
+            room.dispatch_direct_command(
+                gm.clone(),
+                TrameCommand::SpawnToken { token: Box::new(t) },
+            )
+            .await
+            .unwrap();
         }
         room.dispatch_direct_command(gm.clone(), cmd).await.unwrap();
         let state = table(&room).await;

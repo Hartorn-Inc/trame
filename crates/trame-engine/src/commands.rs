@@ -874,8 +874,9 @@ pub enum TrameCommand {
     },
     /// Spawns or replaces a token on the tabletop (GM only).
     SpawnToken {
-        /// Complete initial state of the token to place on the map.
-        token: TokenState,
+        /// Complete initial state of the token to place on the map (boxed to keep
+        /// `TrameCommand` small; JSON shape unchanged).
+        token: Box<TokenState>,
     },
     /// Removes a token from the tabletop and combat initiative order (GM only).
     RemoveToken {
@@ -2749,10 +2750,8 @@ impl TableState {
             TrameCommand::SpawnToken { token } => {
                 Self::require_gm(actor)?;
                 self.push_undo(format!("Spawn token {}", token.name));
-                self.data.tokens.insert(token.id, token.clone());
-                Ok(vec![TrameEvent::TokenSpawned {
-                    token: Box::new(token),
-                }])
+                self.data.tokens.insert(token.id, (*token).clone());
+                Ok(vec![TrameEvent::TokenSpawned { token }])
             }
 
             TrameCommand::RemoveToken { token_id } => {

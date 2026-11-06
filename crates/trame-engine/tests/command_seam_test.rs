@@ -794,7 +794,7 @@ fn decide_reaction_rejections_leave_state_and_undo_untouched() {
 
 fn goblin_spawn(id: u128, x: f64) -> TrameCommand {
     TrameCommand::SpawnToken {
-        token: token(Uuid::from_u128(id), "Goblin", x, 300.0, None),
+        token: Box::new(token(Uuid::from_u128(id), "Goblin", x, 300.0, None)),
     }
 }
 
