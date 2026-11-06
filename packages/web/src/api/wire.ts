@@ -326,8 +326,27 @@ export interface WireActionRequest {
   damage_modifier: number;
   /** Lowercase SRD damage type, `null` for untyped damage. */
   damage_type: string | null;
+  /** Further damage parts with their own type (`0..=3`), rolled like the primary part. */
+  extra_damage: WireDamageComponentRequest[];
   /** `1..=32` distinct targets. */
   targets: WireActionTargetRequest[];
+}
+
+/** One extra damage part of an action (`DamageComponentRequest`). */
+export interface WireDamageComponentRequest {
+  /** Dice terms only (`"2d6"`), `""` for flat damage. */
+  dice: string;
+  /** Flat damage added once (`-20..=50`). */
+  modifier: number;
+  /** Lowercase SRD damage type, `null` for untyped damage. */
+  damage_type: string | null;
+}
+
+/** Extra damage part of a pending resolution (`ExtraDamage`). */
+export interface WireExtraDamage {
+  damage_type: string | null;
+  /** Expression rolled before critical doubling (`"2d6"`). */
+  expression: string;
 }
 
 /** Result of one target (`TargetOutcome`). */
@@ -344,6 +363,8 @@ export interface WireResolvedTarget {
   total: number | null;
   /** Damage to apply (`>= 0`), after save-for-half and before the target's affinity. */
   damage: number;
+  /** Damage of each `extra_damage` part of the resolution, same order (absent or empty: single type). */
+  extra_damage?: number[];
   is_critical: boolean;
   /** Already applied (or nothing to apply); never applied twice. */
   applied: boolean;
@@ -360,6 +381,8 @@ export interface WirePendingResolution {
   damage_type: string | null;
   /** Damage expression rolled (`"1d8+3"`; critical hits doubled the dice). */
   damage_expression: string;
+  /** Extra damage parts with their own type (absent or empty: single type). */
+  extra_damage?: WireExtraDamage[];
   targets: WireResolvedTarget[];
   /** Creation order on the table. */
   sequence: number;

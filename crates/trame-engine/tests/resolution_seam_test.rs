@@ -5,7 +5,7 @@
 
 use trame_engine::aoe::{AoeShape, AoeTemplate, GridDiscretizationMode};
 use trame_engine::resolution::{
-    ActionRequest, ActionTargetRequest, ConcentrationRoll, MAX_PENDING_RESOLUTIONS,
+    ActionRequest, ActionTargetRequest, ConcentrationRoll, ExtraDamage, MAX_PENDING_RESOLUTIONS,
     PendingResolution, ResolutionAdjustment, ResolutionCheck, ResolvedTarget, RollMode,
     TargetOutcome,
 };
@@ -57,6 +57,7 @@ fn target(token_id: Uuid, outcome: TargetOutcome, damage: i32) -> ResolvedTarget
         d20_rolls: vec![12],
         total: Some(17),
         damage,
+        extra_damage: Vec::new(),
         is_critical: outcome == TargetOutcome::Critical,
         applied: false,
     }
@@ -75,6 +76,7 @@ fn resolve(issuer: Uuid, targets: Vec<ResolvedTarget>, damage_type: Option<&str>
         damage_dice: "1d10".to_string(),
         damage_modifier: 0,
         damage_type: damage_type.map(str::to_string),
+        extra_damage: Vec::new(),
         targets: targets
             .iter()
             .map(|t| ActionTargetRequest {
@@ -92,6 +94,7 @@ fn resolve(issuer: Uuid, targets: Vec<ResolvedTarget>, damage_type: Option<&str>
         check: request.check.clone(),
         damage_type: request.damage_type.clone(),
         damage_expression: "1d10".to_string(),
+        extra_damage: Vec::new(),
         targets,
         sequence: 0,
     };
@@ -412,6 +415,145 @@ fn apply_resolution_enforces_permissions_and_idempotency() {
             case.expect_pending,
             "{}",
             case.id
+        );
+    }
+}
+
+/// `resolve` with a primary part of `primary_type` and one extra part per `(type, damage)`.
+fn resolve_parts(
+    token_id: Uuid,
+    primary: (Option<&str>, i32),
+    extra: &[(&str, i32)],
+) -> TrameCommand {
+    let mut hit = target(token_id, TargetOutcome::Hit, primary.1);
+    hit.extra_damage = extra.iter().map(|(_, damage)| *damage).collect();
+    let TrameCommand::ResolveAction {
+        request,
+        resolution: Some(mut resolution),
+    } = resolve(GM_ID, vec![hit], primary.0)
+    else {
+        unreachable!("resolve builds a filled ResolveAction")
+    };
+    resolution.extra_damage = extra
+        .iter()
+        .map(|(damage_type, _)| ExtraDamage {
+            damage_type: Some(damage_type.to_string()),
+            expression: "2d6".to_string(),
+        })
+        .collect();
+    TrameCommand::ResolveAction {
+        request,
+        resolution: Some(resolution),
+    }
+}
+
+#[test]
+fn every_damage_part_is_mitigated_by_its_own_type() {
+    struct Case {
+        id: &'static str,
+        token_id: Uuid,
+        primary: (Option<&'static str>, i32),
+        extra: Vec<(&'static str, i32)>,
+        adjustment: Option<ResolutionAdjustment>,
+        expect_hp: i32,
+    }
+    let cases = [
+        Case {
+            id: "fire_resistance_halves_only_the_fire_part",
+            token_id: ORC_ID,
+            primary: (Some("slashing"), 6),
+            extra: vec![("fire", 7)],
+            adjustment: None,
+            expect_hp: 20 - 6 - 3,
+        },
+        Case {
+            id: "no_affinity_takes_every_part_in_full",
+            token_id: GOBLIN_ID,
+            primary: (Some("piercing"), 5),
+            extra: vec![("poison", 4), ("fire", 3)],
+            adjustment: None,
+            expect_hp: 20 - 12,
+        },
+        Case {
+            id: "resisted_primary_with_unresisted_extra_part",
+            token_id: ORC_ID,
+            primary: (Some("fire"), 9),
+            extra: vec![("cold", 2)],
+            adjustment: None,
+            expect_hp: 20 - 4 - 2,
+        },
+        Case {
+            id: "gm_total_override_uses_the_primary_type",
+            token_id: ORC_ID,
+            primary: (Some("fire"), 6),
+            extra: vec![("cold", 6)],
+            adjustment: Some(ResolutionAdjustment {
+                damage: Some(10),
+                ..ResolutionAdjustment::default()
+            }),
+            expect_hp: 20 - 5,
+        },
+        Case {
+            id: "gm_retyped_primary_keeps_the_extra_part_type",
+            token_id: ORC_ID,
+            primary: (Some("fire"), 6),
+            extra: vec![("fire", 6)],
+            adjustment: Some(ResolutionAdjustment {
+                damage_type: Some("cold".to_string()),
+                ..ResolutionAdjustment::default()
+            }),
+            expect_hp: 20 - 6 - 3,
+        },
+    ];
+    for case in cases {
+        let mut state = table();
+        state
+            .apply_command(
+                &gm(),
+                resolve_parts(case.token_id, case.primary, &case.extra),
+            )
+            .unwrap_or_else(|e| panic!("{}: {e:?}", case.id));
+        state
+            .apply_command(&gm(), apply(Some(case.token_id), case.adjustment))
+            .unwrap_or_else(|e| panic!("{}: {e:?}", case.id));
+        assert_eq!(hp(&state, case.token_id), case.expect_hp, "{}", case.id);
+    }
+}
+
+#[test]
+fn damage_parts_must_match_the_resolution() {
+    let cases = [
+        ("negative_extra_part_is_rejected", vec![-1], 1),
+        ("more_target_parts_than_action_parts", vec![2, 2], 1),
+        ("more_than_three_extra_parts", vec![1, 1, 1, 1], 4),
+    ];
+    for (id, target_parts, action_parts) in cases {
+        let mut hit = target(GOBLIN_ID, TargetOutcome::Hit, 3);
+        hit.extra_damage = target_parts;
+        let TrameCommand::ResolveAction {
+            request,
+            resolution: Some(mut resolution),
+        } = resolve(GM_ID, vec![hit], None)
+        else {
+            unreachable!("resolve builds a filled ResolveAction")
+        };
+        resolution.extra_damage = (0..action_parts)
+            .map(|_| ExtraDamage {
+                damage_type: None,
+                expression: "1d4".to_string(),
+            })
+            .collect();
+        let mut state = table();
+        let result = state.apply_command(
+            &gm(),
+            TrameCommand::ResolveAction {
+                request,
+                resolution: Some(resolution),
+            },
+        );
+        assert!(
+            matches!(result, Err(CommandError::InvalidConfiguration(_))),
+            "{id}: {result:?}"
         );
     }
 }

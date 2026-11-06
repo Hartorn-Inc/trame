@@ -776,6 +776,17 @@ pub const MIN_CONCENTRATION_DC: i32 = 10;
 /// Highest `ConcentrationCheckPrompt` DC (`30`, SRD 5.2.1), reached at 60+ damage.
 pub const MAX_CONCENTRATION_DC: i32 = 30;
 
+/// Damage left after one affinity, from a raw amount floored at `0` (`Resistant` rounds down).
+pub fn mitigate_damage(raw_damage: i32, affinity: DamageAffinity) -> i32 {
+    let raw = raw_damage.max(0);
+    match affinity {
+        DamageAffinity::Immune => 0,
+        DamageAffinity::Resistant => raw / 2,
+        DamageAffinity::Vulnerable => raw.saturating_mul(2),
+        DamageAffinity::Normal => raw,
+    }
+}
+
 /// Resolves D&D 5e / generic damage mitigation (`IMMUNE -> RESISTANT -> VULNERABLE`),
 /// Temporary HP absorption, `InstantDeath`, death saving throw failures at 0 HP, and
 /// Concentration Constitution save DC (`02-GAME-ENGINE-AND-DND5E.md` §4).
@@ -792,13 +803,7 @@ pub fn resolve_damage_application(
     is_critical: bool,
     current_death_save_failures: u8,
 ) -> DamageResolution {
-    let raw = raw_damage.max(0);
-    let final_damage = match affinity {
-        DamageAffinity::Immune => 0,
-        DamageAffinity::Resistant => raw / 2,
-        DamageAffinity::Vulnerable => raw.saturating_mul(2),
-        DamageAffinity::Normal => raw,
-    };
+    let final_damage = mitigate_damage(raw_damage, affinity);
 
     let temp_hp_absorbed = final_damage.min(current_temp_hp.max(0));
     let new_temp_hp = (current_temp_hp - temp_hp_absorbed).max(0);

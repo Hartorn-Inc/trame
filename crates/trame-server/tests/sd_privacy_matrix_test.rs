@@ -239,6 +239,7 @@ fn controller_resolution(t: &Table) -> PendingResolution {
         d20_rolls: vec![14],
         total: Some(19),
         damage: 6,
+        extra_damage: Vec::new(),
         is_critical: false,
         applied: false,
     };
@@ -253,6 +254,7 @@ fn controller_resolution(t: &Table) -> PendingResolution {
         },
         damage_type: Some("slashing".to_string()),
         damage_expression: "1d8+3".to_string(),
+        extra_damage: Vec::new(),
         targets: vec![hit(t.lurker), hit(t.hero)],
         sequence: 1,
     }

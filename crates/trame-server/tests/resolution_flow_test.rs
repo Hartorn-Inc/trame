@@ -25,8 +25,9 @@ use trame_engine::commands::{
 use trame_engine::cover::CoverLevel;
 use trame_engine::geometry::{CHANNEL_GM_HIDDEN, Point2D};
 use trame_engine::resolution::{
-    ActionRequest, ActionTargetRequest, ConcentrationRoll, PendingResolution, ResolutionAdjustment,
-    ResolutionCheck, ResolvedTarget, RollMode, TargetOutcome,
+    ActionRequest, ActionTargetRequest, ConcentrationRoll, DamageComponentRequest,
+    PendingResolution, ResolutionAdjustment, ResolutionCheck, ResolvedTarget, RollMode,
+    TargetOutcome,
 };
 use trame_engine::rules::DamageAffinity;
 use trame_server::room::{
@@ -149,6 +150,7 @@ fn request(
         damage_dice: damage_dice.to_string(),
         damage_modifier,
         damage_type: None,
+        extra_damage: Vec::new(),
         targets: targets
             .iter()
             .map(|id| ActionTargetRequest {
@@ -170,6 +172,7 @@ fn forged(request: &ActionRequest, issuer: Uuid) -> PendingResolution {
         check: request.check.clone(),
         damage_type: None,
         damage_expression: "999".to_string(),
+        extra_damage: Vec::new(),
         targets: request
             .targets
             .iter()
@@ -180,6 +183,7 @@ fn forged(request: &ActionRequest, issuer: Uuid) -> PendingResolution {
                 d20_rolls: vec![20],
                 total: Some(99),
                 damage: 999,
+                extra_damage: vec![999],
                 is_critical: true,
                 applied: false,
             })
@@ -362,6 +366,79 @@ async fn saves_use_the_server_side_bonus_and_save_for_half() {
         let target = &resolution.targets[0];
         assert_eq!(target.outcome, outcome, "{id}");
         assert_eq!(target.damage, damage, "{id}");
+    }
+}
+
+fn part(dice: &str, modifier: i32, damage_type: &str) -> DamageComponentRequest {
+    DamageComponentRequest {
+        dice: dice.to_string(),
+        modifier,
+        damage_type: Some(damage_type.to_string()),
+    }
+}
+
+#[tokio::test]
+async fn every_damage_part_is_rolled_with_its_own_type() {
+    // (case_id, check, extra parts, expected primary damage, expected extra damage)
+    let cases = [
+        (
+            "automatic_rolls_every_part",
+            ResolutionCheck::Automatic,
+            vec![part("", 7, "fire"), part("", 3, "poison")],
+            10,
+            vec![7, 3],
+        ),
+        (
+            "save_for_half_halves_each_part",
+            save("dex", 30, true),
+            vec![part("", 7, "fire")],
+            5,
+            vec![3],
+        ),
+        (
+            "failed_save_keeps_each_part",
+            save("con", 30, true),
+            vec![part("", 7, "fire")],
+            10,
+            vec![7],
+        ),
+    ];
+    for (id, check, extra, damage, extra_damage) in cases {
+        let r = room().await;
+        let mut req = request(None, check, "", 10, &[r.goblin]);
+        req.damage_type = Some("slashing".to_string());
+        req.extra_damage = extra.clone();
+        let resolution = resolve(&r, &r.gm, req)
+            .await
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+        let target = &resolution.targets[0];
+        assert_eq!(target.damage, damage, "{id}: primary");
+        assert_eq!(target.extra_damage, extra_damage, "{id}: extra parts");
+        let types: Vec<Option<&str>> = resolution
+            .extra_damage
+            .iter()
+            .map(|p| p.damage_type.as_deref())
+            .collect();
+        let wanted: Vec<Option<&str>> = extra.iter().map(|p| p.damage_type.as_deref()).collect();
+        assert_eq!(types, wanted, "{id}: part types");
+    }
+}
+
+#[tokio::test]
+async fn invalid_damage_parts_are_rejected() {
+    let r = room().await;
+    // (case_id, extra parts)
+    let cases = [
+        ("unknown_part_type", vec![part("1d6", 0, "laser")]),
+        ("part_dice_out_of_bounds", vec![part("100d6", 0, "fire")]),
+        ("part_modifier_out_of_bounds", vec![part("", 51, "fire")]),
+        ("more_than_three_parts", vec![part("1d4", 0, "fire"); 4]),
+    ];
+    for (id, extra) in cases {
+        let mut req = request(None, ResolutionCheck::Automatic, "1d6", 0, &[r.goblin]);
+        req.extra_damage = extra;
+        let result = resolve(&r, &r.gm, req).await;
+        assert!(result.is_err(), "{id}: {result:?}");
     }
 }
 

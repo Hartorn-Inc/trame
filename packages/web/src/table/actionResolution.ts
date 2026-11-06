@@ -32,11 +32,12 @@
  * 4. `Explicit Cover`:
  *    - Cover is the level the user accepted in the cover panel for this
  *      attacker and target (`acceptedCoverSignal`), `NONE` otherwise.
- * 5. `One Damage Type Per Resolution`:
- *    - A monster action with several damage types resolves the parts of its
- *      first type; the others stay described in its text
- *      (`otherDamageTypes`). A spell's secondary save (Ice Knife) is
- *      described too (`secondarySave`), never rolled here.
+ * 5. `Every Damage Type Is Rolled`:
+ *    - A monster action with several damage types sends its first type as
+ *      the primary part and up to `MAX_EXTRA_DAMAGE_PARTS` other types as
+ *      `extra_damage`; the server rolls each part and the engine applies
+ *      the target's affinity to each type. A spell's secondary save (Ice
+ *      Knife) is described (`secondarySave`), never rolled here.
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -167,9 +168,21 @@ export interface ResolvableAction {
   concentration: boolean;
   /** Save after the attack's damage (Ice Knife), described to the table, not rolled (invariant 5). */
   secondarySave?: { ability: AbilityId; dc: number } | null;
-  /** Damage types of the action left to its description (invariant 5). */
-  otherDamageTypes?: DamageType[];
+  /** Damage parts of other types, rolled and mitigated one by one (invariant 5). */
+  extraDamage?: ExtraDamagePart[];
 }
+
+/** One extra damage part of an action: its dice, flat modifier and type. */
+export interface ExtraDamagePart {
+  /** Dice terms only (`"2d6"`), `""` for flat damage. */
+  dice: string;
+  /** Flat damage added once. */
+  modifier: number;
+  type: DamageType;
+}
+
+/** Most extra damage parts the server accepts besides the primary part (`MAX_EXTRA_DAMAGE_COMPONENTS`). */
+export const MAX_EXTRA_DAMAGE_PARTS = 3;
 
 /** Derived statistics of a stored sheet, `null` when it cannot be derived. */
 export function deriveSheet(data: unknown): Dnd5eDerivedStats | null {
@@ -249,23 +262,27 @@ export function monsterActions(block: MonsterStatBlock): MonsterAction[] {
 export function resolvableFromMonsterAction(action: MonsterAction): ResolvableAction | null {
   if (!action.attack && !action.save) return null;
   const parts = action.damage ?? [];
-  const type = parts[0]?.type ?? null;
-  const own = parts.filter((p) => p.type === type).map((p) => splitDamage(p.dice));
+  const ofType = (type: DamageType) => {
+    const own = parts.filter((p) => p.type === type).map((p) => splitDamage(p.dice));
+    return { dice: own.map((p) => p.dice).filter(Boolean).join('+'), modifier: own.reduce((sum, p) => sum + p.modifier, 0) };
+  };
+  const [type = null, ...otherTypes] = [...new Set(parts.map((p) => p.type))];
+  const primary = type ? ofType(type) : { dice: '', modifier: 0 };
   return {
     id: action.id,
     name: action.name,
     attackBonus: action.attack ? action.attack.toHit : null,
     save: !action.attack && action.save ? { ability: action.save.ability, dc: action.save.dc } : null,
     halfDamageOnSave: action.save?.onSuccess === 'half',
-    damageDice: own.map((p) => p.dice).filter(Boolean).join('+'),
-    damageModifier: own.reduce((sum, p) => sum + p.modifier, 0),
+    damageDice: primary.dice,
+    damageModifier: primary.modifier,
     damageType: type,
     criticalRange: 20,
     source: action.attack?.kind === 'ranged' ? 'weapon_dex' : 'weapon_str',
     area: null,
     concentration: false,
     secondarySave: action.attack && action.save ? { ability: action.save.ability, dc: action.save.dc } : null,
-    otherDamageTypes: [...new Set(parts.map((p) => p.type).filter((t) => t !== type))],
+    extraDamage: otherTypes.slice(0, MAX_EXTRA_DAMAGE_PARTS).map((other) => ({ ...ofType(other), type: other })),
   };
 }
 
@@ -404,6 +421,11 @@ export function buildActionRequest(
     damage_dice: damage.dice,
     damage_modifier: Math.trunc(action.damageModifier + damage.modifier),
     damage_type: action.damageType,
+    extra_damage: (action.extraDamage ?? []).map((part) => ({
+      dice: part.dice,
+      modifier: Math.trunc(part.modifier),
+      damage_type: part.type,
+    })),
     targets: targets.map((target) => ({
       token_id: target.tokenId,
       roll_mode: WIRE_ROLL_MODE[targetRollMode(action, attacker, target).mode],

@@ -60,6 +60,7 @@ import {
   targetContext,
   targetRollMode,
   toggleActionTarget,
+  type ExtraDamagePart,
   type PendingAction,
   type ResolvableAction,
 } from './actionResolution.ts';
@@ -86,6 +87,12 @@ function tokenCenter(token: TableToken, cellPx: number) {
 
 function signed(value: number): string {
   return value >= 0 ? `+${value}` : String(value);
+}
+
+/** `"2d6 Poison"`, `"1d4+2 Fire"`, `"5 Cold"` for flat damage. */
+function extraPartLabel(part: ExtraDamagePart): string {
+  const expression = `${part.dice}${part.modifier ? signed(part.modifier) : ''}`.replace(/^\+/, '');
+  return `${expression} ${t(`damage.type.${part.type}` as MessageKey)}`;
 }
 
 function actionSummary(action: ResolvableAction): string {
@@ -210,9 +217,9 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
           {t('resolution.secondarySave', { ability: action.secondarySave.ability.toUpperCase(), dc: action.secondarySave.dc })}
         </p>
       ) : null}
-      {action.otherDamageTypes?.length ? (
-        <p class="ds-hint" data-testid="action-other-damage">
-          {t('resolution.otherDamage', { types: action.otherDamageTypes.map((type) => t(`damage.type.${type}` as MessageKey)).join(', ') })}
+      {action.extraDamage?.length ? (
+        <p class="ds-hint" data-testid="action-extra-damage">
+          {t('resolution.extraDamage', { parts: action.extraDamage.map(extraPartLabel).join(', ') })}
         </p>
       ) : null}
 

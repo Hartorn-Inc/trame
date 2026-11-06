@@ -539,7 +539,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### PendingResolution
 
-- **Definition**: Server-held result of an attack or area action (`ResolveAction`): per target the outcome (hit, miss, critical, blocked, save success or failure) and the server-rolled damage after save-for-half, waiting for an explicit `ApplyResolution`. The issuer may apply it as rolled, the Game Master may apply, adjust or dismiss it, and each target is applied at most once. It lives in `TableSnapshotData`, so the WAL and undo restore it ([ADR-0042](./docs/adr/0042-server-held-pending-resolutions.md)).
+- **Definition**: Server-held result of an attack or area action (`ResolveAction`): per target the outcome (hit, miss, critical, blocked, save success or failure) and the server-rolled damage after save-for-half, split into one part per damage type when the action deals several (each part meets the target's own affinity to that type), waiting for an explicit `ApplyResolution`. The issuer may apply it as rolled, the Game Master may apply, adjust or dismiss it, and each target is applied at most once. It lives in `TableSnapshotData`, so the WAL and undo restore it ([ADR-0042](./docs/adr/0042-server-held-pending-resolutions.md)).
 - **Allowed Context**: Decision D6 attack and area resolution, the attack card, and the Game Master pending list.
 - **_Avoid_**: PendingAttack, DamageQueue, UnappliedRoll.
 

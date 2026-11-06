@@ -25,6 +25,11 @@
  *    - Only the GM edits amounts, the critical flag and the damage type;
  *      edited targets are applied one by one with an adjustment. The issuer
  *      applies the rolled values for every remaining target.
+ * 4. `One Line Per Damage Type`:
+ *    - A resolution with `extra_damage` parts shows each target's total and
+ *      its per-type split; the engine applies affinities per type. A GM
+ *      amount edit replaces the total and is applied with the primary
+ *      (possibly edited) damage type.
  * ============================================================================
  */
 import { useState } from 'preact/hooks';
@@ -65,6 +70,20 @@ function rollLine(target: WireResolvedTarget, sources: readonly string[] | undef
   return withSources ? `${line}, ${withSources}` : line;
 }
 
+/** Damage of every part of `target` before affinities. */
+function totalDamage(target: WireResolvedTarget): number {
+  return (target.extra_damage ?? []).reduce((sum, part) => sum + part, target.damage);
+}
+
+/** `"6 Slashing + 7 Fire"` for a target hit by several damage types, `null` for a single type (invariant 4). */
+function partsLine(resolution: WirePendingResolution, target: WireResolvedTarget, typeLabel: (type: string) => string): string | null {
+  const extra = resolution.extra_damage ?? [];
+  if (extra.length === 0 || totalDamage(target) === 0) return null;
+  const parts = [`${target.damage} ${typeLabel(resolution.damage_type ?? '')}`];
+  extra.forEach((part, index) => parts.push(`${target.extra_damage?.[index] ?? 0} ${typeLabel(part.damage_type ?? '')}`));
+  return parts.join(' + ');
+}
+
 export interface ResolutionReviewProps {
   client: ApiClient;
   isGm: boolean;
@@ -93,7 +112,7 @@ export function ResolutionReview({ client, isGm, resolution, testIdPrefix: p, mo
     [...Object.values(table?.tokens ?? {}), ...Object.values(table?.public_tokens ?? {})].map((tok) => [tok.id, tok.name ?? '']),
   );
   const [edits, setEdits] = useState<Record<Uuid, TargetEdit>>(() =>
-    Object.fromEntries(resolution.targets.map((target) => [target.token_id, { damage: target.damage, critical: target.is_critical }])),
+    Object.fromEntries(resolution.targets.map((target) => [target.token_id, { damage: totalDamage(target), critical: target.is_critical }])),
   );
   const [damageType, setDamageType] = useState<string>(resolution.damage_type ?? '');
   const [error, setError] = useState<string | null>(null);
@@ -114,7 +133,7 @@ export function ResolutionReview({ client, isGm, resolution, testIdPrefix: p, mo
     const typeChanged = damageType !== (current.damage_type ?? '');
     const edited = (target: WireResolvedTarget) => {
       const edit = edits[target.token_id];
-      return edit !== undefined && (edit.damage !== target.damage || edit.critical !== target.is_critical);
+      return edit !== undefined && (edit.damage !== totalDamage(target) || edit.critical !== target.is_critical);
     };
     if (!isGm || (!typeChanged && !remaining.some(edited))) {
       send([applyResolution(current.id)]);
@@ -122,9 +141,9 @@ export function ResolutionReview({ client, isGm, resolution, testIdPrefix: p, mo
     }
     send(
       remaining.map((target) => {
-        const edit = edits[target.token_id] ?? { damage: target.damage, critical: target.is_critical };
+        const edit = edits[target.token_id] ?? { damage: totalDamage(target), critical: target.is_critical };
         return applyResolution(current.id, target.token_id, {
-          damage: edit.damage !== target.damage ? edit.damage : null,
+          damage: edit.damage !== totalDamage(target) ? edit.damage : null,
           damage_type: typeChanged ? damageType : null,
           is_critical: edit.critical !== target.is_critical ? edit.critical : null,
         });
@@ -142,7 +161,8 @@ export function ResolutionReview({ client, isGm, resolution, testIdPrefix: p, mo
           const name = names.get(target.token_id) || t('resolution.unknownTarget');
           const line = rollLine(target, modeSources?.[target.token_id]);
           const editable = isGm && !target.applied;
-          const value = edits[target.token_id] ?? { damage: target.damage, critical: target.is_critical };
+          const value = edits[target.token_id] ?? { damage: totalDamage(target), critical: target.is_critical };
+          const parts = partsLine(current, target, typeLabel);
           return (
             <li key={target.token_id} class="ds-stack-sm" data-testid={`${p}-result-${target.token_id}`}>
               <p class="ds-value">
@@ -174,10 +194,15 @@ export function ResolutionReview({ client, isGm, resolution, testIdPrefix: p, mo
                 </div>
               ) : (
                 <p class="ds-value" data-testid={`${p}-damage-${target.token_id}`}>
-                  {t('resolution.damageValue', { damage: target.damage })}
-                  {target.applied && target.damage > 0 ? ` (${t('resolution.applied')})` : ''}
+                  {t('resolution.damageValue', { damage: totalDamage(target) })}
+                  {target.applied && totalDamage(target) > 0 ? ` (${t('resolution.applied')})` : ''}
                 </p>
               )}
+              {parts ? (
+                <p class="ds-hint" data-testid={`${p}-parts-${target.token_id}`}>
+                  {t('resolution.damageParts', { parts })}
+                </p>
+              ) : null}
             </li>
           );
         })}

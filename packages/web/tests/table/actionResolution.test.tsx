@@ -184,9 +184,36 @@ describe("resolvableFromMonsterAction", () => {
       expect: { attackBonus: 5, save: null, secondarySave: { ability: "con", dc: 11 } },
     },
     {
-      id: "a second damage type is left to the text",
+      id: "a second damage type becomes an extra part with its own type",
       action: { ...base, attack: { kind: "melee", toHit: 5 }, damage: [{ dice: "1d8 + 3", average: 7, type: "piercing" }, { dice: "2d6", average: 7, type: "poison" }] },
-      expect: { damageDice: "1d8", damageModifier: 3, damageType: "piercing", otherDamageTypes: ["poison"] },
+      expect: { damageDice: "1d8", damageModifier: 3, damageType: "piercing", extraDamage: [{ dice: "2d6", modifier: 0, type: "poison" }] },
+    },
+    {
+      id: "parts of the same type are summed into one part",
+      action: {
+        ...base,
+        attack: { kind: "melee", toHit: 5 },
+        damage: [
+          { dice: "1d6", average: 3, type: "slashing" },
+          { dice: "1d4 + 1", average: 3, type: "fire" },
+          { dice: "1d6", average: 3, type: "fire" },
+        ],
+      },
+      expect: { damageDice: "1d6", damageType: "slashing", extraDamage: [{ dice: "1d4+1d6", modifier: 1, type: "fire" }] },
+    },
+    {
+      id: "at most three extra types are rolled",
+      action: {
+        ...base,
+        save: { ability: "dex", dc: 15, onSuccess: "half" },
+        damage: (["acid", "cold", "fire", "lightning", "poison"] as const).map((type) => ({ dice: "1d6", average: 3, type })),
+      },
+      expect: { damageType: "acid", extraDamage: (["cold", "fire", "lightning"] as const).map((type) => ({ dice: "1d6", modifier: 0, type })) },
+    },
+    {
+      id: "a single damage type has no extra part",
+      action: { ...base, attack: { kind: "melee", toHit: 5 }, damage: [{ dice: "1d8", average: 4, type: "piercing" }] },
+      expect: { extraDamage: [] },
     },
     { id: "a prose-only action (Multiattack) cannot be resolved", action: { ...base, automation: "text" }, expect: null },
   ];
@@ -468,6 +495,47 @@ describe("PendingResolutionsPanel: the GM's list", () => {
     ui.unmount();
   });
 
+  const multiType = (targets: WireResolvedTarget[]) =>
+    gmView({
+      pending_resolutions: {
+        [ID]: pendingResolution(ID, targets, {
+          damage_type: "slashing",
+          damage_expression: "1d6",
+          extra_damage: [{ damage_type: "fire", expression: "2d6" }],
+        }),
+      },
+    });
+  const partCases = [
+    { id: "a hit shows the total and the split by type", target: resolvedTarget({ damage: 4, extra_damage: [7] }), read: "value", total: "11", parts: "Split by type: 4 Slashing + 7 Fire" },
+    { id: "a miss has no split line", target: resolvedTarget({ outcome: "MISS", damage: 0, extra_damage: [0], applied: true }), read: "textContent", total: "0 damage", parts: null },
+  ] as const;
+  for (const c of partCases) {
+    it(`several damage types: ${c.id}`, () => {
+      const { ui } = table("GM", multiType([c.target]));
+      assert.equal(ui.byTestId(`pending-${ID}-damage-${GOBLIN}`)[c.read], c.total);
+      if (c.parts === null) assertAbsent(ui.byTestId(`pending-${ID}-parts-${GOBLIN}`), "parts line");
+      else assert.equal(ui.byTestId(`pending-${ID}-parts-${GOBLIN}`).textContent, c.parts);
+      ui.unmount();
+    });
+  }
+
+  it("several damage types: a GM total edit replaces every part", () => {
+    const { live, ui } = table("GM", multiType([resolvedTarget({ damage: 4, extra_damage: [7] })]));
+    ui.input(`pending-${ID}-damage-${GOBLIN}`, "5");
+    ui.click(`pending-${ID}-apply`);
+    assert.deepEqual(live.commands(), [
+      { cmd: "APPLY_RESOLUTION", resolution_id: ID, token_id: GOBLIN, adjustment: { damage: 5, damage_type: null, is_critical: null } },
+    ]);
+    ui.unmount();
+  });
+
+  it("several damage types: applied as rolled without an adjustment", () => {
+    const { live, ui } = table("GM", multiType([resolvedTarget({ damage: 4, extra_damage: [7] })]));
+    ui.click(`pending-${ID}-apply`);
+    assert.deepEqual(live.commands(), [{ cmd: "APPLY_RESOLUTION", resolution_id: ID, token_id: null, adjustment: null }]);
+    ui.unmount();
+  });
+
   it("an already applied target is not offered again", () => {
     const { ui } = table("GM", withPending([resolvedTarget({ applied: true })]));
     assert.equal(ui.byTestId(`pending-${ID}-apply`).disabled, true);
@@ -492,8 +560,30 @@ describe("MonsterTurnPanel: the GM runs a monster's attack", () => {
     const [sent] = live.commands();
     assert.equal(sent.request.attacker_token_id, GOBLIN);
     assert.deepEqual(sent.request.check, { kind: "ATTACK", attack_bonus: GOBLIN_ATTACK.attack!.toHit, critical_range: 20 });
+    assert.deepEqual(sent.request.extra_damage, []);
     answer(live, gmView, [resolvedTarget({ token_id: HERO, d20_rolls: [13], total: 17 })]);
     assert.match(ui.byTestId(`action-result-${HERO}`).textContent, /rolled 17, d20 13/);
+    ui.unmount();
+  });
+
+  it("an action with two damage types sends both parts and describes the extra one", () => {
+    const venomous = {
+      ...GOBLIN_BLOCK,
+      actions: GOBLIN_BLOCK.actions.map((a) =>
+        a.id === GOBLIN_ATTACK.id ? { ...a, damage: [{ dice: "1d6 + 2", average: 5, type: "slashing" }, { dice: "2d6", average: 7, type: "poison" }] } : a,
+      ),
+    };
+    const state = gmView();
+    state.tokens[GOBLIN] = { ...state.tokens[GOBLIN], stat_block: venomous as unknown as Record<string, unknown> };
+    const { live, ui } = table("GM", state);
+    selectedTokenIdSignal.value = GOBLIN;
+    ui.click(`monster-turn-action-${GOBLIN_ATTACK.id}`);
+    assert.equal(ui.byTestId("action-extra-damage").textContent, "Also deals 2d6 Poison damage, each type resisted separately.");
+    ui.input(`action-target-${HERO}`, "on", "change");
+    ui.click("action-roll");
+    const [sent] = live.commands();
+    assert.equal(sent.request.damage_type, "slashing");
+    assert.deepEqual(sent.request.extra_damage, [{ dice: "2d6", modifier: 0, damage_type: "poison" }]);
     ui.unmount();
   });
 

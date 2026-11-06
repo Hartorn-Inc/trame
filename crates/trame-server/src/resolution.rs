@@ -36,7 +36,11 @@
 //!   3. `Crit Doubles Dice Only`:
 //!      - `damage_expression` doubles every dice count on a critical hit; the
 //!        flat modifier is added once.
-//!   4. `Nothing Leaves Through The Dice Log`:
+//!   4. `Every Damage Part Keeps Its Type`:
+//!      - `extra_damage` parts (`1d8 slashing + 2d6 fire`) are rolled, doubled
+//!        on a critical hit and halved on a save one by one, so the engine
+//!        applies the target's affinity to each type when the damage lands.
+//!   5. `Nothing Leaves Through The Dice Log`:
 //!      - Resolution rolls are not fanned out as `DiceRolled`; the outcome
 //!        reaches clients only through `ActionResolved` and the projection,
 //!        which `sync.rs` redacts per recipient.
@@ -58,10 +62,10 @@ use crate::sync::visible_token_ids_for_recipient;
 use serde_json::Value;
 use trame_engine::commands::{CampaignRole, CommandActor, TableState, TokenState};
 use trame_engine::resolution::{
-    ABILITY_IDS, ActionRequest, MAX_ACTION_NAME_CHARS, MAX_RESOLUTION_TARGETS, PendingResolution,
-    ResolutionCheck, ResolvedTarget, RollMode, TargetOutcome, attack_outcome,
-    auto_critical_within_5ft, damage_after_save, kept_d20, save_condition_mode,
-    save_fails_automatically, token_distance_ft,
+    ABILITY_IDS, ActionRequest, ExtraDamage, MAX_ACTION_NAME_CHARS, MAX_EXTRA_DAMAGE_COMPONENTS,
+    MAX_RESOLUTION_TARGETS, PendingResolution, ResolutionCheck, ResolvedTarget, RollMode,
+    TargetOutcome, attack_outcome, auto_critical_within_5ft, damage_after_save, kept_d20,
+    save_condition_mode, save_fails_automatically, token_distance_ft,
 };
 use uuid::Uuid;
 
@@ -202,11 +206,40 @@ fn roll_damage(
     Ok(roll(roller, issuer, expression, reason)?.total.max(0))
 }
 
+/// One damage part of a request: parsed dice terms and flat modifier.
+struct DamagePart {
+    terms: Vec<(u32, u32)>,
+    modifier: i32,
+}
+
+/// Rolls every damage part (the primary part first), dice doubled on a critical hit.
+fn roll_parts(
+    roller: &mut SeededDiceRoller,
+    issuer: Uuid,
+    parts: &[DamagePart],
+    critical: bool,
+    reason: &str,
+) -> Result<Vec<i32>, String> {
+    parts
+        .iter()
+        .map(|p| {
+            let expression = damage_expression(&p.terms, p.modifier, critical);
+            roll_damage(roller, issuer, &expression, reason)
+        })
+        .collect()
+}
+
+/// Primary part and extra parts of rolled damage, the shape `ResolvedTarget` stores.
+fn split_parts(mut rolled: Vec<i32>) -> (i32, Vec<i32>) {
+    let extra = rolled.split_off(1.min(rolled.len()));
+    (rolled.first().copied().unwrap_or(0), extra)
+}
+
 fn validate_request(
     state: &TableState,
     actor: &CommandActor,
     request: &ActionRequest,
-) -> Result<Vec<(u32, u32)>, String> {
+) -> Result<Vec<DamagePart>, String> {
     let invalid = |m: &str| Err(format!("invalid configuration: {m}"));
     let name_len = request.action_name.trim().chars().count();
     if !(1..=MAX_ACTION_NAME_CHARS).contains(&name_len) {
@@ -230,14 +263,17 @@ fn validate_request(
         }
         ResolutionCheck::Automatic => {}
     }
-    if !DAMAGE_MODIFIER_RANGE.contains(&request.damage_modifier) {
+    if request.extra_damage.len() > MAX_EXTRA_DAMAGE_COMPONENTS {
+        return invalid("an action has at most 3 extra damage parts");
+    }
+    let mut modifiers = std::iter::once(request.damage_modifier)
+        .chain(request.extra_damage.iter().map(|p| p.modifier));
+    if modifiers.any(|m| !DAMAGE_MODIFIER_RANGE.contains(&m)) {
         return invalid("damage modifier is out of bounds");
     }
-    if request
-        .damage_type
-        .as_deref()
-        .is_some_and(|t| !DAMAGE_TYPES.contains(&t))
-    {
+    let mut types = std::iter::once(&request.damage_type)
+        .chain(request.extra_damage.iter().map(|p| &p.damage_type));
+    if types.any(|t| t.as_deref().is_some_and(|t| !DAMAGE_TYPES.contains(&t))) {
         return invalid("damage type is not an SRD damage type");
     }
     let count = request.targets.len();
@@ -256,7 +292,14 @@ fn validate_request(
             return Err("entity not found: a target is not on the table".to_string());
         }
     }
-    parse_damage_dice(&request.damage_dice).map_err(|m| format!("invalid configuration: {m}"))
+    std::iter::once((&request.damage_dice, request.damage_modifier))
+        .chain(request.extra_damage.iter().map(|p| (&p.dice, p.modifier)))
+        .map(|(dice, modifier)| {
+            let terms =
+                parse_damage_dice(dice).map_err(|m| format!("invalid configuration: {m}"))?;
+            Ok(DamagePart { terms, modifier })
+        })
+        .collect()
 }
 
 /// Rolls `request` for `actor` (invariants 1-3). Unknown tokens are reported as not found;
@@ -267,7 +310,7 @@ pub fn fill_action_resolution(
     request: &ActionRequest,
     roller: &mut SeededDiceRoller,
 ) -> Result<PendingResolution, String> {
-    let dice = validate_request(state, actor, request)?;
+    let parts = validate_request(state, actor, request)?;
     let tokens = &state.data.tokens;
     let target_of = |id: &Uuid| {
         tokens
@@ -280,8 +323,8 @@ pub fn fill_action_resolution(
     };
     let issuer = actor.user_id;
     let name = request.action_name.trim().to_string();
-    let modifier = request.damage_modifier;
-    let base_expression = damage_expression(&dice, modifier, false);
+    let base_expression = damage_expression(&parts[0].terms, parts[0].modifier, false);
+    let damage_reason = format!("{name}: damage");
     let mut targets = Vec::with_capacity(request.targets.len());
 
     match &request.check {
@@ -316,16 +359,18 @@ pub fn fill_action_resolution(
                     auto_critical,
                 );
                 let critical = outcome == TargetOutcome::Critical;
-                let damage = if matches!(outcome, TargetOutcome::Hit | TargetOutcome::Critical) {
-                    roll_damage(
-                        roller,
-                        issuer,
-                        &damage_expression(&dice, modifier, critical),
-                        &format!("{name}: damage"),
-                    )?
-                } else {
-                    0
-                };
+                let (damage, extra_damage) =
+                    if matches!(outcome, TargetOutcome::Hit | TargetOutcome::Critical) {
+                        split_parts(roll_parts(
+                            roller,
+                            issuer,
+                            &parts,
+                            critical,
+                            &damage_reason,
+                        )?)
+                    } else {
+                        (0, Vec::new())
+                    };
                 targets.push(ResolvedTarget {
                     token_id: wanted.token_id,
                     roll_mode: mode,
@@ -333,6 +378,7 @@ pub fn fill_action_resolution(
                     d20_rolls,
                     total: Some(d20.total),
                     damage,
+                    extra_damage,
                     is_critical: critical,
                     applied: false,
                 });
@@ -343,7 +389,7 @@ pub fn fill_action_resolution(
             dc,
             half_on_success,
         } => {
-            let rolled = roll_damage(roller, issuer, &base_expression, &format!("{name}: damage"))?;
+            let rolled = roll_parts(roller, issuer, &parts, false, &damage_reason)?;
             for wanted in &request.targets {
                 let target = target_of(&wanted.token_id)?;
                 let client_mode_allowed =
@@ -358,13 +404,15 @@ pub fn fill_action_resolution(
                     continue;
                 };
                 if save_fails_automatically(target, ability) {
+                    let (damage, extra_damage) = split_parts(rolled.clone());
                     targets.push(ResolvedTarget {
                         token_id: wanted.token_id,
                         roll_mode: mode,
                         outcome: TargetOutcome::SaveFailure,
                         d20_rolls: Vec::new(),
                         total: None,
-                        damage: rolled,
+                        damage,
+                        extra_damage,
                         is_critical: false,
                         applied: false,
                     });
@@ -380,6 +428,12 @@ pub fn fill_action_resolution(
                 )?;
                 let (d20_rolls, _) = d20s_of(&save, mode);
                 let success = save.total >= *dc;
+                let (damage, extra_damage) = split_parts(
+                    rolled
+                        .iter()
+                        .map(|part| damage_after_save(*part, success, *half_on_success))
+                        .collect(),
+                );
                 targets.push(ResolvedTarget {
                     token_id: wanted.token_id,
                     roll_mode: mode,
@@ -390,14 +444,16 @@ pub fn fill_action_resolution(
                     },
                     d20_rolls,
                     total: Some(save.total),
-                    damage: damage_after_save(rolled, success, *half_on_success),
+                    damage,
+                    extra_damage,
                     is_critical: false,
                     applied: false,
                 });
             }
         }
         ResolutionCheck::Automatic => {
-            let rolled = roll_damage(roller, issuer, &base_expression, &format!("{name}: damage"))?;
+            let (rolled, rolled_extra) =
+                split_parts(roll_parts(roller, issuer, &parts, false, &damage_reason)?);
             for wanted in &request.targets {
                 target_of(&wanted.token_id)?;
                 if wanted.cover.bonus().is_none() {
@@ -411,6 +467,7 @@ pub fn fill_action_resolution(
                     d20_rolls: Vec::new(),
                     total: None,
                     damage: rolled,
+                    extra_damage: rolled_extra.clone(),
                     is_critical: false,
                     applied: false,
                 });
@@ -426,6 +483,15 @@ pub fn fill_action_resolution(
         check: request.check.clone(),
         damage_type: request.damage_type.clone(),
         damage_expression: base_expression,
+        extra_damage: request
+            .extra_damage
+            .iter()
+            .zip(&parts[1..])
+            .map(|(requested, part)| ExtraDamage {
+                damage_type: requested.damage_type.clone(),
+                expression: damage_expression(&part.terms, part.modifier, false),
+            })
+            .collect(),
         targets,
         sequence: 0,
     })
@@ -439,6 +505,7 @@ fn blocked(token_id: Uuid, roll_mode: RollMode) -> ResolvedTarget {
         d20_rolls: Vec::new(),
         total: None,
         damage: 0,
+        extra_damage: Vec::new(),
         is_critical: false,
         applied: false,
     }

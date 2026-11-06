@@ -1458,6 +1458,7 @@ async fn pg_pending_resolution_survives_restart_and_applies_once() {
             damage_dice: String::new(),
             damage_modifier: 7,
             damage_type: Some("force".to_string()),
+            extra_damage: Vec::new(),
             targets: vec![ActionTargetRequest {
                 token_id,
                 roll_mode: RollMode::Normal,

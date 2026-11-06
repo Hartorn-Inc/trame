@@ -33,7 +33,12 @@
 //!        engine derives the affinity) and marks each target `applied`. A
 //!        target that is already applied is never damaged again; a fully
 //!        applied resolution leaves the table. Targets with `0` damage are
-//!        applied when the resolution is created.
+//!        applied when the resolution is created. An action dealing several
+//!        damage types carries `extra_damage` parts (at most
+//!        `MAX_EXTRA_DAMAGE_COMPONENTS`): each part meets the target's own
+//!        affinity to its type, then the sum lands as one hit (one
+//!        Concentration check, one death-save failure at 0 HP). A GM amount
+//!        override replaces every part and uses the primary type.
 //!   4. `Who May Apply`:
 //!      - The issuer applies their own resolution as rolled. Only the Game
 //!        Master adjusts (amount, type, critical) or dismisses one.
@@ -58,7 +63,7 @@ use crate::commands::{
     TrameEvent, condition_effect_active,
 };
 use crate::cover::CoverLevel;
-use crate::rules::DamageAffinity;
+use crate::rules::{DamageAffinity, mitigate_damage};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -172,8 +177,40 @@ pub struct ActionRequest {
     /// Lowercase SRD damage type; `None` is untyped damage (no affinity).
     #[serde(default)]
     pub damage_type: Option<String>,
+    /// Further damage parts with their own type (a monster's `1d8 slashing + 2d6 fire`),
+    /// rolled like the primary part (`0..=MAX_EXTRA_DAMAGE_COMPONENTS`).
+    #[serde(default)]
+    pub extra_damage: Vec<DamageComponentRequest>,
     /// Targets (`1..=MAX_RESOLUTION_TARGETS`, distinct).
     pub targets: Vec<ActionTargetRequest>,
+}
+
+/// Most extra damage parts one action carries besides its primary part.
+pub const MAX_EXTRA_DAMAGE_COMPONENTS: usize = 3;
+
+/// One extra damage part of an `ActionRequest`, rolled and mitigated with its own type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct DamageComponentRequest {
+    /// Damage dice, dice terms only (`"2d6"`); `""` for flat damage.
+    #[serde(default)]
+    pub dice: String,
+    /// Flat damage added once, never doubled (`-20..=50`).
+    #[serde(default)]
+    pub modifier: i32,
+    /// Lowercase SRD damage type; `None` is untyped damage (no affinity).
+    #[serde(default)]
+    pub damage_type: Option<String>,
+}
+
+/// Extra damage part of a `PendingResolution`, in `ActionRequest::extra_damage` order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ExtraDamage {
+    /// Damage type of the part (`None`: untyped).
+    pub damage_type: Option<String>,
+    /// Damage expression of the part before critical doubling (`"2d6"`).
+    pub expression: String,
 }
 
 /// Result of one target.
@@ -214,6 +251,10 @@ pub struct ResolvedTarget {
     pub total: Option<i32>,
     /// Damage to apply (`>= 0`): rolled, after save-for-half, before the target's affinity.
     pub damage: i32,
+    /// Damage of each `PendingResolution::extra_damage` part (`>= 0`, same order), before the
+    /// target's affinity to that part's type; empty for single-type actions.
+    #[serde(default)]
+    pub extra_damage: Vec<i32>,
     /// Damage counts as a critical hit (death saving throw failures at 0 HP).
     pub is_critical: bool,
     /// The damage was applied (or there was none to apply).
@@ -238,6 +279,9 @@ pub struct PendingResolution {
     pub damage_type: Option<String>,
     /// Damage expression (`"1d8+3"`; critical hits doubled the dice), `""` without damage.
     pub damage_expression: String,
+    /// Extra damage parts with their own type (`0..=MAX_EXTRA_DAMAGE_COMPONENTS`).
+    #[serde(default)]
+    pub extra_damage: Vec<ExtraDamage>,
     /// Results, in request order.
     pub targets: Vec<ResolvedTarget>,
     /// Creation order on the table (set by the engine; the oldest is dropped first).
@@ -248,6 +292,13 @@ pub struct PendingResolution {
 impl PendingResolution {
     fn fully_applied(&self) -> bool {
         self.targets.iter().all(|t| t.applied)
+    }
+}
+
+impl ResolvedTarget {
+    /// Raw damage of every part before affinities.
+    fn total_damage(&self) -> i32 {
+        self.damage + self.extra_damage.iter().sum::<i32>()
     }
 }
 
@@ -429,17 +480,25 @@ impl TableState {
                 "an action resolves 1..={MAX_RESOLUTION_TARGETS} targets"
             )));
         }
+        if resolution.extra_damage.len() > MAX_EXTRA_DAMAGE_COMPONENTS {
+            return Err(invalid(format!(
+                "an action has at most {MAX_EXTRA_DAMAGE_COMPONENTS} extra damage parts"
+            )));
+        }
         for target in &resolution.targets {
             if !self.data.tokens.contains_key(&target.token_id) {
                 return Err(CommandError::NotFound(format!("token {}", target.token_id)));
             }
-            if target.damage < 0 {
+            if target.damage < 0 || target.extra_damage.iter().any(|d| *d < 0) {
                 return Err(invalid("resolution damage must be >= 0"));
+            }
+            if target.extra_damage.len() > resolution.extra_damage.len() {
+                return Err(invalid("a target has more damage parts than the action"));
             }
         }
         self.push_undo(format!("Resolve {}", resolution.action_name));
         for target in &mut resolution.targets {
-            target.applied |= target.damage == 0;
+            target.applied |= target.total_damage() == 0;
         }
         self.data.resolution_seq += 1;
         resolution.sequence = self.data.resolution_seq;
@@ -525,16 +584,38 @@ impl TableState {
         let mut updated = resolution;
         for index in selected {
             let target = &mut updated.targets[index];
-            let amount = adjustment.damage.unwrap_or(target.damage);
             let critical = adjustment.is_critical.unwrap_or(target.is_critical);
-            if amount > 0 && self.data.tokens.contains_key(&target.token_id) {
-                events.extend(self.apply_damage_to_token(
-                    target.token_id,
-                    amount,
-                    DamageAffinity::Normal,
-                    critical,
-                    damage_type.as_deref(),
-                ));
+            let has_parts =
+                adjustment.damage.is_none() && target.extra_damage.iter().any(|d| *d > 0);
+            if has_parts && let Some(token) = self.data.tokens.get(&target.token_id) {
+                let parts = std::iter::once((target.damage, damage_type.as_deref())).chain(
+                    target
+                        .extra_damage
+                        .iter()
+                        .zip(&updated.extra_damage)
+                        .map(|(amount, part)| (*amount, part.damage_type.as_deref())),
+                );
+                let amount = mitigated_parts(token, parts);
+                if amount > 0 {
+                    events.extend(self.apply_damage_to_token(
+                        target.token_id,
+                        amount,
+                        DamageAffinity::Normal,
+                        critical,
+                        None,
+                    ));
+                }
+            } else {
+                let amount = adjustment.damage.unwrap_or(target.damage);
+                if amount > 0 && self.data.tokens.contains_key(&target.token_id) {
+                    events.extend(self.apply_damage_to_token(
+                        target.token_id,
+                        amount,
+                        DamageAffinity::Normal,
+                        critical,
+                        damage_type.as_deref(),
+                    ));
+                }
             }
             target.applied = true;
             applied_ids.push(target.token_id);
@@ -637,6 +718,21 @@ impl TableState {
                     .is_some_and(|t| t.concentrating || t.concentrating_on_aoe_id.is_some())
         });
     }
+}
+
+/// Sum of damage parts after the token's affinity to each part's type (untyped parts are
+/// unmitigated), so one hit of `slashing + fire` on a fire-resistant target halves only the fire.
+fn mitigated_parts<'a>(
+    token: &TokenState,
+    parts: impl Iterator<Item = (i32, Option<&'a str>)>,
+) -> i32 {
+    parts
+        .map(|(amount, damage_type)| {
+            let affinity =
+                damage_type.map_or(DamageAffinity::Normal, |t| token.damage_affinity_for(t));
+            mitigate_damage(amount, affinity)
+        })
+        .fold(0, i32::saturating_add)
 }
 
 #[cfg(test)]
