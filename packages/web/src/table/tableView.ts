@@ -23,9 +23,21 @@
  * 3. `Grid Snapping`:
  *    - Click targets snap to the top-left corner of the grid cell under the
  *      pointer (`floor(x / cell) * cell`), so moves land on cells.
+ * 4. `Door Handles Follow The Projection`:
+ *    - Players never receive a closed secret door (the server sends it as
+ *      `NORMAL`), so `doorHandles` cannot reveal one. A handle is actionable
+ *      for the GM on every door, and for players on unlocked plain doors,
+ *      the same rule the engine applies to `TOGGLE_DOOR`.
+ * 5. `Death Saving Throw Phase`:
+ *    - `deathSavePhase` reads the server's counters and flags; the client
+ *      never evaluates a roll itself, the room resolves `RECORD_DEATH_SAVE`.
  * ============================================================================
  */
-import type { ProjectedTableState, Uuid, WireBloodiedState, WirePoint2D, WireReactionPrompt } from "../api/wire.ts";
+import type { ConditionOverrideRuling } from "../../../game-systems/dnd5e/src/conditions.ts";
+import type { ProjectedTableState, Uuid, WireBloodiedState, WirePoint2D, WireReactionPrompt, WireTokenState } from "../api/wire.ts";
+
+/** `CHANNEL_GM_HIDDEN` bit of `TokenState::visibility_channel` (`geometry.rs`). */
+const CHANNEL_GM_HIDDEN = 0b100;
 
 /** Token as rendered on the table. */
 export interface TableToken {
@@ -47,6 +59,57 @@ export interface TableToken {
   /** Coarse health tier, public tokens only. */
   bloodied: WireBloodiedState | null;
   conditions: string[];
+  /** GM rulings (`condition_overrides`), controlled tokens only. */
+  conditionOverrides: ConditionOverrideRuling[];
+  /** Concentrating on a spell, with (`concentrating_on_aoe_id`) or without a zone. */
+  concentrating: boolean;
+  /** Death saving throw counters (`0..=3`), controlled tokens only. */
+  deathSaves: { successes: number; failures: number };
+  /** Stable at 0 HP (no more death saving throws until damaged). */
+  isStable: boolean;
+  isDead: boolean;
+  /** Disengage taken this turn (no opportunity attacks). */
+  disengaged: boolean;
+  /** Hidden from every player by the GM (`CHANNEL_GM_HIDDEN`). */
+  gmHidden: boolean;
+  invisible: boolean;
+  /** Remaining and maximum walking speed in feet (`ft`), controlled tokens only. */
+  speedRemainingFt: number | null;
+  speedMaxFt: number | null;
+  /** Base elevation and stature in feet (`ft`). */
+  elevationFt: number;
+  heightFt: number;
+  /** Name of the server-validated stat block copy (`stat_block.name`), when any. */
+  statBlockName: string | null;
+}
+
+/** Life state driving the death saving throw controls (`deathSavePhase`). */
+export type DeathSavePhase = "conscious" | "dying" | "stable" | "dead" | "unknown";
+
+/** Door handle drawn at a door's midpoint on the board. */
+export interface DoorHandle {
+  wallId: Uuid;
+  /** Midpoint of the door segment in canvas pixels (`px`). */
+  pos: WirePoint2D;
+  isOpen: boolean;
+  isLocked: boolean;
+  isSecret: boolean;
+  /** The recipient may send `TOGGLE_DOOR` for it (see invariant 4). */
+  canToggle: boolean;
+}
+
+function numberOr(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function overridesOf(raw: WireTokenState): ConditionOverrideRuling[] {
+  const list = Array.isArray(raw.condition_overrides) ? (raw.condition_overrides as ConditionOverrideRuling[]) : [];
+  return list.filter((o) => (o.subject === "CONDITION" || o.subject === "EFFECT") && typeof o.id === "string");
+}
+
+function statBlockName(raw: WireTokenState): string | null {
+  const name = raw.stat_block?.name;
+  return typeof name === "string" && name.trim() ? name : null;
 }
 
 /** One row of the combat tracker. */
@@ -91,6 +154,22 @@ export function listTableTokens(state: ProjectedTableState | null): TableToken[]
     tempHp: controlled && typeof raw.temp_hp === "number" ? raw.temp_hp : null,
     bloodied: controlled ? null : (raw.bloodied ?? null),
     conditions: Array.isArray(raw.conditions) ? raw.conditions : [],
+    conditionOverrides: controlled ? overridesOf(raw) : [],
+    concentrating: raw.concentrating === true || (typeof raw.concentrating_on_aoe_id === "string" && raw.concentrating_on_aoe_id !== ""),
+    deathSaves: {
+      successes: controlled ? numberOr(raw.death_save_successes, 0) : 0,
+      failures: controlled ? numberOr(raw.death_save_failures, 0) : 0,
+    },
+    isStable: raw.is_stable === true,
+    isDead: raw.is_dead === true,
+    disengaged: raw.disengaged === true,
+    gmHidden: (numberOr(raw.visibility_channel, 1) & CHANNEL_GM_HIDDEN) !== 0,
+    invisible: raw.invisible === true,
+    speedRemainingFt: controlled && typeof raw.speed_remaining_ft === "number" ? raw.speed_remaining_ft : null,
+    speedMaxFt: controlled && typeof raw.speed_max_ft === "number" ? raw.speed_max_ft : null,
+    elevationFt: numberOr(raw.elevation_ft, 0),
+    heightFt: numberOr(raw.height_ft, 5),
+    statBlockName: controlled ? statBlockName(raw) : null,
   });
   const tokens = [
     ...Object.values(state.tokens).map((raw) => toToken(raw, true)),
@@ -135,6 +214,39 @@ export function initiativeEntries(state: ProjectedTableState | null, totals: Rec
 export function activeTurnTokenId(state: ProjectedTableState | null): Uuid | null {
   if (!state || state.mode !== "TURN_BY_TURN" || state.active_turn_index === null) return null;
   return state.initiative_order[state.active_turn_index] ?? null;
+}
+
+/**
+ * Death saving throw phase of a token: `unknown` for tokens whose hit points
+ * the recipient does not see, `dead` / `stable` from the server flags, then
+ * `dying` at 0 HP and `conscious` above.
+ */
+export function deathSavePhase(token: TableToken): DeathSavePhase {
+  if (token.isDead) return "dead";
+  if (token.hp === null) return "unknown";
+  if (token.hp > 0) return "conscious";
+  return token.isStable ? "stable" : "dying";
+}
+
+/** Door handles of the projected walls (invariant 4); `spectator` handles are never actionable. */
+export function doorHandles(state: ProjectedTableState | null, isGm: boolean, spectator = false): DoorHandle[] {
+  if (!state) return [];
+  return (state.walls ?? []).flatMap((wall): DoorHandle[] => {
+    const kind = wall.kind;
+    if (kind?.kind !== "DOOR" && kind?.kind !== "SECRET_DOOR") return [];
+    const isLocked = kind.kind === "DOOR" && kind.is_locked;
+    const isSecret = kind.kind === "SECRET_DOOR";
+    return [
+      {
+        wallId: wall.id,
+        pos: { x: (wall.a.x + wall.b.x) / 2, y: (wall.a.y + wall.b.y) / 2 },
+        isOpen: kind.is_open,
+        isLocked,
+        isSecret,
+        canToggle: !spectator && (isGm || (!isSecret && !isLocked)),
+      },
+    ];
+  });
 }
 
 /**

@@ -44,7 +44,7 @@
  * ============================================================================
  */
 import { Decoder, encode } from "@msgpack/msgpack";
-import type { AoeTemplateDto } from "../engine/wasmBridge.ts";
+import type { AoeTemplateDto, GridCell } from "../engine/wasmBridge.ts";
 
 /** Canonical hyphenated UUID string (`8-4-4-4-12` lowercase hex). */
 export type Uuid = string;
@@ -110,6 +110,26 @@ export interface WireTokenState {
   bloodied?: WireBloodiedState;
   /** Visible condition labels. */
   conditions?: string[];
+  /** GM `ConditionOverride` rulings (full tokens only). */
+  condition_overrides?: { subject: "CONDITION" | "EFFECT"; id: string; mode: "FORCE" | "REMOVE" }[];
+  /** Concentrating without a zone (`SetConcentration`); omitted when `false`. */
+  concentrating?: boolean;
+  /** Persistent AoE the token concentrates on, when any. */
+  concentrating_on_aoe_id?: Uuid | null;
+  /** Death saving throw counters `0..=3` (full tokens only). */
+  death_save_successes?: number;
+  death_save_failures?: number;
+  /** Stable at 0 HP after three successes; omitted when `false`. */
+  is_stable?: boolean;
+  is_dead?: boolean;
+  /** Disengage taken this turn. */
+  disengaged?: boolean;
+  /** Visibility channel bitmask (`0b100` = hidden from players by the GM). */
+  visibility_channel?: number;
+  invisible?: boolean;
+  /** Walking speed in feet (`ft`, full tokens only; remaining is `0` for non-controllers). */
+  speed_max_ft?: number;
+  speed_remaining_ft?: number;
   /**
    * Server-validated monster or actor-template stat block copy (full tokens only); the
    * source of the token's HP, AC, speed, senses, reach and damage affinities. Absent for
@@ -243,6 +263,8 @@ export interface ProjectedTableState {
   round: number;
   lights: WireLightSource[];
   fog_overrides: WireFogOverrideCell[];
+  /** Difficult terrain cells of the active map (entering one costs double movement). */
+  difficult_terrain?: GridCell[];
   background_asset_hash: string | null;
   /** Battlemap width in canvas pixels (`px`). */
   map_width_px: number;

@@ -1104,9 +1104,13 @@ export class ApiClient {
     }));
   }
 
-  /** Broadcasts an ephemeral pointer ping at a canvas position (`px`). */
+  /**
+   * Broadcasts an ephemeral pointer ping at a canvas position (`px`), tagged with the
+   * projection's `active_scene_id` so the server drops pings aimed at a scene the table left.
+   */
   sendPointerPing(pos: WirePoint2D, colorHex: string): boolean {
-    return this.send({ type: "PointerPing", pos, colorHex });
+    const sceneId = this.state.table.value?.active_scene_id ?? undefined;
+    return this.send({ type: "PointerPing", pos, colorHex, ...(sceneId ? { sceneId } : {}) });
   }
 
   /** Sends an RTT probe; the `Pong` updates `rttMs`. */
