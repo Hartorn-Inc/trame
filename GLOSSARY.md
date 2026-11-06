@@ -557,7 +557,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ReactionPrompt
 
-- **Definition**: Pending opportunity-reaction decision opened by a Turn-by-Turn `MoveToken` that leaves the `ThreatReach` of a hostile token that still has its reaction, is not GM-hidden or incapacitated, and can see the mover. It is addressed to the reactor's owner (the Game Master for unowned tokens), has no timer, and blocks player movement of the interrupted token until `DecideReaction` (`Trigger` or `Pass`, which the Game Master can force). After `Trigger`, `ResolveReaction` resumes the remaining move. Its `prompt_id` is a one-way SHA-256-derived UUID, so players cannot recover a hidden reactor's ID, and WAL replay reproduces the same IDs.
+- **Definition**: Pending opportunity-reaction decision opened by a Turn-by-Turn `MoveToken` that leaves the `ThreatReach` of a hostile token that still has its reaction, is not GM-hidden or incapacitated, and can see the mover. It is addressed to the reactor's owner (the Game Master for unowned tokens), has no timer, and blocks player movement of the interrupted token until `DecideReaction` (`Trigger` or `Pass`, which the Game Master can force). A mover that took the Disengage action (`SetDisengaged`) opens none until the next turn starts. After `Trigger`, `ResolveReaction` resumes the remaining move. Its `prompt_id` is a one-way SHA-256-derived UUID, so players cannot recover a hidden reactor's ID, and WAL replay reproduces the same IDs.
 - **Allowed Context**: `ProjectedTableState.active_reaction_prompts`, `ReactionPromptOpened` / `ReactionPromptClosed` events, and `ReactionBanner` rendering.
 - **_Avoid_**: OpportunityWindow, ReactionTimer, InterruptToken.
 

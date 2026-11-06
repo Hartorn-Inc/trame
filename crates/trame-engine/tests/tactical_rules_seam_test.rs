@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 const PLAYER_ID: Uuid = Uuid::from_u128(0xA1);
 const HERO_ID: Uuid = Uuid::from_u128(0x10);
+const GOBLIN_ID: Uuid = Uuid::from_u128(0x20);
 
 fn gm() -> CommandActor {
     CommandActor {
@@ -28,6 +29,20 @@ fn player() -> CommandActor {
         user_id: PLAYER_ID,
         role: CampaignRole::Player,
     }
+}
+
+fn spectator() -> CommandActor {
+    CommandActor {
+        user_id: Uuid::from_u128(0xA9),
+        role: CampaignRole::Spectator,
+    }
+}
+
+fn opened_prompt_count(events: &[TrameEvent]) -> usize {
+    events
+        .iter()
+        .filter(|e| matches!(e, TrameEvent::ReactionPromptOpened { .. }))
+        .count()
 }
 
 fn cell(col: i32, row: i32) -> GridCell {
@@ -405,4 +420,198 @@ fn snapshots_written_before_the_tactical_fields_still_load() {
     let loaded: TableSnapshotData = serde_json::from_value(legacy).unwrap();
     assert!(loaded.difficult_terrain.is_empty());
     assert_eq!(loaded.tokens[&HERO_ID].name, "Kyra");
+}
+
+#[test]
+fn opportunity_prompts_follow_weapon_reach_and_disengage() {
+    #[derive(Clone, Copy)]
+    struct Case {
+        id: &'static str,
+        hero_x: f64,
+        goblin_reach_ft: f64,
+        disengage: bool,
+        full_rounds_before_move: u32,
+        expect_prompt: bool,
+    }
+    let base = Case {
+        id: "",
+        hero_x: 100.0,
+        goblin_reach_ft: 5.0,
+        disengage: false,
+        full_rounds_before_move: 0,
+        expect_prompt: true,
+    };
+    let cases = [
+        Case {
+            id: "default_reach_threatens_adjacent_square",
+            ..base
+        },
+        Case {
+            id: "default_reach_ignores_mover_10ft_away",
+            hero_x: 200.0,
+            expect_prompt: false,
+            ..base
+        },
+        Case {
+            id: "reach_weapon_threatens_10ft",
+            hero_x: 200.0,
+            goblin_reach_ft: 10.0,
+            ..base
+        },
+        Case {
+            id: "disengage_suppresses_reaction_prompt",
+            disengage: true,
+            expect_prompt: false,
+            ..base
+        },
+        Case {
+            id: "disengage_suppresses_reach_weapon_prompt",
+            hero_x: 200.0,
+            goblin_reach_ft: 10.0,
+            disengage: true,
+            expect_prompt: false,
+            ..base
+        },
+        Case {
+            id: "disengage_ends_when_the_next_turn_starts",
+            disengage: true,
+            full_rounds_before_move: 1,
+            ..base
+        },
+    ];
+
+    for c in cases {
+        let hero = token(HERO_ID, "Kyra", c.hero_x, 0.0, Some(PLAYER_ID));
+        let mut goblin = token(GOBLIN_ID, "Goblin", 0.0, 0.0, None);
+        goblin.reach_ft = c.goblin_reach_ft;
+        let mut state = table(vec![hero, goblin]);
+        start_combat(&mut state, vec![HERO_ID, GOBLIN_ID]);
+
+        if c.disengage {
+            let events = state
+                .apply_command(
+                    &player(),
+                    TrameCommand::SetDisengaged {
+                        token_id: HERO_ID,
+                        disengaged: true,
+                    },
+                )
+                .unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+            assert_eq!(
+                events,
+                vec![TrameEvent::TokenDisengaged {
+                    token_id: HERO_ID,
+                    disengaged: true,
+                }],
+                "case {} events",
+                c.id
+            );
+        }
+        for _ in 0..c.full_rounds_before_move * 2 {
+            state
+                .apply_command(&gm(), TrameCommand::AdvanceTurn)
+                .unwrap();
+        }
+        assert_eq!(
+            state.data.tokens[&HERO_ID].disengaged,
+            c.disengage && c.full_rounds_before_move == 0,
+            "case {} flag before the move",
+            c.id
+        );
+
+        let events = state
+            .apply_command(
+                &player(),
+                TrameCommand::MoveToken {
+                    token_id: HERO_ID,
+                    to_top_left: Point2D::new(600.0, 0.0),
+                    to_elevation_ft: None,
+                    gm_teleport: false,
+                },
+            )
+            .unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+        assert_eq!(
+            opened_prompt_count(&events),
+            usize::from(c.expect_prompt),
+            "case {} prompts",
+            c.id
+        );
+        assert_eq!(
+            state.data.active_reaction_prompts.len(),
+            usize::from(c.expect_prompt),
+            "case {} prompt state",
+            c.id
+        );
+    }
+}
+
+#[test]
+fn set_disengaged_requires_token_control_and_is_undoable() {
+    struct Case {
+        id: &'static str,
+        actor: CommandActor,
+        target: Uuid,
+        expect_ok: bool,
+    }
+    let cases = [
+        Case {
+            id: "player_disengages_own_token",
+            actor: player(),
+            target: HERO_ID,
+            expect_ok: true,
+        },
+        Case {
+            id: "gm_disengages_any_token",
+            actor: gm(),
+            target: GOBLIN_ID,
+            expect_ok: true,
+        },
+        Case {
+            id: "player_cannot_disengage_other_token",
+            actor: player(),
+            target: GOBLIN_ID,
+            expect_ok: false,
+        },
+        Case {
+            id: "spectator_cannot_disengage",
+            actor: spectator(),
+            target: HERO_ID,
+            expect_ok: false,
+        },
+    ];
+    for c in cases {
+        let mut state = table(vec![
+            token(HERO_ID, "Kyra", 100.0, 0.0, Some(PLAYER_ID)),
+            token(GOBLIN_ID, "Goblin", 0.0, 0.0, None),
+        ]);
+        let result = state.apply_command(
+            &c.actor,
+            TrameCommand::SetDisengaged {
+                token_id: c.target,
+                disengaged: true,
+            },
+        );
+        assert_eq!(result.is_ok(), c.expect_ok, "case {}: {result:?}", c.id);
+        assert_eq!(
+            state.data.tokens[&c.target].disengaged, c.expect_ok,
+            "case {} flag",
+            c.id
+        );
+        assert_eq!(
+            state.undo_stack.len(),
+            usize::from(c.expect_ok),
+            "case {} undo",
+            c.id
+        );
+        if c.expect_ok {
+            state
+                .apply_command(&gm(), TrameCommand::UndoLastAction)
+                .unwrap();
+            assert!(
+                !state.data.tokens[&c.target].disengaged,
+                "case {} undone",
+                c.id
+            );
+        }
+    }
 }

@@ -664,6 +664,7 @@ pub fn filter_events_for_recipient(
             }
             TrameEvent::TokenMoved { token_id, .. }
             | TrameEvent::TokenSqueezeToggled { token_id, .. }
+            | TrameEvent::TokenDisengaged { token_id, .. }
             | TrameEvent::TokenVisibilityChanged { token_id, .. }
             | TrameEvent::TokenOwnerAssigned { token_id, .. }
             | TrameEvent::ActionRefunded { token_id, .. } => {

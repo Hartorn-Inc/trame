@@ -51,6 +51,8 @@
 //!        drops, so event-driven clients stay in sync with state.
 //!      - Hostility is side-based: a `HeroToken` (`owner_user_id.is_some()`)
 //!        and a GM-controlled token (`owner_user_id.is_none()`) are hostile.
+//!      - A mover with `disengaged` set (Disengage action) opens no prompt;
+//!        every turn start and `EndTurnByTurn` clear the flag on all tokens.
 //!      - `Pass` (including a GM-forced `Pass`) resumes the remaining move,
 //!        re-checking walls, budget, and the other reactors' reach. `Trigger`
 //!        spends the reaction and leaves the token on the exit square; once the
@@ -463,6 +465,10 @@ pub struct TokenState {
     /// Melee `ThreatReach` in feet (`ft`, default `5.0`); leaving it provokes an opportunity prompt.
     #[serde(default = "default_reach_ft")]
     pub reach_ft: f64,
+    /// `true` after the Disengage action (`SetDisengaged`): this token's movement opens no
+    /// `ReactionPrompt` until the next turn starts, which clears every token's flag.
+    #[serde(default)]
+    pub disengaged: bool,
     /// `DeathSaveCounters` successes (`0..=3`), reset when the token regains HP.
     #[serde(default)]
     pub death_save_successes: u8,
@@ -515,6 +521,7 @@ impl TokenState {
             active_effects: Vec::new(),
             conditions: Vec::new(),
             reach_ft: default_reach_ft(),
+            disengaged: false,
             death_save_successes: 0,
             death_save_failures: 0,
             is_dead: false,
@@ -586,6 +593,14 @@ pub enum TrameCommand {
         to_elevation_ft: Option<f64>,
         /// When `true` and issued by a `Gm`, bypasses wall collisions, turn locks, and movement cost deduction.
         gm_teleport: bool,
+    },
+    /// Records the Disengage action on a token (GM: any token; players: owned tokens only). While
+    /// set, the token's moves open no `ReactionPrompt`; the next turn start clears it.
+    SetDisengaged {
+        /// Target token ID.
+        token_id: Uuid,
+        /// `true` to take the Disengage action, `false` to withdraw it.
+        disengaged: bool,
     },
     /// Toggles the D&D 5e squeezing state for a token to fit through narrower passages at double movement cost.
     ToggleSqueeze {
@@ -866,6 +881,13 @@ pub enum TrameEvent {
         elevation_ft: f64,
         /// Remaining movement budget for the current turn in feet (`ft`).
         speed_remaining_ft: f64,
+    },
+    /// Emitted when a token takes or withdraws the Disengage action.
+    TokenDisengaged {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Updated Disengage flag.
+        disengaged: bool,
     },
     /// Emitted when a token enters or exits squeezing mode.
     TokenSqueezeToggled {
@@ -1667,7 +1689,7 @@ impl TableState {
         excluded_reactors: Vec<Uuid>,
     ) -> Vec<TrameEvent> {
         let token = self.data.tokens[&token_id].clone();
-        let threat = if check_threats {
+        let threat = if check_threats && !token.disengaged {
             self.find_threat_exit(&token, to_top_left, new_elev, &excluded_reactors)
         } else {
             None
@@ -1768,13 +1790,21 @@ impl TableState {
         uuid::Builder::from_custom_bytes(bytes).into_uuid()
     }
 
-    /// Gives `token_id` a fresh turn: full speed, action, bonus action, and reaction.
+    /// Starts `token_id`'s turn: full speed, action, bonus action, and reaction. Also ends every
+    /// Disengage, which lasts only until the end of the turn it was taken in.
     fn reset_turn_resources(&mut self, token_id: Uuid) {
+        self.clear_disengaged();
         if let Some(tok) = self.data.tokens.get_mut(&token_id) {
             tok.speed_remaining_ft = tok.speed_max_ft;
             tok.has_action = true;
             tok.has_bonus_action = true;
             tok.has_reaction = true;
+        }
+    }
+
+    fn clear_disengaged(&mut self) {
+        for tok in self.data.tokens.values_mut() {
+            tok.disengaged = false;
         }
     }
 
@@ -1945,6 +1975,20 @@ impl TableState {
                 Ok(events)
             }
 
+            TrameCommand::SetDisengaged {
+                token_id,
+                disengaged,
+            } => {
+                let token = self.require_token_control(actor, token_id)?.clone();
+                self.push_undo(format!("Set Disengage for {}", token.name));
+                let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
+                tok_mut.disengaged = disengaged;
+                Ok(vec![TrameEvent::TokenDisengaged {
+                    token_id,
+                    disengaged,
+                }])
+            }
+
             TrameCommand::ToggleSqueeze {
                 token_id,
                 is_squeezing,
@@ -2019,13 +2063,8 @@ impl TableState {
                 self.data.initiative_order = initiative_order;
                 self.data.active_turn_index = 0;
                 self.data.round = 1;
-                if let Some(first_id) = self.active_turn_token_id()
-                    && let Some(tok) = self.data.tokens.get_mut(&first_id)
-                {
-                    tok.speed_remaining_ft = tok.speed_max_ft;
-                    tok.has_action = true;
-                    tok.has_bonus_action = true;
-                    tok.has_reaction = true;
+                if let Some(first_id) = self.active_turn_token_id() {
+                    self.reset_turn_resources(first_id);
                 }
                 let mut events = vec![TrameEvent::TableModeChanged {
                     mode,
@@ -2052,13 +2091,8 @@ impl TableState {
                 self.data.initiative_order = initiative_order;
                 self.data.active_turn_index = 0;
                 self.data.round = 1;
-                if let Some(first_id) = self.active_turn_token_id()
-                    && let Some(tok) = self.data.tokens.get_mut(&first_id)
-                {
-                    tok.speed_remaining_ft = tok.speed_max_ft;
-                    tok.has_action = true;
-                    tok.has_bonus_action = true;
-                    tok.has_reaction = true;
+                if let Some(first_id) = self.active_turn_token_id() {
+                    self.reset_turn_resources(first_id);
                 }
                 Ok(vec![TrameEvent::TableModeChanged {
                     mode: TableMode::TurnByTurn,
@@ -2071,6 +2105,7 @@ impl TableState {
             TrameCommand::EndTurnByTurn => {
                 Self::require_gm(actor)?;
                 self.push_undo("End Turn-by-Turn mode");
+                self.clear_disengaged();
                 self.data.mode = TableMode::Exploration;
                 self.data.exploration_paused = false;
                 self.data.initiative_order.clear();
