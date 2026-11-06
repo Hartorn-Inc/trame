@@ -657,6 +657,13 @@ pub struct TokenState {
     /// subject and id); they win over `conditions` and over automated effects.
     #[serde(default)]
     pub condition_overrides: Vec<ConditionOverrideEntry>,
+    /// Copy of the game-system stat block a `SyntheticToken` was staged or spawned from
+    /// (dnd5e `MonsterStatBlock` JSON), editable as homebrew. Opaque to the engine: the
+    /// server validates its bounds and derives `hp`, `ac`, speed, senses, reach and damage
+    /// affinities from it before the token reaches the table. `None` for plain and linked
+    /// tokens; omitted from the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stat_block: Option<serde_json::Value>,
 }
 
 impl TokenState {
@@ -699,6 +706,7 @@ impl TokenState {
             damage_immunities: Vec::new(),
             damage_vulnerabilities: Vec::new(),
             condition_overrides: Vec::new(),
+            stat_block: None,
         }
     }
 

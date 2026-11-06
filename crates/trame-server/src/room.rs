@@ -192,13 +192,14 @@ pub struct ActorTacticalSync {
     pub hp_max: Option<i32>,
     /// Updated Temporary Hit Points (`temp_hp`).
     pub temp_hp: Option<i32>,
-    /// Updated Armor Class (`ac`).
+    /// Updated Armor Class (`ac`), from the sheet's `derived.armorClass` (GS6).
     pub ac: Option<i32>,
     /// Updated Dexterity ability modifier (`dex_mod`).
     pub dex_mod: Option<i32>,
     /// Updated non-Dexterity initiative bonus (`TokenState::initiative_extra`, SEC3).
     pub initiative_extra: Option<i32>,
-    /// Updated maximum movement speed in feet (`speed_ft`).
+    /// Updated walking speed in feet (`ft`, `>= 0`) after exhaustion, from the sheet's
+    /// `attributes.speedFt` (GS6); copied onto `speed_max_ft`.
     pub speed_ft: Option<f64>,
     /// Updated list of active condition labels (`conditions`).
     pub conditions: Option<Vec<String>>,
@@ -214,9 +215,61 @@ pub struct ActorTacticalSync {
 }
 
 impl ActorTacticalSync {
-    /// Copies the sheet-derived rules fields (reach, darkvision) onto `token`. Shared by the
-    /// sheet resync and by actor-linked `SpawnToken`, so both paths ignore client values.
-    pub fn apply_sheet_rules(&self, token: &mut trame_engine::commands::TokenState) {
+    /// Copies every synced field onto `token` (the sheet resync and actor-linked `SpawnToken`
+    /// share it, so both ignore client values). `mode` decides the remaining speed: the full
+    /// speed in `Exploration`, at most the new speed in `TurnByTurn`. A token whose conditions
+    /// set its Speed to 0 (`condition_effects().speed_zero`, GM rulings included) ends with
+    /// `speed_remaining_ft == 0` while `speed_max_ft` keeps the sheet speed, so lifting the
+    /// condition restores the speed at the next turn without another sheet save.
+    pub fn apply_to_token(&self, token: &mut trame_engine::commands::TokenState, mode: TableMode) {
+        if let Some(ref name) = self.name {
+            token.name = name.clone();
+        }
+        if let Some(hp_max) = self.hp_max {
+            token.max_hp = hp_max.max(1);
+            token.hp = token.hp.clamp(0, token.max_hp);
+        }
+        if let Some(hp_current) = self.hp_current {
+            token.hp = hp_current.clamp(0, token.max_hp);
+        }
+        if let Some(temp_hp) = self.temp_hp {
+            token.temp_hp = temp_hp.max(0);
+        }
+        if let Some(ac) = self.ac {
+            token.ac = ac.max(0);
+        }
+        if let Some(dex_mod) = self.dex_mod {
+            token.dex_mod = dex_mod;
+        }
+        if let Some(extra) = self.initiative_extra {
+            token.initiative_extra = extra;
+        }
+        if let Some(speed_ft) = self.speed_ft
+            && speed_ft >= 0.0
+        {
+            token.speed_max_ft = speed_ft;
+            if mode == TableMode::Exploration {
+                token.speed_remaining_ft = speed_ft;
+            } else {
+                token.speed_remaining_ft = token.speed_remaining_ft.min(speed_ft);
+            }
+        }
+        if let Some(ref conditions) = self.conditions {
+            token.conditions = conditions.clone();
+        }
+        if token.condition_effects().speed_zero {
+            token.speed_remaining_ft = 0.0;
+        }
+        if let Some((ref resist, ref immune, ref vuln)) = self.damage_affinities {
+            token.damage_resistances = resist.clone();
+            token.damage_immunities = immune.clone();
+            token.damage_vulnerabilities = vuln.clone();
+        }
+        self.apply_sheet_rules(token);
+    }
+
+    /// Copies the sheet-derived rules fields (reach, darkvision) onto `token`.
+    fn apply_sheet_rules(&self, token: &mut trame_engine::commands::TokenState) {
         if let Some(reach_ft) = self.reach_ft {
             token.reach_ft = reach_ft;
         }
@@ -823,8 +876,19 @@ impl TableRoomActor {
                         }
                     }
                 }
-                RoomActorMessage::StageMcpProposal { proposal, reply } => {
+                RoomActorMessage::StageMcpProposal {
+                    mut proposal,
+                    reply,
+                } => {
                     self.last_activity_ms = now_ms();
+                    if let Err(reason) = proposal
+                        .commands
+                        .iter_mut()
+                        .try_for_each(crate::statblock::normalize_command)
+                    {
+                        let _ = reply.send(Err(RoomError::CommandRejected(reason)));
+                        continue;
+                    }
                     let entry = WalEntry {
                         seq_id: self.seq_id + 1,
                         campaign_id: self.campaign_id,
@@ -988,10 +1052,11 @@ impl TableRoomActor {
     fn execute_and_broadcast_command(
         &mut self,
         actor: CommandActor,
-        cmd: TrameCommand,
+        mut cmd: TrameCommand,
     ) -> Result<(u64, Vec<TrameEvent>), RoomError> {
         self.authorize_command(&actor, &cmd)
             .map_err(RoomError::CommandRejected)?;
+        crate::statblock::normalize_command(&mut cmd).map_err(RoomError::CommandRejected)?;
         let checkpoint = self.state.clone();
         let initiative_checkpoint = self.player_initiative_rolls.clone();
         let prior_mode = self.state.data.mode;
@@ -1049,12 +1114,13 @@ impl TableRoomActor {
     fn execute_and_broadcast_batch(
         &mut self,
         actor: CommandActor,
-        commands: Vec<TrameCommand>,
+        mut commands: Vec<TrameCommand>,
         description: String,
     ) -> Result<(u64, Vec<TrameEvent>), RoomError> {
-        for cmd in &commands {
+        for cmd in &mut commands {
             self.authorize_command(&actor, cmd)
                 .map_err(RoomError::CommandRejected)?;
+            crate::statblock::normalize_command(cmd).map_err(RoomError::CommandRejected)?;
         }
         let checkpoint = self.state.clone();
         let prior_mode = self.state.data.mode;
@@ -1487,52 +1553,13 @@ impl TableRoomActor {
     ) -> usize {
         let mut updated_count = 0usize;
         let mut sheet_owners: Vec<Uuid> = Vec::new();
+        let mode = self.state.data.mode;
         for token in self.state.data.tokens.values_mut() {
             if token.actor_id == Some(actor_id) {
                 if let Some(owner) = token.owner_user_id {
                     sheet_owners.push(owner);
                 }
-                if let Some(ref name) = sync.name {
-                    token.name = name.clone();
-                }
-                if let Some(hp_max) = sync.hp_max {
-                    token.max_hp = hp_max.max(1);
-                    token.hp = token.hp.clamp(0, token.max_hp);
-                }
-                if let Some(hp_current) = sync.hp_current {
-                    token.hp = hp_current.clamp(0, token.max_hp);
-                }
-                if let Some(temp_hp) = sync.temp_hp {
-                    token.temp_hp = temp_hp.max(0);
-                }
-                if let Some(ac) = sync.ac {
-                    token.ac = ac.max(0);
-                }
-                if let Some(dex_mod) = sync.dex_mod {
-                    token.dex_mod = dex_mod;
-                }
-                if let Some(extra) = sync.initiative_extra {
-                    token.initiative_extra = extra;
-                }
-                if let Some(speed_ft) = sync.speed_ft
-                    && speed_ft >= 0.0
-                {
-                    token.speed_max_ft = speed_ft;
-                    if self.state.data.mode == TableMode::Exploration {
-                        token.speed_remaining_ft = speed_ft;
-                    } else {
-                        token.speed_remaining_ft = token.speed_remaining_ft.min(speed_ft);
-                    }
-                }
-                if let Some(ref conditions) = sync.conditions {
-                    token.conditions = conditions.clone();
-                }
-                if let Some((ref resist, ref immune, ref vuln)) = sync.damage_affinities {
-                    token.damage_resistances = resist.clone();
-                    token.damage_immunities = immune.clone();
-                    token.damage_vulnerabilities = vuln.clone();
-                }
-                sync.apply_sheet_rules(token);
+                sync.apply_to_token(token, mode);
                 updated_count += 1;
             }
         }

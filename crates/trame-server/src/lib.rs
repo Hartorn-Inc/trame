@@ -64,6 +64,7 @@ pub mod mcp;
 pub mod notes;
 pub mod room;
 pub mod security;
+pub mod statblock;
 pub mod storage;
 pub mod sync;
 pub mod timeline;

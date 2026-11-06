@@ -1304,23 +1304,27 @@ pub async fn presign_asset_handler(
 }
 
 /// Replaces a client `ActivateScene` payload with the stored scene. A failed lookup becomes a
-/// command without payload, which the room rejects back to the sender. An actor-linked
-/// `SpawnToken` gets its reach and darkvision from the stored sheet (`resolve_linked_spawn`).
+/// command without payload, which the room rejects back to the sender. A `SpawnToken` takes
+/// its linked sheet values and actor-template stat block from storage
+/// (`campaigns::resolve_spawn`); a template that cannot be resolved comes back as
+/// `Err((reason, correlation_id))` for the caller to reject.
 async fn resolve_client_envelope(
     state: &AppState,
     campaign_id: Uuid,
     envelope: ClientEnvelope,
-) -> ClientEnvelope {
+) -> Result<ClientEnvelope, (String, Option<String>)> {
     let ClientEnvelope::SubmitCommand(mut submission) = envelope else {
-        return envelope;
+        return Ok(envelope);
     };
     if let TrameCommand::SpawnToken { .. } = submission.command {
         submission.command =
-            crate::campaigns::resolve_linked_spawn(state, campaign_id, submission.command).await;
-        return ClientEnvelope::SubmitCommand(submission);
+            crate::campaigns::resolve_spawn(state, campaign_id, submission.command)
+                .await
+                .map_err(|reason| (reason, submission.correlation_id.clone()))?;
+        return Ok(ClientEnvelope::SubmitCommand(submission));
     }
     let TrameCommand::ActivateScene { scene_id, .. } = submission.command else {
-        return ClientEnvelope::SubmitCommand(submission);
+        return Ok(ClientEnvelope::SubmitCommand(submission));
     };
     submission.command = crate::maps::resolve_scene_command(
         state,
@@ -1335,14 +1339,19 @@ async fn resolve_client_envelope(
         scene_id,
         scene: None,
     });
-    ClientEnvelope::SubmitCommand(submission)
+    Ok(ClientEnvelope::SubmitCommand(submission))
 }
 
-/// Answers an undecodable frame with `CommandRejected` (no correlation id can be read, RT10).
-fn reject_frame(tx: &mpsc::UnboundedSender<OutboundClientFrame>, reason: &str) {
+/// Answers a frame the socket task refused before the room saw it with `CommandRejected`;
+/// `correlation_id` is `None` when the frame could not be decoded (RT10).
+fn reject_frame(
+    tx: &mpsc::UnboundedSender<OutboundClientFrame>,
+    reason: &str,
+    correlation_id: Option<String>,
+) {
     let out = crate::sync::ServerEnvelope::CommandRejected {
         reason: reason.to_string(),
-        correlation_id: None,
+        correlation_id,
     };
     if let Ok(bytes) = crate::sync::encode_server_envelope(&out) {
         let _ = tx.send(OutboundClientFrame::Binary(bytes));
@@ -1438,10 +1447,20 @@ async fn handle_ws_connection(
             continue;
         };
         let Ok(envelope) = decode_client_envelope(&bin) else {
-            reject_frame(&reject_tx, "malformed frame: not a valid client envelope");
+            reject_frame(
+                &reject_tx,
+                "malformed frame: not a valid client envelope",
+                None,
+            );
             continue;
         };
-        let envelope = resolve_client_envelope(&state, campaign_id, envelope).await;
+        let envelope = match resolve_client_envelope(&state, campaign_id, envelope).await {
+            Ok(envelope) => envelope,
+            Err((reason, correlation_id)) => {
+                reject_frame(&reject_tx, &reason, correlation_id);
+                continue;
+            }
+        };
         match tokio::time::timeout(
             room_timeout,
             room_handle.send_envelope(session_id, envelope),

@@ -33,7 +33,12 @@
 //!   4b. `Sheet-Derived Rules Fields`:
 //!      - Threat reach (equipped reach weapon or stat-block melee reach) and darkvision
 //!        (species or stat-block senses) come from the stored sheet on every resync and
-//!        on actor-linked `SpawnToken` (`resolve_linked_spawn`), never from the client.
+//!        on actor-linked `SpawnToken` (`resolve_spawn`), never from the client.
+//!      - Armor Class comes from the sheet's `derived.armorClass` and speed from
+//!        `attributes.speedFt` minus exhaustion (GS6); a token whose conditions impose
+//!        Speed 0 keeps the sheet speed as its maximum but has no movement left.
+//!      - A `SpawnToken` whose `stat_block` names an actor template UUID gets a copy of
+//!        that actor's `statBlock`, which the room validates and applies (`statblock`).
 //!   5. `Confidential Notes`:
 //!      - Non-GM readers never receive `min_role = GM` notes nor `:::dm` / unrevealed
 //!        `:::handout` blocks; player edits go through `merge_party_note_ast`, so the
@@ -894,11 +899,37 @@ fn darkvision_ft(data: &Value) -> Option<f64> {
         .map(|(_, ft)| *ft)
 }
 
+/// Armor Class from the sheet (GS6): the derived AC the client stores with the sheet
+/// (`derived.armorClass`, armor, shield and Unarmored Defense applied), else a flat
+/// `attributes.ac`, else a stat block's `armorClass.value`; `None` keeps the token's AC.
+fn sheet_armor_class(data: &Value) -> Option<i32> {
+    i32_at(data, &["derived", "armorClass"])
+        .or_else(|| i32_at(data, &["attributes", "ac"]))
+        .or_else(|| i32_at(data, &["armorClass", "value"]))
+}
+
+/// Walking speed in feet from the sheet (GS6), mirroring the `derivedDAG` `speed` formula
+/// `max(0, speed_base - 5 * exhaustion)`: `speed_base` is `attributes.speedFt` (legacy
+/// `attributes.speed`, or a stat block's `speed.walk`), exhaustion is clamped to `0..=6`.
+/// `None` keeps the token's speed. Conditions are not folded in here: the token evaluates
+/// Speed 0 itself (`ActorTacticalSync::apply_to_token`) so GM rulings still apply.
+fn sheet_speed_ft(data: &Value) -> Option<f64> {
+    let attributes = data.get("attributes");
+    let base = attributes
+        .and_then(|a| a.get("speedFt").or_else(|| a.get("speed")))
+        .and_then(Value::as_f64)
+        .or_else(|| data.pointer("/speed/walk").and_then(Value::as_f64))?;
+    let exhaustion = i32_at(data, &["attributes", "exhaustion"])
+        .unwrap_or(0)
+        .clamp(0, 6);
+    Some((base - 5.0 * f64::from(exhaustion)).max(0.0))
+}
+
 /// Extracts the token-relevant subset of a `Dnd5eActorData` sheet:
-/// `attributes.hp.{current,max,temp}`, `attributes.ac` (or `derived.ac`),
-/// `abilities.dex.score` (-> modifier), `attributes.speed`, `conditions[].id`,
-/// `damageMitigations` (`RESISTANT` / `IMMUNE` / `VULNERABLE` per damage type, A68), the
-/// threat reach (`threat_reach_ft`), and darkvision (`darkvision_ft`).
+/// `attributes.hp.{current,max,temp}`, the Armor Class (`sheet_armor_class`),
+/// `abilities.dex.score` (-> modifier), the walking speed (`sheet_speed_ft`),
+/// `conditions[].id`, `damageMitigations` (`RESISTANT` / `IMMUNE` / `VULNERABLE` per damage
+/// type, A68), the threat reach (`threat_reach_ft`), and darkvision (`darkvision_ft`).
 pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTacticalSync {
     let conditions = data.get("conditions").and_then(Value::as_array).map(|arr| {
         arr.iter()
@@ -934,13 +965,10 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
         hp_current: i32_at(data, &["attributes", "hp", "current"]),
         hp_max: i32_at(data, &["attributes", "hp", "max"]),
         temp_hp: i32_at(data, &["attributes", "hp", "temp"]),
-        ac: i32_at(data, &["attributes", "ac"]).or_else(|| i32_at(data, &["derived", "ac"])),
+        ac: sheet_armor_class(data),
         dex_mod,
         initiative_extra: dex_mod.map(|_| derived_initiative_extra(data)),
-        speed_ft: data
-            .get("attributes")
-            .and_then(|a| a.get("speed"))
-            .and_then(Value::as_f64),
+        speed_ft: sheet_speed_ft(data),
         conditions,
         damage_affinities,
         reach_ft: threat_reach_ft(data),
@@ -948,24 +976,55 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
     }
 }
 
-/// Overwrites the sheet-derived rules fields (`reach_ft`, darkvision) of an actor-linked
-/// `SpawnToken` with the values from the stored sheet, so a client cannot spawn its token
-/// with a longer reach or sight than the sheet allows. Other commands, synthetic tokens,
-/// and actors that cannot be loaded pass through unchanged.
-pub async fn resolve_linked_spawn(
+/// Resolves the storage-backed parts of a `SpawnToken` before it reaches the room:
+/// - Actor-linked token: every synced field (HP, AC, speed, conditions, affinities, reach,
+///   darkvision) is overwritten from the stored sheet, so a client cannot spawn its token
+///   with better numbers than the sheet allows. An actor that cannot be loaded leaves the
+///   token unchanged.
+/// - `stat_block` holding an actor template UUID: replaced by a copy of that actor's
+///   `statBlock`; the room then validates and applies it (`statblock::normalize_command`).
+///   A template that is missing or has no stat block rejects the command.
+///
+/// Other commands pass through unchanged.
+pub async fn resolve_spawn(
     state: &AppState,
     campaign_id: Uuid,
     cmd: TrameCommand,
-) -> TrameCommand {
+) -> Result<TrameCommand, String> {
     let TrameCommand::SpawnToken { mut token } = cmd else {
-        return cmd;
+        return Ok(cmd);
     };
     if let Some(actor_id) = token.actor_id
         && let Ok(Some(actor)) = get_actor(state, campaign_id, actor_id).await
     {
-        tactical_sync_from_sheet(None, &actor.payload).apply_sheet_rules(&mut token);
+        tactical_sync_from_sheet(None, &actor.payload)
+            .apply_to_token(&mut token, trame_engine::commands::TableMode::Exploration);
     }
-    TrameCommand::SpawnToken { token }
+    if let Some(template_id) = token
+        .stat_block
+        .as_ref()
+        .and_then(Value::as_str)
+        .and_then(|s| Uuid::parse_str(s).ok())
+    {
+        token.stat_block = Some(actor_template_stat_block(state, campaign_id, template_id).await?);
+    }
+    Ok(TrameCommand::SpawnToken { token })
+}
+
+/// Copy of the `statBlock` stored on actor `template_id` of `campaign_id` (a monster actor
+/// used as a template); an error when the actor is missing or carries no stat block.
+pub async fn actor_template_stat_block(
+    state: &AppState,
+    campaign_id: Uuid,
+    template_id: Uuid,
+) -> Result<Value, String> {
+    get_actor(state, campaign_id, template_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|actor| actor.payload.get("statBlock").cloned())
+        .filter(Value::is_object)
+        .ok_or_else(|| format!("not found: actor template {template_id} has no stat block"))
 }
 
 /// Wakes the room and resyncs linked tokens + broadcasts `ActorUpdated` for `record`.

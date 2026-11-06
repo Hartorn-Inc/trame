@@ -256,8 +256,8 @@ pub fn tools_list() -> Value {
 }
 
 /// Fills `ActivateScene` payloads from storage so staged and executed commands never carry
-/// client-supplied geometry, and takes an actor-linked `SpawnToken`'s reach and darkvision
-/// from the stored sheet.
+/// client-supplied geometry, and resolves `SpawnToken` sheet values and actor-template stat
+/// blocks from storage (`campaigns::resolve_spawn`); the room validates the stat blocks.
 async fn resolve_commands(
     state: &AppState,
     campaign_id: Uuid,
@@ -265,7 +265,7 @@ async fn resolve_commands(
 ) -> Result<Vec<TrameCommand>, String> {
     let mut out = Vec::with_capacity(commands.len());
     for cmd in commands {
-        let cmd = crate::campaigns::resolve_linked_spawn(state, campaign_id, cmd).await;
+        let cmd = crate::campaigns::resolve_spawn(state, campaign_id, cmd).await?;
         out.push(crate::maps::resolve_scene_command(state, campaign_id, cmd).await?);
     }
     Ok(out)
