@@ -26,6 +26,7 @@ import {
   tableState,
 } from "../helpers/liveTable.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
+import { assertAbsent } from "../helpers/domAssert.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -234,7 +235,7 @@ describe("CombatTrackerBar: initiative totals and turn commands", () => {
       const live = liveTable(c.userId, playerView({ mode: "TURN_BY_TURN", initiative_order: [HERO, GOBLIN], active_turn_index: c.active }));
       const ui = mount(h(CombatTrackerBar, { client: live.client, isGm: false }));
       assert.equal(Boolean(ui.byTestId("combat-next")), c.next);
-      assert.equal(ui.byTestId("combat-end"), null);
+      assertAbsent(ui.byTestId("combat-end"), "combat-end");
       ui.unmount();
     });
   }
@@ -263,7 +264,7 @@ describe("GmOverrideToolbar: lighting, undo, and MCP staging review", () => {
   it("renders nothing for a player", () => {
     const live = liveTable(PLAYER_ID, playerView());
     const ui = mount(h(GmOverrideToolbar, { client: live.client, isGm: false }));
-    assert.equal(ui.byTestId("gm-toolbar"), null);
+    assertAbsent(ui.byTestId("gm-toolbar"), "gm-toolbar");
     ui.unmount();
   });
 
@@ -334,7 +335,7 @@ describe("TokenVitalsPanel: damage and heal controls", () => {
     selectedTokenIdSignal.value = GOBLIN;
     const ui = mount(h(TokenVitalsPanel, { client: live.client }));
     assert.equal(ui.byTestId("vitals-hp").textContent, "Bloodied");
-    assert.equal(ui.byTestId("vitals-damage"), null);
+    assertAbsent(ui.byTestId("vitals-damage"), "vitals-damage");
     ui.unmount();
   });
 
@@ -380,7 +381,7 @@ describe("ReactionBanner: prompts, decisions, and undo", () => {
       events: [{ event: "ACTION_UNDONE" }, { event: "REACTION_PROMPT_CLOSED", prompt_id: PROMPT, reason: "UNDONE" }],
       state: playerView(),
     });
-    assert.equal(ui.byTestId(`reaction-${PROMPT}`), null);
+    assertAbsent(ui.byTestId(`reaction-${PROMPT}`), `reaction-${PROMPT}`);
     assert.match(ui.byTestId("reaction-undone").textContent, /withdrawn by the GM's undo/);
     live.client.applyServerEnvelope({
       type: "CommandAccepted",

@@ -11,6 +11,7 @@ import { HudDrawers, isSheetDrawerOpenSignal } from "../../src/hud/HudDrawers.ts
 import { createSheetCommandDispatcher, restDiceRollService, setAtPath } from "../../src/sheet/sheetPersistence.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
 import { actorDto, createMockTransport, flush, type RouteReply } from "../helpers/mockTransport.ts";
+import { assertAbsent } from "../helpers/domAssert.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -188,7 +189,7 @@ describe("CharacterSheetHeader: versioned REST save (AC2, AC4)", () => {
 
       const putVersions = transport.calls.filter((call) => call.method === "PUT").map((call) => (call.body as any).expected_version);
       assert.deepEqual(putVersions, r.expectedPutVersions);
-      assert.equal(byTestId("sheet-version-conflict"), null);
+      assertAbsent(byTestId("sheet-version-conflict"), "sheet-version-conflict");
       assert.equal(state.actors.value[ACTOR_ID].version, r.reply.body.actor.version);
       unmount();
     });

@@ -40,6 +40,7 @@ import {
   activeCompanionTabSignal,
   MOBILE_COMPANION_TABS,
 } from "../src/mobile/MobileCompanionView.tsx";
+import { assertAbsent } from "./helpers/domAssert.ts";
 
 describe("[Ticket #89 - Acceptance Criterion 1] Zero-Trust 3-Scope Note RBAC & Directive Stripping", () => {
   interface NoteTestCase {
@@ -189,7 +190,7 @@ describe("[Ticket #89 - Acceptance Criterion 2] Live HandoutRevealed Broadcast &
       handoutManager: manager,
     });
 
-    assert.equal(container.querySelector('[data-testid="handout-reveal-modal"]'), null);
+    assertAbsent(container.querySelector('[data-testid="handout-reveal-modal"]'), "handout-reveal-modal");
 
     manager.onHandoutRevealed({
       event: "handout.revealed",
@@ -212,7 +213,7 @@ describe("[Ticket #89 - Acceptance Criterion 2] Live HandoutRevealed Broadcast &
     assert.ok(closeBtn);
     closeBtn.click();
 
-    assert.equal(container.querySelector('[data-testid="handout-reveal-modal"]'), null);
+    assertAbsent(container.querySelector('[data-testid="handout-reveal-modal"]'), "handout-reveal-modal");
     root.destroy();
   });
 
@@ -318,7 +319,7 @@ describe("[Ticket #89 - Acceptance Criterion 3] Responsive MobileCompanionView (
     });
 
     assert.equal(webglCanvasCreated, false);
-    assert.equal(container.querySelector('[data-testid="table-canvas"]'), null);
+    assertAbsent(container.querySelector('[data-testid="table-canvas"]'), "table-canvas");
     assert.ok(container.querySelector('[data-testid="mobile-companion-layout"]'));
 
     root.destroy();

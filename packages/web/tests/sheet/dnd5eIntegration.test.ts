@@ -12,6 +12,7 @@ import {
   type SheetLayoutNode,
   type WidgetLayoutNode,
 } from "../../src/sheet/index.ts";
+import { assertAbsent } from "../helpers/domAssert.ts";
 
 function collectWidgetNodes(node: SheetLayoutNode | RenderedLayoutNode | null): Array<WidgetLayoutNode | RenderedLayoutNode> {
   if (!node) return [];
@@ -295,6 +296,6 @@ describe("D&D 5e Declarative Character Sheet Layout Integration Suite", () => {
 
     assert.ok(rendered.root);
     const notesWidget = findWidgetById(rendered.root, "dnd5e-notes-pane");
-    assert.equal(notesWidget, null, "OWNER_ONLY notes widget must not be rendered for non-owner player");
+    assertAbsent(notesWidget, "OWNER_ONLY notes widget must not be rendered for non-owner player");
   });
 });

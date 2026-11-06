@@ -4,6 +4,7 @@ import { LevelUpModal, type LevelUpModalProps } from "../../src/components/modal
 import { createDefaultActorData, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
 import { localeSignal } from "../../src/i18n/index.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
+import { assertAbsent, assertSameNode } from "../helpers/domAssert.ts";
 
 localeSignal.value = "en";
 
@@ -227,7 +228,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
 
     // Before a Next attempt the cap violation is a quiet description, not an alert
     const singleSelect = container.querySelector("#asi-single-ability");
-    assert.equal(container.querySelector("[role='alert']"), null, "No alert before the user tries to proceed");
+    assertAbsent(container.querySelector("[role='alert']"), "No alert before the user tries to proceed");
     assert.ok(singleSelect.getAttribute("aria-describedby"), "Select must reference the validation hint");
     assert.equal(singleSelect.getAttribute("aria-invalid"), null);
 
@@ -629,7 +630,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
     nextOnStep3.dispatchEvent(new (globalThis as any).Event("click"));
     const confirm = getConfirmButton();
     assert.ok(confirm, "Confirm must render on step 4");
-    assert.notEqual(confirm, nextOnStep3, "Next and Confirm must not share a DOM node");
+    assert.ok(confirm !== nextOnStep3, "Next and Confirm must not share a DOM node");
     assert.equal(container.contains(nextOnStep3), false, "The Next node must be unmounted on step 4");
     unmount();
   });
@@ -713,7 +714,7 @@ describe("LevelUpModal Preact 4-Step Wizard Component Suite", () => {
       assert.equal(expected.getAttribute("aria-selected"), "true");
       assert.equal(expected.getAttribute("tabindex"), "0");
       assert.equal(other.getAttribute("tabindex"), "-1");
-      assert.equal((globalThis as any).document.activeElement, expected, "Focus must follow the selected tab");
+      assertSameNode((globalThis as any).document.activeElement, expected, "Focus must follow the selected tab");
       unmount();
     });
   }

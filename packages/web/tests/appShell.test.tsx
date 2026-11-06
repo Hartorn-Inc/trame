@@ -13,6 +13,7 @@ import {
   flush,
   type RouteReply,
 } from "./helpers/mockTransport.ts";
+import { assertAbsent } from "./helpers/domAssert.ts";
 
 localeSignal.value = "en";
 options.debounceRendering = (cb: () => void) => cb();
@@ -190,7 +191,7 @@ describe("App shell rendered against a mocked transport", () => {
       const { client } = newClient(c.routes);
       await mount(client, c.search);
       assert.ok(byTestId(c.visible), `expected ${c.visible}`);
-      assert.equal(byTestId(c.hidden), null);
+      assertAbsent(byTestId(c.hidden), c.hidden);
     });
   }
 
@@ -201,7 +202,7 @@ describe("App shell rendered against a mocked transport", () => {
     });
     await mount(client, "?token=feedface", "/setup");
     assert.ok(byTestId("owner-setup-screen"));
-    assert.equal(byTestId("auth-screen"), null);
+    assertAbsent(byTestId("auth-screen"), "auth-screen");
   });
 
   it("signing in from the auth screen loads the lobby campaigns", async () => {
