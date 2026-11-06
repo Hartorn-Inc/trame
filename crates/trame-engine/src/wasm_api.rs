@@ -247,13 +247,13 @@ struct CoverRequest {
 struct CoverResponse {
     /// Suggested cover level.
     cover: CoverLevel,
-    /// AC and Dexterity save bonus (`0`, `2`, `5`); `null` for `TOTAL` cover.
+    /// AC and Dexterity save bonus (`0`, `2`, `5`).
     bonus: Option<i32>,
 }
 
 /// Cover suggestion (never applied by the engine): `{ walls, attacker, target, cellSizePx }`
-/// -> `{ cover: "NONE" | "HALF" | "THREE_QUARTERS" | "TOTAL", bonus }`, using the
-/// corner-to-corner rule of `cover::suggest_cover`.
+/// -> `{ cover: "NONE" | "HALF" | "THREE_QUARTERS", bonus }`, using the corner-to-corner
+/// rule of `cover::suggest_cover` (`TOTAL` is never suggested; the GM picks it).
 pub fn suggest_cover_json(request_json: &str) -> Result<String, String> {
     let req: CoverRequest = parse(request_json)?;
     let cover = suggest_cover(

@@ -462,7 +462,7 @@ describe("TokenConditionsPanel: conditions, rulings and automated effects", () =
 describe("CoverSuggestionPanel: suggested, never applied", () => {
   const suggestions = [
     { id: "open ground suggests no cover", walls: [], expected: /Suggested cover: No cover/ },
-    { id: "a wall across the line of fire suggests total cover", walls: [wallBetween], expected: /Suggested cover: Total cover \(cannot be targeted directly\)/ },
+    { id: "a wall across the line of fire suggests three-quarters cover, never total", walls: [wallBetween], expected: /Suggested cover: Three-quarters cover \(\+5 to AC/ },
   ];
   for (const c of suggestions) {
     it(c.id, () => {
@@ -491,6 +491,22 @@ describe("CoverSuggestionPanel: suggested, never applied", () => {
       assert.deepEqual(acceptedCoverSignal.value, { attackerId: HERO, targetId: GOBLIN, ...c.expected });
       assert.match(ui.byTestId("cover-accepted").textContent, /Cover in use/);
       assert.equal(live.commands().length, 0, "cover is local until an attack uses it");
+      ui.unmount();
+    });
+  }
+
+  const totalChoice = [
+    { id: "a player cannot rule total cover", userId: PLAYER_ID, isGm: false, offered: false },
+    { id: "the GM may rule total cover", userId: GM_ID, isGm: true, offered: true },
+  ];
+  for (const c of totalChoice) {
+    it(c.id, () => {
+      const live = liveTable(c.userId, c.isGm ? gmView() : playerView());
+      selectedTokenIdSignal.value = HERO;
+      const ui = mount(h(CoverSuggestionPanel, { client: live.client, isGm: c.isGm }));
+      ui.input("cover-target", GOBLIN, "change");
+      assert.equal(/Total cover/.test(ui.byTestId("cover-choice").textContent ?? ""), c.offered);
+      assert.match(ui.byTestId("cover-choice").textContent ?? "", /Three-quarters cover/);
       ui.unmount();
     });
   }

@@ -25,6 +25,9 @@
  *      creature can never be targeted or leak through this list.
  * 4. `Not Colour Alone`:
  *    - The suggestion is a sentence naming the level and its bonus.
+ * 5. `Total Cover Is a GM Ruling`:
+ *    - The engine never suggests Total Cover (four blocked lines are
+ *      Three-Quarters); only the Game Master is offered it in the choice.
  * ============================================================================
  */
 import { signal } from '@preact/signals';
@@ -86,9 +89,11 @@ function coverEffect(cover: CoverLevel): string {
 
 export interface CoverSuggestionPanelProps {
   client: ApiClient;
+  /** Only the Game Master may rule Total Cover (invariant 5). */
+  isGm?: boolean;
 }
 
-export function CoverSuggestionPanel({ client }: CoverSuggestionPanelProps) {
+export function CoverSuggestionPanel({ client, isGm = false }: CoverSuggestionPanelProps) {
   const state = client.state.table.value;
   const tokens = listTableTokens(state);
   const attacker = tokens.find((tok) => tok.id === selectedTokenIdSignal.value && tok.controlled) ?? null;
@@ -137,7 +142,7 @@ export function CoverSuggestionPanel({ client }: CoverSuggestionPanelProps) {
               value={selected}
               onChange={(e) => setChoice((e.target as HTMLSelectElement).value as CoverLevel)}
             >
-              {COVER_LEVELS.map((level) => (
+              {COVER_LEVELS.filter((level) => isGm || level !== 'TOTAL').map((level) => (
                 <option key={level} value={level}>{coverLabel(level)}</option>
               ))}
             </select>

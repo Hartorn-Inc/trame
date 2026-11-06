@@ -5,7 +5,8 @@
 //! PURPOSE:
 //! --------
 //! Suggests the cover a target has against an attacker (`None`, `Half`,
-//! `ThreeQuarters`, `Total`) from the wall segments between them, so the
+//! `ThreeQuarters`; `Total` is only ever a Game Master choice) from the wall
+//! segments between them, so the
 //! Game Master does not eyeball every attack behind a pillar or doorway. The
 //! result is a suggestion only: no command applies it. The attacker or the GM
 //! confirms or overrides it in the resolution flow, which then adds the bonus
@@ -22,12 +23,16 @@
 //!        every square the target occupies; the attacker picks the most
 //!        favorable pair, so the suggestion is the minimum blocked count.
 //!      - Minimum blocked lines: `0` -> `None`, `1..=2` -> `Half`,
-//!        `3` -> `ThreeQuarters`, `4` -> `Total` (no line reaches the target).
+//!        `3..=4` -> `ThreeQuarters`. The rule never suggests `Total`: a
+//!        target behind a solid wall may still be reachable (around a corner,
+//!        through an arrow slit the grid misses), so Total Cover stays a Game
+//!        Master ruling in the cover panel.
 //!   2. `Physical Walls Only`:
 //!      - A wall counts when it blocks movement for a material creature
 //!        (`WallSegment::effective_blocks_movement(false)`): closed doors and
 //!        secret doors, windows, terrain and one-way walls count; open doors
-//!        and illusions do not. Creatures never provide cover here.
+//!        and illusions do not. Creatures never provide cover in this rule
+//!        (tokens between attacker and target are not walls).
 //!   3. `Strict Interior Crossings`:
 //!      - A crossing at a line's own endpoint (`t <= 1e-6` or `t >= 1 - 1e-6`)
 //!        is ignored, so a wall drawn along the grid line a token stands on
@@ -43,7 +48,8 @@
 //!     ├── 1. Keep the walls that physically block a material creature.
 //!     ├── 2. For each attacker corner x target square, count blocked lines.
 //!     ├── 3. Stop early when a pair has no blocked line (`None`).
-//!     └── 4. Map the minimum blocked count to a `CoverLevel`.
+//!     └── 4. Map the minimum blocked count to a `CoverLevel` (at most
+//!            `ThreeQuarters`).
 //! ============================================================================
 
 use crate::aoe::TokenSpatialRef;
@@ -59,9 +65,10 @@ pub enum CoverLevel {
     None,
     /// One or two of the four lines are blocked: `+2` to AC and Dexterity saves.
     Half,
-    /// Three of the four lines are blocked: `+5` to AC and Dexterity saves.
+    /// Three or four of the four lines are blocked: `+5` to AC and Dexterity saves.
     ThreeQuarters,
-    /// All four lines are blocked from every corner: the target cannot be targeted directly.
+    /// The target is completely concealed and cannot be targeted directly. Never suggested
+    /// (`suggest_cover` stops at `ThreeQuarters`): only the Game Master applies it.
     Total,
 }
 
@@ -77,12 +84,13 @@ impl CoverLevel {
         }
     }
 
+    /// Never `Total`: four blocked lines are Three-Quarters under the corner rule, and Total
+    /// Cover (completely concealed) is a Game Master ruling in the cover panel.
     fn from_blocked_lines(blocked: usize) -> Self {
         match blocked {
             0 => Self::None,
             1 | 2 => Self::Half,
-            3 => Self::ThreeQuarters,
-            _ => Self::Total,
+            _ => Self::ThreeQuarters,
         }
     }
 }

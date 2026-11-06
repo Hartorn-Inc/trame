@@ -161,7 +161,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### CoverLevel
 
-- **Definition**: Cover a target has against one attacker (`None`, `Half`, `ThreeQuarters`, `Total`), suggested by the engine (`suggestCover`) from the movement-blocking `WallSegment`s between them with the corner-to-corner grid rule: from the attacker's best corner to the corners of one target square, `0` blocked lines is `None`, `1-2` is `Half` (`+2` AC and Dexterity saves), `3` is `ThreeQuarters` (`+5`), `4` is `Total` (cannot be targeted directly). Never applied automatically: the attacker or Game Master confirms it.
+- **Definition**: Cover a target has against one attacker (`None`, `Half`, `ThreeQuarters`, `Total`), suggested by the engine (`suggestCover`) from the movement-blocking `WallSegment`s between them with the corner-to-corner grid rule: from the attacker's best corner to the corners of one target square, `0` blocked lines is `None`, `1-2` is `Half` (`+2` AC and Dexterity saves), `3-4` is `ThreeQuarters` (`+5`). Creatures never provide cover in this rule. `Total` (cannot be targeted directly) is never suggested: only the Game Master picks it in the cover panel. Never applied automatically: the attacker or Game Master confirms it.
 - **Allowed Context**: Attack and saving throw resolution, the cover suggestion shown before Apply.
 - **_Avoid_**: Obstruction, CoverBonus, AutoCover.
 

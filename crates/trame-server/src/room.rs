@@ -2001,6 +2001,9 @@ impl TableRoomActor {
                 updated_count += 1;
             }
         }
+        // Sheet conditions can incapacitate a concentrating caster outside the command
+        // stream; the next projection carries the ended concentration.
+        self.state.end_incapacitated_concentration();
 
         let out = ServerEnvelope::ActorUpdated {
             actor_id,

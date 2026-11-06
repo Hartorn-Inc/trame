@@ -69,7 +69,7 @@ export function TableTab({ campaignId, client, isGm }: TableTabProps) {
         <TokenVitalsPanel client={client} isGm={isGm} />
         <MonsterTurnPanel client={client} isGm={isGm} />
         <TokenConditionsPanel client={client} isGm={isGm} />
-        <CoverSuggestionPanel client={client} />
+        <CoverSuggestionPanel client={client} isGm={isGm} />
         <DiceTray client={client} />
         <button
           type="button"

@@ -1105,18 +1105,18 @@ fn cover_suggestion_counts_blocked_corner_lines() {
             expect_bonus: json!(5),
         },
         Case {
-            id: "full_wall_gives_total_cover",
+            id: "full_wall_gives_three_quarters_never_total",
             walls: full_height(normal()),
             attacker_elevation_ft: 0.0,
-            expect_cover: "TOTAL",
-            expect_bonus: Value::Null,
+            expect_cover: "THREE_QUARTERS",
+            expect_bonus: json!(5),
         },
         Case {
-            id: "closed_door_gives_total_cover",
+            id: "closed_door_gives_three_quarters_never_total",
             walls: full_height(json!({"kind": "DOOR", "is_open": false, "is_locked": false})),
             attacker_elevation_ft: 0.0,
-            expect_cover: "TOTAL",
-            expect_bonus: Value::Null,
+            expect_cover: "THREE_QUARTERS",
+            expect_bonus: json!(5),
         },
         Case {
             id: "open_door_gives_no_cover",
@@ -1126,11 +1126,11 @@ fn cover_suggestion_counts_blocked_corner_lines() {
             expect_bonus: json!(0),
         },
         Case {
-            id: "window_glass_gives_total_cover",
+            id: "window_glass_gives_three_quarters_never_total",
             walls: full_height(json!({"kind": "WINDOW"})),
             attacker_elevation_ft: 0.0,
-            expect_cover: "TOTAL",
-            expect_bonus: Value::Null,
+            expect_cover: "THREE_QUARTERS",
+            expect_bonus: json!(5),
         },
         Case {
             id: "illusion_gives_no_cover",
@@ -1699,6 +1699,101 @@ fn set_concentration_drives_checks_and_breaks_at_zero_hp() {
             .iter()
             .any(|e| matches!(e, TrameEvent::ConcentrationBroken { .. }));
         assert_eq!(broke, !c.still_concentrating, "case {} break event", c.id);
+    }
+}
+
+#[test]
+fn incapacitation_breaks_concentration_and_removes_the_zone() {
+    use trame_engine::aoe::{AoeShape, AoeTemplate, GridDiscretizationMode};
+    use trame_engine::commands::{OverrideMode, OverrideSubject};
+    let set = |ids: &[&str]| TrameCommand::SetTokenConditions {
+        token_id: HERO_ID,
+        conditions: ids.iter().map(|s| s.to_string()).collect(),
+    };
+    let rule = |subject, id: &str, mode| TrameCommand::ConditionOverride {
+        token_id: HERO_ID,
+        subject,
+        id: id.to_string(),
+        mode: Some(mode),
+    };
+    use OverrideMode::{Force, Remove};
+    use OverrideSubject::{Condition, Effect};
+    // (case_id, commands applied in order by the GM, concentration broken by the last one)
+    let cases: Vec<(&str, Vec<TrameCommand>, bool)> = vec![
+        ("stunned_breaks", vec![set(&["stunned"])], true),
+        ("paralyzed_breaks", vec![set(&["paralyzed"])], true),
+        ("unconscious_breaks", vec![set(&["unconscious"])], true),
+        ("petrified_breaks", vec![set(&["petrified"])], true),
+        ("incapacitated_breaks", vec![set(&["Incapacitated"])], true),
+        ("prone_keeps_concentration", vec![set(&["prone"])], false),
+        (
+            "forced_stunned_ruling_breaks",
+            vec![rule(Condition, "stunned", Force)],
+            true,
+        ),
+        (
+            "forced_incapacitated_effect_breaks",
+            vec![rule(Effect, "gm.incapacitated", Force)],
+            true,
+        ),
+        (
+            "removed_stunned_ruling_spares_the_caster",
+            vec![rule(Condition, "stunned", Remove), set(&["stunned"])],
+            false,
+        ),
+    ];
+    for (case, commands, broken) in cases {
+        let aoe_id = Uuid::from_u128(0xAE);
+        let mut hero = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+        hero.concentrating_on_aoe_id = Some(aoe_id);
+        let mut state = table(vec![hero]);
+        state.data.persistent_aoes.insert(
+            aoe_id,
+            AoeTemplate {
+                id: aoe_id,
+                origin: Point2D::new(300.0, 300.0),
+                origin_elevation_ft: 0.0,
+                shape: AoeShape::Sphere { radius_ft: 10.0 },
+                stops_at_walls: false,
+                discretization: GridDiscretizationMode::CenterPoint,
+                concentration_caster_id: Some(HERO_ID),
+            },
+        );
+        let mut events = Vec::new();
+        for cmd in commands {
+            events = state.apply_command(&gm(), cmd).unwrap();
+        }
+        let broke_event = events.iter().any(|e| {
+            matches!(
+                e,
+                TrameEvent::ConcentrationBroken {
+                    caster_token_id: HERO_ID,
+                    removed_aoe_id: Some(id),
+                } if *id == aoe_id
+            )
+        });
+        assert_eq!(broke_event, broken, "case {case}: event {events:?}");
+        assert_eq!(
+            state.data.persistent_aoes.contains_key(&aoe_id),
+            !broken,
+            "case {case}: zone"
+        );
+        assert_eq!(
+            state.data.tokens[&HERO_ID]
+                .concentrating_on_aoe_id
+                .is_some(),
+            !broken,
+            "case {case}: token"
+        );
+        if broken {
+            state
+                .apply_command(&gm(), TrameCommand::UndoLastAction)
+                .unwrap();
+            assert!(
+                state.data.persistent_aoes.contains_key(&aoe_id),
+                "case {case}: undo restores the zone"
+            );
+        }
     }
 }
 

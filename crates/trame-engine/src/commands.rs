@@ -31,6 +31,9 @@
 //!        caster's previous concentration zone, and dropping to `0` HP via
 //!        `ApplyDamage` immediately terminates active concentration and emits
 //!        `TrameEvent::ConcentrationBroken`.
+//!      - So does becoming Incapacitated (Incapacitated, Paralyzed, Petrified,
+//!        Stunned, Unconscious, or a `Force` ruling), checked after every
+//!        command (`end_incapacitated_concentration`).
 //!   4. `BVH Synchronization`:
 //!      - Any mutation that alters wall permeability (`ToggleDoor`,
 //!        `UndoLastAction`, `LoadScene`, `ActivateScene`) immediately rebuilds
@@ -2315,9 +2318,49 @@ impl TableState {
         actor: &CommandActor,
         cmd: TrameCommand,
     ) -> Result<Vec<TrameEvent>, CommandError> {
-        let events = self.apply_command_unpruned(actor, cmd)?;
+        let mut events = self.apply_command_unpruned(actor, cmd)?;
+        events.extend(self.end_incapacitated_concentration());
         self.prune_concentration_checks();
         Ok(events)
+    }
+
+    /// Ends the concentration of every concentrating token that is Incapacitated (SRD 5.2.1:
+    /// concentration ends when the caster has the Incapacitated condition, which Paralyzed,
+    /// Petrified, Stunned and Unconscious include). Evaluated after the rulings
+    /// (`condition_effects`), so a `Force` condition or effect override counts and a `Remove`
+    /// ruling spares the caster. Removes the persistent AoE like the 0 HP path and emits one
+    /// `ConcentrationBroken` per caster, in token id order. Runs after every command (so
+    /// `SetTokenConditions`, `ConditionOverride` and batches are covered) and from the
+    /// server's sheet resync, which changes conditions outside the command stream.
+    pub fn end_incapacitated_concentration(&mut self) -> Vec<TrameEvent> {
+        let mut casters: Vec<Uuid> = self
+            .data
+            .tokens
+            .values()
+            .filter(|t| t.concentrating || t.concentrating_on_aoe_id.is_some())
+            .filter(|t| is_incapacitated(t))
+            .map(|t| t.id)
+            .collect();
+        casters.sort();
+        casters
+            .into_iter()
+            .map(|caster_token_id| {
+                let tok = self
+                    .data
+                    .tokens
+                    .get_mut(&caster_token_id)
+                    .expect("token exists");
+                tok.concentrating = false;
+                let removed_aoe_id = tok.concentrating_on_aoe_id.take();
+                if let Some(aoe_id) = removed_aoe_id {
+                    self.data.persistent_aoes.remove(&aoe_id);
+                }
+                TrameEvent::ConcentrationBroken {
+                    caster_token_id,
+                    removed_aoe_id,
+                }
+            })
+            .collect()
     }
 
     /// Applies `damage` to `token_id` (which must exist) without an undo entry: typed damage
