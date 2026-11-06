@@ -23,6 +23,9 @@
  *      - A Constitution increase (ASI or feat) that changes the modifier adds
  *        the difference for every earlier level; Dwarven Toughness adds `+1`
  *        per level. No SRD 5.2.1 feat grants HP per level.
+ *      - Class features with `hpMaxPerLevel` (Draconic Resilience) add the
+ *        difference of `classFeatureHpMaxBonus` before and after the level:
+ *        `+3` when the Draconic subclass arrives at level 3, `+1` per level after.
  *   3. `Incremental Spell Slot Preservation`:
  *      - Advancing a caster increases `current` available slots only by the delta
  *        `max(0, newMax - existing.max)` so previously expended spell slots are
@@ -48,7 +51,8 @@
  *     ├── 3. Apply the ASI or feat (and its `+1` increase).
  *     ├── 4. Compute `hpGain = max(1, baseGain + conMod)` plus retroactive CON and
  *     │      species bonuses, and add it to `hp.max` & `hp.current`.
- *     └── 5. Reconcile `spellSlots` against the target level's `casterType` progression row.
+ *     ├── 5. Record class/subclass; add the class feature HP bonus delta.
+ *     └── 6. Reconcile `spellSlots` against the target level's `casterType` progression row.
  * ============================================================================
  */
 
@@ -66,6 +70,7 @@ import type {
   SpellSlotsState,
   TurnTrigger,
 } from "./types.ts";
+import { classFeatureHpMaxBonus } from "./classFeatures.ts";
 import { calculateProficiencyBonus, computeDnd5eSheetDerived } from "./manifest.ts";
 import {
   getFeatSlotOptions,
@@ -849,6 +854,11 @@ export function applyLevelUp(
     clone.classId = options.classId;
     clone.attributes.classId = options.classId;
   }
+
+  // 10b. Feature Hit Point maximum bonuses (Draconic Resilience), once class and subclass are known
+  const featureHpGain = classFeatureHpMaxBonus(clone) - classFeatureHpMaxBonus(actor);
+  clone.attributes.hp.max += featureHpGain;
+  clone.attributes.hp.current += featureHpGain;
 
   // 11. Register new spell identifiers
   if (options.newSpellIds && Array.isArray(options.newSpellIds)) {

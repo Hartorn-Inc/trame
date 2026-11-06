@@ -145,6 +145,16 @@ export interface ClassFeatureSpec {
   strMeleeDamageBonus?: (level: number) => number;
   /** Ability whose modifier (min `+1`) is added to weapon attack rolls (Sacred Weapon). */
   weaponAttackBonusAbility?: AbilityId;
+  /**
+   * Martial Arts die size at a class level (`6`, `8`, `10`, `12`): replaces the damage die of
+   * Unarmed Strikes and Monk weapons when larger, and lets them use DEX when it is higher.
+   */
+  martialArtsDie?: (level: number) => number;
+  /**
+   * Hit Point maximum bonus per class level once the feature is gained (Draconic Resilience
+   * `1`: `+3` at level 3, then `+1` per later level). `applyLevelUp` adds the difference.
+   */
+  hpMaxPerLevel?: number;
 }
 
 /** Highest table value whose level key is `<= level`, `0` below the first key. */
@@ -184,6 +194,9 @@ const abilityBonus = (ability: AbilityId, max: number): FeatureModifier => ({
 
 /** Fields of a catalogue rule; the id, name, class and level come from the progression. */
 type FeatureRule = Omit<ClassFeatureSpec, "id" | "name" | "classId" | "subclassId" | "level">;
+
+/** Martial Arts die size by Monk level. */
+const MARTIAL_ARTS_DIE: Readonly<Record<number, number>> = { 1: 6, 5: 8, 11: 10, 17: 12 };
 
 const AUTO = { automation: "automated" } as const;
 const DESCRIBED = { automation: "described" } as const;
@@ -229,6 +242,8 @@ const CLASS_RULES: Readonly<Record<string, FeatureRule>> = {
     scaling: { label: "Bardic Inspiration", at: die({ 1: 6, 5: 8, 10: 10, 15: 12 }) },
   },
   "bard:spellcasting": AUTO,
+  // SRD 5.2.1: only ability checks that use a skill proficiency the Bard lacks. Initiative is a
+  // DEX check without a skill, so `initiative` is deliberately not a target.
   "bard:jack_of_all_trades": {
     ...AUTO,
     effects: () => SKILL_IDS.map((skill) => ({ target: `skill_${skill}_prof`, phase: "BASE", value: 0.5 })),
@@ -265,7 +280,11 @@ const CLASS_RULES: Readonly<Record<string, FeatureRule>> = {
   "fighter:indomitable_three_uses": AUTO,
   "fighter:three_extra_attacks": { ...AUTO, extraAttacks: 3 },
   // Monk
-  "monk:martial_arts": { ...AUTO, scaling: { label: "Martial Arts", at: die({ 1: 6, 5: 8, 11: 10, 17: 12 }) } },
+  "monk:martial_arts": {
+    ...AUTO,
+    martialArtsDie: (level) => valueAtLevel(MARTIAL_ARTS_DIE, level),
+    scaling: { label: "Martial Arts", at: die(MARTIAL_ARTS_DIE) },
+  },
   "monk:unarmored_defense": AUTO,
   "monk:monk_s_focus": { ...DESCRIBED, pool: pool("monk_focus_points", { perLevel: 1 }, "SHORT_REST") },
   "monk:unarmored_movement": {
@@ -447,7 +466,11 @@ const SUBCLASS_FEATURES: Readonly<Record<string, { classId: SrdClassId; features
       [
         3,
         "Draconic Resilience",
-        { ...AUTO, effects: () => [{ target: "ac_base", phase: "BASE", value: 10, formula: "(1 - armor_worn) * (10 + dex_mod + cha_mod)" }] },
+        {
+          ...AUTO,
+          effects: () => [{ target: "ac_base", phase: "BASE", value: 10, formula: "(1 - armor_worn) * (10 + dex_mod + cha_mod)" }],
+          hpMaxPerLevel: 1,
+        },
       ],
       [3, "Draconic Spells", AUTO],
       [6, "Elemental Affinity"],
@@ -666,6 +689,18 @@ export interface DerivedFeatureRules {
   strMeleeDamageBonus: number;
   /** Ability whose modifier (min `+1`) is added to weapon attack rolls (Sacred Weapon). */
   weaponAttackBonusAbility?: AbilityId;
+  /** Martial Arts die size (`6..=12`) when the actor has Martial Arts; armor and shields are checked by `deriveAttacks`. */
+  martialArtsDie?: number;
+}
+
+/**
+ * Hit Point maximum bonus of `actor`'s features at its level (`hpMaxPerLevel * level`, Draconic
+ * Resilience `3` at level 3). `applyLevelUp` adds the before/after difference to `hp.max`, so a
+ * subclass chosen at level 3 grants `+3` and every later level `+1`.
+ */
+export function classFeatureHpMaxBonus(actor: Dnd5eActorData): number {
+  const level = actor.attributes.level;
+  return classFeaturesFor(actor).reduce((sum, spec) => sum + (spec.hpMaxPerLevel ?? 0) * level, 0);
 }
 
 /** Aggregates the attacks, critical range, roll rules and resistances of `actor`'s features in force. */
@@ -681,5 +716,7 @@ export function deriveFeatureRules(actor: Dnd5eActorData): DerivedFeatureRules {
   };
   const sacred = active.find((spec) => spec.weaponAttackBonusAbility);
   if (sacred) rules.weaponAttackBonusAbility = sacred.weaponAttackBonusAbility;
+  const martialArts = active.find((spec) => spec.martialArtsDie);
+  if (martialArts) rules.martialArtsDie = martialArts.martialArtsDie!(level);
   return rules;
 }

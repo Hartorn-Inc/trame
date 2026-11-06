@@ -27,6 +27,9 @@
  *   3. `Equipped Only`:
  *      - Only items with `equipped: true` produce attacks or AC; the first
  *        equipped body armor wins.
+ *      - Martial Arts applies only while `armor_worn` and `shield_bonus`
+ *        are `0`: Monk weapons (Simple Melee, Martial Melee with Light) use
+ *        DEX when higher and the larger die; an Unarmed Strike is listed.
  *   4. `Tables Before Tracking`:
  *      - Slot maxima come from the class tables (`reconcileSlots`) for the
  *        actor's level, so a level-1 caster always shows its slots; tracked
@@ -172,6 +175,26 @@ export function isWeaponProficient(tokens: readonly WeaponProficiency[], entry: 
   );
 }
 
+/**
+ * Martial Arts die size in force for `actor`, or `0`: the feature is gained and the actor wears
+ * no armor and wields no Shield (`armor_worn` / `shield_bonus` DAG inputs).
+ */
+function martialArtsDieInForce(v: EvaluatedDag, rules: DerivedFeatureRules): number {
+  return rules.martialArtsDie && !v.armor_worn && !v.shield_bonus ? rules.martialArtsDie : 0;
+}
+
+/** SRD 5.2.1 Monk weapon: a Simple Melee weapon or a Martial Melee weapon with the Light property. */
+function isMonkWeapon(entry: CompendiumEntry, ranged: boolean, properties: readonly string[]): boolean {
+  if (ranged) return false;
+  return entry.data.category === "simple" || (entry.data.category === "martial" && properties.includes("light"));
+}
+
+/** `"1d4"` with a Martial Arts `d6` -> `"1d6"`; larger or multi-die damage is kept. */
+function withMartialArtsDie(dice: string, martialArtsDie: number): string {
+  const match = /^1d(\d+)$/.exec(dice.trim());
+  return match && Number(match[1]) < martialArtsDie ? `1d${martialArtsDie}` : dice;
+}
+
 function weaponAttack(
   item: ActorItem,
   entry: CompendiumEntry,
@@ -183,7 +206,9 @@ function weaponAttack(
   const properties = (data.properties as string[] | undefined) ?? [];
   const ranged = data.weaponType === "ranged" || properties.includes("ammunition");
   const finesse = properties.includes("finesse");
-  const ability: AbilityId = ranged || (finesse && v.dex_mod > v.str_mod) ? "dex" : "str";
+  const martialArtsDie = isMonkWeapon(entry, ranged, properties) ? martialArtsDieInForce(v, rules) : 0;
+  const dexAllowed = ranged || finesse || martialArtsDie > 0;
+  const ability: AbilityId = ranged || (dexAllowed && v.dex_mod > v.str_mod) ? "dex" : "str";
   const proficient = isWeaponProficient(getActorProficiencies(actor).weapons, entry);
   const rangeFt = parseRangeFt(data.range);
   const featureAttackBonus = rules.weaponAttackBonusAbility ? Math.max(1, v[`${rules.weaponAttackBonusAbility}_mod`]) : 0;
@@ -194,16 +219,43 @@ function weaponAttack(
     source: "weapon",
     delivery: ranged ? "ranged" : "melee",
     attackBonus: v[`${ability}_mod`] + (proficient ? v.prof_bonus : 0) - v.exhaustion_penalty + featureAttackBonus,
-    damageDice: String(data.damage),
+    damageDice: withMartialArtsDie(String(data.damage), martialArtsDie),
     damageModifier: v[`${ability}_mod`] + rageBonus,
     ...(rules.criticalRange < 20 ? { criticalRange: rules.criticalRange } : {}),
-    ...(typeof data.versatileDamage === "string" ? { versatileDamageDice: data.versatileDamage } : {}),
+    ...(typeof data.versatileDamage === "string"
+      ? { versatileDamageDice: withMartialArtsDie(data.versatileDamage, martialArtsDie) }
+      : {}),
     damageType: data.damageType as DamageType,
     ...(ranged ? {} : { reachFt: properties.includes("reach") ? 10 : 5 }),
     ...(rangeFt ? { rangeFt } : {}),
     properties: [...properties],
     ...(typeof data.mastery === "string" ? { mastery: data.mastery } : {}),
     proficient,
+    ability,
+  };
+}
+
+/** Id of the Martial Arts Unarmed Strike attack (no sheet item backs it). */
+export const MARTIAL_ARTS_UNARMED_STRIKE_ID = "monk:unarmed_strike";
+
+/**
+ * Unarmed Strike under Martial Arts: the Martial Arts die plus the better of STR and DEX,
+ * Bludgeoning, reach 5 ft. Every creature is proficient with Unarmed Strikes.
+ */
+function martialArtsUnarmedStrike(v: EvaluatedDag, martialArtsDie: number): DerivedAttack {
+  const ability: AbilityId = v.dex_mod > v.str_mod ? "dex" : "str";
+  return {
+    id: MARTIAL_ARTS_UNARMED_STRIKE_ID,
+    name: "Unarmed Strike",
+    source: "weapon",
+    delivery: "melee",
+    attackBonus: v[`${ability}_mod`] + v.prof_bonus - v.exhaustion_penalty,
+    damageDice: `1d${martialArtsDie}`,
+    damageModifier: v[`${ability}_mod`],
+    damageType: "bludgeoning",
+    reachFt: 5,
+    properties: [],
+    proficient: true,
     ability,
   };
 }
@@ -325,7 +377,10 @@ export function deriveSpellcasting(
  * better of both for Finesse), then each damaging class or feat spell
  * (attack roll or saving throw). Weapon attacks carry the `ClassFeature`
  * rules in force: Rage Damage on Strength melee damage, the Sacred Weapon
- * attack bonus and a Champion critical range below `20`.
+ * attack bonus and a Champion critical range below `20`. While Martial Arts
+ * is in force (no armor, no Shield), Monk weapons use DEX when it is higher
+ * and the larger of their die and the Martial Arts die, and an Unarmed
+ * Strike attack is listed after the weapons.
  */
 export function deriveAttacks(
   actor: Dnd5eActorData,
@@ -336,6 +391,8 @@ export function deriveAttacks(
   const weapons = equippedEntries(actor)
     .filter(({ entry }) => entry.data.itemType === "weapon")
     .map(({ item, entry }) => weaponAttack(item, entry, actor, v, rules));
+  const martialArtsDie = martialArtsDieInForce(v, rules);
+  if (martialArtsDie > 0) weapons.push(martialArtsUnarmedStrike(v, martialArtsDie));
   if (!spells) return weapons;
   const resolver = CompendiumResolver.getDefault();
   const sources = [

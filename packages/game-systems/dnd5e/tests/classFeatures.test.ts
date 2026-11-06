@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import "../src/node.ts";
 import {
+  applyLevelUp,
   applyLongRest,
   applyShortRest,
   classFeaturesFor,
@@ -13,6 +14,7 @@ import {
   type AbilityId,
   type ActorItem,
   type Dnd5eActorData,
+  type LevelUpOptions,
   type SrdClassId,
 } from "../src/index.ts";
 
@@ -247,6 +249,58 @@ describe("Feature rules: attacks, crits, roll rules, resistances", () => {
     const rules = computeDnd5eSheetDerived(hero("rogue", 7)).featureRules;
     assert.ok(rules?.rolls.some((r) => r.kind === "minimum_d20" && r.value === 10 && r.featureId === "rogue:reliable_talent"));
   });
+});
+
+describe("Martial Arts: Monk weapons and Unarmed Strikes", () => {
+  const dexMonk = { str: 10, dex: 16 };
+  const cases: [string, Dnd5eActorData, string, { ability?: string; damageDice: string; damageModifier: number; versatile?: string } | undefined][] = [
+    ["quarterstaff_uses_dex_and_martial_arts_d6", hero("monk", 1, { scores: dexMonk, items: [equipped("quarterstaff", "Quarterstaff")] }), "Quarterstaff", { ability: "dex", damageDice: "1d6", damageModifier: 3, versatile: "1d8" }],
+    ["quarterstaff_d8_at_monk_5", hero("monk", 5, { scores: dexMonk, items: [equipped("quarterstaff", "Quarterstaff")] }), "Quarterstaff", { ability: "dex", damageDice: "1d8", damageModifier: 3, versatile: "1d8" }],
+    ["dagger_d4_raised_to_d6", hero("monk", 1, { scores: dexMonk, items: [equipped("dagger", "Dagger")] }), "Dagger", { ability: "dex", damageDice: "1d6", damageModifier: 3 }],
+    ["str_kept_when_higher", hero("monk", 1, { scores: { str: 16, dex: 12 }, items: [equipped("spear", "Spear")] }), "Spear", { ability: "str", damageDice: "1d6", damageModifier: 3, versatile: "1d8" }],
+    ["heavy_martial_weapon_is_not_a_monk_weapon", hero("monk", 5, { scores: dexMonk, items: [equipped("greatsword", "Greatsword")] }), "Greatsword", { ability: "str", damageDice: "2d6", damageModifier: 0 }],
+    ["armor_suppresses_martial_arts", hero("monk", 5, { scores: dexMonk, items: [equipped("quarterstaff", "Quarterstaff"), equipped("leather_armor", "Leather Armor")] }), "Quarterstaff", { ability: "str", damageDice: "1d6", damageModifier: 0, versatile: "1d8" }],
+    ["unarmed_strike_uses_martial_arts_die", hero("monk", 1, { scores: dexMonk }), "Unarmed Strike", { ability: "dex", damageDice: "1d6", damageModifier: 3 }],
+    ["unarmed_strike_d12_at_monk_17", hero("monk", 17, { scores: dexMonk }), "Unarmed Strike", { ability: "dex", damageDice: "1d12", damageModifier: 3 }],
+    ["no_martial_arts_unarmed_strike_in_armor", hero("monk", 1, { scores: dexMonk, items: [equipped("leather_armor", "Leather Armor")] }), "Unarmed Strike", undefined],
+    ["fighter_gets_no_martial_arts", hero("fighter", 5, { scores: dexMonk, items: [equipped("quarterstaff", "Quarterstaff")] }), "Quarterstaff", { ability: "str", damageDice: "1d6", damageModifier: 0, versatile: "1d8" }],
+  ];
+  for (const [id, actor, name, expected] of cases) {
+    it(id, () => {
+      const attack = computeDnd5eSheetDerived(actor).attacks?.find((a) => a.name === name);
+      assert.deepEqual(
+        attack && { ability: attack.ability, damageDice: attack.damageDice, damageModifier: attack.damageModifier, ...(attack.versatileDamageDice ? { versatile: attack.versatileDamageDice } : {}) },
+        expected
+      );
+    });
+  }
+});
+
+describe("Jack of All Trades follows SRD 5.2.1 (skill checks only)", () => {
+  const cases: [string, Dnd5eActorData, (d: ReturnType<typeof computeDnd5eSheetDerived>) => number, number][] = [
+    ["half_prof_on_untrained_skill", hero("bard", 2, { scores: { dex: 14 } }), (d) => d.skills.acrobatics, 3],
+    ["initiative_is_a_dex_check_without_a_skill", hero("bard", 2, { scores: { dex: 14 } }), (d) => d.initiativeBonus, 2],
+  ];
+  for (const [id, actor, read, expected] of cases) {
+    it(id, () => assert.equal(read(computeDnd5eSheetDerived(actor)), expected));
+  }
+});
+
+describe("Draconic Resilience raises the Hit Point maximum", () => {
+  const cases: [string, Dnd5eActorData, LevelUpOptions, number][] = [
+    ["plus_3_when_draconic_arrives_at_level_3", hero("sorcerer", 2), { targetLevel: 3, subclassId: "srd:subclass:draconic" }, 5 + 3],
+    ["plus_1_per_sorcerer_level_after", hero("sorcerer", 3, { subclassId: "draconic" }), { targetLevel: 4 }, 5 + 1],
+    ["other_subclasses_gain_nothing_extra", hero("fighter", 2), { targetLevel: 3, subclassId: "srd:subclass:champion" }, 5],
+  ];
+  for (const [id, actor, options, gain] of cases) {
+    it(id, () => {
+      const leveled = applyLevelUp(actor, { hitPointsMode: "fixed", ...options });
+      assert.deepEqual(
+        [leveled.attributes.hp.max - actor.attributes.hp.max, leveled.attributes.hp.current - actor.attributes.hp.current],
+        [gain, gain]
+      );
+    });
+  }
 });
 
 describe("Rests recover class feature pools", () => {
