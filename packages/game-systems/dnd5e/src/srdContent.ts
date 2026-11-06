@@ -960,6 +960,26 @@ const ITEMS: CompendiumEntry[] = [
     { en: ["Glaive", "A heavy polearm with reach dealing 1d10 slashing damage."], fr: ["Coutille", "Une lourde arme d'hast à allonge infligeant 1d10 dégâts tranchants."] }
   ),
   weapon(
+    "halberd",
+    { category: "martial", damage: "1d10", damageType: "slashing", properties: ["heavy", "reach", "two-handed"], mastery: "cleave", weight: 6, cost: "20 gp" },
+    { en: ["Halberd", "A heavy axe-bladed polearm with reach dealing 1d10 slashing damage."], fr: ["Hallebarde", "Une lourde arme d'hast à lame de hache et à allonge infligeant 1d10 dégâts tranchants."] }
+  ),
+  weapon(
+    "lance",
+    { category: "martial", damage: "1d10", damageType: "piercing", properties: ["heavy", "reach", "two-handed"], mastery: "topple", weight: 6, cost: "10 gp" },
+    { en: ["Lance", "A long cavalry spear with reach dealing 1d10 piercing damage (two-handed unless mounted)."], fr: ["Lance d'arçon", "Une longue lance de cavalerie à allonge infligeant 1d10 dégâts perforants (à deux mains sauf monté)."] }
+  ),
+  weapon(
+    "pike",
+    { category: "martial", damage: "1d10", damageType: "piercing", properties: ["heavy", "reach", "two-handed"], mastery: "push", weight: 18, cost: "5 gp" },
+    { en: ["Pike", "A very long spear with reach dealing 1d10 piercing damage."], fr: ["Pique", "Une très longue lance à allonge infligeant 1d10 dégâts perforants."] }
+  ),
+  weapon(
+    "whip",
+    { category: "martial", damage: "1d4", damageType: "slashing", properties: ["finesse", "reach"], mastery: "slow", weight: 3, cost: "2 gp" },
+    { en: ["Whip", "A finesse lash with reach dealing 1d4 slashing damage."], fr: ["Fouet", "Un fouet à allonge maniable en finesse infligeant 1d4 dégâts tranchants."] }
+  ),
+  weapon(
     "maul",
     { category: "martial", damage: "2d6", damageType: "bludgeoning", properties: ["heavy", "two-handed"], mastery: "topple", weight: 10, cost: "10 gp" },
     { en: ["Maul", "A heavy two-handed hammer dealing 2d6 bludgeoning damage."], fr: ["Maillet d'armes", "Un lourd marteau à deux mains infligeant 2d6 dégâts contondants."] }

@@ -813,6 +813,8 @@ fn derived_initiative_extra(data: &Value) -> i32 {
 }
 
 /// Compendium keys (`srd:item:<key>`) of the SRD 5.2.1 weapons with the Reach property.
+/// This table and `SRD_SPECIES_DARKVISION_FT` are parsed and checked against the dnd5e
+/// packs by `packages/game-systems/dnd5e/tests/serverTablesDrift.test.ts`.
 const SRD_REACH_WEAPONS: [&str; 5] = ["glaive", "halberd", "lance", "pike", "whip"];
 
 /// Darkvision in feet of each SRD 5.2.1 species (`speciesId` key without `srd:species:`),
