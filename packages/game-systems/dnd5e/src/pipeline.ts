@@ -656,7 +656,10 @@ export interface TargetResolutionInput {
   attackD20Rolls?: readonly [number, number];
   /** Both natural d20s of the saving throw (see `attackD20Rolls`). */
   saveD20Rolls?: readonly [number, number];
-  /** Attacker-to-target distance in feet (`ft`, default `5`) for Prone and automatic critical hits. */
+  /**
+   * Attacker-to-target 3D distance in feet (`ft`, elevation included) for Prone and automatic
+   * critical hits. Unknown when absent: no Prone modifier and never an automatic critical hit.
+   */
   distanceFt?: number;
   /** Game Master `ConditionOverride` rulings on the target token. */
   overrides?: readonly ConditionOverrideRuling[];
@@ -743,7 +746,7 @@ export function resolveActionPipeline(
       const roll = resolveAttackRollMode({
         attacker: { conditions: actor.conditions, overrides: attackerOverrides },
         target: targetState,
-        distanceFt: item.distanceFt ?? 5,
+        distanceFt: item.distanceFt ?? null,
       });
       rollMode = roll.mode;
       const d20 = keptD20(rollMode, item.attackD20Rolls ?? [item.attackD20Roll ?? 10]);

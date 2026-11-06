@@ -240,6 +240,25 @@ describe("Pack-only spells derive once the full SRD is installed", () => {
     assert.deepEqual(derived.spells?.prepared[0], { id: "srd:spell:acid_arrow", name: "Acid Arrow", level: 2 });
   });
 
+  const attackAndSave: [string, string, string, string, AbilityId][] = [
+    ["ice_knife_keeps_its_attack_roll_and_describes_the_explosion_save", "srd:spell:ice_knife", "1d10", "piercing", "dex"],
+    ["arcane_hand_keeps_its_attack_roll_and_describes_the_grasp_save", "srd:spell:arcane_hand", "5d8", "force", "str"],
+  ];
+  for (const [id, spellId, dice, damageType, secondaryAbility] of attackAndSave) {
+    it(id, async () => {
+      await installFullSystemSrd();
+      const actor = packOnlyCaster();
+      actor.attributes.level = 9;
+      actor.spellIds = [spellId];
+      const derived = computeDnd5eSheetDerived(actor);
+      const attack = derived.attacks?.find((a) => a.id === spellId);
+      assert.deepEqual(
+        [attack?.delivery === "save", attack?.attackBonus, attack?.save, attack?.damageDice, attack?.damageType, attack?.secondarySave],
+        [false, derived.spellAttackBonus, undefined, dice, damageType, { ability: secondaryAbility, dc: derived.spellSaveDc }]
+      );
+    });
+  }
+
   it("curated_items_still_resolve_after_install", async () => {
     await installFullSystemSrd();
     const attacks = computeDnd5eSheetDerived(actorWith("fighter", { str: 16 }, [equipped("longsword", "Longsword")])).attacks;

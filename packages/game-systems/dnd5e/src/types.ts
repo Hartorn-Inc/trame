@@ -419,6 +419,12 @@ export interface DerivedAttack {
   attackBonus: number | null;
   /** Saving throw a `"save"` attack forces. */
   save?: { ability: AbilityId; dc: number };
+  /**
+   * Saving throw of a secondary effect of an attack-roll spell (Ice Knife's explosion).
+   * Not automated: the attack roll resolves the primary damage and the table resolves this
+   * save as a described effect.
+   */
+  secondarySave?: { ability: AbilityId; dc: number };
   /** Damage dice (e.g. `"1d8"`, cantrips scaled by character level). */
   damageDice: string;
   /** Flat damage modifier added once (never doubled on a critical hit). */

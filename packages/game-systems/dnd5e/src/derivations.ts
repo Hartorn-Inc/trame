@@ -223,7 +223,11 @@ function spellAttack(
 ): DerivedAttack | undefined {
   const data = entry.data;
   if (typeof data.damageDice !== "string" || typeof data.damageType !== "string") return undefined;
-  const save = data.saveAbility as AbilityId | undefined;
+  // A spell with an attack roll keeps it for its primary damage even when it also names a
+  // save (Ice Knife's explosion): that save is a secondary, described effect.
+  const attackRoll = typeof data.attackType === "string";
+  const saveAbility = data.saveAbility as AbilityId | undefined;
+  const save = attackRoll ? undefined : saveAbility;
   const range = String(data.range ?? "");
   const melee = data.attackType === "melee" || /^(touch|self)/i.test(range);
   const rangeFt = parseRangeFt(range);
@@ -234,6 +238,7 @@ function spellAttack(
     delivery: save ? "save" : melee ? "melee" : "ranged",
     attackBonus: save ? null : numbers.spellAttackBonus,
     ...(save ? { save: { ability: save, dc: numbers.spellSaveDc } } : {}),
+    ...(attackRoll && saveAbility ? { secondarySave: { ability: saveAbility, dc: numbers.spellSaveDc } } : {}),
     damageDice: data.level === 0 ? scaleCantripDice(data.damageDice, characterLevel) : data.damageDice,
     damageModifier: 0,
     damageType: data.damageType as DamageType,

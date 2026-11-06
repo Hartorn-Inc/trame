@@ -79,6 +79,8 @@ describe("Attack roll mode from attacker and target conditions", () => {
     ["unconscious_target_at_range_cancels_to_normal", { target: state(["unconscious"]), distanceFt: 30 }, "normal", false],
     ["paralyzed_target_within_5ft_is_auto_crit", { target: state(["paralyzed"]), distanceFt: 5 }, "advantage", true],
     ["paralyzed_target_at_10ft_is_not_auto_crit", { target: state(["paralyzed"]), distanceFt: 10 }, "advantage", false],
+    ["paralyzed_target_at_unknown_distance_is_never_auto_crit", { target: state(["paralyzed"]), distanceFt: null }, "advantage", false],
+    ["prone_target_at_unknown_distance_adds_no_modifier", { target: state(["prone"]), distanceFt: null }, "normal", false],
     ["compendium_condition_id_counts", { target: state(["srd:condition:unconscious"]), distanceFt: 5 }, "advantage", true],
     ["grappled_attacker_vs_other_creature_has_disadvantage", { attacker: state(["grappled"]) }, "disadvantage", false],
     ["grappled_attacker_vs_grappler_is_normal", { attacker: state(["grappled"]), targetIsGrappler: true }, "normal", false],
@@ -180,6 +182,11 @@ describe("Action pipeline applies condition effects", () => {
       { target: sheet({ id: "t", conditions: ["paralyzed"] }), attackD20Rolls: [4, 12], distanceFt: 5 },
     ]);
     assert.deepEqual([outcome.rollMode, outcome.criticalHit, outcome.damageApplied], ["advantage", true, 13]);
+  });
+
+  it("hit_on_paralyzed_target_at_unknown_distance_is_not_critical", () => {
+    const [outcome] = resolveActionPipeline(sheet(), sword, [{ target: sheet({ id: "t", conditions: ["paralyzed"] }), attackD20Rolls: [4, 12] }]);
+    assert.deepEqual([outcome.rollMode, outcome.criticalHit, outcome.damageApplied], ["advantage", false, 8]);
   });
 
   it("disadvantage_keeps_the_lower_d20_and_misses", () => {

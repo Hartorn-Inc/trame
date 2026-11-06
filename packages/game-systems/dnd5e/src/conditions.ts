@@ -287,8 +287,12 @@ export interface AttackRollContext {
   attacker: ConditionState;
   /** Target conditions and rulings. */
   target: ConditionState;
-  /** Distance between attacker and target in feet (`ft`), for Prone and automatic critical hits. */
-  distanceFt: number;
+  /**
+   * 3D distance between attacker and target in feet (`ft`, elevation included), for Prone
+   * and automatic critical hits. `null` when unknown (no attacker token): Prone then adds
+   * neither advantage nor disadvantage, and no hit is ever upgraded to a critical hit.
+   */
+  distanceFt: number | null;
   /** `true` when the target is the creature grappling the attacker. */
   targetIsGrappler?: boolean;
   /** Kind of attack, matched against the attacker's feature rules (none matched when absent). */
@@ -325,7 +329,8 @@ function resolution(advantage: string[], disadvantage: string[], extra?: ExtraRo
 export function resolveAttackRollMode(ctx: AttackRollContext): AttackRollResolution {
   const attacker = resolveConditionEffects(ctx.attacker);
   const target = resolveConditionEffects(ctx.target);
-  const within5 = ctx.distanceFt <= 5;
+  const within5 = ctx.distanceFt !== null && ctx.distanceFt <= 5;
+  const beyond5 = ctx.distanceFt !== null && ctx.distanceFt > 5;
   const prone = withRule(target, "attacked_prone");
   const advantage = [
     ...withRule(attacker, "attack_advantage"),
@@ -338,7 +343,7 @@ export function resolveAttackRollMode(ctx: AttackRollContext): AttackRollResolut
     ...withRule(attacker, "attack_disadvantage"),
     ...(ctx.targetIsGrappler ? [] : withRule(attacker, "attack_disadvantage_vs_others")),
     ...withRule(target, "attacked_with_disadvantage"),
-    ...(within5 ? [] : prone),
+    ...(beyond5 ? prone : []),
   ];
   return {
     ...resolution(advantage, disadvantage, ctx.extra),
