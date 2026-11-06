@@ -26,6 +26,13 @@
  *   3. `Stable Ids`:
  *      - Every curated id stays resolvable; generated-only entries are
  *        appended after the curated ones.
+ *   4. `Install Before Derivation (Sync Contract)`:
+ *      - Sheet derivations (`derivations.ts`) are synchronous and read
+ *        `CompendiumResolver.getDefault()`. `installFullSystemSrd()` swaps
+ *        that default for the full catalog; hosts await it at startup
+ *        (`packages/web/src/main.tsx`) before sheets that may reference
+ *        pack-only spells are derived. Until then derivations see only the
+ *        curated catalog and skip unknown spells instead of failing.
  *
  * EXECUTION LIFECYCLE:
  * --------------------
@@ -99,4 +106,15 @@ export async function createFullSrdResolver(
   campaignHomebrew: CompendiumEntry[] = []
 ): Promise<CompendiumResolver> {
   return new CompendiumResolver(await loadFullSystemSrd(), instanceLibrary, campaignHomebrew);
+}
+
+/**
+ * Installs the full SRD resolver as `CompendiumResolver.getDefault()` so the
+ * synchronous sheet derivations resolve pack-only spells and items (banner
+ * invariant 4). Idempotent: later calls reinstall the same cached catalog.
+ */
+export async function installFullSystemSrd(): Promise<CompendiumResolver> {
+  const resolver = await createFullSrdResolver();
+  CompendiumResolver.setDefault(resolver);
+  return resolver;
 }

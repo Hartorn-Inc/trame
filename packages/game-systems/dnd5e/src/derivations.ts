@@ -69,14 +69,18 @@ export type SpellNumbersFor = (ability: AbilityId) => { spellSaveDc: number; spe
 
 const ITEM_ENTITY_TYPES = new Set(["item", "weapon", "armor"]);
 
-let nameIndex: Map<string, CompendiumEntry> | null = null;
+/** Item name index per default resolver, rebuilt when `installFullSystemSrd` swaps it. */
+const nameIndexes = new WeakMap<CompendiumResolver, Map<string, CompendiumEntry>>();
 
 function defaultItemByName(name: string): CompendiumEntry | undefined {
+  const resolver = CompendiumResolver.getDefault();
+  let nameIndex = nameIndexes.get(resolver);
   if (!nameIndex) {
     nameIndex = new Map();
-    for (const entry of CompendiumResolver.getDefault().list()) {
+    for (const entry of resolver.list()) {
       if (ITEM_ENTITY_TYPES.has(entry.entityType)) nameIndex.set(entry.name.toLowerCase(), entry);
     }
+    nameIndexes.set(resolver, nameIndex);
   }
   const key = name.trim().toLowerCase();
   return nameIndex.get(key) ?? nameIndex.get(key.replace(/s$/, "")) ?? nameIndex.get(key.replace(/es$/, ""));

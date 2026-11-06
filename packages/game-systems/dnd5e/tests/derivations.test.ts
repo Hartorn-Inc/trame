@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import "../src/node.ts";
 import {
   applyBackground,
   applyClassChoices,
   applyFeatChoices,
   applyLevelUp,
+  CompendiumResolver,
   computeDnd5eSheetDerived,
+  installFullSystemSrd,
   createDefaultActorData,
   getClassChoices,
   getSpellsByLevel,
@@ -206,6 +208,42 @@ describe("GS6: spell attacks", () => {
       ["int", 12, 4]
     );
     assert.equal(spells?.featSpells[0].spells.length, 3);
+  });
+});
+
+describe("Pack-only spells derive once the full SRD is installed", () => {
+  function packOnlyCaster(): Dnd5eActorData {
+    const actor = actorWith("wizard", { int: 16 });
+    actor.attributes.level = 3;
+    actor.attributes.spellcastingAbility = "int";
+    actor.spellIds = ["srd:spell:acid_arrow"];
+    return actor;
+  }
+
+  after(() => CompendiumResolver.setDefault(null));
+
+  it("curated_only_default_skips_the_pack_only_spell", () => {
+    CompendiumResolver.setDefault(null);
+    const derived = computeDnd5eSheetDerived(packOnlyCaster());
+    assert.equal(derived.attacks?.some((a) => a.id === "srd:spell:acid_arrow"), false);
+    assert.equal(derived.spells?.prepared[0].name, "srd:spell:acid_arrow");
+  });
+
+  it("installed_packs_derive_the_attack_and_spell_ref", async () => {
+    await installFullSystemSrd();
+    const derived = computeDnd5eSheetDerived(packOnlyCaster());
+    const attack = derived.attacks?.find((a) => a.id === "srd:spell:acid_arrow");
+    assert.deepEqual(
+      [attack?.delivery, attack?.damageDice, attack?.damageType, attack?.attackBonus, attack?.rangeFt],
+      ["ranged", "4d4", "acid", derived.spellAttackBonus, { normal: 90 }]
+    );
+    assert.deepEqual(derived.spells?.prepared[0], { id: "srd:spell:acid_arrow", name: "Acid Arrow", level: 2 });
+  });
+
+  it("curated_items_still_resolve_after_install", async () => {
+    await installFullSystemSrd();
+    const attacks = computeDnd5eSheetDerived(actorWith("fighter", { str: 16 }, [equipped("longsword", "Longsword")])).attacks;
+    assert.equal(attacks?.[0].damageDice, "1d8");
   });
 });
 
