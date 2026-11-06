@@ -24,17 +24,27 @@
  * 4. `Verbatim SRD Notice`:
  *    - The Compendium tab shows `SRD_521_ATTRIBUTION` unmodified (CC-BY-4.0
  *      requires the exact text), marked `lang="en"` inside a localized UI.
+ * 5. `Full Catalog`:
+ *    - Both compendium views list `CompendiumResolver.getDefault()`, which
+ *      `main.tsx` replaced with the full SRD 5.2.1 packs before the first
+ *      render; a GM with a loaded table can spawn any monster from them.
  * ============================================================================
  */
-import { useState } from 'preact/hooks';
-import { SRD_521_ATTRIBUTION, SYSTEM_SRD } from '../../../game-systems/dnd5e/src/index.ts';
+import { useMemo, useState } from 'preact/hooks';
+import { CompendiumResolver, SRD_521_ATTRIBUTION } from '../../../game-systems/dnd5e/src/index.ts';
 import { apiClient, type ApiClient } from '../api/client.ts';
-import { CompendiumDrawer } from '../compendium/CompendiumDrawer.tsx';
+import {
+  CompendiumDrawer,
+  monsterSpawnCommand,
+  monsterStatBlockOf,
+  type CompendiumEntry,
+} from '../compendium/CompendiumDrawer.tsx';
 import { HudDrawers } from '../hud/HudDrawers.tsx';
 import { t, type MessageKey } from '../i18n/index.ts';
 import { MapsWorkspaceTab } from '../maps/MapsWorkspaceTab.tsx';
 import type { UserRole } from '../maps/types.ts';
 import { TableTab } from '../table/TableTab.tsx';
+import { firstFreeCell, uniqueTokenName } from '../table/tableView.ts';
 import { ActorsTab } from './ActorsTab.tsx';
 import { CampaignDocumentsTab } from './CampaignDocumentsTab.tsx';
 
@@ -78,7 +88,19 @@ export function nextTabIndex(index: number, key: string, count: number): number 
 
 export function CampaignWorkspace({ campaignId, userRole, client = apiClient, activeTab = 'table' }: CampaignWorkspaceProps) {
   const [tab, setTab] = useState<WorkspaceTabId>(activeTab);
+  const [spawnStatus, setSpawnStatus] = useState('');
   const isGm = userRole === 'GM';
+  const compendium = useMemo(() => CompendiumResolver.getDefault().list(), []);
+  const table = client.state.table.value;
+
+  const spawnMonster = (entry: CompendiumEntry) => {
+    const statBlock = monsterStatBlockOf(entry);
+    if (!statBlock) return;
+    const name = uniqueTokenName(entry.name, table);
+    const sent = client.submitCommand(monsterSpawnCommand(entry, statBlock, name, firstFreeCell(table), crypto.randomUUID()));
+    setSpawnStatus(sent ? t('compendium.spawned', { name }) : t('tray.offline'));
+  };
+  const onSpawnMonster = isGm && table !== null ? spawnMonster : undefined;
 
   const onTabKeyDown = (e: KeyboardEvent) => {
     const next = nextTabIndex(WORKSPACE_TABS.indexOf(tab), e.key, WORKSPACE_TABS.length);
@@ -121,7 +143,7 @@ export function CampaignWorkspace({ campaignId, userRole, client = apiClient, ac
         {tab === 'documents' && <CampaignDocumentsTab campaignId={campaignId} client={client} isGm={isGm} />}
         {tab === 'compendium' && (
           <div class="ds-stack">
-            <CompendiumDrawer isOpen entries={SYSTEM_SRD} systemId="dnd5e" onClose={() => setTab('table')} />
+            <CompendiumDrawer isOpen entries={compendium} systemId="dnd5e" onClose={() => setTab('table')} onSpawnMonster={onSpawnMonster} />
             <section class="ds-panel" aria-labelledby="srd-attribution-title" data-testid="srd-attribution">
               <h2 id="srd-attribution-title" class="ds-panel-title">{t('compendium.attributionTitle')}</h2>
               <p class="ds-meta" lang="en">{SRD_521_ATTRIBUTION}</p>
@@ -129,7 +151,14 @@ export function CampaignWorkspace({ campaignId, userRole, client = apiClient, ac
           </div>
         )}
       </div>
-      <HudDrawers campaignId={campaignId} client={client} isTableCanvasMounted={tab === 'table'} compendiumEntries={SYSTEM_SRD} />
+      <p role="status" class="ds-meta" data-testid="workspace-spawn-status">{spawnStatus}</p>
+      <HudDrawers
+        campaignId={campaignId}
+        client={client}
+        isTableCanvasMounted={tab === 'table'}
+        compendiumEntries={compendium}
+        onSpawnMonster={onSpawnMonster}
+      />
     </div>
   );
 }

@@ -241,6 +241,13 @@ export interface SpawnTokenInput {
   dexMod: number;
   /** Walking speed in feet (`ft`). */
   speedFt: number;
+  /**
+   * Monster stat block: an SRD reference (`srd:monster:<slug>`), an actor
+   * template UUID, or a full stat block object. The server resolves and
+   * validates it, then overwrites HP, AC, speed, senses, size, reach and
+   * damage affinities from its own copy. Omitted for plain and linked tokens.
+   */
+  statBlock?: string | Record<string, unknown>;
 }
 
 /**
@@ -255,6 +262,7 @@ export function spawnToken(input: SpawnTokenInput): WireTrameCommand {
   return {
     cmd: "SPAWN_TOKEN",
     token: {
+      ...(input.statBlock === undefined ? {} : { stat_block: input.statBlock }),
       id: input.tokenId,
       name: input.name,
       owner_user_id: input.ownerUserId,

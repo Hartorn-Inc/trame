@@ -198,6 +198,19 @@ export function firstFreeCell(state: ProjectedTableState | null): WirePoint2D {
   return { x: 0, y: 0 };
 }
 
+/**
+ * `base` when no visible token carries that name yet, otherwise `base N` with
+ * the smallest free `N >= 2`, so several spawned monsters of one kind stay
+ * distinguishable in target lists and the initiative tracker.
+ */
+export function uniqueTokenName(base: string, state: ProjectedTableState | null): string {
+  const names = new Set(listTableTokens(state).map((tok) => tok.name));
+  if (!names.has(base)) return base;
+  let n = 2;
+  while (names.has(`${base} ${n}`)) n++;
+  return `${base} ${n}`;
+}
+
 /** Initiative rows in turn order; hidden combatants are absent from the projection. */
 export function initiativeEntries(state: ProjectedTableState | null, totals: Record<Uuid, number>): InitiativeEntry[] {
   if (!state || state.mode !== "TURN_BY_TURN") return [];

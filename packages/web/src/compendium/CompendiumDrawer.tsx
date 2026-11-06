@@ -1,7 +1,40 @@
+/**
+ * ============================================================================
+ * COMPENDIUM DRAWER: SEARCH, ADD, STAT BLOCKS & MONSTER SPAWN (CompendiumDrawer.tsx)
+ * ============================================================================
+ *
+ * PURPOSE:
+ * -----
+ * Searchable list of compendium entries (the full SRD 5.2.1 catalog once
+ * `installFullSystemSrd()` resolved, plus instance and campaign tiers). Items,
+ * spells and feats are added to the open sheet; monsters show their real
+ * stat block and, for the GM, a "Spawn on table" button.
+ *
+ * INVARIANTS & SAFETY BOUNDARIES:
+ * -----
+ * 1. `Bounded Result List`:
+ *    - At most `MAX_VISIBLE_ENTRIES` (50) cards render; the full SRD holds
+ *      about a thousand entries, so the rest is reached by searching.
+ * 2. `Server-Owned Monster Numbers`:
+ *    - A spawned SRD monster sends only its reference (`srd:monster:<slug>`)
+ *      in `stat_block`; the server copies its own pack stat block onto the
+ *      token and derives HP, AC, speed, senses, size and affinities from it.
+ *      Non-SRD monsters send their stat block object, which the server
+ *      validates against the same bounds before accepting it.
+ * 3. `GM-Only Spawn`:
+ *    - The spawn button renders only when the host passes `onSpawnMonster`
+ *      (GM with a loaded table); the server rejects `SPAWN_TOKEN` from
+ *      players regardless.
+ * ============================================================================
+ */
 import { h, type VNode } from 'preact';
+import type { WirePoint2D, WireTrameCommand } from '../api/wire.ts';
+import type { MonsterStatBlock } from '../../../game-systems/dnd5e/src/index.ts';
 import { useSafeState } from '../sheet/safeHooks.ts';
 import type { CommandDispatcher } from '../sheet/types.ts';
+import { spawnToken } from '../table/commands.ts';
 import { CompendiumDragDropManager } from './CompendiumDragDropManager.ts';
+import { isMonsterStatBlock, MonsterStatBlockView } from './MonsterStatBlockView.tsx';
 import { t, type MessageKey } from '../i18n/index.ts';
 
 export interface CompendiumEntry {
@@ -22,6 +55,44 @@ export interface CompendiumDrawerProps {
   actorId?: string;
   targetContainerId?: string | null;
   onDragStart?: (entry: CompendiumEntry, event: DragEvent) => void;
+  /** GM spawn of a monster entry on the live table; the button is hidden when absent. */
+  onSpawnMonster?: (entry: CompendiumEntry) => void;
+}
+
+/** Cards rendered at once; narrower searches reach the rest (banner invariant 1). */
+export const MAX_VISIBLE_ENTRIES = 50;
+
+/** The entry's `MonsterStatBlock`, or `null` for non-monsters and stat-less monsters. */
+export function monsterStatBlockOf(entry: CompendiumEntry): MonsterStatBlock | null {
+  const block = entry.entityType === 'monster' ? entry.data?.statBlock : undefined;
+  return isMonsterStatBlock(block) ? block : null;
+}
+
+/**
+ * `SPAWN_TOKEN` for a monster entry (banner invariant 2): SRD entries send
+ * their reference, other tiers the stat block object. The vitals are the
+ * stat block's own numbers; the server overwrites them from its copy anyway.
+ */
+export function monsterSpawnCommand(
+  entry: CompendiumEntry,
+  statBlock: MonsterStatBlock,
+  name: string,
+  topLeft: WirePoint2D,
+  tokenId: string,
+): WireTrameCommand {
+  return spawnToken({
+    tokenId,
+    actorId: null,
+    name,
+    ownerUserId: null,
+    topLeft,
+    hp: statBlock.hitPoints.average,
+    maxHp: statBlock.hitPoints.average,
+    ac: statBlock.armorClass.value,
+    dexMod: Math.floor((statBlock.abilities.dex - 10) / 2),
+    speedFt: statBlock.speed.walk,
+    statBlock: entry.tier === 'SYSTEM_SRD' ? entry.id : (statBlock as unknown as Record<string, unknown>),
+  });
 }
 
 const CATEGORIES = ['all', 'item', 'spell', 'feat', 'monster'] as const;
@@ -39,6 +110,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
 
   const [query, setQuery] = useSafeState('');
   const [category, setCategory] = useSafeState<string>('all');
+  const [openStatBlockId, setOpenStatBlockId] = useSafeState<string | null>(null);
   const entries = props.entries ?? [];
   const dragManager = new CompendiumDragDropManager({
     systemId: props.systemId ?? 'dnd5e',
@@ -52,6 +124,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
     const q = query.toLowerCase();
     return entry.name.toLowerCase().includes(q) || entry.slug.toLowerCase().includes(q);
   });
+  const visible = filtered.slice(0, MAX_VISIBLE_ENTRIES);
 
   const handleAddEntry = (entry: CompendiumEntry) => {
     const targetContainerId = props.targetContainerId ?? null;
@@ -151,8 +224,11 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
         : h(
             'ul',
             { class: 'ds-compendium-entry-list', 'data-testid': 'compendium-entry-list' },
-            filtered.map((entry) =>
-              h(
+            visible.map((entry) => {
+              const statBlock = monsterStatBlockOf(entry);
+              const statBlockOpen = statBlock !== null && openStatBlockId === entry.id;
+              const statBlockDomId = `compendium-stat-block-${entry.slug.replace(/[^a-z0-9_-]/gi, '-')}`;
+              return h(
                 'li',
                 {
                   key: entry.id,
@@ -180,9 +256,46 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
                   },
                   t('compendium.add'),
                 ),
-              ),
-            ),
+                statBlock
+                  ? h(
+                      'button',
+                      {
+                        type: 'button',
+                        class: 'ds-btn ds-btn-ghost ds-btn-sm',
+                        'data-testid': `btn-stat-block-${entry.slug}`,
+                        'aria-expanded': statBlockOpen ? 'true' : 'false',
+                        'aria-controls': statBlockDomId,
+                        onClick: () => setOpenStatBlockId(statBlockOpen ? null : entry.id),
+                      },
+                      t(statBlockOpen ? 'compendium.hideStatBlock' : 'compendium.showStatBlock'),
+                    )
+                  : null,
+                statBlock && props.onSpawnMonster
+                  ? h(
+                      'button',
+                      {
+                        type: 'button',
+                        class: 'ds-btn ds-btn-secondary ds-btn-sm',
+                        'data-testid': `btn-spawn-${entry.slug}`,
+                        'aria-label': t('compendium.spawnAria', { name: entry.name }),
+                        onClick: () => props.onSpawnMonster?.(entry),
+                      },
+                      t('compendium.spawn'),
+                    )
+                  : null,
+                statBlockOpen
+                  ? h(MonsterStatBlockView, { statBlock, id: statBlockDomId, testId: `stat-block-${entry.slug}` })
+                  : null,
+              );
+            }),
           ),
     ),
+    filtered.length > visible.length
+      ? h(
+          'p',
+          { class: 'ds-hint', role: 'status', 'data-testid': 'compendium-truncated' },
+          t('compendium.truncated', { shown: visible.length, total: filtered.length }),
+        )
+      : null,
   );
 }
