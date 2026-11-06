@@ -860,7 +860,7 @@ pub fn filter_events_for_recipient(
                 } else {
                     visible_ids
                         .contains(token_id)
-                        .then(|| TrameEvent::DeathSaveRecorded {
+                        .then_some(TrameEvent::DeathSaveRecorded {
                             token_id: *token_id,
                             d20: *d20,
                             outcome: trame_engine::rules::DeathSaveOutcome {
