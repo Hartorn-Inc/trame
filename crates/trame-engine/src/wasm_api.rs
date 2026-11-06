@@ -33,9 +33,11 @@
 //! ============================================================================
 
 use crate::aoe::{AoeTemplate, GridCell};
-use crate::commands::{MovePreview, TableState, TokenState};
+use crate::commands::{AmbientLightingPreset, MovePreview, TableState, TokenState};
 use crate::cover::{CoverLevel, suggest_cover};
-use crate::geometry::{Bvh2D, CHANNEL_ETHEREAL, Point2D, WallSegment, count_sound_occluding_walls};
+use crate::geometry::{
+    Bvh2D, CHANNEL_ETHEREAL, Point2D, SenseProfile, WallSegment, count_sound_occluding_walls,
+};
 use crate::rules::{ActiveEffect, evaluate_actor_attributes};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -54,29 +56,61 @@ fn to_json<T: serde::Serialize>(value: &T) -> Result<String, String> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VisibilityRequest {
-    /// Walls to raycast against.
+    /// Walls to raycast against; each wall's `kind` decides whether it stops the ray
+    /// (windows and open doors never do, see `WallSegment::effective_blocks_vision`).
     walls: Vec<WallSegment>,
     /// Observer position in pixels (`px`).
     origin: Point2D,
     /// Observer eye elevation in feet (`ft`).
     observer_eye_ft: f64,
-    /// Ray length in pixels (`px`).
-    max_range_px: f64,
+    /// Ray length in pixels (`px`). Required unless `sight` is given; ignored when it is.
+    #[serde(default)]
+    max_range_px: Option<f64>,
     /// When `true`, illusions with `pierced_by_truesight` do not block rays.
     #[serde(default)]
     has_truesight: bool,
+    /// Observer token's senses; when present the ray length comes from them.
+    #[serde(default)]
+    sight: Option<TokenSight>,
 }
 
-/// Visibility polygon: `{ walls, origin, observerEyeFt, maxRangePx, hasTruesight? }` ->
-/// `Point2D[]` ordered by ray angle from `-PI`.
+/// Per-token sight input of `compute_visibility_polygon_json`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenSight {
+    /// Token senses in their snake_case engine shape (`SenseProfile`).
+    senses: SenseProfile,
+    /// Scene ambient preset (`SCREAMING_SNAKE_CASE`).
+    ambient_lighting: AmbientLightingPreset,
+    /// Pixels per foot (`cellSizePx / feetPerCell`, `> 0`).
+    px_per_ft: f64,
+}
+
+/// Visibility polygon: `{ walls, origin, observerEyeFt, maxRangePx?, hasTruesight?, sight? }`
+/// -> `Point2D[]` ordered by ray angle from `-PI`.
+///
+/// With `sight = { senses, ambientLighting, pxPerFt }` the radius is
+/// `senses.sight_range_ft(ambientLighting) * pxPerFt` and truesight comes from the senses too,
+/// so darkvision is per token. Without `sight`, `maxRangePx` is required.
 pub fn compute_visibility_polygon_json(request_json: &str) -> Result<String, String> {
     let req: VisibilityRequest = parse(request_json)?;
+    let (max_range_px, has_truesight) = match &req.sight {
+        Some(sight) => (
+            sight.senses.sight_range_ft(sight.ambient_lighting) * sight.px_per_ft,
+            req.has_truesight || sight.senses.truesight_range_ft > 0.0,
+        ),
+        None => (
+            req.max_range_px
+                .ok_or("invalid request: maxRangePx or sight is required")?,
+            req.has_truesight,
+        ),
+    };
     let bvh = Bvh2D::build(req.walls);
     to_json(&bvh.compute_visibility_polygon(
         req.origin,
         req.observer_eye_ft,
-        req.max_range_px,
-        req.has_truesight,
+        max_range_px,
+        has_truesight,
     ))
 }
 

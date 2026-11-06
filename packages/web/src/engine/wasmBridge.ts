@@ -44,6 +44,7 @@ import initWasm, {
   previewMove as wasmPreviewMove,
   suggestCover as wasmSuggestCover,
 } from "../wasm/trame_engine.js";
+import type { WireAmbientLighting, WireSenseProfile, WireWallKind } from "../api/wire.ts";
 
 export interface Point2D {
   x: number;
@@ -54,6 +55,11 @@ export interface WallSegmentDto {
   id: string;
   a: Point2D;
   b: Point2D;
+  /**
+   * Engine `WallKind`; missing means `NORMAL`. Vision honours it: windows, open doors and a
+   * single terrain wall let sight through, one-way walls block from their normal side only.
+   */
+  kind?: WireWallKind;
   blocksVision: boolean;
   blocksMovement?: boolean;
   /** Missing means blocking, matching the engine default. */
@@ -233,6 +239,28 @@ export function computeVisibilityPolygon(
     observerEyeFt,
     maxRangePx,
     hasTruesight,
+  });
+}
+
+/**
+ * Visibility polygon of one token: the radius comes from the token's own `senses` under the
+ * scene's `ambientLighting` (in pitch darkness only darkvision, blindsight, truesight or
+ * Devil's Sight see), and truesight from `senses.truesight_range_ft`. `pxPerFt` is
+ * `cellSizePx / feetPerCell`.
+ */
+export function computeTokenVisionPolygon(
+  walls: WallSegmentDto[],
+  origin: Point2D,
+  observerEyeFt: number,
+  senses: WireSenseProfile,
+  ambientLighting: WireAmbientLighting,
+  pxPerFt: number,
+): Point2D[] {
+  return callEngine(wasmComputeVisibilityPolygon, {
+    walls: toEngineWalls(walls),
+    origin,
+    observerEyeFt,
+    sight: { senses, ambientLighting, pxPerFt },
   });
 }
 

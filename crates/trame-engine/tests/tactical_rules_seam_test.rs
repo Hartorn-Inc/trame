@@ -1055,3 +1055,142 @@ fn cover_suggestion_counts_blocked_corner_lines() {
         );
     }
 }
+
+/// Length in pixels of the eastward ray (angle `0`) of a `computeVisibilityPolygon` response.
+fn east_ray_px(request: Value) -> f64 {
+    let polygon: Vec<Point2D> = serde_json::from_str(
+        &call_export("computeVisibilityPolygon", &request.to_string()).unwrap(),
+    )
+    .unwrap();
+    let origin = Point2D::new(100.0, 100.0);
+    polygon
+        .iter()
+        .filter(|p| (p.y - origin.y).abs() < 1e-6 && p.x >= origin.x)
+        .map(|p| p.x - origin.x)
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn vision_api_reads_the_wall_kind() {
+    // (case_id, wall kind across the eastward ray at x = 200, expected ray length in px)
+    let cases = [
+        ("normal_wall_blocks", json!({"kind": "NORMAL"}), 100.0),
+        ("window_lets_sight_through", json!({"kind": "WINDOW"}), 500.0),
+        (
+            "open_door_lets_sight_through",
+            json!({"kind": "DOOR", "is_open": true, "is_locked": false}),
+            500.0,
+        ),
+        (
+            "closed_door_blocks",
+            json!({"kind": "DOOR", "is_open": false, "is_locked": true}),
+            100.0,
+        ),
+        (
+            "closed_secret_door_blocks",
+            json!({"kind": "SECRET_DOOR", "is_open": false}),
+            100.0,
+        ),
+        (
+            "open_secret_door_lets_sight_through",
+            json!({"kind": "SECRET_DOOR", "is_open": true}),
+            500.0,
+        ),
+        ("single_terrain_wall_is_seen_across", json!({"kind": "TERRAIN"}), 500.0),
+        (
+            "illusion_blocks_without_truesight",
+            json!({"kind": "ILLUSION", "pierced_by_truesight": true}),
+            100.0,
+        ),
+    ];
+    for (case, kind, expected_px) in cases {
+        let reach = east_ray_px(json!({
+            "walls": [vertical_wall(200.0, 0.0, 300.0, kind, None)],
+            "origin": {"x": 100.0, "y": 100.0},
+            "observerEyeFt": 5.0,
+            "maxRangePx": 500.0,
+        }));
+        assert!((reach - expected_px).abs() < 1e-6, "case {case}: {reach}");
+    }
+}
+
+fn senses(normal: f64, darkvision: f64, blindsight: f64, devils_sight: bool) -> Value {
+    json!({
+        "normal_range_ft": normal,
+        "darkvision_range_ft": darkvision,
+        "blindsight_range_ft": blindsight,
+        "tremorsense_range_ft": 0.0,
+        "truesight_range_ft": 0.0,
+        "devils_sight": devils_sight,
+        "see_invisibility": false,
+        "perceives_channels": 1,
+    })
+}
+
+#[test]
+fn vision_radius_comes_from_each_token_senses() {
+    // (case_id, token senses, ambient preset, expected ray length in px at 10 px/ft)
+    let cases = [
+        (
+            "human_sees_nothing_in_pitch_darkness",
+            senses(120.0, 0.0, 0.0, false),
+            "PITCH_DARKNESS",
+            0.0,
+        ),
+        (
+            "elf_darkvision_60_in_pitch_darkness",
+            senses(120.0, 60.0, 0.0, false),
+            "PITCH_DARKNESS",
+            600.0,
+        ),
+        (
+            "dwarf_darkvision_120_in_pitch_darkness",
+            senses(120.0, 120.0, 0.0, false),
+            "PITCH_DARKNESS",
+            1200.0,
+        ),
+        (
+            "blindsight_10_perceives_in_darkness",
+            senses(120.0, 0.0, 10.0, false),
+            "PITCH_DARKNESS",
+            100.0,
+        ),
+        (
+            "devils_sight_sees_normally_in_darkness",
+            senses(120.0, 0.0, 0.0, true),
+            "PITCH_DARKNESS",
+            1200.0,
+        ),
+        (
+            "human_sees_normal_range_by_moonlight",
+            senses(120.0, 0.0, 0.0, false),
+            "NIGHT_MOONLIGHT",
+            1200.0,
+        ),
+        (
+            "daylight_uses_the_longer_of_normal_and_darkvision",
+            senses(60.0, 90.0, 0.0, false),
+            "DAYLIGHT",
+            900.0,
+        ),
+    ];
+    for (case, senses, ambient, expected_px) in cases {
+        let reach = east_ray_px(json!({
+            "walls": [],
+            "origin": {"x": 100.0, "y": 100.0},
+            "observerEyeFt": 5.0,
+            "sight": { "senses": senses, "ambientLighting": ambient, "pxPerFt": 10.0 },
+        }));
+        assert!((reach - expected_px).abs() < 1e-6, "case {case}: {reach}");
+    }
+}
+
+#[test]
+fn vision_request_without_a_range_fails_closed() {
+    let err = call_export(
+        "computeVisibilityPolygon",
+        &json!({ "walls": [], "origin": {"x": 0.0, "y": 0.0}, "observerEyeFt": 5.0 }).to_string(),
+    )
+    .unwrap_err();
+    assert!(err.contains("maxRangePx or sight"), "{err}");
+}

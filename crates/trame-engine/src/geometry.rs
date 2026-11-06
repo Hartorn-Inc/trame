@@ -39,6 +39,10 @@
 //!        the map-editor input shape (`p1`/`p2`, `wallType`, `doorState`) on
 //!        deserialization and `masked_for_players` is the one place that turns
 //!        closed secret doors and illusions into plain walls for non-GMs.
+//!   6. `Per-Token Sight Radius`:
+//!      - `SenseProfile::sight_range_ft` derives each token's vision radius from its own
+//!        senses and the ambient preset, so darkness hides the map from a token without
+//!        darkvision while a dwarf beside it still sees 120 ft.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -50,6 +54,7 @@
 //!          └── Query `bvh.has_line_of_sight(...)` with 2.5D elevation interpolation and two-hit terrain rule.
 //! ============================================================================
 
+use crate::commands::AmbientLightingPreset;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -447,6 +452,33 @@ impl Default for SenseProfile {
             devils_sight: false,
             see_invisibility: false,
             perceives_channels: CHANNEL_MATERIAL,
+        }
+    }
+}
+
+impl SenseProfile {
+    /// Radius in feet (`ft`) this token sees under the scene's `ambient` preset.
+    ///
+    /// - `PitchDarkness`: only senses that work without light count, so the radius is
+    ///   `max(darkvision, blindsight, truesight)`; Devil's Sight adds `normal_range_ft`.
+    ///   A token with none of them sees `0` ft and relies on light sources.
+    /// - `Daylight`, `Dusk`, `NightMoonlight`: bright or dim light is enough for normal sight,
+    ///   so the radius is `max(normal, darkvision)`.
+    pub fn sight_range_ft(&self, ambient: AmbientLightingPreset) -> f64 {
+        let without_light = self
+            .darkvision_range_ft
+            .max(self.blindsight_range_ft)
+            .max(self.truesight_range_ft);
+        match ambient {
+            AmbientLightingPreset::PitchDarkness if self.devils_sight => {
+                without_light.max(self.normal_range_ft)
+            }
+            AmbientLightingPreset::PitchDarkness => without_light,
+            AmbientLightingPreset::Daylight
+            | AmbientLightingPreset::Dusk
+            | AmbientLightingPreset::NightMoonlight => {
+                self.normal_range_ft.max(self.darkvision_range_ft)
+            }
         }
     }
 }
