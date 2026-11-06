@@ -68,7 +68,14 @@
 //!        and undo stack are restored exactly and the error carries the failing
 //!        index. On success the sub-commands' own undo entries are discarded in
 //!        favor of one composite `UndoEntry`.
-//!   8. `Shared Movement Pricing`:
+//!   8. `Conditions and Game Master Rulings`:
+//!      - `SetTokenConditions` follows token control (GM: any token; player:
+//!        owned tokens); `ConditionOverride` is GM-only. Both validate ids
+//!        (`1..=64` bytes, at most 32 per token) before pushing an `UndoEntry`.
+//!      - `TokenState::effective_conditions` applies the rulings (`Remove`
+//!        wins over the token's own conditions, `Force` adds); engine checks
+//!        such as Incapacitated read effective conditions only.
+//!   9. `Shared Movement Pricing`:
 //!      - `MoveToken` budgets, `preview_move`, and the `previewMove` WASM export
 //!        all price moves with `MovementGrid::movement_cost_ft` (Chebyshev
 //!        squares, `difficult_terrain` doubled), so previews never disagree
@@ -388,12 +395,67 @@ const INCAPACITATING_CONDITIONS: [&str; 5] = [
     "unconscious",
 ];
 
-/// `true` when `token` carries a condition that includes Incapacitated (case-insensitive).
+/// `true` when `token`'s effective conditions (overrides applied) include Incapacitated.
 fn is_incapacitated(token: &TokenState) -> bool {
-    token.conditions.iter().any(|c| {
-        INCAPACITATING_CONDITIONS
-            .iter()
-            .any(|id| c.eq_ignore_ascii_case(id))
+    token
+        .effective_conditions()
+        .iter()
+        .any(|c| INCAPACITATING_CONDITIONS.contains(&c.as_str()))
+}
+
+/// Maximum number of conditions on a token, and of `ConditionOverride` entries per token.
+pub const MAX_TOKEN_CONDITIONS: usize = 32;
+/// Maximum length in bytes of a condition or effect id.
+pub const MAX_CONDITION_ID_LEN: usize = 64;
+
+/// What a `ConditionOverride` rules on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OverrideSubject {
+    /// A `Condition` id (lowercase SRD id, e.g. `"prone"`).
+    Condition,
+    /// An automated condition or feature effect id (owned by the game system, e.g. the
+    /// `ActiveEffect` a condition maps to).
+    Effect,
+}
+
+/// Ruling imposed by a `ConditionOverride`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OverrideMode {
+    /// The condition or effect applies even when the token's state says otherwise.
+    Force,
+    /// The condition or effect does not apply even when the token's state says it does.
+    Remove,
+}
+
+/// One Game Master ruling stored on a token by `ConditionOverride`; it always wins over the
+/// token's own conditions and over automated effects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ConditionOverrideEntry {
+    /// Whether `id` names a condition or an effect.
+    pub subject: OverrideSubject,
+    /// Condition id (trimmed, lowercase) or effect id (trimmed), `1..=64` bytes.
+    pub id: String,
+    /// Forced on or removed.
+    pub mode: OverrideMode,
+}
+
+/// Normalizes a condition id (trim, ASCII lowercase) or an effect id (trim only) and checks its
+/// length (`1..=MAX_CONDITION_ID_LEN` bytes).
+fn normalize_override_id(subject: OverrideSubject, raw: &str) -> Result<String, CommandError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > MAX_CONDITION_ID_LEN {
+        return Err(CommandError::InvalidConfiguration(format!(
+            "condition or effect id must be 1..={MAX_CONDITION_ID_LEN} bytes"
+        )));
+    }
+    Ok(match subject {
+        OverrideSubject::Condition => trimmed.to_ascii_lowercase(),
+        OverrideSubject::Effect => trimmed.to_string(),
     })
 }
 
@@ -459,7 +521,9 @@ pub struct TokenState {
     pub concentrating_on_aoe_id: Option<Uuid>,
     /// Active bonuses, penalties, and modifiers applied to this token.
     pub active_effects: Vec<ActiveEffect>,
-    /// Active D&D 5e condition labels synchronized from the persistent actor sheet (`ADR-0037`).
+    /// Active condition ids (lowercase SRD ids), set by `SetTokenConditions` or synchronized
+    /// from the persistent actor sheet (`ADR-0037`). See `effective_conditions` for the
+    /// overrides.
     #[serde(default)]
     pub conditions: Vec<String>,
     /// Melee `ThreatReach` in feet (`ft`, default `5.0`); leaving it provokes an opportunity prompt.
@@ -487,6 +551,10 @@ pub struct TokenState {
     /// Damage types this token takes double damage from (lowercase SRD ids).
     #[serde(default)]
     pub damage_vulnerabilities: Vec<String>,
+    /// Game Master `ConditionOverride` rulings (at most `MAX_TOKEN_CONDITIONS`, one per
+    /// subject and id); they win over `conditions` and over automated effects.
+    #[serde(default)]
+    pub condition_overrides: Vec<ConditionOverrideEntry>,
 }
 
 impl TokenState {
@@ -528,7 +596,32 @@ impl TokenState {
             damage_resistances: Vec::new(),
             damage_immunities: Vec::new(),
             damage_vulnerabilities: Vec::new(),
+            condition_overrides: Vec::new(),
         }
+    }
+
+    /// Conditions in force after the `ConditionOverride` rulings: `conditions` (lowercased,
+    /// deduplicated, in order) minus the `Remove`d ones, then the `Force`d ones not already
+    /// present, in ruling order.
+    pub fn effective_conditions(&self) -> Vec<String> {
+        let ruled = |id: &str, mode: OverrideMode| {
+            self.condition_overrides
+                .iter()
+                .any(|o| o.subject == OverrideSubject::Condition && o.mode == mode && o.id == id)
+        };
+        let mut out: Vec<String> = Vec::new();
+        let own = self.conditions.iter().map(|c| c.trim().to_ascii_lowercase());
+        let forced = self
+            .condition_overrides
+            .iter()
+            .filter(|o| o.subject == OverrideSubject::Condition && o.mode == OverrideMode::Force)
+            .map(|o| o.id.clone());
+        for id in own.chain(forced) {
+            if !ruled(&id, OverrideMode::Remove) && !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
     }
 
     /// Modifier added to the server's `1d20` initiative roll (`AuthoritativeInitiativeRoll`).
@@ -601,6 +694,27 @@ pub enum TrameCommand {
         token_id: Uuid,
         /// `true` to take the Disengage action, `false` to withdraw it.
         disengaged: bool,
+    },
+    /// Replaces a token's conditions (GM: any token; players: owned tokens only). Ids are
+    /// trimmed, lowercased, and deduplicated; at most `MAX_TOKEN_CONDITIONS` ids of
+    /// `1..=MAX_CONDITION_ID_LEN` bytes. Undoable.
+    SetTokenConditions {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Complete new condition list (empty clears every condition).
+        conditions: Vec<String>,
+    },
+    /// Records, replaces, or clears a Game Master ruling that forces or removes a condition or
+    /// an automated effect on any token (GM only). Undoable.
+    ConditionOverride {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Whether `id` is a condition or an effect.
+        subject: OverrideSubject,
+        /// Condition id (lowercased) or effect id, `1..=MAX_CONDITION_ID_LEN` bytes.
+        id: String,
+        /// `Force` or `Remove`; `None` clears the ruling for `(subject, id)`.
+        mode: Option<OverrideMode>,
     },
     /// Toggles the D&D 5e squeezing state for a token to fit through narrower passages at double movement cost.
     ToggleSqueeze {
@@ -888,6 +1002,24 @@ pub enum TrameEvent {
         token_id: Uuid,
         /// Updated Disengage flag.
         disengaged: bool,
+    },
+    /// Emitted when `SetTokenConditions` replaces a token's conditions.
+    TokenConditionsChanged {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Normalized condition list now on the token.
+        conditions: Vec<String>,
+        /// The token's effective conditions (`ConditionOverride` rulings applied).
+        effective_conditions: Vec<String>,
+    },
+    /// Emitted when a `ConditionOverride` ruling is recorded, replaced, or cleared.
+    ConditionOverrideChanged {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Every ruling now on the token (stripped for recipients who do not control it).
+        overrides: Vec<ConditionOverrideEntry>,
+        /// The token's effective conditions after the change.
+        effective_conditions: Vec<String>,
     },
     /// Emitted when a token enters or exits squeezing mode.
     TokenSqueezeToggled {
@@ -1986,6 +2118,82 @@ impl TableState {
                 Ok(vec![TrameEvent::TokenDisengaged {
                     token_id,
                     disengaged,
+                }])
+            }
+
+            TrameCommand::SetTokenConditions {
+                token_id,
+                conditions,
+            } => {
+                let name = self.require_token_control(actor, token_id)?.name.clone();
+                if conditions.len() > MAX_TOKEN_CONDITIONS {
+                    return Err(CommandError::InvalidConfiguration(format!(
+                        "at most {MAX_TOKEN_CONDITIONS} conditions per token"
+                    )));
+                }
+                let mut normalized: Vec<String> = Vec::with_capacity(conditions.len());
+                for raw in &conditions {
+                    let id = normalize_override_id(OverrideSubject::Condition, raw)?;
+                    if !normalized.contains(&id) {
+                        normalized.push(id);
+                    }
+                }
+                self.push_undo(format!("Set conditions for {name}"));
+                let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
+                tok.conditions = normalized.clone();
+                Ok(vec![TrameEvent::TokenConditionsChanged {
+                    token_id,
+                    conditions: normalized,
+                    effective_conditions: tok.effective_conditions(),
+                }])
+            }
+
+            TrameCommand::ConditionOverride {
+                token_id,
+                subject,
+                id,
+                mode,
+            } => {
+                Self::require_gm(actor)?;
+                let token = self
+                    .data
+                    .tokens
+                    .get(&token_id)
+                    .ok_or_else(|| CommandError::NotFound(format!("token {token_id}")))?;
+                let id = normalize_override_id(subject, &id)?;
+                let existing = token
+                    .condition_overrides
+                    .iter()
+                    .position(|o| o.subject == subject && o.id == id);
+                if mode.is_some()
+                    && existing.is_none()
+                    && token.condition_overrides.len() >= MAX_TOKEN_CONDITIONS
+                {
+                    return Err(CommandError::InvalidConfiguration(format!(
+                        "at most {MAX_TOKEN_CONDITIONS} overrides per token"
+                    )));
+                }
+                let description = format!("Override {id} on {}", token.name);
+                self.push_undo(description);
+                let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
+                match (mode, existing) {
+                    (Some(mode), Some(idx)) => tok.condition_overrides[idx].mode = mode,
+                    (Some(mode), None) => {
+                        tok.condition_overrides.push(ConditionOverrideEntry {
+                            subject,
+                            id,
+                            mode,
+                        })
+                    }
+                    (None, Some(idx)) => {
+                        tok.condition_overrides.remove(idx);
+                    }
+                    (None, None) => {}
+                }
+                Ok(vec![TrameEvent::ConditionOverrideChanged {
+                    token_id,
+                    overrides: tok.condition_overrides.clone(),
+                    effective_conditions: tok.effective_conditions(),
                 }])
             }
 

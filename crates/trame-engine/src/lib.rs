@@ -48,8 +48,9 @@ pub mod rules;
 pub mod wasm_api;
 
 pub use crate::commands::{
-    AmbientLightingPreset, CampaignRole, CommandActor, CommandError, FogOverrideCell,
-    FogOverrideMode, LightSource, McpStagingProposal, MovePreview, ReactionDecision,
+    AmbientLightingPreset, CampaignRole, CommandActor, CommandError, ConditionOverrideEntry,
+    FogOverrideCell, FogOverrideMode, LightSource, McpStagingProposal, MovePreview, OverrideMode,
+    OverrideSubject, ReactionDecision,
     ReactionPrompt, ReactionPromptCloseReason, RefundableResource, SceneActivation, TableMode,
     TableSnapshotData, TableState, TokenState, TrameCommand, TrameEvent, UndoEntry,
 };

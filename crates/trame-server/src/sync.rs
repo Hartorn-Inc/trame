@@ -238,7 +238,8 @@ pub struct PublicTokenView {
     pub height_ft: f64,
     /// Whether the token has the Invisible condition (only sent when the recipient perceives it).
     pub invisible: bool,
-    /// Visible D&D 5e condition labels.
+    /// Effective condition ids (`TokenState::effective_conditions`: GM rulings applied, the
+    /// rulings themselves withheld).
     pub conditions: Vec<String>,
     /// Coarse health tier derived from `hp` / `max_hp`.
     pub bloodied: BloodiedState,
@@ -258,7 +259,7 @@ impl From<&TokenState> for PublicTokenView {
             elevation_ft: t.elevation_ft,
             height_ft: t.height_ft,
             invisible: t.invisible,
-            conditions: t.conditions.clone(),
+            conditions: t.effective_conditions(),
             bloodied: BloodiedState::from_hp(t.hp, t.max_hp),
         }
     }
@@ -618,7 +619,9 @@ pub fn project_state_for_recipient(
 /// - Vitality events (`DamageApplied`, `TokenResourcesOverridden`) and full `TokenSpawned`
 ///   payloads reach only the token's controller; others learn the outcome through the
 ///   `PublicTokenView` in the accompanying state projection.
-/// - Movement, squeeze, visibility, and ownership events require the token to be visible.
+/// - Movement, squeeze, conditions, visibility, and ownership events require the token to be
+///   visible. `ConditionOverrideChanged` keeps its rulings for the controller only; other
+///   recipients who see the token get it with `overrides` emptied.
 /// - Secret door / illusion geometry in `DoorToggled`, `DoorConfigured`, and `WallAdded` is
 ///   masked; closing a secret door is dropped entirely.
 /// - `AoeProjected` keeps only visible affected tokens and hides invisible casters.
@@ -665,6 +668,7 @@ pub fn filter_events_for_recipient(
             TrameEvent::TokenMoved { token_id, .. }
             | TrameEvent::TokenSqueezeToggled { token_id, .. }
             | TrameEvent::TokenDisengaged { token_id, .. }
+            | TrameEvent::TokenConditionsChanged { token_id, .. }
             | TrameEvent::TokenVisibilityChanged { token_id, .. }
             | TrameEvent::TokenOwnerAssigned { token_id, .. }
             | TrameEvent::ActionRefunded { token_id, .. } => {
@@ -672,6 +676,23 @@ pub fn filter_events_for_recipient(
             }
             TrameEvent::TokenHealed { token_id, .. } => {
                 recipient_controls(state, token_id, recipient_user_id).then(|| ev.clone())
+            }
+            TrameEvent::ConditionOverrideChanged {
+                token_id,
+                effective_conditions,
+                ..
+            } => {
+                if recipient_controls(state, token_id, recipient_user_id) {
+                    Some(ev.clone())
+                } else {
+                    visible_ids.contains(token_id).then(|| {
+                        TrameEvent::ConditionOverrideChanged {
+                            token_id: *token_id,
+                            overrides: Vec::new(),
+                            effective_conditions: effective_conditions.clone(),
+                        }
+                    })
+                }
             }
             TrameEvent::ReactionPromptOpened { prompt } => {
                 prompt_concerns_recipient(state, prompt, recipient_user_id).then(|| {

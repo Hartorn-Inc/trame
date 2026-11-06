@@ -417,8 +417,13 @@ fn snapshots_written_before_the_tactical_fields_still_load() {
     state.data.difficult_terrain.insert(cell(1, 1));
     let mut legacy = serde_json::to_value(&state.data).unwrap();
     legacy.as_object_mut().unwrap().remove("difficult_terrain");
+    legacy["tokens"][HERO_ID.to_string()]
+        .as_object_mut()
+        .unwrap()
+        .remove("condition_overrides");
     let loaded: TableSnapshotData = serde_json::from_value(legacy).unwrap();
     assert!(loaded.difficult_terrain.is_empty());
+    assert!(loaded.tokens[&HERO_ID].condition_overrides.is_empty());
     assert_eq!(loaded.tokens[&HERO_ID].name, "Kyra");
 }
 
@@ -613,6 +618,320 @@ fn set_disengaged_requires_token_control_and_is_undoable() {
                 c.id
             );
         }
+    }
+}
+
+#[test]
+fn set_token_conditions_follows_token_control_and_is_undoable() {
+    struct Case {
+        id: &'static str,
+        actor: CommandActor,
+        target: Uuid,
+        conditions: Vec<&'static str>,
+        expect: Result<Vec<&'static str>, &'static str>,
+    }
+    let cases = [
+        Case {
+            id: "player_sets_own_token_conditions_normalized",
+            actor: player(),
+            target: HERO_ID,
+            conditions: vec![" Prone ", "poisoned", "PRONE"],
+            expect: Ok(vec!["prone", "poisoned"]),
+        },
+        Case {
+            id: "gm_sets_any_token_conditions",
+            actor: gm(),
+            target: GOBLIN_ID,
+            conditions: vec!["frightened"],
+            expect: Ok(vec!["frightened"]),
+        },
+        Case {
+            id: "empty_list_clears_conditions",
+            actor: player(),
+            target: HERO_ID,
+            conditions: vec![],
+            expect: Ok(vec![]),
+        },
+        Case {
+            id: "player_cannot_set_other_token_conditions",
+            actor: player(),
+            target: GOBLIN_ID,
+            conditions: vec!["prone"],
+            expect: Err("permission denied"),
+        },
+        Case {
+            id: "spectator_cannot_set_conditions",
+            actor: spectator(),
+            target: HERO_ID,
+            conditions: vec!["prone"],
+            expect: Err("permission denied"),
+        },
+        Case {
+            id: "blank_condition_id_rejected",
+            actor: gm(),
+            target: HERO_ID,
+            conditions: vec!["  "],
+            expect: Err("invalid configuration"),
+        },
+        Case {
+            id: "too_many_conditions_rejected",
+            actor: gm(),
+            target: HERO_ID,
+            conditions: vec!["x"; 33],
+            expect: Err("invalid configuration"),
+        },
+    ];
+    for c in cases {
+        let mut hero = token(HERO_ID, "Kyra", 100.0, 0.0, Some(PLAYER_ID));
+        hero.conditions = vec!["blinded".to_string()];
+        let mut state = table(vec![hero, token(GOBLIN_ID, "Goblin", 0.0, 0.0, None)]);
+        let before = state.data.tokens[&c.target].conditions.clone();
+        let result = state.apply_command(
+            &c.actor,
+            TrameCommand::SetTokenConditions {
+                token_id: c.target,
+                conditions: c.conditions.iter().map(|s| s.to_string()).collect(),
+            },
+        );
+        match c.expect {
+            Ok(expected) => {
+                let expected: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+                assert_eq!(
+                    result.unwrap_or_else(|e| panic!("case {}: {e}", c.id)),
+                    vec![TrameEvent::TokenConditionsChanged {
+                        token_id: c.target,
+                        conditions: expected.clone(),
+                        effective_conditions: expected.clone(),
+                    }],
+                    "case {} event",
+                    c.id
+                );
+                assert_eq!(
+                    state.data.tokens[&c.target].conditions, expected,
+                    "case {} state",
+                    c.id
+                );
+                state
+                    .apply_command(&gm(), TrameCommand::UndoLastAction)
+                    .unwrap();
+                assert_eq!(
+                    state.data.tokens[&c.target].conditions, before,
+                    "case {} undone",
+                    c.id
+                );
+            }
+            Err(prefix) => {
+                let err = result.unwrap_err().to_string();
+                assert!(err.starts_with(prefix), "case {}: {err}", c.id);
+                assert!(state.undo_stack.is_empty(), "case {} no undo entry", c.id);
+                assert_eq!(
+                    state.data.tokens[&c.target].conditions, before,
+                    "case {} unchanged",
+                    c.id
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn condition_override_is_gm_only_wins_over_conditions_and_is_undoable() {
+    use trame_engine::{ConditionOverrideEntry, OverrideMode, OverrideSubject};
+    struct Case {
+        id: &'static str,
+        actor: CommandActor,
+        subject: OverrideSubject,
+        override_id: &'static str,
+        mode: Option<OverrideMode>,
+        expect_effective: Result<Vec<&'static str>, &'static str>,
+        expect_overrides: usize,
+    }
+    let base = || Case {
+        id: "",
+        actor: gm(),
+        subject: OverrideSubject::Condition,
+        override_id: "prone",
+        mode: Some(OverrideMode::Force),
+        expect_effective: Ok(vec![]),
+        expect_overrides: 1,
+    };
+    let cases = [
+        Case {
+            id: "gm_forces_condition_on_synthetic_token",
+            expect_effective: Ok(vec!["poisoned", "prone"]),
+            ..base()
+        },
+        Case {
+            id: "gm_removes_condition_the_token_has",
+            override_id: "POISONED",
+            mode: Some(OverrideMode::Remove),
+            expect_effective: Ok(vec![]),
+            ..base()
+        },
+        Case {
+            id: "gm_overrides_effect_without_touching_conditions",
+            subject: OverrideSubject::Effect,
+            override_id: "condition:poisoned:attack_disadvantage",
+            mode: Some(OverrideMode::Remove),
+            expect_effective: Ok(vec!["poisoned"]),
+            ..base()
+        },
+        Case {
+            id: "gm_clears_a_missing_ruling_as_a_no_op",
+            mode: None,
+            expect_effective: Ok(vec!["poisoned"]),
+            expect_overrides: 0,
+            ..base()
+        },
+        Case {
+            id: "player_cannot_override_even_own_token",
+            actor: player(),
+            expect_effective: Err("permission denied"),
+            expect_overrides: 0,
+            ..base()
+        },
+        Case {
+            id: "overlong_id_rejected",
+            override_id: "an-effect-id-that-is-far-too-long-to-be-a-real-condition-or-effect-id",
+            expect_effective: Err("invalid configuration"),
+            expect_overrides: 0,
+            ..base()
+        },
+    ];
+    for c in cases {
+        let mut goblin = token(GOBLIN_ID, "Goblin", 0.0, 0.0, Some(PLAYER_ID));
+        goblin.conditions = vec!["poisoned".to_string()];
+        let mut state = table(vec![goblin]);
+        let result = state.apply_command(
+            &c.actor,
+            TrameCommand::ConditionOverride {
+                token_id: GOBLIN_ID,
+                subject: c.subject,
+                id: c.override_id.to_string(),
+                mode: c.mode,
+            },
+        );
+        let tok = &state.data.tokens[&GOBLIN_ID];
+        assert_eq!(
+            tok.condition_overrides.len(),
+            c.expect_overrides,
+            "case {} overrides",
+            c.id
+        );
+        match c.expect_effective {
+            Ok(expected) => {
+                let expected: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+                let events = result.unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+                assert_eq!(
+                    events,
+                    vec![TrameEvent::ConditionOverrideChanged {
+                        token_id: GOBLIN_ID,
+                        overrides: tok.condition_overrides.clone(),
+                        effective_conditions: expected.clone(),
+                    }],
+                    "case {} event",
+                    c.id
+                );
+                assert_eq!(tok.effective_conditions(), expected, "case {}", c.id);
+                assert_eq!(tok.conditions, vec!["poisoned"], "case {} own", c.id);
+                if let Some(mode) = c.mode {
+                    let id = match c.subject {
+                        OverrideSubject::Condition => c.override_id.to_ascii_lowercase(),
+                        OverrideSubject::Effect => c.override_id.to_string(),
+                    };
+                    assert_eq!(
+                        tok.condition_overrides[0],
+                        ConditionOverrideEntry {
+                            subject: c.subject,
+                            id,
+                            mode,
+                        },
+                        "case {} entry",
+                        c.id
+                    );
+                }
+                state
+                    .apply_command(&gm(), TrameCommand::UndoLastAction)
+                    .unwrap();
+                assert!(
+                    state.data.tokens[&GOBLIN_ID].condition_overrides.is_empty(),
+                    "case {} undone",
+                    c.id
+                );
+            }
+            Err(prefix) => {
+                let err = result.unwrap_err().to_string();
+                assert!(err.starts_with(prefix), "case {}: {err}", c.id);
+                assert!(state.undo_stack.is_empty(), "case {} no undo entry", c.id);
+            }
+        }
+    }
+}
+
+#[test]
+fn condition_rulings_decide_whether_a_reactor_is_incapacitated() {
+    use trame_engine::{OverrideMode, OverrideSubject};
+    struct Case {
+        id: &'static str,
+        goblin_conditions: Vec<&'static str>,
+        ruling: Option<(&'static str, OverrideMode)>,
+        expect_prompt: bool,
+    }
+    let cases = [
+        Case {
+            id: "stunned_reactor_opens_no_prompt",
+            goblin_conditions: vec!["stunned"],
+            ruling: None,
+            expect_prompt: false,
+        },
+        Case {
+            id: "removed_stun_restores_the_prompt",
+            goblin_conditions: vec!["stunned"],
+            ruling: Some(("stunned", OverrideMode::Remove)),
+            expect_prompt: true,
+        },
+        Case {
+            id: "forced_paralysis_suppresses_the_prompt",
+            goblin_conditions: vec![],
+            ruling: Some(("paralyzed", OverrideMode::Force)),
+            expect_prompt: false,
+        },
+    ];
+    for c in cases {
+        let mut goblin = token(GOBLIN_ID, "Goblin", 0.0, 0.0, None);
+        goblin.conditions = c.goblin_conditions.iter().map(|s| s.to_string()).collect();
+        let mut state = table(vec![token(HERO_ID, "Kyra", 100.0, 0.0, Some(PLAYER_ID)), goblin]);
+        if let Some((id, mode)) = c.ruling {
+            state
+                .apply_command(
+                    &gm(),
+                    TrameCommand::ConditionOverride {
+                        token_id: GOBLIN_ID,
+                        subject: OverrideSubject::Condition,
+                        id: id.to_string(),
+                        mode: Some(mode),
+                    },
+                )
+                .unwrap();
+        }
+        start_combat(&mut state, vec![HERO_ID, GOBLIN_ID]);
+        let events = state
+            .apply_command(
+                &player(),
+                TrameCommand::MoveToken {
+                    token_id: HERO_ID,
+                    to_top_left: Point2D::new(600.0, 0.0),
+                    to_elevation_ft: None,
+                    gm_teleport: false,
+                },
+            )
+            .unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+        assert_eq!(
+            opened_prompt_count(&events),
+            usize::from(c.expect_prompt),
+            "case {}",
+            c.id
+        );
     }
 }
 
