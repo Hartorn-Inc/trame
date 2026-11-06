@@ -439,6 +439,8 @@ export interface DerivedAttack {
   mastery?: string;
   /** Whether the proficiency bonus is included in `attackBonus`. */
   proficient: boolean;
+  /** Ability used by a weapon attack (STR, DEX for ranged, the better for Finesse); absent for spells. */
+  ability?: AbilityId;
 }
 
 /** Spell referenced on the sheet. */

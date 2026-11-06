@@ -100,7 +100,9 @@ export type RollScope =
   | { roll: "check"; ability: AbilityId; skill?: SkillId }
   | { roll: "initiative" }
   | { roll: "death_save" }
-  | { roll: "attack"; source: "weapon_str" | "spell" };
+  | { roll: "attack"; source: "weapon_str" | "spell" }
+  /** Attack rolls made against the feature's owner (Reckless Attack). */
+  | { roll: "attacked" };
 
 /** Roll rule granted by a feature. */
 export type FeatureRollRule =
@@ -207,7 +209,10 @@ const CLASS_RULES: Readonly<Record<string, FeatureRule>> = {
   "barbarian:reckless_attack": {
     ...AUTO,
     toggle: true,
-    rolls: [{ kind: "advantage", on: { roll: "attack", source: "weapon_str" } }],
+    rolls: [
+      { kind: "advantage", on: { roll: "attack", source: "weapon_str" } },
+      { kind: "advantage", on: { roll: "attacked" } },
+    ],
   },
   "barbarian:extra_attack": { ...AUTO, extraAttacks: 1 },
   "barbarian:fast_movement": {

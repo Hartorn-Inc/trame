@@ -204,6 +204,7 @@ function weaponAttack(
     properties: [...properties],
     ...(typeof data.mastery === "string" ? { mastery: data.mastery } : {}),
     proficient,
+    ability,
   };
 }
 

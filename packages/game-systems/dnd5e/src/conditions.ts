@@ -36,18 +36,27 @@
  *      - Exhaustion's `-2 * level` on d20 tests and `-5 ft * level` of speed
  *        are `system.json` formulas; this module only reports the level in
  *        force after rulings.
+ *   6. `Feature Roll Rules Are Sources Like Conditions`:
+ *      - `DerivedFeatureRules.rolls` (Reckless Attack, Danger Sense, Innate
+ *        Sorcery, Rage) enter the same cancellation as condition rules, named
+ *        by their `ClassFeature` id, so a Poisoned barbarian using Reckless
+ *        Attack rolls straight.
+ *      - Feature advantage on saving throws is dropped while the creature is
+ *        Incapacitated (Danger Sense's own exception; Rage ends anyway).
  *
  * EXECUTION LIFECYCLE:
  * --------------------
- *   `resolveAttackRollMode({ attacker, target, distanceFt })`
+ *   `resolveAttackRollMode({ attacker, target, distanceFt, attackerFeatures })`
  *     ├── 1. `resolveConditionEffects` for attacker and target (rulings applied).
  *     ├── 2. Collect attacker-side rules (own attack rolls) and target-side
  *     │      rules (attack rolls against it; Prone depends on distance).
- *     ├── 3. Add caller-provided sources (features, Help, cover...).
- *     └── 4. `combineRollMode` + automatic critical within 5 ft.
+ *     ├── 3. Add feature roll rules of both sides (`featureAdvantageSources`).
+ *     ├── 4. Add caller-provided sources (Help, long range...).
+ *     └── 5. `combineRollMode` + automatic critical within 5 ft.
  * ============================================================================
  */
 
+import type { DerivedFeatureRollRule } from "./classFeatures.ts";
 import type { AbilityId } from "./types.ts";
 
 /** What a `ConditionOverride` ruling targets (engine `OverrideSubject`). */
@@ -236,6 +245,42 @@ export interface ExtraRollSources {
   disadvantage?: readonly string[];
 }
 
+/**
+ * What kind of attack is rolled, for feature rules scoped to one source:
+ * - `"weapon_str"`: weapon attack using Strength (Reckless Attack).
+ * - `"weapon_dex"`: weapon attack using Dexterity.
+ * - `"spell"`: spell attack (Innate Sorcery).
+ */
+export type AttackSource = "weapon_str" | "weapon_dex" | "spell";
+
+/** d20 test a feature roll rule is matched against. */
+export type FeatureRollQuery =
+  | { roll: "attack"; source: AttackSource }
+  | { roll: "attacked" }
+  | { roll: "save"; ability: AbilityId }
+  | { roll: "check"; ability: AbilityId }
+  | { roll: "initiative" }
+  | { roll: "death_save" };
+
+/**
+ * `ClassFeature` ids of the `"advantage"` rules in `rolls` that apply to
+ * `query`: same roll kind, same ability for saves and checks, same source for
+ * attacks. Skill-scoped check rules (Remarkable Athlete) never match a plain
+ * ability check. `minimum_d20` rules (Reliable Talent) are not roll modes.
+ */
+export function featureAdvantageSources(rolls: readonly DerivedFeatureRollRule[] | undefined, query: FeatureRollQuery): string[] {
+  return (rolls ?? [])
+    .filter((rule) => {
+      if (rule.kind !== "advantage" || rule.on.roll !== query.roll) return false;
+      if (rule.on.roll === "attack" && query.roll === "attack") return rule.on.source === query.source;
+      if ((rule.on.roll === "save" || rule.on.roll === "check") && (query.roll === "save" || query.roll === "check")) {
+        return rule.on.ability === query.ability && !("skill" in rule.on && rule.on.skill);
+      }
+      return true;
+    })
+    .map((rule) => rule.featureId);
+}
+
 /** Inputs of `resolveAttackRollMode`. */
 export interface AttackRollContext {
   /** Attacker conditions and rulings. */
@@ -246,7 +291,13 @@ export interface AttackRollContext {
   distanceFt: number;
   /** `true` when the target is the creature grappling the attacker. */
   targetIsGrappler?: boolean;
-  /** Sources from outside conditions. */
+  /** Kind of attack, matched against the attacker's feature rules (none matched when absent). */
+  source?: AttackSource;
+  /** Attacker's `DerivedFeatureRules.rolls` (Reckless Attack, Innate Sorcery). */
+  attackerFeatures?: readonly DerivedFeatureRollRule[];
+  /** Target's `DerivedFeatureRules.rolls` (attacks against a reckless barbarian). */
+  targetFeatures?: readonly DerivedFeatureRollRule[];
+  /** Sources from outside conditions and features. */
   extra?: ExtraRollSources;
 }
 
@@ -280,6 +331,8 @@ export function resolveAttackRollMode(ctx: AttackRollContext): AttackRollResolut
     ...withRule(attacker, "attack_advantage"),
     ...withRule(target, "attacked_with_advantage"),
     ...(within5 ? prone : []),
+    ...(ctx.source ? featureAdvantageSources(ctx.attackerFeatures, { roll: "attack", source: ctx.source }) : []),
+    ...featureAdvantageSources(ctx.targetFeatures, { roll: "attacked" }),
   ];
   const disadvantage = [
     ...withRule(attacker, "attack_disadvantage"),
@@ -299,27 +352,47 @@ export interface SavingThrowResolution extends RollModeResolution {
   autoFail: boolean;
 }
 
-/** Advantage, disadvantage and automatic failure of a saving throw of `ability`. */
+/**
+ * Advantage, disadvantage and automatic failure of a saving throw of
+ * `ability`. `features` are the creature's own feature roll rules (Danger
+ * Sense, Rage); they are ignored while it is Incapacitated (invariant 6).
+ */
 export function resolveSavingThrowMode(
   state: ConditionState,
   ability: AbilityId,
-  extra?: ExtraRollSources
+  extra?: ExtraRollSources,
+  features?: readonly DerivedFeatureRollRule[]
 ): SavingThrowResolution {
   const effects = resolveConditionEffects(state);
   const disadvantage = ability === "dex" ? withRule(effects, "dex_save_disadvantage") : [];
-  return { ...resolution([], disadvantage, extra), autoFail: effects.autoFailSaves.includes(ability) };
+  const advantage = effects.incapacitated ? [] : featureAdvantageSources(features, { roll: "save", ability });
+  return { ...resolution(advantage, disadvantage, extra), autoFail: effects.autoFailSaves.includes(ability) };
 }
 
-/** Advantage and disadvantage of an ability check (skills included, initiative excluded). */
-export function resolveAbilityCheckMode(state: ConditionState, extra?: ExtraRollSources): RollModeResolution {
-  return resolution([], withRule(resolveConditionEffects(state), "check_disadvantage"), extra);
+/**
+ * Advantage and disadvantage of an ability check (skills included, initiative
+ * excluded). `ability` selects the feature rules of `features` that apply (Rage
+ * on Strength checks).
+ */
+export function resolveAbilityCheckMode(
+  state: ConditionState,
+  extra?: ExtraRollSources,
+  features?: readonly DerivedFeatureRollRule[],
+  ability?: AbilityId
+): RollModeResolution {
+  const advantage = ability ? featureAdvantageSources(features, { roll: "check", ability }) : [];
+  return resolution(advantage, withRule(resolveConditionEffects(state), "check_disadvantage"), extra);
 }
 
 /** Advantage and disadvantage of the Initiative roll (a Dexterity check). */
-export function resolveInitiativeMode(state: ConditionState, extra?: ExtraRollSources): RollModeResolution {
+export function resolveInitiativeMode(
+  state: ConditionState,
+  extra?: ExtraRollSources,
+  features?: readonly DerivedFeatureRollRule[]
+): RollModeResolution {
   const effects = resolveConditionEffects(state);
   return resolution(
-    withRule(effects, "initiative_advantage"),
+    [...withRule(effects, "initiative_advantage"), ...featureAdvantageSources(features, { roll: "initiative" })],
     [...withRule(effects, "initiative_disadvantage"), ...withRule(effects, "check_disadvantage")],
     extra
   );
