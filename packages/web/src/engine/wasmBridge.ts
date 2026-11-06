@@ -42,6 +42,7 @@ import initWasm, {
   initSync,
   previewAoeCells as wasmPreviewAoeCells,
   previewMove as wasmPreviewMove,
+  suggestCover as wasmSuggestCover,
 } from "../wasm/trame_engine.js";
 
 export interface Point2D {
@@ -103,7 +104,7 @@ export interface AoeTemplateDto {
   concentration_caster_id?: string | null;
 }
 
-/** Footprint of the token whose move is previewed. Optional fields use engine defaults. */
+/** Footprint of a token (move preview, cover). Optional fields use engine defaults. */
 export interface MoverFootprint {
   /** Current top-left in canvas pixels. */
   topLeft: Point2D;
@@ -129,6 +130,15 @@ export interface MovePreview {
    * doubled, elevation change as a third axis (`max`), doubled while squeezing.
    */
   costFt: number;
+}
+
+/** Cover level suggested from the walls between an attacker and a target. */
+export type CoverLevel = "NONE" | "HALF" | "THREE_QUARTERS" | "TOTAL";
+
+export interface CoverSuggestion {
+  cover: CoverLevel;
+  /** AC and Dexterity save bonus (`0`, `2`, `5`); `null` for `TOTAL` (cannot be targeted). */
+  bonus: number | null;
 }
 
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
@@ -287,6 +297,25 @@ export function previewMove(
     cellSizePx,
     feetPerCell,
     difficultTerrain,
+  });
+}
+
+/**
+ * Suggests the cover `target` has against `attacker` from movement-blocking walls (closed
+ * doors, windows; not open doors or illusions), by the corner-to-corner grid rule. A
+ * suggestion only: the attacker or GM confirms it before it changes AC or a save.
+ */
+export function suggestCover(
+  attacker: MoverFootprint,
+  target: MoverFootprint,
+  walls: WallSegmentDto[],
+  cellSizePx: number,
+): CoverSuggestion {
+  return callEngine(wasmSuggestCover, {
+    walls: toEngineWalls(walls),
+    attacker,
+    target,
+    cellSizePx,
   });
 }
 

@@ -6,7 +6,7 @@
 //! --------
 //! One JSON-in / JSON-out function per engine capability the browser and Node
 //! consumers need: visibility polygon, wall-clipped AoE cells, move preview with
-//! wall collision, sound occlusion count, and `derivedDAG` evaluation (G1: the
+//! wall collision, cover suggestion, sound occlusion count, and `derivedDAG` evaluation (G1: the
 //! single formula evaluator). `lib.rs` wraps each function in a thin
 //! `#[wasm_bindgen]` export; native tests call the same functions directly, so
 //! the shared parity fixtures (`tests/fixtures/wasm_parity.json`) prove that
@@ -34,10 +34,11 @@
 
 use crate::aoe::{AoeTemplate, GridCell};
 use crate::commands::{MovePreview, TableState, TokenState};
+use crate::cover::{CoverLevel, suggest_cover};
 use crate::geometry::{Bvh2D, CHANNEL_ETHEREAL, Point2D, WallSegment, count_sound_occluding_walls};
 use crate::rules::{ActiveEffect, evaluate_actor_attributes};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
@@ -104,10 +105,10 @@ pub fn preview_aoe_cells_json(request_json: &str) -> Result<String, String> {
     to_json(&cells)
 }
 
-/// Footprint of the token being previewed in `preview_move_json`.
+/// Footprint of a token in `preview_move_json` and `suggest_cover_json`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MoverFootprint {
+struct TokenFootprint {
     /// Current top-left position in pixels (`px`).
     top_left: Point2D,
     /// Width in grid cells (default `1`).
@@ -130,6 +131,22 @@ struct MoverFootprint {
     is_ethereal: bool,
 }
 
+impl TokenFootprint {
+    /// A default token (nil id) carrying this footprint.
+    fn to_token(&self) -> TokenState {
+        let mut token = TokenState::new_default(Uuid::nil(), "preview", self.top_left);
+        token.grid_w = self.grid_w;
+        token.grid_h = self.grid_h;
+        token.elevation_ft = self.elevation_ft;
+        token.height_ft = self.height_ft;
+        token.is_squeezing = self.is_squeezing;
+        if self.is_ethereal {
+            token.visibility_channel |= CHANNEL_ETHEREAL;
+        }
+        token
+    }
+}
+
 fn one_cell() -> u8 {
     1
 }
@@ -145,7 +162,7 @@ struct MoveRequest {
     /// Walls checked for movement collision.
     walls: Vec<WallSegment>,
     /// Mover footprint and current position.
-    token: MoverFootprint,
+    token: TokenFootprint,
     /// Destination top-left in pixels (`px`).
     to_top_left: Point2D,
     /// Destination elevation in feet (`ft`); defaults to the current elevation.
@@ -167,18 +184,51 @@ pub fn preview_move_json(request_json: &str) -> Result<String, String> {
     let req: MoveRequest = parse(request_json)?;
     let mut table = TableState::new(req.cell_size_px, req.feet_per_cell, req.walls);
     table.data.difficult_terrain = req.difficult_terrain;
-    let mut token = TokenState::new_default(Uuid::nil(), "preview", req.token.top_left);
-    token.grid_w = req.token.grid_w;
-    token.grid_h = req.token.grid_h;
-    token.elevation_ft = req.token.elevation_ft;
-    token.height_ft = req.token.height_ft;
-    token.is_squeezing = req.token.is_squeezing;
-    if req.token.is_ethereal {
-        token.visibility_channel |= CHANNEL_ETHEREAL;
-    }
+    let token = req.token.to_token();
     let to_elevation_ft = req.to_elevation_ft.unwrap_or(token.elevation_ft);
     let preview: MovePreview = table.preview_move(&token, req.to_top_left, to_elevation_ft);
     to_json(&preview)
+}
+
+/// Request for `suggest_cover_json`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CoverRequest {
+    /// Walls between the two tokens (kinds decide which ones physically block).
+    walls: Vec<WallSegment>,
+    /// Attacker footprint; squeezing shrinks it like on the table.
+    attacker: TokenFootprint,
+    /// Target footprint.
+    target: TokenFootprint,
+    /// Grid cell edge in pixels (`px`, `> 0`).
+    cell_size_px: f64,
+}
+
+/// Response of `suggest_cover_json`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CoverResponse {
+    /// Suggested cover level.
+    cover: CoverLevel,
+    /// AC and Dexterity save bonus (`0`, `2`, `5`); `null` for `TOTAL` cover.
+    bonus: Option<i32>,
+}
+
+/// Cover suggestion (never applied by the engine): `{ walls, attacker, target, cellSizePx }`
+/// -> `{ cover: "NONE" | "HALF" | "THREE_QUARTERS" | "TOTAL", bonus }`, using the
+/// corner-to-corner rule of `cover::suggest_cover`.
+pub fn suggest_cover_json(request_json: &str) -> Result<String, String> {
+    let req: CoverRequest = parse(request_json)?;
+    let cover = suggest_cover(
+        &req.walls,
+        &req.attacker.to_token().spatial_ref(),
+        &req.target.to_token().spatial_ref(),
+        req.cell_size_px,
+    );
+    to_json(&CoverResponse {
+        cover,
+        bonus: cover.bonus(),
+    })
 }
 
 /// Request for `count_sound_occluding_walls_json`.
@@ -243,6 +293,7 @@ pub fn call_export(export: &str, request_json: &str) -> Result<String, String> {
         "computeVisibilityPolygon" => compute_visibility_polygon_json(request_json),
         "previewAoeCells" => preview_aoe_cells_json(request_json),
         "previewMove" => preview_move_json(request_json),
+        "suggestCover" => suggest_cover_json(request_json),
         "countSoundOccludingWalls" => count_sound_occluding_walls_json(request_json),
         "evaluateDerivedDag" => evaluate_derived_dag_json(request_json),
         other => Err(format!("unknown export '{other}'")),

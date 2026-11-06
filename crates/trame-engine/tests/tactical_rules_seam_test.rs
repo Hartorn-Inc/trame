@@ -615,3 +615,124 @@ fn set_disengaged_requires_token_control_and_is_undoable() {
         }
     }
 }
+
+/// Vertical wall at `x` spanning `y0..y1` (pixels) with the given `kind` JSON (full height
+/// unless `top_ft` is set).
+fn vertical_wall(x: f64, y0: f64, y1: f64, kind: Value, top_ft: Option<f64>) -> Value {
+    let mut wall = json!({
+        "id": Uuid::nil(),
+        "a": {"x": x, "y": y0},
+        "b": {"x": x, "y": y1},
+        "kind": kind,
+    });
+    if let Some(top) = top_ft {
+        wall["topElevationFt"] = json!(top);
+    }
+    wall
+}
+
+#[test]
+fn cover_suggestion_counts_blocked_corner_lines() {
+    struct Case {
+        id: &'static str,
+        walls: Vec<Value>,
+        attacker_elevation_ft: f64,
+        expect_cover: &'static str,
+        expect_bonus: Value,
+    }
+    let normal = || json!({"kind": "NORMAL"});
+    let full_height = |kind: Value| vec![vertical_wall(200.0, -500.0, 500.0, kind, None)];
+    let cases = [
+        Case {
+            id: "open_ground_gives_no_cover",
+            walls: vec![],
+            attacker_elevation_ft: 0.0,
+            expect_cover: "NONE",
+            expect_bonus: json!(0),
+        },
+        Case {
+            id: "wall_over_lower_half_gives_half_cover",
+            walls: vec![vertical_wall(200.0, 50.0, 500.0, normal(), None)],
+            attacker_elevation_ft: 0.0,
+            expect_cover: "HALF",
+            expect_bonus: json!(2),
+        },
+        Case {
+            id: "arrow_slit_gives_three_quarters_cover",
+            walls: vec![
+                vertical_wall(200.0, -500.0, 40.0, normal(), None),
+                vertical_wall(200.0, 60.0, 500.0, normal(), None),
+            ],
+            attacker_elevation_ft: 0.0,
+            expect_cover: "THREE_QUARTERS",
+            expect_bonus: json!(5),
+        },
+        Case {
+            id: "full_wall_gives_total_cover",
+            walls: full_height(normal()),
+            attacker_elevation_ft: 0.0,
+            expect_cover: "TOTAL",
+            expect_bonus: Value::Null,
+        },
+        Case {
+            id: "closed_door_gives_total_cover",
+            walls: full_height(json!({"kind": "DOOR", "is_open": false, "is_locked": false})),
+            attacker_elevation_ft: 0.0,
+            expect_cover: "TOTAL",
+            expect_bonus: Value::Null,
+        },
+        Case {
+            id: "open_door_gives_no_cover",
+            walls: full_height(json!({"kind": "DOOR", "is_open": true, "is_locked": false})),
+            attacker_elevation_ft: 0.0,
+            expect_cover: "NONE",
+            expect_bonus: json!(0),
+        },
+        Case {
+            id: "window_glass_gives_total_cover",
+            walls: full_height(json!({"kind": "WINDOW"})),
+            attacker_elevation_ft: 0.0,
+            expect_cover: "TOTAL",
+            expect_bonus: Value::Null,
+        },
+        Case {
+            id: "illusion_gives_no_cover",
+            walls: full_height(json!({"kind": "ILLUSION", "pierced_by_truesight": true})),
+            attacker_elevation_ft: 0.0,
+            expect_cover: "NONE",
+            expect_bonus: json!(0),
+        },
+        Case {
+            id: "flying_attacker_shoots_over_low_wall",
+            walls: vec![vertical_wall(200.0, -500.0, 500.0, normal(), Some(10.0))],
+            attacker_elevation_ft: 30.0,
+            expect_cover: "NONE",
+            expect_bonus: json!(0),
+        },
+    ];
+    for c in cases {
+        let response: Value = serde_json::from_str(
+            &call_export(
+                "suggestCover",
+                &json!({
+                    "walls": c.walls,
+                    "attacker": {
+                        "topLeft": {"x": 0.0, "y": 0.0},
+                        "elevationFt": c.attacker_elevation_ft,
+                    },
+                    "target": { "topLeft": {"x": 300.0, "y": 0.0} },
+                    "cellSizePx": 100.0,
+                })
+                .to_string(),
+            )
+            .unwrap_or_else(|e| panic!("case {}: {e}", c.id)),
+        )
+        .unwrap();
+        assert_eq!(
+            response,
+            json!({ "cover": c.expect_cover, "bonus": c.expect_bonus }),
+            "case {}",
+            c.id
+        );
+    }
+}

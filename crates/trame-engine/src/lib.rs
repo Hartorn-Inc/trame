@@ -32,7 +32,7 @@
 //! EXECUTION LIFECYCLE:
 //! --------------------
 //!   JS `computeVisibilityPolygon(requestJson)` (likewise `previewAoeCells`,
-//!   `previewMove`, `countSoundOccludingWalls`, `evaluateDerivedDag`)
+//!   `previewMove`, `suggestCover`, `countSoundOccludingWalls`, `evaluateDerivedDag`)
 //!     ├── 1. `#[wasm_bindgen]` wrapper below forwards to `wasm_api::*_json`.
 //!     ├── 2. Deserialize the camelCase request (walls, template, token...).
 //!     ├── 3. Run the same engine code the server uses.
@@ -41,6 +41,7 @@
 
 pub mod aoe;
 pub mod commands;
+pub mod cover;
 pub mod geometry;
 pub mod movement;
 pub mod rules;
@@ -52,6 +53,7 @@ pub use crate::commands::{
     ReactionPrompt, ReactionPromptCloseReason, RefundableResource, SceneActivation, TableMode,
     TableSnapshotData, TableState, TokenState, TrameCommand, TrameEvent, UndoEntry,
 };
+pub use crate::cover::CoverLevel;
 pub use crate::geometry::{Bvh2D, Point2D, SenseProfile, WallKind, WallSegment};
 pub use crate::rules::{
     ActiveEffect, AttributeModifier, DEATH_SAVE_FAILURES_TO_DIE, DamageAffinity, DamageResolution,
@@ -83,6 +85,13 @@ pub fn preview_aoe_cells(request_json: &str) -> Result<String, JsError> {
 #[wasm_bindgen(js_name = previewMove)]
 pub fn preview_move(request_json: &str) -> Result<String, JsError> {
     into_js(wasm_api::preview_move_json(request_json))
+}
+
+/// Cover a target has against an attacker, as a suggestion only. Request/response shapes:
+/// `wasm_api::suggest_cover_json`.
+#[wasm_bindgen(js_name = suggestCover)]
+pub fn suggest_cover(request_json: &str) -> Result<String, JsError> {
+    into_js(wasm_api::suggest_cover_json(request_json))
 }
 
 /// Number of sound-blocking walls between an emitter and a listener. Request/response shapes:

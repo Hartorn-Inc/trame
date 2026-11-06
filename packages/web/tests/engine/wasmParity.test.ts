@@ -12,6 +12,7 @@ type ExportName =
   | "computeVisibilityPolygon"
   | "previewAoeCells"
   | "previewMove"
+  | "suggestCover"
   | "countSoundOccludingWalls"
   | "evaluateDerivedDag";
 

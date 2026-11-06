@@ -1099,5 +1099,135 @@
     "request": {
       "walls": []
     }
+  },
+  {
+    "expected": {
+      "ok": {
+        "bonus": 2,
+        "cover": "HALF"
+      }
+    },
+    "export": "suggestCover",
+    "id": "cover_half_from_partial_wall",
+    "request": {
+      "attacker": {
+        "topLeft": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      "cellSizePx": 100,
+      "target": {
+        "topLeft": {
+          "x": 300,
+          "y": 0
+        }
+      },
+      "walls": [
+        {
+          "a": {
+            "x": 200,
+            "y": 50
+          },
+          "b": {
+            "x": 200,
+            "y": 500
+          },
+          "id": "00000000-0000-0000-0000-000000000001",
+          "wallType": "Normal"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "bonus": 5,
+        "cover": "THREE_QUARTERS"
+      }
+    },
+    "export": "suggestCover",
+    "id": "cover_three_quarters_through_arrow_slit_large_target",
+    "request": {
+      "attacker": {
+        "topLeft": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      "cellSizePx": 100,
+      "target": {
+        "gridH": 2,
+        "gridW": 2,
+        "topLeft": {
+          "x": 300,
+          "y": -50
+        }
+      },
+      "walls": [
+        {
+          "a": {
+            "x": 200,
+            "y": -500
+          },
+          "b": {
+            "x": 200,
+            "y": 40
+          },
+          "id": "00000000-0000-0000-0000-000000000001"
+        },
+        {
+          "a": {
+            "x": 200,
+            "y": 60
+          },
+          "b": {
+            "x": 200,
+            "y": 500
+          },
+          "id": "00000000-0000-0000-0000-000000000002"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "bonus": 0,
+        "cover": "NONE"
+      }
+    },
+    "export": "suggestCover",
+    "id": "cover_open_door_is_no_cover",
+    "request": {
+      "attacker": {
+        "topLeft": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      "cellSizePx": 100,
+      "target": {
+        "topLeft": {
+          "x": 300,
+          "y": 0
+        }
+      },
+      "walls": [
+        {
+          "a": {
+            "x": 200,
+            "y": -500
+          },
+          "b": {
+            "x": 200,
+            "y": 500
+          },
+          "doorState": "Open",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "wallType": "Door"
+        }
+      ]
+    }
   }
 ]
