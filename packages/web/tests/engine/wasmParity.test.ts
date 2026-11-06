@@ -1,12 +1,17 @@
 /**
  * WASM half of the Rust/WASM parity check: every case in the shared fixture file is run through
  * the Node build of `trame-engine` and must equal the outcome recorded by the native Rust test
- * (`crates/trame-engine/tests/wasm_parity_test.rs`), bit for bit.
+ * (`crates/trame-engine/tests/wasm_parity_test.rs`), bit for bit. The `conditionEffects` cases
+ * are also run through the dnd5e TypeScript resolver, which must reach the same values.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import * as engine from "../../../trame-engine-node/trame_engine.js";
+import {
+  resolveConditionEffects,
+  type ConditionState,
+} from "../../../game-systems/dnd5e/src/conditions.ts";
 
 type ExportName =
   | "computeVisibilityPolygon"
@@ -14,7 +19,8 @@ type ExportName =
   | "previewMove"
   | "suggestCover"
   | "countSoundOccludingWalls"
-  | "evaluateDerivedDag";
+  | "evaluateDerivedDag"
+  | "conditionEffects";
 
 interface ParityCase {
   id: string;
@@ -46,6 +52,31 @@ describe("trame-engine WASM (Node target) matches native Rust parity fixtures", 
   for (const c of cases) {
     it(c.id, () => {
       assert.deepStrictEqual(outcome(c), c.expected);
+    });
+  }
+});
+
+describe("dnd5e condition effects agree with the engine on the shared fixtures", () => {
+  const conditionCases = cases.filter((c) => c.export === "conditionEffects");
+
+  it("has condition effect fixtures", () => {
+    assert.ok(conditionCases.length > 0);
+  });
+
+  for (const c of conditionCases) {
+    it(c.id, () => {
+      const ts = resolveConditionEffects(c.request as ConditionState);
+      assert.deepStrictEqual(
+        {
+          ok: {
+            effectiveConditions: ts.effectiveConditions,
+            incapacitated: ts.incapacitated,
+            resistsAllDamage: ts.resistsAllDamage,
+            speedZero: ts.speedZero,
+          },
+        },
+        c.expected,
+      );
     });
   }
 });

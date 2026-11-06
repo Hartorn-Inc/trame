@@ -155,7 +155,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ConditionOverride
 
-- **Definition**: Game Master-only `TrameCommand` that forces or removes any `Condition` or `ActiveEffect` on a `LinkedActorToken` or `SyntheticToken`. It always wins over automated condition effects and pushes an `UndoEntry`.
+- **Definition**: Game Master-only `TrameCommand` that forces or removes any `Condition` or `ActiveEffect` on a `LinkedActorToken` or `SyntheticToken`. It always wins over automated condition effects and pushes an `UndoEntry`. Effect rulings name one automated rule of one condition as `<condition>.<rule>` (for example `grappled.speed_zero`, `paralyzed.auto_crit_within_5ft`).
 - **Allowed Context**: Game Master rulings on condition edge cases and the condition picker override control.
 - **_Avoid_**: ForceCondition, ManualStatus, ConditionHack.
 

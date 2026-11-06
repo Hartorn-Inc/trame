@@ -48,6 +48,7 @@
  *     ├── 1. Map the actor to the `derivedInputs` record (`level`, scores, flags).
  *     │      Equipped armor and shields override the armor inputs (`derivations.ts`).
  *     ├── 2. `evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, activeEffects)` (WASM).
+ *     │      `ConditionOverride` rulings (options) can suspend exhaustion first.
  *     ├── 3. Project the evaluated attributes onto `Dnd5eDerivedStats`.
  *     └── 4. Add `attacks`, `spells` and `features` (`derivations.ts`) from the
  *            evaluated values; Magic Initiate abilities re-run the DAG.
@@ -74,6 +75,7 @@ import {
   equippedArmorInputs,
 } from "./derivations.ts";
 import { getClassProgression } from "./progression.ts";
+import { resolveConditionEffects, type ConditionOverrideRuling } from "./conditions.ts";
 
 /**
  * Symbolic proficiency tier string used on `Dnd5eActorSheet`:
@@ -304,6 +306,16 @@ export function calculateProficiencyBonus(level: number): number {
   ).prof_bonus;
 }
 
+/** Optional inputs of `computeDnd5eSheetDerived` beyond the actor and its active effects. */
+export interface SheetDerivationOptions {
+  /**
+   * `ConditionOverride` rulings on the actor's token. They decide
+   * `conditionEffects`; a `REMOVE` ruling on `exhaustion` evaluates the DAG
+   * with exhaustion `0`.
+   */
+  conditionOverrides?: readonly ConditionOverrideRuling[];
+}
+
 /**
  * Computes every derived D&D 5e statistic—proficiency bonus, ability modifiers,
  * saving throws, skills, passive senses, Armor Class, speed (`ft`), spell save
@@ -323,9 +335,15 @@ export function calculateProficiencyBonus(level: number): number {
  */
 export function computeDnd5eSheetDerived(
   actor: Dnd5eActorData | Dnd5eActorSheet,
-  activeEffects?: unknown[]
+  activeEffects?: unknown[],
+  options: SheetDerivationOptions = {}
 ): Dnd5eDerivedStats {
   const inputs = "attributes" in actor ? derivedInputsForActorData(actor) : derivedInputsForSheet(actor);
+  const conditionEffects = resolveConditionEffects({
+    conditions: (actor.conditions ?? []).map((c) => (typeof c === "string" ? c : c.id)),
+    overrides: options.conditionOverrides,
+  });
+  if (!conditionEffects.exhaustionApplies) inputs.exhaustion = 0;
   const v = evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, activeEffects);
 
   let extras: Pick<Dnd5eDerivedStats, "attacks" | "spells" | "features">;
@@ -373,6 +391,7 @@ export function computeDnd5eSheetDerived(
       encumbered: v.encumbered,
     },
     ...extras,
+    conditionEffects,
   };
 }
 

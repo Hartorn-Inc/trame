@@ -40,6 +40,12 @@
  *      - `ActionDefinition.attackBonus` / `saveDc` (a weapon's own bonus, a
  *        monster ability's DC) override the actor's generic spell attack
  *        bonus and spell save DC.
+ *   7. `Conditions Shape Rolls` (D13):
+ *      - Attacker and target conditions, after `ConditionOverride` rulings,
+ *        set advantage / disadvantage (any of each cancels), auto-fail STR
+ *        and DEX saves, make hits from within 5 ft on Paralyzed or
+ *        Unconscious targets critical, and give Petrified creatures
+ *        resistance to all damage (`conditions.ts`).
  *
  * EXECUTION LIFECYCLE:
  * --------------------
@@ -60,12 +66,22 @@ import type {
   DerivedFeature,
   DerivedSpellcasting,
   Dnd5eActorData,
+  MitigationLevel,
   ProficiencyRank,
   SkillId,
   TurnTrigger,
 } from "./types.ts";
 import { computeDnd5eSheetDerived, type ProficiencyRankString } from "./manifest.ts";
 import { decrementConditionDurations } from "./progression.ts";
+import {
+  keptD20,
+  resolveAttackRollMode,
+  resolveConditionEffects,
+  resolveSavingThrowMode,
+  type ConditionEffects,
+  type ConditionOverrideRuling,
+  type RollMode,
+} from "./conditions.ts";
 
 export { computeDnd5eSheetDerived, decrementConditionDurations };
 
@@ -235,6 +251,12 @@ export interface Dnd5eDerivedStats {
   spells?: DerivedSpellcasting;
   /** Class, subclass, species, background and feat features with their level. */
   features?: DerivedFeature[];
+  /**
+   * Condition effects in force after the `ConditionOverride` rulings passed to
+   * `computeDnd5eSheetDerived` (`speedZero` means the creature cannot move;
+   * `speed` stays the walking speed so lifting the condition restores it).
+   */
+  conditionEffects?: ConditionEffects;
 }
 
 /**
@@ -286,6 +308,18 @@ export interface DamageInstance {
 export interface DamagePipelineOptions {
   /** When true, damage dealt to an actor already at `0` HP inflicts `2` death save failures instead of `1`. */
   isCritical?: boolean;
+  /** Game Master `ConditionOverride` rulings on the actor's token (Petrified resistance). */
+  conditionOverrides?: readonly ConditionOverrideRuling[];
+}
+
+/**
+ * Mitigation of one damage type after condition rules: resistance to all
+ * damage (Petrified) makes `NONE` resistant and cancels a vulnerability, like
+ * the engine's `damage_affinity_for`.
+ */
+function mitigationWithConditions(base: MitigationLevel, effects: ConditionEffects): MitigationLevel {
+  if (!effects.resistsAllDamage || base === "IMMUNE" || base === "RESISTANT") return base;
+  return base === "VULNERABLE" ? "NONE" : "RESISTANT";
 }
 
 /**
@@ -346,9 +380,13 @@ export function resolveDamagePipeline(
 ): DamageResolutionResult {
   const clone: Dnd5eActorData = JSON.parse(JSON.stringify(actor));
 
+  const conditionEffects = resolveConditionEffects({
+    conditions: clone.conditions.map((c) => c.id),
+    overrides: options.conditionOverrides,
+  });
   let totalMitigatedDamage = 0;
   for (const instance of damageInstances) {
-    const mitigation = clone.damageMitigations?.[instance.type] ?? "NONE";
+    const mitigation = mitigationWithConditions(clone.damageMitigations?.[instance.type] ?? "NONE", conditionEffects);
     let instanceAmount = Math.max(0, instance.amount);
     if (mitigation === "IMMUNE") {
       instanceAmount = 0;
@@ -606,6 +644,17 @@ export interface TargetResolutionInput {
   saveD20Roll?: number;
   /** When true, spends `1` charge of `legendary_resistance` if available to turn a failed save into a success. */
   useLegendaryResistanceIfFailed?: boolean;
+  /**
+   * Both natural d20s when the roll has advantage or disadvantage; the kept one
+   * follows the condition roll mode. Falls back to `attackD20Roll` / `saveD20Roll`.
+   */
+  attackD20Rolls?: readonly [number, number];
+  /** Both natural d20s of the saving throw (see `attackD20Rolls`). */
+  saveD20Rolls?: readonly [number, number];
+  /** Attacker-to-target distance in feet (`ft`, default `5`) for Prone and automatic critical hits. */
+  distanceFt?: number;
+  /** Game Master `ConditionOverride` rulings on the target token. */
+  overrides?: readonly ConditionOverrideRuling[];
 }
 
 /**
@@ -624,6 +673,12 @@ export interface TargetResolutionOutcome {
   remainingHp: number;
   /** Condition applied to the target on hit/failed save, if any. */
   appliedCondition?: string;
+  /** Roll mode of the attack roll or saving throw after condition rules (`"normal"` for auto-hit). */
+  rollMode: RollMode;
+  /** True when the hit was a critical hit (natural 20 or a condition's automatic critical). */
+  criticalHit: boolean;
+  /** True when the saving throw failed automatically (Paralyzed, Petrified, Stunned, Unconscious). */
+  autoFailedSave: boolean;
 }
 
 /**
@@ -633,12 +688,18 @@ export interface TargetResolutionOutcome {
  * and Legendary Resistance, deducting Temporary/Current HP, and applying failure
  * conditions. The action's own `attackBonus` / `saveDc` take precedence over
  * the actor's spell attack bonus / spell save DC.
+ *
+ * Conditions on the attacker and each target (after `ConditionOverride`
+ * rulings) set the roll mode with SRD cancellation, auto-fail Strength and
+ * Dexterity saves, and turn a hit from within 5 ft on a Paralyzed or
+ * Unconscious target into a critical hit (`conditions.ts`).
  */
 export function resolveActionPipeline(
   actor: Dnd5eActorSheet,
   action: ActionDefinition,
   targets: TargetResolutionInput[],
-  castSlotLevel?: number
+  castSlotLevel?: number,
+  attackerOverrides: readonly ConditionOverrideRuling[] = []
 ): TargetResolutionOutcome[] {
   if (action.resourceCostId) {
     const res = actor.resources[action.resourceCostId];
@@ -669,18 +730,30 @@ export function resolveActionPipeline(
     let hitOrFailedSave = true;
     let usedLegendaryResistance = false;
     let isCriticalHit = false;
+    let rollMode: RollMode = "normal";
+    let autoFailedSave = false;
+    const targetState = { conditions: item.target.conditions, overrides: item.overrides };
 
     if (action.resolutionKind === "attack_roll") {
-      const d20 = item.attackD20Roll ?? 10;
-      isCriticalHit = d20 === 20;
+      const roll = resolveAttackRollMode({
+        attacker: { conditions: actor.conditions, overrides: attackerOverrides },
+        target: targetState,
+        distanceFt: item.distanceFt ?? 5,
+      });
+      rollMode = roll.mode;
+      const d20 = keptD20(rollMode, item.attackD20Rolls ?? [item.attackD20Roll ?? 10]);
       const isAutoMiss = d20 === 1;
       const totalAttack = d20 + attackBonus;
-      hitOrFailedSave = !isAutoMiss && (isCriticalHit || totalAttack >= targetDerived.armorClass);
+      hitOrFailedSave = !isAutoMiss && (d20 === 20 || totalAttack >= targetDerived.armorClass);
+      isCriticalHit = hitOrFailedSave && (d20 === 20 || roll.autoCritical);
     } else if (action.resolutionKind === "saving_throw") {
       const saveAb = action.saveAbility ?? "dex";
-      const d20 = item.saveD20Roll ?? 10;
+      const save = resolveSavingThrowMode(targetState, saveAb);
+      rollMode = save.mode;
+      autoFailedSave = save.autoFail;
+      const d20 = keptD20(rollMode, item.saveD20Rolls ?? [item.saveD20Roll ?? 10]);
       const totalSave = d20 + targetDerived.savingThrows[saveAb];
-      hitOrFailedSave = totalSave < saveDc;
+      hitOrFailedSave = autoFailedSave || totalSave < saveDc;
 
       if (hitOrFailedSave && item.useLegendaryResistanceIfFailed) {
         const legRes = item.target.resources.legendary_resistance;
@@ -719,6 +792,9 @@ export function resolveActionPipeline(
       damageApplied,
       remainingHp: item.target.hpCurrent,
       appliedCondition,
+      rollMode,
+      criticalHit: isCriticalHit,
+      autoFailedSave,
     });
   }
 
