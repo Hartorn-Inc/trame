@@ -5,8 +5,9 @@
  *
  * PURPOSE:
  * -----
- * Accessible six-step dialog over `CharacterBuilderWizard` (species, class,
- * background, ability scores, equipment, review). On confirm it creates the
+ * Accessible eight-step dialog over `CharacterBuilderWizard` (species, class,
+ * background, ability scores, class skills, equipment, spells, review). On
+ * confirm it creates the
  * actor with `POST /api/v1/campaigns/{id}/actors`, reusing the sheet id as the
  * actor id so the token link and the sheet stay one identity.
  *
@@ -22,6 +23,10 @@
  * 3. `Single Submission`:
  *    - The create button is inert while the request is in flight, so a double
  *      click cannot create two actors.
+ * 4. `Class Picks Capped In The UI`:
+ *    - Multi-pick class choices (skills, cantrips, spells) are checkboxes
+ *      that disable the unpicked options once `count` are chosen, with a
+ *      polite "n of count chosen" status; single picks are radios.
  * ============================================================================
  */
 import { h, type ComponentChildren, type VNode } from 'preact';
@@ -32,6 +37,8 @@ import {
   SRD_SPECIES,
   type AbilityId,
   type BackgroundId,
+  type BuilderChoice,
+  type BuilderChoiceOption,
   type SrdClassId,
   type SrdSpeciesId,
 } from '../../../game-systems/dnd5e/src/index.ts';
@@ -288,15 +295,63 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
     );
   };
 
+  const optionLabel = (choice: BuilderChoice, option: BuilderChoiceOption) =>
+    choice.kind === 'skill' ? t(`skill.${option.id}` as MessageKey) : option.label;
+
+  /** One class choice: radios for a single pick, else checkboxes capped at `count` (invariant 4). */
+  const renderChoice = (choice: BuilderChoice) => {
+    const picked = wizard.getClassSelection(choice.id);
+    const full = picked.length >= choice.count;
+    const legend = choice.kind === 'equipment_option'
+      ? t('builder.choice.classEquipment')
+      : t(`builder.choice.${choice.id}` as MessageKey, { count: choice.count });
+    if (choice.count === 1) {
+      return fieldset(legend, choice.options.map((option) =>
+        radio(`class-${choice.id}`, option.id, picked.includes(option.id), () => wizard.toggleClassOption(choice.id, option.id),
+          choice.kind === 'equipment_option' ? t('builder.equipment.classOption', { id: option.id }) : optionLabel(choice, option),
+          choice.kind === 'equipment_option' ? option.label : undefined)));
+    }
+    return fieldset(legend, [
+      h('p', { key: 'count', class: 'ds-meta', 'aria-live': 'polite', 'data-testid': `builder-${choice.id}-count` },
+        t('builder.choice.picked', { picked: picked.length, count: choice.count })),
+      ...choice.options.map((option) => {
+        const checked = picked.includes(option.id);
+        return h(
+          'label',
+          { key: option.id, class: cx('ds-choice', checked && 'is-selected') },
+          h('input', {
+            type: 'checkbox',
+            checked,
+            disabled: !checked && full,
+            'data-testid': `builder-${choice.id}-${option.id}`,
+            onChange: () => wizard.toggleClassOption(choice.id, option.id),
+          }),
+          h('span', { class: 'ds-value' }, optionLabel(choice, option)),
+        );
+      }),
+    ]);
+  };
+
+  const renderSkills = () => h('div', { class: 'ds-stack' }, wizard.choicesForStep('skills').map(renderChoice));
+
+  const renderSpells = () => {
+    const choices = wizard.choicesForStep('spells');
+    return h('div', { class: 'ds-stack' }, choices.length
+      ? choices.map(renderChoice)
+      : h('p', { class: 'ds-hint', 'data-testid': 'builder-no-spells' }, t('builder.spells.none')));
+  };
+
   const renderEquipment = () => {
     const background = draft.backgroundId ? BACKGROUNDS[draft.backgroundId as BackgroundId] : undefined;
     const packageItems = background ? [...background.equipment] : [];
     const isGold = draft.equipmentIds.length === 1 && draft.equipmentIds[0] === GOLD_OPTION;
-    return fieldset(t('builder.equipment.legend'), [
-      radio('equipment', 'package', draft.equipmentIds.length > 0 && !isGold, () => wizard.setEquipment(packageItems),
-        t('builder.equipment.package'), packageItems.join(', ')),
-      radio('equipment', 'gold', isGold, () => wizard.setEquipment([GOLD_OPTION]), t('builder.equipment.gold')),
-    ]);
+    return h('div', { class: 'ds-stack' },
+      wizard.choicesForStep('equipment').map(renderChoice),
+      fieldset(t('builder.equipment.legend'), [
+        radio('equipment', 'package', draft.equipmentIds.length > 0 && !isGold, () => wizard.setEquipment(packageItems),
+          t('builder.equipment.package'), packageItems.join(', ')),
+        radio('equipment', 'gold', isGold, () => wizard.setEquipment([GOLD_OPTION]), t('builder.equipment.gold')),
+      ]));
   };
 
   const renderReview = () =>
@@ -335,7 +390,9 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
     class: renderClass,
     background: renderBackground,
     abilityScores: renderAbilities,
+    skills: renderSkills,
     equipment: renderEquipment,
+    spells: renderSpells,
     review: renderReview,
   };
 

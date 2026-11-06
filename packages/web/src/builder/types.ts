@@ -2,14 +2,18 @@ import type { BackgroundAbilityChoice } from "../../../game-systems/dnd5e/src/in
 
 /**
  * Wizard steps in SRD 5.2.1 (2024) creation order: species, class, background
- * (ability increases + origin feat), base ability scores, equipment, review.
+ * (ability increases + origin feat), base ability scores, class skills (and
+ * tools), equipment (background and class options), spells (cantrips and
+ * level-1 spells; empty for non-casters), review.
  */
 export type BuilderStep =
   | "species"
   | "class"
   | "background"
   | "abilityScores"
+  | "skills"
   | "equipment"
+  | "spells"
   | "review";
 
 export const BUILDER_STEPS: readonly BuilderStep[] = [
@@ -17,7 +21,9 @@ export const BUILDER_STEPS: readonly BuilderStep[] = [
   "class",
   "background",
   "abilityScores",
+  "skills",
   "equipment",
+  "spells",
   "review",
 ] as const;
 
@@ -68,7 +74,13 @@ export interface CharacterDraft {
   /** Base scores before background increases. */
   abilityScores: AbilityScores;
   abilityGenerationMethod: AbilityGenerationMethod;
+  /** Background equipment: option A item names, or `["50 GP"]` (option B). */
   equipmentIds: string[];
+  /**
+   * Class picks keyed by `getClassChoices` id (`skills`, `tools`,
+   * `equipment` option id, `cantrips`, `spells`); reset when the class changes.
+   */
+  classSelections: Record<string, string[]>;
 }
 
 export interface StepValidationResult {
@@ -96,6 +108,7 @@ export function createDefaultDraft(overrides?: Partial<CharacterDraft>): Charact
     abilityScores: createDefaultAbilityScores(),
     abilityGenerationMethod: "pointBuy",
     equipmentIds: [],
+    classSelections: {},
     ...overrides,
   };
 }
