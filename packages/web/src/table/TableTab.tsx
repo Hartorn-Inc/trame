@@ -6,7 +6,8 @@
  * PURPOSE:
  * -----
  * Composes the live table: GM toolbar, combat tracker, reaction prompts,
- * board, selected-token vitals, and dice tray (the sheet/compendium drawers
+ * board, selected-token vitals, conditions and cover suggestion, and dice
+ * tray (the sheet/compendium drawers
  * are mounted by the workspace). Each child reads the session signals itself;
  * this module only lays them out.
  *
@@ -29,6 +30,8 @@ import { DiceTray } from './DiceTray.tsx';
 import { GmOverrideToolbar } from './GmOverrideToolbar.tsx';
 import { ReactionBanner } from './ReactionBanner.tsx';
 import { TableCanvas } from './TableCanvas.tsx';
+import { CoverSuggestionPanel } from './CoverSuggestionPanel.tsx';
+import { TokenConditionsPanel } from './TokenConditionsPanel.tsx';
 import { TokenVitalsPanel } from './TokenVitalsPanel.tsx';
 
 export interface TableTabProps {
@@ -54,7 +57,9 @@ export function TableTab({ campaignId, client, isGm }: TableTabProps) {
         <TableCanvas campaignId={campaignId} client={client} isGm={isGm} />
       </div>
       <aside class="ds-stack-sm ds-table-side" aria-label={t('table.sidebar')}>
-        <TokenVitalsPanel client={client} />
+        <TokenVitalsPanel client={client} isGm={isGm} />
+        <TokenConditionsPanel client={client} isGm={isGm} />
+        <CoverSuggestionPanel client={client} />
         <DiceTray client={client} />
         <button
           type="button"

@@ -1,0 +1,539 @@
+import assert from "node:assert/strict";
+import { beforeEach, describe, it } from "node:test";
+import { h } from "preact";
+import { selectedActorIdSignal, selectedTokenIdSignal } from "../../src/api/session.ts";
+import type { WireWallSegment } from "../../src/api/wire.ts";
+import { CommandFeedbackToasts, rejectionReason } from "../../src/components/RoomConnectionFeedback.tsx";
+import { localeSignal } from "../../src/i18n/index.ts";
+import { acceptedCoverSignal, CoverSuggestionPanel, targetTokenIdSignal } from "../../src/table/CoverSuggestionPanel.tsx";
+import { ReactionBanner } from "../../src/table/ReactionBanner.tsx";
+import { TableCanvas } from "../../src/table/TableCanvas.tsx";
+import { deathSavePhase, listTableTokens } from "../../src/table/tableView.ts";
+import { TokenConditionsPanel } from "../../src/table/TokenConditionsPanel.tsx";
+import { TokenVitalsPanel } from "../../src/table/TokenVitalsPanel.tsx";
+import { CAMPAIGN, GM_ID, GOBLIN, HERO, PLAYER_ID, fullToken, liveTable, mount, publicToken, tableState } from "../helpers/liveTable.ts";
+import { assertAbsent, assertPresent } from "../helpers/domAssert.ts";
+import { setupMockDom } from "../helpers/mockDom.ts";
+
+setupMockDom();
+localeSignal.value = "en";
+
+const SCENE = "eeeeeeee-0000-4000-8000-000000000001";
+const DOOR = "dddddddd-0000-4000-8000-000000000001";
+const PROMPT = "bbbbbbbb-0000-4000-8000-000000000001";
+
+const door = (isOpen: boolean, isLocked: boolean): WireWallSegment => ({
+  id: DOOR,
+  a: { x: 300, y: 0 },
+  b: { x: 300, y: 100 },
+  kind: { kind: "DOOR", is_open: isOpen, is_locked: isLocked },
+  blocks_movement: !isOpen,
+  blocks_vision: !isOpen,
+  blocks_light: !isOpen,
+  blocks_sound: !isOpen,
+  bottom_elevation_ft: -1000,
+  top_elevation_ft: 1000,
+});
+
+const wallBetween: WireWallSegment = {
+  id: DOOR,
+  a: { x: 0, y: 200 },
+  b: { x: 1000, y: 200 },
+  kind: { kind: "NORMAL" },
+  blocks_movement: true,
+  blocks_vision: true,
+  blocks_light: true,
+  blocks_sound: true,
+  bottom_elevation_ft: -1000,
+  top_elevation_ft: 1000,
+};
+
+const heroToken = (overrides = {}) => fullToken(HERO, "Brakka", { owner_user_id: PLAYER_ID, top_left: { x: 100, y: 50 }, hp: 12, max_hp: 13, ...overrides });
+
+const gmView = (overrides = {}, hero = {}, goblin = {}) =>
+  tableState({
+    tokens: { [HERO]: heroToken(hero), [GOBLIN]: fullToken(GOBLIN, "Goblin", { top_left: { x: 200, y: 300 }, hp: 7, max_hp: 7, ...goblin }) },
+    ...overrides,
+  });
+
+const playerView = (overrides = {}, hero = {}) =>
+  tableState({
+    tokens: { [HERO]: heroToken(hero) },
+    public_tokens: { [GOBLIN]: publicToken(GOBLIN, "Goblin", { top_left: { x: 200, y: 300 } }) },
+    ...overrides,
+  });
+
+const viewer = (role: "GM" | "player") => (role === "GM" ? { userId: GM_ID, isGm: true } : { userId: PLAYER_ID, isGm: false });
+
+/** Places the board at client (10, 20) so board points are `client - (10, 20)` at 100% zoom. */
+function pinBoard(ui: ReturnType<typeof mount>): void {
+  ui.byTestId("table-board").getBoundingClientRect = () => ({ left: 10, top: 20 });
+}
+
+beforeEach(() => {
+  selectedTokenIdSignal.value = null;
+  selectedActorIdSignal.value = null;
+  targetTokenIdSignal.value = null;
+  acceptedCoverSignal.value = null;
+});
+
+describe("TableCanvas: door handles", () => {
+  const cases = [
+    { id: "GM opens a locked door", role: "GM", open: false, locked: true, enabled: true, expected: [{ cmd: "TOGGLE_DOOR", wall_id: DOOR, is_open: true }] },
+    { id: "player opens an unlocked closed door", role: "player", open: false, locked: false, enabled: true, expected: [{ cmd: "TOGGLE_DOOR", wall_id: DOOR, is_open: true }] },
+    { id: "player closes an open door", role: "player", open: true, locked: false, enabled: true, expected: [{ cmd: "TOGGLE_DOOR", wall_id: DOOR, is_open: false }] },
+    { id: "player cannot toggle a locked door", role: "player", open: false, locked: true, enabled: false, expected: [] },
+  ] as const;
+  for (const c of cases) {
+    it(c.id, () => {
+      const { userId, isGm } = viewer(c.role);
+      const live = liveTable(userId, (isGm ? gmView : playerView)({ walls: [door(c.open, c.locked)] }));
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm }));
+      const handle = ui.byTestId(`door-${DOOR}`);
+      assert.equal(handle.disabled, !c.enabled);
+      assert.equal(handle.getAttribute("aria-pressed"), String(c.open));
+      ui.click(`door-${DOOR}`);
+      assert.deepEqual(live.commands(), c.expected);
+      ui.unmount();
+    });
+  }
+
+  it("the door label names its state in words, not colour alone", () => {
+    const live = liveTable(PLAYER_ID, playerView({ walls: [door(false, true)] }));
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+    assert.equal(ui.byTestId(`door-${DOOR}`).getAttribute("aria-label"), "Door, closed, locked");
+    ui.unmount();
+  });
+});
+
+describe("TableCanvas: token actions menu", () => {
+  const entries = [
+    { id: "GM gets every entry on an NPC", role: "GM", token: GOBLIN, present: ["disengage", "visibility", "teleport", "speed", "remove"], absent: [] },
+    { id: "player gets only Disengage on their own token", role: "player", token: HERO, present: ["disengage"], absent: ["visibility", "teleport", "speed", "remove"] },
+    { id: "player gets no action on a public token", role: "player", token: GOBLIN, present: [], absent: ["disengage", "visibility", "teleport", "remove"] },
+  ] as const;
+  for (const c of entries) {
+    it(c.id, () => {
+      const { userId, isGm } = viewer(c.role);
+      const live = liveTable(userId, isGm ? gmView() : playerView());
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm }));
+      ui.key(`token-${c.token}`, "ContextMenu");
+      assertPresent(ui.byTestId("token-menu"), "token-menu");
+      for (const name of c.present) assertPresent(ui.byTestId(`token-menu-${name}`), name);
+      for (const name of c.absent) assertAbsent(ui.byTestId(`token-menu-${name}`), name);
+      ui.unmount();
+    });
+  }
+
+  const commands = [
+    { id: "Disengage sends SET_DISENGAGED", role: "player", token: HERO, act: "token-menu-disengage", expected: { cmd: "SET_DISENGAGED", token_id: HERO, disengaged: true } },
+    { id: "Hide from players sends SET_TOKEN_VISIBILITY gm_hidden", role: "GM", token: GOBLIN, act: "token-menu-visibility", expected: { cmd: "SET_TOKEN_VISIBILITY", token_id: GOBLIN, gm_hidden: true, invisible: false } },
+    { id: "Remove sends REMOVE_TOKEN", role: "GM", token: GOBLIN, act: "token-menu-remove", expected: { cmd: "REMOVE_TOKEN", token_id: GOBLIN } },
+  ] as const;
+  for (const c of commands) {
+    it(c.id, () => {
+      const { userId, isGm } = viewer(c.role);
+      const live = liveTable(userId, isGm ? gmView() : playerView());
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm }));
+      ui.click(`token-${c.token}`);
+      ui.click("table-token-menu-open");
+      ui.click(c.act);
+      assert.deepEqual(live.commands(), [c.expected]);
+      assertAbsent(ui.byTestId("token-menu"), "menu closes after the action");
+      ui.unmount();
+    });
+  }
+
+  it("a GM-hidden token offers Reveal and is labelled hidden", () => {
+    const live = liveTable(GM_ID, gmView({}, {}, { visibility_channel: 0b101 }));
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+    assert.match(ui.byTestId(`token-${GOBLIN}`).getAttribute("aria-label"), /hidden from players/);
+    ui.key(`token-${GOBLIN}`, "ContextMenu");
+    ui.click("token-menu-visibility");
+    assert.deepEqual(live.commands(), [{ cmd: "SET_TOKEN_VISIBILITY", token_id: GOBLIN, gm_hidden: false, invisible: false }]);
+    ui.unmount();
+  });
+
+  it("GM speed override sends GM_OVERRIDE_TOKEN_RESOURCES with only the speed", () => {
+    const live = liveTable(GM_ID, gmView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+    ui.key(`token-${GOBLIN}`, "ContextMenu");
+    ui.input("token-menu-speed", "15");
+    ui.click("token-menu-speed-apply");
+    assert.deepEqual(live.commands(), [
+      { cmd: "GM_OVERRIDE_TOKEN_RESOURCES", token_id: GOBLIN, hp: null, temp_hp: null, speed_remaining_ft: 15, has_action: null, has_bonus_action: null, has_reaction: null },
+    ]);
+    ui.unmount();
+  });
+
+  it("GM teleport arms the board; the next click moves with gm_teleport", () => {
+    const live = liveTable(GM_ID, gmView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+    ui.key(`token-${GOBLIN}`, "ContextMenu");
+    ui.click("token-menu-teleport");
+    assert.match(ui.byTestId("table-teleport-armed").textContent, /teleport Goblin/);
+    pinBoard(ui);
+    ui.click("table-board", { clientX: 10 + 333, clientY: 20 + 260 });
+    assert.deepEqual(live.commands(), [{ cmd: "MOVE_TOKEN", token_id: GOBLIN, to_top_left: { x: 300, y: 250 }, to_elevation_ft: null, gm_teleport: true }]);
+    assertAbsent(ui.byTestId("table-teleport-armed"), "teleport disarms after one move");
+    ui.unmount();
+  });
+});
+
+describe("TableCanvas: GM map brushes", () => {
+  const visibility = [
+    { id: "the GM gets the brush toolbar", role: "GM", present: true },
+    { id: "a player never gets the brush toolbar", role: "player", present: false },
+  ] as const;
+  for (const c of visibility) {
+    it(c.id, () => {
+      const { userId, isGm } = viewer(c.role);
+      const live = liveTable(userId, isGm ? gmView() : playerView());
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm }));
+      assert.equal(ui.byTestId("table-tool-fogReveal") !== null, c.present);
+      assert.equal(ui.byTestId("table-tool-terrainPaint") !== null, c.present);
+      ui.unmount();
+    });
+  }
+
+  const strokes = [
+    {
+      id: "a terrain drag paints every crossed cell in one command",
+      tool: "terrainPaint",
+      path: [[60, 60], [160, 60]],
+      expected: [{ cmd: "SET_DIFFICULT_TERRAIN", cells: [{ col: 1, row: 1 }, { col: 2, row: 1 }, { col: 3, row: 1 }], difficult: true }],
+    },
+    {
+      id: "a fog hide tap rules on the tapped cell",
+      tool: "fogHide",
+      path: [[60, 110]],
+      expected: [{ cmd: "SET_FOG_OVERRIDE", mode: "HIDE", cell_x: 1, cell_y: 2 }],
+    },
+  ] as const;
+  for (const c of strokes) {
+    it(c.id, () => {
+      const live = liveTable(GM_ID, gmView());
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+      ui.click(`table-tool-${c.tool}`);
+      pinBoard(ui);
+      const board = ui.byTestId("table-board");
+      const at = ([x, y]: readonly number[]) => ({ clientX: 10 + x, clientY: 20 + y, pointerType: "mouse" });
+      board.dispatchEvent({ type: "pointerdown", ...at(c.path[0]) });
+      for (const point of c.path.slice(1)) board.dispatchEvent({ type: "pointermove", ...at(point) });
+      board.dispatchEvent({ type: "pointerup" });
+      ui.click("table-board", at(c.path[0]));
+      assert.deepEqual(live.commands(), c.expected, "the trailing click paints nothing more and moves nothing");
+      ui.unmount();
+    });
+  }
+});
+
+describe("TableCanvas: zoom, pan and pings", () => {
+  it("zoom in scales the board and board clicks are divided by the zoom", () => {
+    const live = liveTable(GM_ID, gmView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+    ui.click("table-zoom-in");
+    assert.equal(ui.byTestId("table-zoom-reset").textContent, "125%");
+    assert.equal(ui.byTestId("table-board").style.transform, "scale(1.25)");
+    ui.click(`token-${GOBLIN}`);
+    pinBoard(ui);
+    ui.click("table-board", { clientX: 10 + 500, clientY: 20 + 250 });
+    assert.deepEqual(live.commands().at(-1)?.to_top_left, { x: 400, y: 200 });
+    ui.click("table-zoom-reset");
+    assert.equal(ui.byTestId("table-zoom-reset").textContent, "100%");
+    ui.unmount();
+  });
+
+  const pings = [
+    { id: "Alt+click pings the cell with the active scene id", scene: SCENE, expectedScene: SCENE },
+    { id: "before any scene is active the ping carries no scene id", scene: null, expectedScene: undefined },
+  ];
+  for (const c of pings) {
+    it(c.id, () => {
+      const live = liveTable(PLAYER_ID, playerView({ active_scene_id: c.scene }));
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+      pinBoard(ui);
+      ui.click("table-board", { clientX: 10 + 120, clientY: 20 + 80, altKey: true });
+      const ping = live.frames().find((f) => f.PointerPing)?.PointerPing;
+      assert.deepEqual([ping?.pos, ping?.scene_id], [{ x: 120, y: 80 }, c.expectedScene]);
+      assert.equal(live.commands().length, 0, "a ping never moves a token");
+      ui.unmount();
+    });
+  }
+});
+
+describe("TokenVitalsPanel: typed damage, concentration and death saving throws", () => {
+  const damage = [
+    { id: "untyped damage keeps damage_type null", type: "", critical: false, expected: { damage_type: null, is_critical: false } },
+    { id: "a fire hit sends the damage type so affinities apply", type: "fire", critical: false, expected: { damage_type: "fire", is_critical: false } },
+    { id: "a critical slashing hit sets is_critical", type: "slashing", critical: true, expected: { damage_type: "slashing", is_critical: true } },
+  ];
+  for (const c of damage) {
+    it(c.id, () => {
+      const live = liveTable(PLAYER_ID, playerView());
+      selectedTokenIdSignal.value = HERO;
+      const ui = mount(h(TokenVitalsPanel, { client: live.client }));
+      ui.input("vitals-amount", "6");
+      ui.input("vitals-damage-type", c.type, "change");
+      if (c.critical) ui.click("vitals-critical");
+      ui.click("vitals-damage");
+      assert.deepEqual(live.commands(), [{ cmd: "APPLY_DAMAGE", token_id: HERO, raw_damage: 6, affinity: "NORMAL", ...c.expected }]);
+      assert.equal(ui.byTestId("vitals-critical").getAttribute("aria-pressed"), "false", "critical resets after each hit");
+      ui.unmount();
+    });
+  }
+
+  const concentration = [
+    { id: "a token not concentrating starts concentrating", concentrating: false, expected: true },
+    { id: "a concentrating token ends concentration", concentrating: true, expected: false },
+  ];
+  for (const c of concentration) {
+    it(c.id, () => {
+      const live = liveTable(PLAYER_ID, playerView({}, { concentrating: c.concentrating }));
+      selectedTokenIdSignal.value = HERO;
+      const ui = mount(h(TokenVitalsPanel, { client: live.client }));
+      ui.click("vitals-concentration");
+      assert.deepEqual(live.commands(), [{ cmd: "SET_CONCENTRATION", token_id: HERO, concentrating: c.expected }]);
+      ui.unmount();
+    });
+  }
+
+  const deathControls = [
+    { id: "a dying player's token offers a server roll and no die entry", role: "player", hero: { hp: 0 }, roll: true, die: false, state: /Dying/ },
+    { id: "the GM may also record a physical die", role: "GM", hero: { hp: 0 }, roll: true, die: true, state: /Dying/ },
+    { id: "a stable token rolls no more", role: "player", hero: { hp: 0, is_stable: true }, roll: false, die: false, state: /Stable/ },
+    { id: "a dead token rolls no more", role: "player", hero: { hp: 0, is_dead: true }, roll: false, die: false, state: /Dead/ },
+  ] as const;
+  for (const c of deathControls) {
+    it(c.id, () => {
+      const { userId, isGm } = viewer(c.role);
+      const live = liveTable(userId, isGm ? gmView({}, c.hero) : playerView({}, c.hero));
+      selectedTokenIdSignal.value = HERO;
+      const ui = mount(h(TokenVitalsPanel, { client: live.client, isGm }));
+      assert.match(ui.byTestId("vitals-death-state").textContent, c.state);
+      assert.equal(ui.byTestId("vitals-death-roll") !== null, c.roll);
+      assert.equal(ui.byTestId("vitals-death-die") !== null, c.die);
+      ui.unmount();
+    });
+  }
+
+  it("rolling sends RECORD_DEATH_SAVE with d20 null so the server rolls", () => {
+    const live = liveTable(PLAYER_ID, playerView({}, { hp: 0, death_save_successes: 1, death_save_failures: 2 }));
+    selectedTokenIdSignal.value = HERO;
+    const ui = mount(h(TokenVitalsPanel, { client: live.client }));
+    assert.equal(ui.byTestId("vitals-death-counters").textContent, "Successes 1 of 3, failures 2 of 3");
+    ui.click("vitals-death-roll");
+    assert.deepEqual(live.commands(), [{ cmd: "RECORD_DEATH_SAVE", token_id: HERO, d20: null }]);
+    ui.unmount();
+  });
+
+  const dice = [
+    { id: "a valid physical die is sent as d20", value: "17", enabled: true },
+    { id: "a die above 20 is refused", value: "21", enabled: false },
+    { id: "a die of 0 is refused", value: "0", enabled: false },
+  ];
+  for (const c of dice) {
+    it(`GM: ${c.id}`, () => {
+      const live = liveTable(GM_ID, gmView({}, { hp: 0 }));
+      selectedTokenIdSignal.value = HERO;
+      const ui = mount(h(TokenVitalsPanel, { client: live.client, isGm: true }));
+      ui.input("vitals-death-die", c.value);
+      assert.equal(ui.byTestId("vitals-death-record").disabled, !c.enabled);
+      if (c.enabled) {
+        ui.click("vitals-death-record");
+        assert.deepEqual(live.commands(), [{ cmd: "RECORD_DEATH_SAVE", token_id: HERO, d20: 17 }]);
+      }
+      ui.unmount();
+    });
+  }
+
+  it("a token carrying a stat block copy names it", () => {
+    const live = liveTable(GM_ID, gmView({}, {}, { stat_block: { name: "Goblin Warrior", ac: 15 } }));
+    selectedTokenIdSignal.value = GOBLIN;
+    const ui = mount(h(TokenVitalsPanel, { client: live.client, isGm: true }));
+    assert.equal(ui.byTestId("vitals-stat-block").textContent, "Stat block: Goblin Warrior");
+    ui.unmount();
+  });
+});
+
+describe("tableView: death saving throw phase", () => {
+  const cases = [
+    { id: "above 0 HP the token is conscious", token: { hp: 5 }, expected: "conscious" },
+    { id: "at 0 HP the token is dying", token: { hp: 0 }, expected: "dying" },
+    { id: "three successes leave it stable at 0 HP", token: { hp: 0, death_save_successes: 3, is_stable: true }, expected: "stable" },
+    { id: "three failures leave it dead", token: { hp: 0, death_save_failures: 3, is_dead: true }, expected: "dead" },
+    { id: "a natural 20 brings it back to 1 HP", token: { hp: 1, death_save_successes: 0, death_save_failures: 0 }, expected: "conscious" },
+  ];
+  for (const c of cases) {
+    it(c.id, () => {
+      const [token] = listTableTokens(tableState({ tokens: { [HERO]: fullToken(HERO, "Brakka", c.token) } }));
+      assert.equal(deathSavePhase(token), c.expected);
+    });
+  }
+
+  it("a public token's phase is unknown (its HP is not projected)", () => {
+    const [token] = listTableTokens(tableState({ public_tokens: { [GOBLIN]: publicToken(GOBLIN, "Goblin") } }));
+    assert.equal(deathSavePhase(token), "unknown");
+  });
+});
+
+describe("TokenConditionsPanel: conditions, rulings and automated effects", () => {
+  const toggles = [
+    { id: "player adds Grappled to their own token", role: "player", conditions: [], toggle: "grappled", expected: ["grappled"] },
+    { id: "player removes Prone and keeps the rest", role: "player", conditions: ["prone", "poisoned"], toggle: "prone", expected: ["poisoned"] },
+    { id: "GM adds Restrained to any token", role: "GM", conditions: [], toggle: "restrained", expected: ["restrained"] },
+  ] as const;
+  for (const c of toggles) {
+    it(c.id, () => {
+      const { userId, isGm } = viewer(c.role);
+      const live = liveTable(userId, isGm ? gmView({}, { conditions: [...c.conditions] }) : playerView({}, { conditions: [...c.conditions] }));
+      selectedTokenIdSignal.value = HERO;
+      const ui = mount(h(TokenConditionsPanel, { client: live.client, isGm }));
+      ui.click(`condition-${c.toggle}`);
+      assert.deepEqual(live.commands(), [{ cmd: "SET_TOKEN_CONDITIONS", token_id: HERO, conditions: c.expected }]);
+      ui.unmount();
+    });
+  }
+
+  const rulings = [
+    { id: "a player gets no rulings", role: "player", present: false },
+    { id: "the GM gets the rulings", role: "GM", present: true },
+  ] as const;
+  for (const c of rulings) {
+    it(c.id, () => {
+      const { userId, isGm } = viewer(c.role);
+      const live = liveTable(userId, isGm ? gmView() : playerView());
+      selectedTokenIdSignal.value = HERO;
+      const ui = mount(h(TokenConditionsPanel, { client: live.client, isGm }));
+      assert.equal(ui.byTestId("conditions-rulings") !== null, c.present);
+      ui.unmount();
+    });
+  }
+
+  const overrides = [
+    { id: "forcing a condition sends FORCE", testId: "ruling-condition-prone", value: "FORCE", existing: [], expected: { subject: "CONDITION", id: "prone", mode: "FORCE" } },
+    { id: "clearing a ruling sends mode null", testId: "ruling-condition-prone", value: "", existing: [{ subject: "CONDITION", id: "prone", mode: "FORCE" }], expected: { subject: "CONDITION", id: "prone", mode: null } },
+    {
+      id: "removing one automated effect sends an EFFECT ruling",
+      testId: "ruling-effect-grappled.speed_zero",
+      value: "REMOVE",
+      existing: [],
+      expected: { subject: "EFFECT", id: "grappled.speed_zero", mode: "REMOVE" },
+    },
+  ] as const;
+  for (const c of overrides) {
+    it(`GM: ${c.id}`, () => {
+      const live = liveTable(GM_ID, gmView({}, { conditions: ["grappled"], condition_overrides: [...c.existing] }));
+      selectedTokenIdSignal.value = HERO;
+      const ui = mount(h(TokenConditionsPanel, { client: live.client, isGm: true }));
+      ui.input(c.testId, c.value, "change");
+      assert.deepEqual(live.commands(), [{ cmd: "CONDITION_OVERRIDE", token_id: HERO, ...c.expected }]);
+      ui.unmount();
+    });
+  }
+
+  const effects = [
+    { id: "Grappled shows Speed 0", conditions: ["grappled"], overrides: [], expected: /Speed 0/ },
+    { id: "Paralyzed shows incapacitated and automatic save failures", conditions: ["paralyzed"], overrides: [], expected: /Incapacitated.*Strength and Dexterity saving throws fail/ },
+    { id: "Petrified shows resistance to all damage", conditions: ["petrified"], overrides: [], expected: /Resistance to all damage/ },
+    { id: "Exhaustion is reported as applying", conditions: ["exhaustion"], overrides: [], expected: /Exhaustion applies/ },
+    { id: "a GM ruling removing Speed 0 lifts it", conditions: ["grappled"], overrides: [{ subject: "EFFECT", id: "grappled.speed_zero", mode: "REMOVE" }], expected: /No automated effects/ },
+  ] as const;
+  for (const c of effects) {
+    it(`effects: ${c.id}`, () => {
+      const live = liveTable(GM_ID, gmView({}, { conditions: [...c.conditions], condition_overrides: [...c.overrides] }));
+      selectedTokenIdSignal.value = HERO;
+      const ui = mount(h(TokenConditionsPanel, { client: live.client, isGm: true }));
+      assert.match(ui.byTestId("conditions-effects").textContent, c.expected);
+      ui.unmount();
+    });
+  }
+
+  it("a player sees a public token's conditions read-only", () => {
+    const live = liveTable(PLAYER_ID, tableState({ public_tokens: { [GOBLIN]: publicToken(GOBLIN, "Goblin", { conditions: ["prone"] }) } }));
+    selectedTokenIdSignal.value = GOBLIN;
+    const ui = mount(h(TokenConditionsPanel, { client: live.client }));
+    assert.equal(ui.byTestId("conditions-readonly").textContent, "Prone");
+    assertAbsent(ui.byTestId("condition-prone"), "condition-prone");
+    ui.unmount();
+  });
+});
+
+describe("CoverSuggestionPanel: suggested, never applied", () => {
+  const suggestions = [
+    { id: "open ground suggests no cover", walls: [], expected: /Suggested cover: No cover/ },
+    { id: "a wall across the line of fire suggests total cover", walls: [wallBetween], expected: /Suggested cover: Total cover \(cannot be targeted directly\)/ },
+  ];
+  for (const c of suggestions) {
+    it(c.id, () => {
+      const live = liveTable(PLAYER_ID, playerView({ walls: c.walls }));
+      selectedTokenIdSignal.value = HERO;
+      const ui = mount(h(CoverSuggestionPanel, { client: live.client }));
+      ui.input("cover-target", GOBLIN, "change");
+      assert.match(ui.byTestId("cover-suggestion").textContent, c.expected);
+      assert.equal(acceptedCoverSignal.value, null, "a suggestion alone changes nothing");
+      ui.unmount();
+    });
+  }
+
+  const accepts = [
+    { id: "accepting keeps the suggested level", choice: null, expected: { cover: "NONE", bonus: 0 } },
+    { id: "the user may pick another level before accepting", choice: "HALF", expected: { cover: "HALF", bonus: 2 } },
+  ];
+  for (const c of accepts) {
+    it(c.id, () => {
+      const live = liveTable(PLAYER_ID, playerView());
+      selectedTokenIdSignal.value = HERO;
+      const ui = mount(h(CoverSuggestionPanel, { client: live.client }));
+      ui.input("cover-target", GOBLIN, "change");
+      if (c.choice) ui.input("cover-choice", c.choice, "change");
+      ui.click("cover-accept");
+      assert.deepEqual(acceptedCoverSignal.value, { attackerId: HERO, targetId: GOBLIN, ...c.expected });
+      assert.match(ui.byTestId("cover-accepted").textContent, /Cover in use/);
+      assert.equal(live.commands().length, 0, "cover is local until an attack uses it");
+      ui.unmount();
+    });
+  }
+
+  it("selecting a token the user does not control shows no targeting", () => {
+    const live = liveTable(PLAYER_ID, playerView());
+    selectedTokenIdSignal.value = GOBLIN;
+    const ui = mount(h(CoverSuggestionPanel, { client: live.client }));
+    assertAbsent(ui.byTestId("cover-panel"), "cover-panel");
+    ui.unmount();
+  });
+});
+
+describe("Rejections and redacted wire fields", () => {
+  const reasons = [
+    { id: "SpeedZero gets a plain-language explanation", reason: "speed is 0: a condition prevents this token from moving", expected: /Speed is 0 because of a condition/ },
+    { id: "DoorLocked explains who can open it", reason: "door is locked", expected: /Only the Game Master can open it/ },
+    { id: "an unknown reason is shown as sent", reason: "movement blocked by wall at (1.0, 2.0)", expected: /^movement blocked by wall/ },
+  ];
+  for (const c of reasons) {
+    it(`rejectionReason: ${c.id}`, () => assert.match(rejectionReason(c.reason), c.expected));
+  }
+
+  it("a refused move shows the SpeedZero explanation in the toast", () => {
+    const live = liveTable(PLAYER_ID, playerView());
+    live.client.state.commandFeedback.value = [{ id: 1, kind: "rejected", action: "MOVE_TOKEN", reason: "speed is 0: a condition prevents this token from moving" }];
+    const ui = mount(h(CommandFeedbackToasts, { client: live.client }));
+    assert.match(ui.byTestId("command-feedback-item").textContent, /^Move token was refused: this creature's Speed is 0/);
+    ui.unmount();
+  });
+
+  it("a redacted reaction prompt (no destination, no resolved reactors) still renders", () => {
+    const prompt = {
+      prompt_id: PROMPT,
+      reactor_actor_id: HERO,
+      trigger_token_id: GOBLIN,
+      reactor_owner_user_id: PLAYER_ID,
+      pending_destination: null,
+      resolved_reactor_ids: [],
+    };
+    const live = liveTable(PLAYER_ID, playerView({ active_reaction_prompts: { [PROMPT]: prompt } }));
+    const ui = mount(h(ReactionBanner, { client: live.client, isGm: false }));
+    assert.match(ui.byTestId(`reaction-${PROMPT}`).textContent, /Brakka can make an opportunity attack against Goblin/);
+    ui.unmount();
+  });
+});
