@@ -199,6 +199,25 @@ export function firstFreeCell(state: ProjectedTableState | null): WirePoint2D {
 }
 
 /**
+ * Top-left (`px`) of a compendium spawn: the GM's selected cell, else the cell under
+ * the viewport centre, else `firstFreeCell`; clamped to the map grid so a stale point
+ * from a larger map never lands off the board.
+ */
+export function spawnTopLeft(
+  state: ProjectedTableState | null,
+  selectedCell: WirePoint2D | null,
+  viewportCenter: WirePoint2D | null,
+): WirePoint2D {
+  const point = selectedCell ?? viewportCenter;
+  if (!point) return firstFreeCell(state);
+  const cell = state && state.cell_size_px > 0 ? state.cell_size_px : 50;
+  const maxX = Math.max(0, Math.ceil((state?.map_width_px || cell) / cell) - 1) * cell;
+  const maxY = Math.max(0, Math.ceil((state?.map_height_px || cell) / cell) - 1) * cell;
+  const snapped = snapToCell(point, cell);
+  return { x: Math.min(maxX, Math.max(0, snapped.x)), y: Math.min(maxY, Math.max(0, snapped.y)) };
+}
+
+/**
  * `base` when no visible token carries that name yet, otherwise `base N` with
  * the smallest free `N >= 2`, so several spawned monsters of one kind stay
  * distinguishable in target lists and the initiative tracker.

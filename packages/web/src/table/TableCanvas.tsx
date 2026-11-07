@@ -63,7 +63,9 @@
  * ├── 3. `createTableRenderer(canvas)` (lazy) -> `update(scene, image)` per render.
  * ├── 4. Token click -> select; right-click / Shift+F10 -> `TokenMenuDialog`.
  * ├── 5. Board click / arrow key -> `snapToCell` -> `MOVE_TOKEN` (teleport armed:
- * │      `gm_teleport: true`); Alt+click -> pointer ping.
+ * │      `gm_teleport: true`); Alt+click -> pointer ping. A GM click with no
+ * │      token to move selects the cell (`selectedCellSignal`); scrolling and
+ * │      zooming track `viewportCenterSignal`. Compendium spawns land there.
  * ├── 6. Door handle click -> `TOGGLE_DOOR`.
  * └── 7. Brush drag -> `strokeCommands` -> one `SET_FOG_OVERRIDES` /
  *        `SET_DIFFICULT_TERRAIN` per stroke; a capped stroke shows a notice.
@@ -71,7 +73,7 @@
  */
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ApiClient } from '../api/client.ts';
-import { selectedActorIdSignal, selectedTokenIdSignal } from '../api/session.ts';
+import { selectedActorIdSignal, selectedCellSignal, selectedTokenIdSignal, viewportCenterSignal } from '../api/session.ts';
 import type { Uuid, WirePoint2D } from '../api/wire.ts';
 import { getCanvasThemePalette } from '../canvas/CanvasThemePalette.ts';
 import {
@@ -171,6 +173,7 @@ function hexColor(color: number): string {
 /** Selects a token and the actor sheet linked to it (`null` when unlinked). */
 export function selectToken(token: TableToken | null): void {
   selectedTokenIdSignal.value = token?.id ?? null;
+  if (token) selectedCellSignal.value = null;
   if (token?.actorId) selectedActorIdSignal.value = token.actorId;
 }
 
@@ -179,6 +182,7 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   const tokens = listTableTokens(table);
   const selectedId = selectedTokenIdSignal.value;
   const selected = tokens.find((tok) => tok.id === selectedId) ?? null;
+  const selectedCell = selectedCellSignal.value;
   const [previewPlayerView, setPreviewPlayerView] = useState(false);
   const [, setEngineLoads] = useState(0);
   const palette = getCanvasThemePalette(resolvedThemeSignal.value);
@@ -332,7 +336,18 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
     if (activeTool !== 'select') return;
     const mover = teleportToken ?? (selected?.controlled ? selected : null);
     if (mover) move(mover, boardPoint(e));
+    else if (isGm) selectedCellSignal.value = snapToCell(boardPoint(e), cell);
   };
+
+  const trackViewportCenter = () => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    viewportCenterSignal.value = {
+      x: (scroller.scrollLeft + scroller.clientWidth / 2) / zoom,
+      y: (scroller.scrollTop + scroller.clientHeight / 2) / zoom,
+    };
+  };
+  useEffect(trackViewportCenter, [zoom]);
 
   const paint = (e: PointerEvent, phase: 'start' | 'move') => {
     const bounds = gridBounds(width, height, cell);
@@ -480,6 +495,11 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
           </>
         ) : null}
       </div>
+      {isGm && selectedCell ? (
+        <p class="ds-hint" role="status" data-testid="table-selected-cell">
+          {t('table.selectedCell', { col: Math.round(selectedCell.x / cell) + 1, row: Math.round(selectedCell.y / cell) + 1 })}
+        </p>
+      ) : null}
       {capped && tool !== 'select' ? (
         <p class="ds-hint" role="status" data-testid="table-stroke-capped">
           {t('table.strokeCapped', { max: MAX_STROKE_CELLS })}
@@ -495,6 +515,7 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
         class="ds-board-scroller"
         data-testid="table-scroller"
         onWheel={onScrollerWheel}
+        onScroll={trackViewportCenter}
         onPointerDown={onScrollerPointerDown}
         onPointerMove={onScrollerPointerMove}
         onPointerUp={onScrollerPointerEnd}

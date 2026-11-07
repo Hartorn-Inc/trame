@@ -8,12 +8,15 @@ import {
   monsterStatBlockOf,
   type CompendiumEntry,
 } from "../../src/compendium/CompendiumDrawer.tsx";
+import { selectedCellSignal, viewportCenterSignal } from "../../src/api/session.ts";
+import type { WirePoint2D } from "../../src/api/wire.ts";
 import { localeSignal } from "../../src/i18n/index.ts";
-import { uniqueTokenName } from "../../src/table/tableView.ts";
+import { spawnTopLeft, uniqueTokenName } from "../../src/table/tableView.ts";
 import { CampaignWorkspace } from "../../src/workspace/CampaignWorkspace.tsx";
 import { assertAbsent, assertPresent } from "../helpers/domAssert.ts";
 import { CAMPAIGN, GM_ID, HERO, PLAYER_ID, fullToken, liveTable, mount, tableState } from "../helpers/liveTable.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
+import { flush } from "../helpers/mockTransport.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -111,7 +114,10 @@ describe("Compendium tab: full SRD, stat blocks, GM spawn", () => {
     });
   }
 
-  it("GM spawn sends the SRD reference on the first free cell with a unique name", () => {
+  /** Mounts the GM compendium tab on a table where "Aboleth" stands on (0, 0) and spawns one. */
+  function spawnAboleth(selected: WirePoint2D | null, center: WirePoint2D | null) {
+    selectedCellSignal.value = selected;
+    viewportCenterSignal.value = center;
     const occupied = tableState({ tokens: { [HERO]: fullToken(HERO, "Aboleth") } });
     const table = liveTable(GM_ID, occupied);
     const ui = mount(h(CampaignWorkspace, { campaignId: CAMPAIGN, userRole: "GM", client: table.client, activeTab: "compendium" }));
@@ -119,10 +125,71 @@ describe("Compendium tab: full SRD, stat blocks, GM spawn", () => {
     ui.click(`btn-spawn-${ABOLETH}`);
     const spawn = table.commands().find((c) => c.cmd === "SPAWN_TOKEN");
     assert.ok(spawn, "SPAWN_TOKEN sent");
+    return { table, ui, spawn, occupied };
+  }
+
+  const placements = [
+    { id: "the selected cell wins over the viewport centre", selected: { x: 250, y: 300 }, center: { x: 333, y: 412 }, expected: { x: 250, y: 300 } },
+    { id: "the viewport centre cell without a selected cell", selected: null, center: { x: 333, y: 412 }, expected: { x: 300, y: 400 } },
+    { id: "the first free cell before the board was ever shown", selected: null, center: null, expected: { x: 50, y: 0 } },
+    { id: "a point off the map is clamped onto the grid", selected: { x: 5000, y: -20 }, center: null, expected: { x: 950, y: 0 } },
+  ];
+  for (const c of placements) {
+    it(`GM spawn placement: ${c.id}`, () => {
+      const { ui, spawn } = spawnAboleth(c.selected, c.center);
+      assert.deepEqual(spawn.token.top_left, c.expected);
+      ui.unmount();
+    });
+  }
+
+  it("GM spawn sends the SRD reference, hidden from players, with a unique name", () => {
+    const { ui, spawn } = spawnAboleth(null, null);
     assert.equal(spawn.token.stat_block, ABOLETH);
     assert.equal(spawn.token.name, "Aboleth 2");
-    assert.deepEqual(spawn.token.top_left, { x: 50, y: 0 });
-    assert.equal(ui.byTestId("workspace-spawn-status").textContent, "Aboleth 2 spawned on the table.");
+    assert.equal(spawn.token.visibility_channel & 0b100, 0b100, "CHANNEL_GM_HIDDEN set");
+    assert.equal(ui.byTestId("workspace-spawn-status").textContent, "Spawning Aboleth 2…");
     ui.unmount();
   });
+
+  const answers = [
+    {
+      id: "announces success once the token is in the projection",
+      answer: (live: ReturnType<typeof liveTable>, spawn: any, occupied: any) =>
+        live.client.applyServerEnvelope({
+          type: "CommandAccepted",
+          seqId: 7,
+          state: { ...occupied, tokens: { ...occupied.tokens, [spawn.token.id]: { ...spawn.token } } },
+          events: [{ event: "TOKEN_SPAWNED", token: spawn.token }],
+        } as any),
+      expected: "Aboleth 2 spawned on the table, hidden from players. Reveal it from the token menu.",
+    },
+    {
+      id: "announces the rejection instead",
+      answer: (live: ReturnType<typeof liveTable>) => {
+        live.client.state.commandFeedback.value = [{ id: 41, kind: "rejected", action: "SPAWN_TOKEN", reason: "no" }];
+      },
+      expected: "The table refused to spawn Aboleth 2.",
+    },
+  ];
+  for (const c of answers) {
+    it(`GM spawn ${c.id}`, async () => {
+      const { table, ui, spawn, occupied } = spawnAboleth(null, null);
+      c.answer(table, spawn, occupied);
+      await flush(6);
+      assert.equal(ui.byTestId("workspace-spawn-status").textContent, c.expected);
+      ui.unmount();
+    });
+  }
+});
+
+describe("spawnTopLeft", () => {
+  const state = tableState({ cell_size_px: 50, map_width_px: 500, map_height_px: 300 });
+  const cases = [
+    { id: "a point inside a cell snaps to its top-left", selected: { x: 120, y: 80 }, center: null, expected: { x: 100, y: 50 } },
+    { id: "the far corner clamps to the last cell", selected: null, center: { x: 9999, y: 9999 }, expected: { x: 450, y: 250 } },
+    { id: "negative points clamp to the origin", selected: { x: -60, y: -1 }, center: null, expected: { x: 0, y: 0 } },
+  ];
+  for (const c of cases) {
+    it(c.id, () => assert.deepEqual(spawnTopLeft(state, c.selected, c.center), c.expected));
+  }
 });

@@ -28,11 +28,17 @@
  *    - Both compendium views list `CompendiumResolver.getDefault()`, which
  *      `main.tsx` replaced with the full SRD 5.2.1 packs before the first
  *      render; a GM with a loaded table can spawn any monster from them.
+ * 6. `Staged Spawns, Honest Announcements`:
+ *    - A monster spawns hidden from players at the GM's selected cell, else
+ *      at the board viewport centre (`spawnTopLeft`). The status line says
+ *      "spawned" only once the token is in the projection (`CommandAccepted`)
+ *      and reports a `SPAWN_TOKEN` rejection instead.
  * ============================================================================
  */
-import { useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useState } from 'preact/hooks';
 import { CompendiumResolver, SRD_521_ATTRIBUTION } from '../../../game-systems/dnd5e/src/index.ts';
 import { apiClient, type ApiClient } from '../api/client.ts';
+import { selectedCellSignal, viewportCenterSignal } from '../api/session.ts';
 import {
   CompendiumDrawer,
   monsterSpawnCommand,
@@ -44,7 +50,7 @@ import { t, type MessageKey } from '../i18n/index.ts';
 import { MapsWorkspaceTab } from '../maps/MapsWorkspaceTab.tsx';
 import type { UserRole } from '../maps/types.ts';
 import { TableTab } from '../table/TableTab.tsx';
-import { firstFreeCell, uniqueTokenName } from '../table/tableView.ts';
+import { spawnTopLeft, uniqueTokenName } from '../table/tableView.ts';
 import { ActorsTab } from './ActorsTab.tsx';
 import { CampaignDocumentsTab } from './CampaignDocumentsTab.tsx';
 
@@ -59,6 +65,14 @@ const TAB_LABEL: Record<WorkspaceTabId, MessageKey> = {
   documents: 'workspace.tab.documents',
   compendium: 'workspace.tab.compendium',
 };
+
+/** Spawn sent and not yet answered (invariant 6). */
+interface PendingSpawn {
+  tokenId: string;
+  name: string;
+  /** Highest `commandFeedback` id when the spawn was sent; newer `SPAWN_TOKEN` entries reject it. */
+  feedbackFloor: number;
+}
 
 export interface CampaignWorkspaceProps {
   campaignId: string;
@@ -89,16 +103,37 @@ export function nextTabIndex(index: number, key: string, count: number): number 
 export function CampaignWorkspace({ campaignId, userRole, client = apiClient, activeTab = 'table' }: CampaignWorkspaceProps) {
   const [tab, setTab] = useState<WorkspaceTabId>(activeTab);
   const [spawnStatus, setSpawnStatus] = useState('');
+  const [pendingSpawn, setPendingSpawn] = useState<PendingSpawn | null>(null);
   const isGm = userRole === 'GM';
   const compendium = useMemo(() => CompendiumResolver.getDefault().list(), []);
   const table = client.state.table.value;
+  const feedback = client.state.commandFeedback.value;
+
+  useEffect(() => {
+    if (!pendingSpawn) return;
+    const { tokenId, name, feedbackFloor } = pendingSpawn;
+    if (table?.tokens?.[tokenId]) {
+      setSpawnStatus(t('compendium.spawned', { name }));
+      setPendingSpawn(null);
+    } else if (feedback.some((f) => f.id > feedbackFloor && f.action === 'SPAWN_TOKEN')) {
+      setSpawnStatus(t('compendium.spawnRejected', { name }));
+      setPendingSpawn(null);
+    }
+  }, [table, feedback, pendingSpawn]);
 
   const spawnMonster = (entry: CompendiumEntry) => {
     const statBlock = monsterStatBlockOf(entry);
     if (!statBlock) return;
     const name = uniqueTokenName(entry.name, table);
-    const sent = client.submitCommand(monsterSpawnCommand(entry, statBlock, name, firstFreeCell(table), crypto.randomUUID()));
-    setSpawnStatus(sent ? t('compendium.spawned', { name }) : t('tray.offline'));
+    const tokenId = crypto.randomUUID();
+    const at = spawnTopLeft(table, selectedCellSignal.value, viewportCenterSignal.value);
+    const feedbackFloor = Math.max(-1, ...feedback.map((f) => f.id));
+    if (!client.submitCommand(monsterSpawnCommand(entry, statBlock, name, at, tokenId))) {
+      setSpawnStatus(t('tray.offline'));
+      return;
+    }
+    setSpawnStatus(t('compendium.spawning', { name }));
+    setPendingSpawn({ tokenId, name, feedbackFloor });
   };
   const onSpawnMonster = isGm && table !== null ? spawnMonster : undefined;
 

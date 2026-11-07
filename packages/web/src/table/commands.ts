@@ -285,7 +285,13 @@ export interface SpawnTokenInput {
    * damage affinities from its own copy. Omitted for plain and linked tokens.
    */
   statBlock?: string | Record<string, unknown>;
+  /** Spawn hidden from players (`CHANNEL_GM_HIDDEN`); the GM reveals it from the token menu. */
+  gmHidden?: boolean;
 }
+
+/** `TokenState::visibility_channel` bits (`geometry.rs`): material plane, GM-hidden. */
+const CHANNEL_MATERIAL = 0b001;
+const CHANNEL_GM_HIDDEN = 0b100;
 
 /**
  * `SPAWN_TOKEN`: GM-only. Sends a complete `TokenState` (the engine has no
@@ -310,7 +316,7 @@ export function spawnToken(input: SpawnTokenInput): WireTrameCommand {
       is_squeezing: false,
       elevation_ft: 0,
       height_ft: 5,
-      visibility_channel: 1,
+      visibility_channel: input.gmHidden ? CHANNEL_MATERIAL | CHANNEL_GM_HIDDEN : CHANNEL_MATERIAL,
       invisible: false,
       senses: {
         normal_range_ft: 120,

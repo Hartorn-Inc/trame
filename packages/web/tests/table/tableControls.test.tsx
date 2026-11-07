@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import { h } from "preact";
-import { selectedActorIdSignal, selectedTokenIdSignal } from "../../src/api/session.ts";
+import { selectedActorIdSignal, selectedCellSignal, selectedTokenIdSignal } from "../../src/api/session.ts";
 import type { WireWallSegment } from "../../src/api/wire.ts";
 import { CommandFeedbackToasts, rejectionReason } from "../../src/components/RoomConnectionFeedback.tsx";
 import { localeSignal } from "../../src/i18n/index.ts";
@@ -179,6 +179,29 @@ describe("TableCanvas: token actions menu", () => {
     assertAbsent(ui.byTestId("table-teleport-armed"), "teleport disarms after one move");
     ui.unmount();
   });
+});
+
+describe("TableCanvas: compendium spawn cell", () => {
+  const cases = [
+    { id: "GM click on an empty cell selects it for spawns", role: "GM", expected: { x: 300, y: 250 }, hint: true },
+    { id: "player click selects nothing", role: "player", expected: null, hint: false },
+  ] as const;
+  for (const c of cases) {
+    it(c.id, () => {
+      selectedCellSignal.value = null;
+      const { userId, isGm } = viewer(c.role);
+      const live = liveTable(userId, isGm ? gmView() : playerView());
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm }));
+      pinBoard(ui);
+      ui.click("table-board", { clientX: 10 + 333, clientY: 20 + 260 });
+      assert.deepEqual(selectedCellSignal.value, c.expected);
+      assert.deepEqual(live.commands(), []);
+      if (c.hint) assert.match(ui.byTestId("table-selected-cell").textContent, /column 7, row 6/);
+      else assertAbsent(ui.byTestId("table-selected-cell"), "selected-cell hint");
+      ui.unmount();
+      selectedCellSignal.value = null;
+    });
+  }
 });
 
 describe("TableCanvas: GM map brushes", () => {

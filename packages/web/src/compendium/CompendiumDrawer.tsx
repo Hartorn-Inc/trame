@@ -72,6 +72,8 @@ export function monsterStatBlockOf(entry: CompendiumEntry): MonsterStatBlock | n
  * `SPAWN_TOKEN` for a monster entry (banner invariant 2): SRD entries send
  * their reference, other tiers the stat block object. The vitals are the
  * stat block's own numbers; the server overwrites them from its copy anyway.
+ * The token arrives hidden from players so the GM can stage an encounter and
+ * reveal it from the token menu.
  */
 export function monsterSpawnCommand(
   entry: CompendiumEntry,
@@ -92,6 +94,7 @@ export function monsterSpawnCommand(
     dexMod: Math.floor((statBlock.abilities.dex - 10) / 2),
     speedFt: statBlock.speed.walk,
     statBlock: entry.tier === 'SYSTEM_SRD' ? entry.id : (statBlock as unknown as Record<string, unknown>),
+    gmHidden: true,
   });
 }
 
