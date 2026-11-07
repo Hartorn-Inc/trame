@@ -32,6 +32,12 @@
  *      ContextMenu opens its action menu, Escape clears the selection or
  *      cancels a pending teleport. The canvas itself is a labelled
  *      `role="img"`. Door state is told by text and border style, not colour.
+ *    - While a GM brush or a teleport is active, a focusable cell cursor is
+ *      the keyboard twin of the pointer: arrow keys move it (Shift+arrows
+ *      mark a rectangle for brushes), Enter paints the brush or rectangle or
+ *      teleports there, Escape drops the rectangle, cancels the teleport or
+ *      leaves the brush. A teleport focuses the cursor on the token's cell;
+ *      a polite status names the cursor cell.
  * 4. `Progressive Renderer`:
  *    - PixiJS is imported lazily and only where WebGL2 exists. Until it is up,
  *      when it fails to start, or after a draw throws, the board draws the
@@ -71,7 +77,7 @@
  *        `SET_DIFFICULT_TERRAIN` per stroke; a capped stroke shows a notice.
  * ============================================================================
  */
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { ApiClient } from '../api/client.ts';
 import { selectedActorIdSignal, selectedCellSignal, selectedTokenIdSignal, viewportCenterSignal } from '../api/session.ts';
 import type { Uuid, WirePoint2D } from '../api/wire.ts';
@@ -107,6 +113,8 @@ import {
   gridBounds,
   mergeCells,
   pinchFactor,
+  rectCells,
+  stepCell,
   strokeCapped,
   strokeCells,
   strokeCommands,
@@ -215,6 +223,11 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   const [capped, setStrokeCapped] = useState(false);
   const [menuTokenId, setMenuTokenId] = useState<Uuid | null>(null);
   const [teleportId, setTeleportId] = useState<Uuid | null>(null);
+  /** Keyboard cell cursor (`null`: start at the teleported token, the selected cell or the origin). */
+  const [cursor, setCursor] = useState<GridCell | null>(null);
+  /** Corner a Shift+arrow rectangle started from (`null`: Enter paints one brush). */
+  const [anchor, setAnchor] = useState<GridCell | null>(null);
+  const cursorRef = useRef<HTMLButtonElement>(null);
   const stroke = useRef<{ cells: GridCell[]; last: GridCell } | null>(null);
   const touches = useRef(new Map<number, WirePoint2D>());
   const sceneRef = useRef(scene);
@@ -222,6 +235,14 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   const activeTool: TableTool = isGm ? tool : 'select';
   const menuToken = tokens.find((tok) => tok.id === menuTokenId) ?? null;
   const teleportToken = isGm ? tokens.find((tok) => tok.id === teleportId) ?? null : null;
+  const bounds = gridBounds(width, height, cell);
+  const cursorActive = activeTool !== 'select' || teleportToken !== null;
+  const cursorCell =
+    cursor ?? (teleportToken ? cellAt(teleportToken.topLeft, cell) : selectedCell ? cellAt(selectedCell, cell) : { col: 0, row: 0 });
+
+  useLayoutEffect(() => {
+    if (teleportId && !menuTokenId) cursorRef.current?.focus();
+  }, [teleportId, menuTokenId]);
 
   useEffect(() => {
     if (isEngineReady()) return;
@@ -431,6 +452,49 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
     move(token, { x: token.topLeft.x + delta[0] * cell, y: token.topLeft.y + delta[1] * cell });
   };
 
+  const focusToken = (id: Uuid) => boardRef.current?.querySelector<HTMLButtonElement>(`[data-testid="token-${id}"]`)?.focus();
+
+  /** Keyboard twin of brush strokes and teleport clicks (invariant 3). */
+  const onCursorKeyDown = (e: KeyboardEvent) => {
+    const delta = ARROW_DELTAS[e.key];
+    if (delta) {
+      e.preventDefault();
+      setAnchor(e.shiftKey && !teleportToken ? (anchor ?? cursorCell) : null);
+      setCursor(stepCell(cursorCell, delta, bounds));
+      return;
+    }
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (teleportToken) {
+        focusToken(teleportToken.id);
+        move(teleportToken, { x: cursorCell.col * cell, y: cursorCell.row * cell });
+        return;
+      }
+      const cells = anchor ? rectCells(anchor, cursorCell, bounds) : brushCells(cursorCell, brushSize, bounds);
+      for (const command of strokeCommands(activeTool, cells)) client.submitCommand(command);
+      setStrokeCapped(strokeCapped(cells));
+      setAnchor(null);
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (anchor) setAnchor(null);
+      else if (teleportToken) {
+        focusToken(teleportToken.id);
+        setTeleportId(null);
+      } else setTool('select');
+    }
+  };
+
+  const cursorStatus = anchor
+    ? t('table.cursor.rect', {
+        col: cursorCell.col + 1,
+        row: cursorCell.row + 1,
+        cols: Math.abs(cursorCell.col - anchor.col) + 1,
+        rows: Math.abs(cursorCell.row - anchor.row) + 1,
+      })
+    : t('table.cursor.at', { col: cursorCell.col + 1, row: cursorCell.row + 1 });
+
   const pixi = renderer !== null;
   return (
     <section class="ds-table-canvas" aria-label={t('table.canvas')} data-testid="table-canvas">
@@ -474,7 +538,10 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
                   class="ds-btn ds-btn-ghost ds-btn-sm"
                   data-testid={`table-tool-${id}`}
                   aria-pressed={tool === id ? 'true' : 'false'}
-                  onClick={() => setTool(id)}
+                  onClick={() => {
+                    setTool(id);
+                    setAnchor(null);
+                  }}
                 >
                   {t(`table.tool.${id}` as MessageKey)}
                 </button>
@@ -508,6 +575,11 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
       {teleportToken ? (
         <p class="ds-hint" role="status" data-testid="table-teleport-armed">
           {t('table.teleportArmed', { name: teleportToken.name })}
+        </p>
+      ) : null}
+      {cursorActive ? (
+        <p class="ds-visually-hidden" id="table-cursor-status" role="status" data-testid="table-cursor-status">
+          {cursorStatus}
         </p>
       ) : null}
       <div
@@ -567,6 +639,33 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
                 <span aria-hidden="true">{door.isOpen ? '⊐' : '▮'}</span>
               </button>
             ))}
+            {cursorActive && anchor ? (
+              <div
+                class="ds-board-cursor-rect"
+                aria-hidden="true"
+                style={{
+                  left: `${Math.min(anchor.col, cursorCell.col) * cell}px`,
+                  top: `${Math.min(anchor.row, cursorCell.row) * cell}px`,
+                  width: `${(Math.abs(anchor.col - cursorCell.col) + 1) * cell}px`,
+                  height: `${(Math.abs(anchor.row - cursorCell.row) + 1) * cell}px`,
+                }}
+              />
+            ) : null}
+            {cursorActive ? (
+              <button
+                ref={cursorRef}
+                type="button"
+                class="ds-board-cursor"
+                data-testid="table-cell-cursor"
+                aria-label={teleportToken ? t('table.cursor.teleport', { name: teleportToken.name }) : t('table.cursor.brush')}
+                aria-describedby="table-cursor-status"
+                style={{ left: `${cursorCell.col * cell}px`, top: `${cursorCell.row * cell}px`, width: `${cell}px`, height: `${cell}px` }}
+                onKeyDown={onCursorKeyDown}
+                onClick={(e) => {
+                  if (e.detail === 0) e.stopPropagation();
+                }}
+              />
+            ) : null}
             {tokens.map((token) => (
               <button
                 key={token.id}
@@ -621,7 +720,11 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
           token={menuToken}
           isGm={isGm}
           onClose={() => setMenuTokenId(null)}
-          onTeleport={(tok) => setTeleportId(tok.id)}
+          onTeleport={(tok) => {
+            setTeleportId(tok.id);
+            setCursor(null);
+            setAnchor(null);
+          }}
         />
       ) : null}
     </section>

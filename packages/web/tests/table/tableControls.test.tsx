@@ -13,7 +13,7 @@ import { deathSavePhase, listTableTokens } from "../../src/table/tableView.ts";
 import { TokenConditionsPanel } from "../../src/table/TokenConditionsPanel.tsx";
 import { TokenVitalsPanel } from "../../src/table/TokenVitalsPanel.tsx";
 import { CAMPAIGN, GM_ID, GOBLIN, HERO, PLAYER_ID, fullToken, liveTable, mount, publicToken, tableState } from "../helpers/liveTable.ts";
-import { assertAbsent, assertPresent } from "../helpers/domAssert.ts";
+import { assertAbsent, assertPresent, assertSameNode } from "../helpers/domAssert.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
 
 setupMockDom();
@@ -179,6 +179,60 @@ describe("TableCanvas: token actions menu", () => {
     assertAbsent(ui.byTestId("table-teleport-armed"), "teleport disarms after one move");
     ui.unmount();
   });
+
+  const press = (ui: ReturnType<typeof mount>, id: string, key: string, extra: Record<string, unknown> = {}) =>
+    ui.byTestId(id).dispatchEvent({ type: "keydown", key, ...extra });
+  const doc = () => (globalThis as any).document;
+
+  it("Shift+F10 on a token opens its action menu", () => {
+    const live = liveTable(GM_ID, gmView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+    press(ui, `token-${GOBLIN}`, "F10", { shiftKey: true });
+    assertPresent(ui.byTestId("token-menu"), "token-menu");
+    assert.equal(selectedTokenIdSignal.value, GOBLIN);
+    ui.unmount();
+  });
+
+  it("P on a token pings its centre", () => {
+    const live = liveTable(PLAYER_ID, playerView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+    press(ui, `token-${HERO}`, "p");
+    assert.deepEqual(live.frames().find((f) => f.PointerPing)?.PointerPing.pos, { x: 125, y: 75 });
+    assert.equal(live.commands().length, 0);
+    ui.unmount();
+  });
+
+  /** Arms the GM teleport of the goblin from its menu. */
+  function armTeleport() {
+    const live = liveTable(GM_ID, gmView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+    ui.key(`token-${GOBLIN}`, "ContextMenu");
+    ui.click("token-menu-teleport");
+    return { live, ui };
+  }
+
+  it("teleport focuses a cell cursor on the token; Escape cancels and returns focus", () => {
+    const { live, ui } = armTeleport();
+    assertSameNode(doc().activeElement, ui.byTestId("table-cell-cursor"), "focus moves to the destination cursor");
+    assert.equal(ui.byTestId("table-cursor-status").textContent, "Column 5, row 7.");
+    press(ui, "table-cell-cursor", "Escape");
+    assertAbsent(ui.byTestId("table-teleport-armed"), "teleport cancelled");
+    assertAbsent(ui.byTestId("table-cell-cursor"), "cursor gone");
+    assertSameNode(doc().activeElement, ui.byTestId(`token-${GOBLIN}`), "focus returns to the token");
+    assert.deepEqual(live.commands(), []);
+    ui.unmount();
+  });
+
+  it("teleport from the keyboard: arrow keys move the cursor and Enter teleports", () => {
+    const { live, ui } = armTeleport();
+    press(ui, "table-cell-cursor", "ArrowRight");
+    press(ui, "table-cell-cursor", "ArrowRight");
+    press(ui, "table-cell-cursor", "ArrowUp");
+    press(ui, "table-cell-cursor", "Enter");
+    assert.deepEqual(live.commands(), [{ cmd: "MOVE_TOKEN", token_id: GOBLIN, to_top_left: { x: 300, y: 250 }, to_elevation_ft: null, gm_teleport: true }]);
+    assertAbsent(ui.byTestId("table-teleport-armed"), "teleport disarms after one move");
+    ui.unmount();
+  });
 });
 
 describe("TableCanvas: compendium spawn cell", () => {
@@ -257,6 +311,56 @@ describe("TableCanvas: GM map brushes", () => {
       ui.unmount();
     });
   }
+
+  const keyboard = [
+    {
+      id: "Enter paints the brush at the keyboard cursor",
+      tool: "terrainPaint",
+      keys: [["ArrowRight"], ["ArrowDown"], ["Enter"]],
+      expected: [{ cmd: "SET_DIFFICULT_TERRAIN", cells: [{ col: 1, row: 1 }], difficult: true }],
+    },
+    {
+      id: "Shift+arrows mark a rectangle that Enter paints in one command",
+      tool: "fogReveal",
+      keys: [["ArrowRight", true], ["ArrowRight", true], ["ArrowDown", true], ["Enter"]],
+      expected: [
+        {
+          cmd: "SET_FOG_OVERRIDES",
+          mode: "REVEAL",
+          cells: [{ col: 0, row: 0 }, { col: 1, row: 0 }, { col: 2, row: 0 }, { col: 0, row: 1 }, { col: 1, row: 1 }, { col: 2, row: 1 }],
+        },
+      ],
+    },
+    {
+      id: "Escape drops the rectangle, so Enter paints one cell",
+      tool: "fogHide",
+      keys: [["ArrowRight", true], ["Escape"], ["Enter"]],
+      expected: [{ cmd: "SET_FOG_OVERRIDES", mode: "HIDE", cells: [{ col: 1, row: 0 }] }],
+    },
+  ] as const;
+  for (const c of keyboard) {
+    it(`keyboard brush: ${c.id}`, () => {
+      const live = liveTable(GM_ID, gmView());
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+      ui.click(`table-tool-${c.tool}`);
+      for (const [key, shiftKey = false] of c.keys) ui.byTestId("table-cell-cursor").dispatchEvent({ type: "keydown", key, shiftKey });
+      assert.deepEqual(live.commands(), c.expected);
+      ui.unmount();
+    });
+  }
+
+  it("keyboard brush: the status names the rectangle and Escape without one leaves the brush", () => {
+    const live = liveTable(GM_ID, gmView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+    ui.click("table-tool-terrainPaint");
+    ui.byTestId("table-cell-cursor").dispatchEvent({ type: "keydown", key: "ArrowDown", shiftKey: true });
+    assert.equal(ui.byTestId("table-cursor-status").textContent, "Column 1, row 2. Rectangle of 1 by 2 cells.");
+    ui.byTestId("table-cell-cursor").dispatchEvent({ type: "keydown", key: "Escape" });
+    ui.byTestId("table-cell-cursor").dispatchEvent({ type: "keydown", key: "Escape" });
+    assertAbsent(ui.byTestId("table-cell-cursor"), "cursor gone with the brush");
+    assert.equal(ui.byTestId("table-tool-select").getAttribute("aria-pressed"), "true");
+    ui.unmount();
+  });
 
   it("a 5x5 fog drag that hits the cell cap is one command and tells the GM", () => {
     const live = liveTable(GM_ID, gmView());

@@ -958,6 +958,31 @@ button.ds-prof-pip {
   outline-offset: 2px;
 }
 
+/* Keyboard cell cursor of the GM brushes and teleport; the rectangle marks Shift+arrow selections. */
+.ds-board-cursor,
+.ds-board-cursor-rect {
+  position: absolute;
+  z-index: 2;
+  margin: 0;
+  padding: 0;
+  background-color: transparent;
+}
+
+.ds-board-cursor {
+  border: 2px dashed var(--atlas-action);
+  cursor: cell;
+}
+
+.ds-board-cursor:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+.ds-board-cursor-rect {
+  border: 2px dotted var(--atlas-action);
+  pointer-events: none;
+}
+
 .ds-board-map {
   position: absolute;
   inset: 0;

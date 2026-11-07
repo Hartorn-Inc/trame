@@ -39,7 +39,7 @@ import { MonsterTurnPanel } from "../../src/table/MonsterTurnPanel.tsx";
 import { PendingResolutionsPanel } from "../../src/table/PendingResolutionsPanel.tsx";
 import { TableCanvas } from "../../src/table/TableCanvas.tsx";
 import type { TableToken } from "../../src/table/tableView.ts";
-import { assertAbsent, assertPresent } from "../helpers/domAssert.ts";
+import { assertAbsent, assertPresent, assertSameNode } from "../helpers/domAssert.ts";
 import { CAMPAIGN, GM_ID, GOBLIN, HERO, HERO_ACTOR, PLAYER_ID, fullToken, liveTable, mount, publicToken, tableState, type LiveTable } from "../helpers/liveTable.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
 import { flush } from "../helpers/mockTransport.ts";
@@ -382,6 +382,14 @@ describe("ActionResolutionCard: a player attacks a monster", () => {
     ui.click("action-apply");
     assert.deepEqual(live.commands()[1], { cmd: "APPLY_RESOLUTION", resolution_id: sent.request.resolution_id, token_id: null, adjustment: null });
     assert.equal(pendingActionSignal.value, null);
+    ui.unmount();
+  });
+
+  it("opening the card moves focus to its heading", async () => {
+    const { ui } = table("player");
+    startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:fire_bolt" });
+    await flush(6);
+    assertSameNode((globalThis as any).document.activeElement, ui.byTestId("action-card").querySelector("h3"), "focus on the card heading");
     ui.unmount();
   });
 

@@ -36,6 +36,8 @@
  * `pointerdown` -> `cellAt` -> `brushCells` -> stroke
  * `pointermove` -> `strokeCells(last, cell)` -> `brushCells` -> `mergeCells`
  * `pointerup`   -> `strokeCommands(tool, stroke)` -> `submitCommand`; cap notice
+ * keyboard      -> `stepCell` moves the cursor; Enter paints `brushCells` at
+ *                  it, or `rectCells(anchor, cursor)` after Shift+arrows
  * ============================================================================
  */
 import type { WirePoint2D, WireTrameCommand } from "../api/wire.ts";
@@ -97,6 +99,30 @@ export function brushCells(center: GridCell, size: number, bounds: GridBounds): 
     }
   }
   return cells;
+}
+
+/**
+ * Cells of the rectangle with opposite corners `a` and `b` (the keyboard
+ * cursor's rectangle), clipped to the map and capped at `MAX_STROKE_CELLS`
+ * in row-major order (invariants 1 and 2).
+ */
+export function rectCells(a: GridCell, b: GridCell, bounds: GridBounds): GridCell[] {
+  const cells: GridCell[] = [];
+  for (let row = Math.max(0, Math.min(a.row, b.row)); row <= Math.min(bounds.rows - 1, Math.max(a.row, b.row)); row++) {
+    for (let col = Math.max(0, Math.min(a.col, b.col)); col <= Math.min(bounds.cols - 1, Math.max(a.col, b.col)); col++) {
+      if (cells.length >= MAX_STROKE_CELLS) return cells;
+      cells.push({ col, row });
+    }
+  }
+  return cells;
+}
+
+/** Moves a keyboard cursor cell by `delta`, kept on the map. */
+export function stepCell(cell: GridCell, delta: readonly [number, number], bounds: GridBounds): GridCell {
+  return {
+    col: Math.min(bounds.cols - 1, Math.max(0, cell.col + delta[0])),
+    row: Math.min(bounds.rows - 1, Math.max(0, cell.row + delta[1])),
+  };
 }
 
 /** Cells on the Bresenham line from `from` to `to`, both included (invariant 3). */

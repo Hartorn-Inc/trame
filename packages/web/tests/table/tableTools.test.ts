@@ -10,6 +10,8 @@ import {
   gridBounds,
   mergeCells,
   pinchFactor,
+  rectCells,
+  stepCell,
   strokeCapped,
   strokeCells,
   strokeCommands,
@@ -42,6 +44,31 @@ describe("tableTools: brush cells", () => {
   it("cellAt floors board pixels to the cell under the pointer", () => {
     assert.deepEqual(cellAt({ x: 149.9, y: 50 }, 50), { col: 2, row: 1 });
   });
+});
+
+describe("tableTools: keyboard cursor", () => {
+  const bounds = { cols: 10, rows: 8 };
+  const rects = [
+    { id: "corners in any order give the same rectangle", a: { col: 2, row: 1 }, b: { col: 1, row: 0 }, expected: ["1,0", "2,0", "1,1", "2,1"] },
+    { id: "a one-cell rectangle is that cell", a: { col: 3, row: 3 }, b: { col: 3, row: 3 }, expected: ["3,3"] },
+    { id: "a rectangle past the edge is clipped to the map", a: { col: 8, row: 6 }, b: { col: 12, row: 9 }, expected: ["8,6", "9,6", "8,7", "9,7"] },
+  ];
+  for (const c of rects) {
+    it(`rectCells: ${c.id}`, () => assert.deepEqual(key(rectCells(c.a, c.b, bounds)), c.expected));
+  }
+
+  it("rectCells: a whole-map rectangle stops at the stroke cap", () => {
+    assert.equal(rectCells({ col: 0, row: 0 }, { col: 99, row: 99 }, { cols: 100, rows: 100 }).length, MAX_STROKE_CELLS);
+  });
+
+  const steps = [
+    { id: "an arrow moves one cell", cell: { col: 4, row: 4 }, delta: [1, 0] as const, expected: { col: 5, row: 4 } },
+    { id: "the cursor stops at the left edge", cell: { col: 0, row: 4 }, delta: [-1, 0] as const, expected: { col: 0, row: 4 } },
+    { id: "the cursor stops at the bottom edge", cell: { col: 4, row: 7 }, delta: [0, 1] as const, expected: { col: 4, row: 7 } },
+  ];
+  for (const c of steps) {
+    it(`stepCell: ${c.id}`, () => assert.deepEqual(stepCell(c.cell, c.delta, bounds), c.expected));
+  }
 });
 
 describe("tableTools: gap-free strokes", () => {
