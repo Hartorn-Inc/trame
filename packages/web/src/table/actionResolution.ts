@@ -43,7 +43,8 @@
  * -----
  * `startAction(pending)` (sheet dispatcher or monster stat block)
  * ├── attack / monster: targets <- `targetTokenIdSignal`, board clicks toggle more.
- * ├── area:   board click sets `areaOriginSignal`; `PROJECT_AOE` -> engine
+ * ├── area (spell, or monster save action with an area such as a breath weapon):
+ * │           board click sets `areaOriginSignal`; `PROJECT_AOE` -> engine
  * │           `AOE_PROJECTED.affected_token_ids` become the targets.
  * ├── `buildActionRequest` -> `RESOLVE_ACTION` -> `ACTION_RESOLVED`.
  * └── review -> Apply -> `APPLY_RESOLUTION` (GM adjustments per target).
@@ -75,11 +76,15 @@ import { acceptedCoverSignal, targetTokenIdSignal } from './CoverSuggestionPanel
 import { boardMetrics } from './scene/tableScene.ts';
 import type { TableToken } from './tableView.ts';
 
-/** Action waiting on the table: a sheet attack (or attack / save spell), an area spell, or a monster action. */
+/**
+ * Action waiting on the table: a sheet attack (or attack / save spell), an area spell, or a
+ * monster action. A monster save action with an area (breath weapon) carries its `area`, so
+ * it is placed like an area spell instead of ticking targets.
+ */
 export type PendingAction =
   | { kind: 'attack'; actorId: Uuid; attackId: string }
   | { kind: 'area'; actorId: Uuid; spellId: string }
-  | { kind: 'monster'; tokenId: Uuid; actionId: string };
+  | { kind: 'monster'; tokenId: Uuid; actionId: string; area?: SpellArea };
 
 /** Action the resolution card is open for (`null` when none). */
 export const pendingActionSignal = signal<PendingAction | null>(null);
@@ -99,11 +104,29 @@ export function newUuid(): Uuid {
   return globalThis.crypto.randomUUID();
 }
 
+/** Area a pending action is placed with: the spell's compendium area or the monster action's own. */
+export function pendingArea(pending: PendingAction | null): SpellArea | null {
+  if (pending?.kind === 'monster') return pending.area ?? null;
+  if (pending?.kind !== 'area') return null;
+  return (CompendiumResolver.getDefault().get(pending.spellId)?.data.area as SpellArea | undefined) ?? null;
+}
+
+/** The pending action is placed as an area (area spell or monster area action). */
+export function isAreaAction(pending: PendingAction | null): boolean {
+  return pending?.kind === 'area' || (pending?.kind === 'monster' && pending.area !== undefined);
+}
+
+/** Pending action of a monster stat block action; save actions with an area are placed as areas. */
+export function monsterPendingAction(tokenId: Uuid, action: MonsterAction): PendingAction {
+  const area = !action.attack ? action.save?.area : undefined;
+  return area ? { kind: 'monster', tokenId, actionId: action.id, area } : { kind: 'monster', tokenId, actionId: action.id };
+}
+
 /** Opens the resolution card; an attack starts on the cover panel's target. */
 export function startAction(action: PendingAction): void {
   pendingActionSignal.value = action;
   const target = targetTokenIdSignal.value;
-  actionTargetIdsSignal.value = action.kind !== 'area' && target ? [target] : [];
+  actionTargetIdsSignal.value = !isAreaAction(action) && target ? [target] : [];
   areaOriginSignal.value = null;
   areaTemplateIdSignal.value = newUuid();
   areaProjectedSignal.value = false;
@@ -127,13 +150,13 @@ export function toggleActionTarget(tokenId: Uuid): void {
 
 /** Board clicks on tokens toggle targets instead of selecting (until the action is rolled). */
 export function isPickingTargets(): boolean {
-  const kind = pendingActionSignal.value?.kind;
-  return (kind === 'attack' || kind === 'monster') && activeResolutionIdSignal.value === null;
+  const pending = pendingActionSignal.value;
+  return pending !== null && !isAreaAction(pending) && activeResolutionIdSignal.value === null;
 }
 
 /** Board clicks place the pending area until it is projected. */
 export function isPlacingArea(): boolean {
-  return pendingActionSignal.value?.kind === 'area' && !areaProjectedSignal.value;
+  return isAreaAction(pendingActionSignal.value) && !areaProjectedSignal.value;
 }
 
 /** First token on the table linked to `actorId` (the caster or attacker), `null` when none. */
@@ -279,7 +302,7 @@ export function resolvableFromMonsterAction(action: MonsterAction): ResolvableAc
     damageType: type,
     criticalRange: 20,
     source: action.attack?.kind === 'ranged' ? 'weapon_dex' : 'weapon_str',
-    area: null,
+    area: (!action.attack ? action.save?.area : undefined) ?? null,
     concentration: false,
     secondarySave: action.attack && action.save ? { ability: action.save.ability, dc: action.save.dc } : null,
     extraDamage: otherTypes.slice(0, MAX_EXTRA_DAMAGE_PARTS).map((other) => ({ ...ofType(other), type: other })),
@@ -492,11 +515,10 @@ export function areaTemplate(
 export function pendingAreaTemplate(state: ProjectedTableState | null): AoeTemplateDto | null {
   const pending = pendingActionSignal.value;
   const point = areaOriginSignal.value;
-  if (pending?.kind !== 'area' || !point) return null;
-  const data = CompendiumResolver.getDefault().get(pending.spellId)?.data;
-  const area = data?.area as SpellArea | undefined;
-  if (!area) return null;
-  const casterId = casterTokenId(state, pending.actorId);
+  const area = pendingArea(pending);
+  if (!pending || pending.kind === 'attack' || !point || !area) return null;
+  const concentration = pending.kind === 'area' && CompendiumResolver.getDefault().get(pending.spellId)?.data.concentration === true;
+  const casterId = pending.kind === 'monster' ? pending.tokenId : casterTokenId(state, pending.actorId);
   const token = casterId ? (state?.tokens[casterId] ?? state?.public_tokens?.[casterId]) : undefined;
   const { cellPx } = boardMetrics(state);
   const feetPerCell = state?.feet_per_cell || 5;
@@ -506,5 +528,5 @@ export function pendingAreaTemplate(state: ProjectedTableState | null): AoeTempl
         radiusFt: ((token.grid_w ?? 1) * feetPerCell) / 2,
       }
     : null;
-  return areaTemplate(area, point, caster, areaTemplateIdSignal.value, data?.concentration === true ? casterId : null);
+  return areaTemplate(area, point, caster, areaTemplateIdSignal.value, concentration ? casterId : null);
 }

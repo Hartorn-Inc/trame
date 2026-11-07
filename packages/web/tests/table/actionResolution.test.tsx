@@ -19,6 +19,7 @@ import { localeSignal } from "../../src/i18n/index.ts";
 import { ActionResolutionCard } from "../../src/table/ActionResolutionCard.tsx";
 import {
   areaOriginSignal,
+  areaProjectedSignal,
   areaTemplate,
   buildActionRequest,
   cancelAction,
@@ -433,6 +434,56 @@ describe("ActionResolutionCard: a player's area against monsters", () => {
     ui.unmount();
   });
 
+  /** Projects Burning Hands on the goblin and lets the room refuse the roll. */
+  async function refusedArea() {
+    const { live, ui } = table("player");
+    startAction({ kind: "area", actorId: HERO_ACTOR, spellId: "srd:spell:burning_hands" });
+    ui.input("action-area-token", GOBLIN, "change");
+    ui.click("action-area-project");
+    const projected = live.commands()[0];
+    live.client.applyServerEnvelope({
+      type: "CommandAccepted",
+      seqId: seq++,
+      state: playerView(),
+      events: [{ event: "AOE_PROJECTED", template: projected.template, affected_cells: [], affected_token_ids: [GOBLIN], persisted: false }],
+    } as any);
+    await flush(6);
+    live.client.state.commandFeedback.value = [{ id: 98, kind: "rejected", action: "RESOLVE_ACTION", reason: "no" }];
+    await flush(6);
+    return { live, ui, projected };
+  }
+
+  it("a refused area roll: Roll again sends the same engine targets", async () => {
+    const { live, ui } = await refusedArea();
+    assertPresent(ui.byTestId("action-error"), "action-error");
+    ui.click("action-roll-again");
+    const resolves = live.commands().filter((c) => c.cmd === "RESOLVE_ACTION");
+    assert.equal(resolves.length, 2);
+    assert.deepEqual(resolves[1].request.targets.map((t: { token_id: string }) => t.token_id), [GOBLIN]);
+    assert.notEqual(resolves[1].request.resolution_id, resolves[0].request.resolution_id);
+    ui.unmount();
+  });
+
+  it("a refused area roll: Move area re-projects and rolls the new engine targets", async () => {
+    const { live, ui, projected } = await refusedArea();
+    ui.click("action-area-move");
+    assert.equal(areaProjectedSignal.value, false);
+    ui.input("action-area-token", HERO, "change");
+    ui.click("action-area-project");
+    const reprojected = live.commands().filter((c) => c.cmd === "PROJECT_AOE").at(-1)!;
+    assert.notDeepEqual(reprojected.template.shape, projected.template.shape);
+    live.client.applyServerEnvelope({
+      type: "CommandAccepted",
+      seqId: seq++,
+      state: playerView(),
+      events: [{ event: "AOE_PROJECTED", template: reprojected.template, affected_cells: [], affected_token_ids: [], persisted: false }],
+    } as any);
+    await flush(6);
+    assert.equal(ui.byTestId("action-status").textContent, "No token is in the area.");
+    assert.equal(live.commands().filter((c) => c.cmd === "RESOLVE_ACTION").length, 1);
+    ui.unmount();
+  });
+
   it("an area that reaches nobody says so without asking the server", async () => {
     const { live, ui } = table("GM");
     startAction({ kind: "area", actorId: HERO_ACTOR, spellId: "srd:spell:burning_hands" });
@@ -584,6 +635,45 @@ describe("MonsterTurnPanel: the GM runs a monster's attack", () => {
     const [sent] = live.commands();
     assert.equal(sent.request.damage_type, "slashing");
     assert.deepEqual(sent.request.extra_damage, [{ dice: "2d6", modifier: 0, damage_type: "poison" }]);
+    ui.unmount();
+  });
+
+  it("an area save action is placed on the board and its targets come from the engine", async () => {
+    const breath = {
+      id: "poison_breath",
+      name: "Poison Breath",
+      description: "Constitution Saving Throw: DC 12, each creature in a 15-foot Cone.",
+      automation: "full",
+      save: { ability: "con", dc: 12, area: { shape: "cone", sizeFt: 15 }, onSuccess: "half" },
+      damage: [{ dice: "5d6", average: 17, type: "poison" }],
+    };
+    const withBreath = () => {
+      const state = gmView();
+      state.tokens[GOBLIN] = { ...state.tokens[GOBLIN], stat_block: { ...GOBLIN_BLOCK, actions: [...GOBLIN_BLOCK.actions, breath] } as unknown as Record<string, unknown> };
+      return state;
+    };
+    const { live, ui } = table("GM", withBreath());
+    selectedTokenIdSignal.value = GOBLIN;
+    ui.click("monster-turn-action-poison_breath");
+    assert.deepEqual(pendingActionSignal.value, { kind: "monster", tokenId: GOBLIN, actionId: "poison_breath", area: { shape: "cone", sizeFt: 15 } });
+    assertAbsent(ui.byTestId(`action-target-${HERO}`), "target checklist");
+    ui.input("action-area-token", HERO, "change");
+    ui.click("action-area-project");
+    const [projected] = live.commands();
+    assert.equal(projected.cmd, "PROJECT_AOE");
+    assert.equal(projected.template.shape.shape, "CONE");
+    live.client.applyServerEnvelope({
+      type: "CommandAccepted",
+      seqId: seq++,
+      state: withBreath(),
+      events: [{ event: "AOE_PROJECTED", template: projected.template, affected_cells: [], affected_token_ids: [HERO], persisted: false }],
+    } as any);
+    await flush(6);
+    const sent = live.commands().at(-1)!;
+    assert.equal(sent.cmd, "RESOLVE_ACTION");
+    assert.equal(sent.request.attacker_token_id, GOBLIN);
+    assert.deepEqual(sent.request.check, { kind: "SAVE", ability: "con", dc: 12, half_on_success: true });
+    assert.deepEqual(sent.request.targets.map((t: { token_id: string }) => t.token_id), [HERO]);
     ui.unmount();
   });
 

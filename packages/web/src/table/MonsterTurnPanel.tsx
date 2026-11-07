@@ -10,7 +10,9 @@
  * SRD monsters), its `MonsterStatBlockView` is shown with a button per
  * attack or save action. The button opens the resolution card as a
  * `monster` pending action, which the room rolls against the targets' real
- * AC and save bonuses like any other action.
+ * AC and save bonuses like any other action. A save action with an area
+ * (breath weapon) is placed on the board like an area spell, from the
+ * monster's token, and its targets come from the engine's projection.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
@@ -26,7 +28,7 @@
 import { selectedTokenIdSignal } from '../api/session.ts';
 import type { ApiClient } from '../api/client.ts';
 import { isMonsterStatBlock, MonsterStatBlockView } from '../compendium/MonsterStatBlockView.tsx';
-import { startAction } from './actionResolution.ts';
+import { monsterPendingAction, startAction } from './actionResolution.ts';
 
 export interface MonsterTurnPanelProps {
   client: ApiClient;
@@ -42,7 +44,7 @@ export function MonsterTurnPanel({ client, isGm }: MonsterTurnPanelProps) {
     <MonsterStatBlockView
       statBlock={block}
       testId="monster-turn"
-      onAction={(action) => startAction({ kind: 'monster', tokenId, actionId: action.id })}
+      onAction={(action) => startAction(monsterPendingAction(tokenId, action))}
     />
   );
 }

@@ -35,7 +35,10 @@
  * -----
  * `ActionResolutionCard` (keyed by the pending template id)
  * ├── attack / monster: targets -> Roll -> `RESOLVE_ACTION`.
- * ├── area: place -> Project (`PROJECT_AOE`) -> `AOE_PROJECTED` -> `RESOLVE_ACTION`.
+ * ├── area (spell, or monster action with an area):
+ * │     place -> Project (`PROJECT_AOE`) -> `AOE_PROJECTED` -> `RESOLVE_ACTION`.
+ * │     Refused roll -> Roll again (same engine targets) or Move area
+ * │     (place and project again; the new `AOE_PROJECTED` gives the targets).
  * ├── `ACTION_RESOLVED` (projection) -> `ResolutionReview`.
  * └── Apply -> `APPLY_RESOLUTION` -> `cancelAction()`.
  * ============================================================================
@@ -53,6 +56,7 @@ import {
   attackerContext,
   buildActionRequest,
   cancelAction,
+  isAreaAction,
   newUuid,
   pendingActionSignal,
   pendingAreaTemplate,
@@ -132,12 +136,25 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
 
   useEffect(() => headingRef.current?.focus(), [resolved !== undefined]);
 
+  const isArea = isAreaAction(pending);
+  const templateId = areaTemplateIdSignal.value;
+  const projected = areaProjectedSignal.value;
+  /** Tokens the engine put in the projected area, kept so a refused roll can be sent again. */
+  const [areaTargetIds, setAreaTargetIds] = useState<Uuid[] | null>(null);
+  /** `lastEvents` already consumed for this projection; a re-projection ignores them. */
+  const consumedEvents = useRef<unknown>(null);
+
   const feedback = client.state.commandFeedback.value;
   const feedbackSeen = useRef(feedback.length ? feedback[feedback.length - 1].id : -1);
   useEffect(() => {
-    const rejected = feedback.find((f) => f.id > feedbackSeen.current && f.action === 'RESOLVE_ACTION');
+    const fresh = feedback.filter((f) => f.id > feedbackSeen.current);
     if (feedback.length) feedbackSeen.current = Math.max(feedbackSeen.current, ...feedback.map((f) => f.id));
-    if (!rejected || resolved) return;
+    if (fresh.some((f) => f.action === 'PROJECT_AOE' && f.kind !== 'notConnected') && isArea && areaTargetIds === null) {
+      areaProjectedSignal.value = false;
+      setError(t('resolution.projectRejected'));
+      return;
+    }
+    if (!fresh.some((f) => f.action === 'RESOLVE_ACTION') || resolved) return;
     setSent(false);
     activeResolutionIdSignal.value = null;
     setError(t('resolution.rejected'));
@@ -169,18 +186,26 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
     activeResolutionIdSignal.value = id;
   };
 
-  const templateId = areaTemplateIdSignal.value;
-  const projected = areaProjectedSignal.value;
-  const areaResolved = useRef(false);
   useEffect(() => {
-    if (pending.kind !== 'area' || !projected || areaResolved.current || !action) return;
+    if (!isArea || !projected || areaTargetIds !== null || !action || events === consumedEvents.current) return;
     const hit = events.find((ev) => ev.event === 'AOE_PROJECTED' && (ev.template as { id?: string } | undefined)?.id === templateId);
     if (!hit) return;
-    areaResolved.current = true;
+    consumedEvents.current = events;
     const ids = (hit.affected_token_ids as Uuid[] | undefined) ?? [];
     const excluded = action.area?.shape === 'emanation' ? attacker.tokenId : null;
-    resolveFor(tokens.filter((tok) => ids.includes(tok.id) && tok.id !== excluded));
+    const targets = tokens.filter((tok) => ids.includes(tok.id) && tok.id !== excluded);
+    setAreaTargetIds(targets.map((tok) => tok.id));
+    resolveFor(targets);
   }, [events, projected]);
+
+  /** After a refused roll: place and project the area again (the next `AOE_PROJECTED` gives the targets). */
+  const moveArea = () => {
+    consumedEvents.current = events;
+    setAreaTargetIds(null);
+    setNoneAffected(false);
+    setError(null);
+    areaProjectedSignal.value = false;
+  };
 
   const close = (
     <button type="button" class="ds-btn ds-btn-ghost" data-testid="action-cancel" onClick={cancelAction}>
@@ -198,13 +223,15 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
   }
 
   const targetIds = actionTargetIdsSignal.value;
-  const template = pending.kind === 'area' ? pendingAreaTemplate(state) : null;
+  const template = isArea ? pendingAreaTemplate(state) : null;
   const project = () => {
     if (!template) return;
+    setError(null);
     if (client.submitCommand(projectAoe(template, action.concentration))) areaProjectedSignal.value = true;
     else setError(t('resolution.offline'));
   };
-  const picking = !sent && pending.kind !== 'area';
+  const picking = !sent && !isArea;
+  const retryArea = !sent && isArea && areaTargetIds !== null;
 
   return (
     <section class="ds-panel ds-stack-sm" aria-label={t('resolution.region')} data-testid="action-card" aria-busy={sent && !resolved ? 'true' : 'false'}>
@@ -252,7 +279,23 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
         </fieldset>
       ) : null}
 
-      {!sent && pending.kind === 'area' ? (
+      {retryArea ? (
+        <div class="ds-cluster">
+          <button
+            type="button"
+            class="ds-btn ds-btn-primary"
+            data-testid="action-roll-again"
+            onClick={() => resolveFor(tokens.filter((tok) => areaTargetIds.includes(tok.id)))}
+          >
+            {t('resolution.rollAgain')}
+          </button>
+          <button type="button" class="ds-btn ds-btn-secondary" data-testid="action-area-move" onClick={moveArea}>
+            {t('resolution.moveArea')}
+          </button>
+        </div>
+      ) : null}
+
+      {!sent && isArea && !retryArea ? (
         <div class="ds-stack-sm">
           <p class="ds-hint" data-testid="action-area-hint" role="status">
             {projected ? t('resolution.waiting') : template ? t('resolution.areaPlaced') : t('resolution.placeArea')}
