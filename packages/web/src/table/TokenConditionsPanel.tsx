@@ -28,26 +28,44 @@
  *      `tests/engine/wasmParity.test.ts`).
  * 4. `Not Colour Alone`:
  *    - Active conditions are `aria-pressed` toggles with text; each effect
- *      is a sentence.
+ *      is a sentence. Advantage / disadvantage sources (`ROLL_MODE_RULES`)
+ *      are listed by condition and rule (`effectLabel`), never by raw id.
+ * 5. `Exhaustion Level On The Sheet`:
+ *    - The stepper (0..`MAX_EXHAUSTION_LEVEL`) saves `attributes.exhaustion`
+ *      on the token's linked actor sheet, where the DAG turns it into
+ *      `-2 * level` on d20 tests and `-5 ft * level` of Speed. Moving off 0
+ *      adds the `exhaustion` condition and returning to 0 removes it, so the
+ *      token and the sheet never disagree. Tokens without a loaded sheet only
+ *      get the condition toggle.
  * ============================================================================
  */
+import { signal } from '@preact/signals';
 import type { ApiClient } from '../api/client.ts';
 import { selectedTokenIdSignal } from '../api/session.ts';
 import { t, type MessageKey } from '../i18n/index.ts';
 import {
   CONDITION_RULES,
+  MAX_EXHAUSTION_LEVEL,
+  ROLL_MODE_RULES,
   normalizeConditionId,
   resolveConditionEffects,
   type ConditionOverrideRuling,
+  type ConditionRule,
 } from '../../../game-systems/dnd5e/src/conditions.ts';
+import { saveActorSheet, setAtPath } from '../sheet/sheetPersistence.ts';
 import { conditionOverride, setTokenConditions, type ConditionOverrideMode, type ConditionOverrideSubject } from './commands.ts';
 import { listTableTokens } from './tableView.ts';
 
 /** SRD 5.2.1 condition ids offered by the picker. */
 export const CONDITION_IDS: readonly string[] = Object.keys(CONDITION_RULES);
 
+/** The last exhaustion level change was not saved (version conflict or request error). */
+const exhaustionSaveFailedSignal = signal(false);
+
 export interface TokenConditionsPanelProps {
   client: ApiClient;
+  /** Campaign of the table; the exhaustion stepper saves the linked actor sheet in it. */
+  campaignId?: string;
   isGm?: boolean;
 }
 
@@ -79,7 +97,49 @@ function RulingSelect(props: {
   );
 }
 
-export function TokenConditionsPanel({ client, isGm = false }: TokenConditionsPanelProps) {
+/** `"Poisoned: disadvantage on its attack rolls"` for a `"<condition>.<rule>"` effect id. */
+export function effectLabel(id: string): string {
+  const [condition, rule] = id.split('.');
+  if (!rule) return t('conditions.effectId', { id });
+  return t('conditions.effectLabel', {
+    condition: t(`conditions.name.${condition}` as MessageKey),
+    rule: t(`conditions.rule.${rule}` as MessageKey),
+  });
+}
+
+function ExhaustionStepper(props: { level: number; onChange: (level: number) => void }) {
+  const { level } = props;
+  return (
+    <div class="ds-cluster" role="group" aria-label={t('conditions.exhaustion.group')} data-testid="exhaustion-stepper">
+      <span class="ds-field-label">{t('conditions.exhaustion.label')}</span>
+      <button
+        type="button"
+        class="ds-btn ds-btn-ghost ds-btn-sm"
+        data-testid="exhaustion-decrease"
+        aria-label={t('conditions.exhaustion.decrease')}
+        disabled={level <= 0}
+        onClick={() => props.onChange(level - 1)}
+      >
+        −
+      </button>
+      <output class="atlas-tabular-nums" data-testid="exhaustion-level" aria-live="polite">
+        {t('conditions.exhaustion.value', { level, max: MAX_EXHAUSTION_LEVEL })}
+      </output>
+      <button
+        type="button"
+        class="ds-btn ds-btn-ghost ds-btn-sm"
+        data-testid="exhaustion-increase"
+        aria-label={t('conditions.exhaustion.increase')}
+        disabled={level >= MAX_EXHAUSTION_LEVEL}
+        onClick={() => props.onChange(level + 1)}
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
+export function TokenConditionsPanel({ client, campaignId, isGm = false }: TokenConditionsPanelProps) {
   const token = listTableTokens(client.state.table.value).find((tok) => tok.id === selectedTokenIdSignal.value);
   if (!token) return null;
   const current = token.conditions.map(normalizeConditionId);
@@ -92,13 +152,41 @@ export function TokenConditionsPanel({ client, isGm = false }: TokenConditionsPa
   const rule = (subject: ConditionOverrideSubject, id: string, mode: ConditionOverrideMode) =>
     client.submitCommand(conditionOverride(token.id, subject, id, mode));
 
+  const actor = token.actorId ? client.state.actors.value[token.actorId] : undefined;
+  const sheet = actor?.data as { attributes?: { exhaustion?: number } } | undefined;
+  const exhaustion = sheet?.attributes ? Math.min(MAX_EXHAUSTION_LEVEL, Math.max(0, Number(sheet.attributes.exhaustion ?? 0))) : null;
+  const setExhaustion = (level: number) => {
+    if (!token.actorId || !campaignId) return;
+    exhaustionSaveFailedSignal.value = false;
+    const has = current.includes('exhaustion');
+    saveActorSheet(client, campaignId, token.actorId, setAtPath(actor?.data, 'attributes.exhaustion', level))
+      .then((outcome) => {
+        if (outcome.status !== 'saved') {
+          exhaustionSaveFailedSignal.value = true;
+          return;
+        }
+        if (level > 0 && !has) client.submitCommand(setTokenConditions(token.id, [...current, 'exhaustion']));
+        if (level === 0 && has) client.submitCommand(setTokenConditions(token.id, current.filter((c) => c !== 'exhaustion')));
+      })
+      .catch(() => {
+        exhaustionSaveFailedSignal.value = true;
+      });
+  };
+
   const summary: string[] = [];
   if (effects.speedZero) summary.push(t('conditions.effect.speedZero'));
   if (effects.incapacitated) summary.push(t('conditions.effect.incapacitated'));
   if (effects.autoFailSaves.length > 0) summary.push(t('conditions.effect.autoFailSaves'));
   if (effects.resistsAllDamage) summary.push(t('conditions.effect.resistAll'));
+  for (const id of effects.activeEffects) {
+    if (ROLL_MODE_RULES.has(id.split('.')[1] as ConditionRule)) summary.push(effectLabel(id));
+  }
   if (effects.effectiveConditions.includes('exhaustion')) {
-    summary.push(effects.exhaustionApplies ? t('conditions.effect.exhaustion') : t('conditions.effect.exhaustionSuspended'));
+    if (!effects.exhaustionApplies) summary.push(t('conditions.effect.exhaustionSuspended'));
+    else if (exhaustion) {
+      summary.push(t('conditions.effect.exhaustionLevel', { level: exhaustion, penalty: 2 * exhaustion, speed: 5 * exhaustion }));
+      if (exhaustion >= MAX_EXHAUSTION_LEVEL) summary.push(t('conditions.effect.exhaustionDeath'));
+    } else summary.push(t('conditions.effect.exhaustion'));
   }
   const ruledEffects = isGm
     ? [...new Set([...effects.activeEffects, ...token.conditionOverrides.filter((o) => o.subject === 'EFFECT').map((o) => o.id)])]
@@ -127,6 +215,12 @@ export function TokenConditionsPanel({ client, isGm = false }: TokenConditionsPa
           {current.length > 0 ? current.map(conditionName).join(', ') : t('conditions.none')}
         </p>
       )}
+      {token.controlled && exhaustion !== null ? <ExhaustionStepper level={exhaustion} onChange={setExhaustion} /> : null}
+      {exhaustionSaveFailedSignal.value ? (
+        <p class="ds-hint" role="alert" data-testid="exhaustion-save-failed">
+          {t('conditions.exhaustion.saveFailed')}
+        </p>
+      ) : null}
       <ul class="ds-stack-sm" data-testid="conditions-effects" aria-label={t('conditions.effectsTitle')}>
         {summary.length > 0 ? summary.map((line) => <li key={line}>{line}</li>) : <li>{t('conditions.noEffects')}</li>}
       </ul>
@@ -146,10 +240,10 @@ export function TokenConditionsPanel({ client, isGm = false }: TokenConditionsPa
           ))}
           {ruledEffects.map((id) => (
             <div key={id} class="ds-cluster">
-              <span class="ds-field-label">{t('conditions.effectId', { id })}</span>
+              <span class="ds-field-label">{effectLabel(id)}</span>
               <RulingSelect
                 testId={`ruling-effect-${id}`}
-                label={t('conditions.rulingFor', { name: id })}
+                label={t('conditions.rulingFor', { name: effectLabel(id) })}
                 value={rulingOf(token.conditionOverrides, 'EFFECT', id)}
                 onChange={(mode) => rule('EFFECT', id, mode)}
               />

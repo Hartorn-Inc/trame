@@ -13,9 +13,10 @@ import { MAX_STROKE_CELLS } from "../../src/table/tableTools.ts";
 import { deathSavePhase, listTableTokens } from "../../src/table/tableView.ts";
 import { TokenConditionsPanel } from "../../src/table/TokenConditionsPanel.tsx";
 import { TokenVitalsPanel } from "../../src/table/TokenVitalsPanel.tsx";
-import { CAMPAIGN, GM_ID, GOBLIN, HERO, PLAYER_ID, fullToken, liveTable, mount, publicToken, tableState } from "../helpers/liveTable.ts";
+import { CAMPAIGN, GM_ID, GOBLIN, HERO, HERO_ACTOR, PLAYER_ID, fullToken, liveTable, mount, publicToken, tableState } from "../helpers/liveTable.ts";
 import { assertAbsent, assertPresent, assertSameNode } from "../helpers/domAssert.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
+import { actorDto, flush } from "../helpers/mockTransport.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -712,13 +713,77 @@ describe("TokenConditionsPanel: conditions, rulings and automated effects", () =
     { id: "Paralyzed shows incapacitated and automatic save failures", conditions: ["paralyzed"], overrides: [], expected: /Incapacitated.*Strength and Dexterity saving throws fail/ },
     { id: "Petrified shows resistance to all damage", conditions: ["petrified"], overrides: [], expected: /Resistance to all damage/ },
     { id: "Exhaustion is reported as applying", conditions: ["exhaustion"], overrides: [], expected: /Exhaustion applies/ },
-    { id: "a GM ruling removing Speed 0 lifts it", conditions: ["grappled"], overrides: [{ subject: "EFFECT", id: "grappled.speed_zero", mode: "REMOVE" }], expected: /No automated effects/ },
+    { id: "a GM ruling removing Speed 0 lifts it", conditions: ["grappled"], overrides: [{ subject: "EFFECT", id: "grappled.speed_zero", mode: "REMOVE" }], expected: /^(?!.*Speed 0)/ },
+    { id: "Poisoned lists its disadvantage sources by name", conditions: ["poisoned"], overrides: [], expected: /Poisoned: disadvantage on its attack rolls.*Poisoned: disadvantage on ability checks/ },
+    { id: "Invisible lists advantage on attacks and Initiative", conditions: ["invisible"], overrides: [], expected: /Invisible: advantage on its attack rolls.*Invisible: attack rolls against it have disadvantage.*Invisible: advantage on Initiative/ },
+    { id: "a removed roll-mode effect is not listed", conditions: ["poisoned"], overrides: [{ subject: "EFFECT", id: "poisoned.check_disadvantage", mode: "REMOVE" }], expected: /^(?!.*ability checks).*attack rolls/ },
   ] as const;
   for (const c of effects) {
     it(`effects: ${c.id}`, () => {
       const live = liveTable(GM_ID, gmView({}, { conditions: [...c.conditions], condition_overrides: [...c.overrides] }));
       selectedTokenIdSignal.value = HERO;
       const ui = mount(h(TokenConditionsPanel, { client: live.client, isGm: true }));
+      assert.match(ui.byTestId("conditions-effects").textContent, c.expected);
+      ui.unmount();
+    });
+  }
+
+  it("the GM ruling list names effects instead of raw ids", () => {
+    const live = liveTable(GM_ID, gmView({}, { conditions: ["grappled"] }));
+    selectedTokenIdSignal.value = HERO;
+    const ui = mount(h(TokenConditionsPanel, { client: live.client, isGm: true }));
+    assert.equal(ui.byTestId("ruling-effect-grappled.speed_zero").getAttribute("aria-label"), "Ruling for Grappled: Speed 0");
+    ui.unmount();
+  });
+
+  const ACTOR_URL = `PUT /api/v1/campaigns/${CAMPAIGN}/actors/${HERO_ACTOR}`;
+  const linkedHero = (level: number, conditions: string[]) => {
+    const live = liveTable(PLAYER_ID, playerView({}, { actor_id: HERO_ACTOR, conditions }), {
+      [ACTOR_URL]: { status: 200, body: { actor: actorDto({ id: HERO_ACTOR, version: 2 }) } },
+    });
+    live.client.state.actors.value = { [HERO_ACTOR]: { id: HERO_ACTOR, version: 1, data: { attributes: { exhaustion: level } } } as any };
+    selectedTokenIdSignal.value = HERO;
+    return live;
+  };
+  const steps = [
+    { id: "raising from 0 saves level 1 and adds the Exhaustion condition", level: 0, conditions: [], button: "exhaustion-increase", saved: 1, commands: [{ cmd: "SET_TOKEN_CONDITIONS", token_id: HERO, conditions: ["exhaustion"] }] },
+    { id: "raising from 2 saves level 3 and keeps the condition", level: 2, conditions: ["exhaustion"], button: "exhaustion-increase", saved: 3, commands: [] },
+    { id: "lowering to 0 saves level 0 and removes the condition", level: 1, conditions: ["prone", "exhaustion"], button: "exhaustion-decrease", saved: 0, commands: [{ cmd: "SET_TOKEN_CONDITIONS", token_id: HERO, conditions: ["prone"] }] },
+  ];
+  for (const c of steps) {
+    it(`exhaustion stepper: ${c.id}`, async () => {
+      const live = linkedHero(c.level, c.conditions);
+      const ui = mount(h(TokenConditionsPanel, { client: live.client, campaignId: CAMPAIGN }));
+      ui.click(c.button);
+      await flush(4);
+      const put = live.transport.calls.find((call) => call.method === "PUT")?.body as Record<string, any>;
+      assert.equal(put.data.attributes.exhaustion, c.saved);
+      assert.deepEqual(live.commands(), c.commands);
+      ui.unmount();
+    });
+  }
+
+  const bounds = [
+    { id: "level 0 cannot go lower", level: 0, decrease: true, increase: false },
+    { id: "level 6 cannot go higher", level: 6, decrease: false, increase: true },
+  ];
+  for (const c of bounds) {
+    it(`exhaustion stepper: ${c.id}`, () => {
+      const ui = mount(h(TokenConditionsPanel, { client: linkedHero(c.level, c.level > 0 ? ["exhaustion"] : []).client, campaignId: CAMPAIGN }));
+      assert.equal(ui.byTestId("exhaustion-decrease").disabled, c.decrease);
+      assert.equal(ui.byTestId("exhaustion-increase").disabled, c.increase);
+      assert.equal(ui.byTestId("exhaustion-level").textContent, `${c.level} / 6`);
+      ui.unmount();
+    });
+  }
+
+  const penalties = [
+    { id: "level 2 shows -4 to d20 tests and -10 ft of Speed", level: 2, expected: /Exhaustion level 2: -4 to d20 tests, Speed -10 ft\./ },
+    { id: "level 6 says the creature dies", level: 6, expected: /Exhaustion level 6: -12 to d20 tests, Speed -30 ft\..*the creature dies/ },
+  ];
+  for (const c of penalties) {
+    it(`exhaustion summary: ${c.id}`, () => {
+      const ui = mount(h(TokenConditionsPanel, { client: linkedHero(c.level, ["exhaustion"]).client, campaignId: CAMPAIGN }));
       assert.match(ui.byTestId("conditions-effects").textContent, c.expected);
       ui.unmount();
     });

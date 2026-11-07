@@ -109,6 +109,23 @@ export type ConditionRule =
   | "initiative_disadvantage"
   | "resistance_all_damage";
 
+/** Rules that grant advantage or impose disadvantage on a d20 test (the roll-mode sources). */
+export const ROLL_MODE_RULES: ReadonlySet<ConditionRule> = new Set<ConditionRule>([
+  "attack_disadvantage",
+  "attack_disadvantage_vs_others",
+  "attack_advantage",
+  "attacked_with_advantage",
+  "attacked_with_disadvantage",
+  "attacked_prone",
+  "dex_save_disadvantage",
+  "check_disadvantage",
+  "initiative_advantage",
+  "initiative_disadvantage",
+]);
+
+/** Highest SRD 5.2.1 exhaustion level; a creature at this level dies. */
+export const MAX_EXHAUSTION_LEVEL = 6;
+
 const INCAPACITATED: readonly ConditionRule[] = ["incapacitated", "initiative_disadvantage"];
 
 /**
