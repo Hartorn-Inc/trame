@@ -150,6 +150,11 @@ export function toggleDoor(wallId: Uuid, isOpen: boolean): WireTrameCommand {
   return { cmd: "TOGGLE_DOOR", wall_id: wallId, is_open: isOpen };
 }
 
+/** `CONFIGURE_DOOR`: GM-only; locks or unlocks a plain door, leaving its open and secret state unchanged. */
+export function configureDoorLock(wallId: Uuid, isLocked: boolean): WireTrameCommand {
+  return { cmd: "CONFIGURE_DOOR", wall_id: wallId, is_open: null, is_locked: isLocked, is_secret: null };
+}
+
 /** `REMOVE_TOKEN`: GM-only; also drops the token from the initiative order. */
 export function removeToken(tokenId: Uuid): WireTrameCommand {
   return { cmd: "REMOVE_TOKEN", token_id: tokenId };

@@ -91,13 +91,63 @@ describe("TableCanvas: door handles", () => {
       const live = liveTable(userId, (isGm ? gmView : playerView)({ walls: [door(c.open, c.locked)] }));
       const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm }));
       const handle = ui.byTestId(`door-${DOOR}`);
-      assert.equal(handle.disabled, !c.enabled);
+      assert.equal(handle.getAttribute("aria-disabled"), c.enabled ? null : "true");
+      assert.equal(handle.disabled, false, "a refused handle stays focusable");
       assert.equal(handle.getAttribute("aria-pressed"), String(c.open));
       ui.click(`door-${DOOR}`);
       assert.deepEqual(live.commands(), c.expected);
       ui.unmount();
     });
   }
+
+  it("a locked handle says why it does not open", () => {
+    const live = liveTable(PLAYER_ID, playerView({ walls: [door(false, true)] }));
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+    ui.click(`door-${DOOR}`);
+    assert.equal(ui.byTestId("table-door-status").textContent, "This door is locked. Only the Game Master can unlock it.");
+    assert.deepEqual(live.commands(), []);
+    ui.unmount();
+  });
+
+  const blinding: WireWallSegment = { ...wallBetween, id: "dddddddd-0000-4000-8000-000000000002", a: { x: 250, y: -1000 }, b: { x: 250, y: 1000 } };
+  const sight = [
+    { id: "a player does not get the handle of a door behind a wall", role: "player", walls: [blinding, door(false, false)], fog: [], present: false },
+    { id: "a GM reveal cell on the door shows its handle", role: "player", walls: [blinding, door(false, false)], fog: [{ cell_x: 6, cell_y: 1, mode: "REVEAL" }], present: true },
+    { id: "a GM hide cell over a seen door hides its handle", role: "player", walls: [door(false, false)], fog: [{ cell_x: 5, cell_y: 1, mode: "HIDE" }, { cell_x: 6, cell_y: 1, mode: "HIDE" }], present: false },
+    { id: "the GM gets every handle, fog or not", role: "GM", walls: [blinding, door(false, false)], fog: [], present: true },
+  ] as const;
+  for (const c of sight) {
+    it(c.id, () => {
+      const { userId, isGm } = viewer(c.role);
+      const live = liveTable(userId, (isGm ? gmView : playerView)({ walls: [...c.walls], fog_overrides: [...c.fog] }));
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm }));
+      assert.equal(ui.byTestId(`door-${DOOR}`) !== null, c.present);
+      ui.unmount();
+    });
+  }
+
+  const locks = [
+    { id: "GM locks an unlocked door", locked: false, expected: true },
+    { id: "GM unlocks a locked door", locked: true, expected: false },
+  ];
+  for (const c of locks) {
+    it(c.id, () => {
+      const live = liveTable(GM_ID, gmView({ walls: [door(false, c.locked)] }));
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+      assert.equal(ui.byTestId(`door-lock-${DOOR}`).getAttribute("aria-pressed"), String(c.locked));
+      assert.equal(ui.byTestId(`door-lock-${DOOR}`).getAttribute("aria-label"), "Door locked");
+      ui.click(`door-lock-${DOOR}`);
+      assert.deepEqual(live.commands(), [{ cmd: "CONFIGURE_DOOR", wall_id: DOOR, is_open: null, is_locked: c.expected, is_secret: null }]);
+      ui.unmount();
+    });
+  }
+
+  it("players never get the lock toggle", () => {
+    const live = liveTable(PLAYER_ID, playerView({ walls: [door(false, false)] }));
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+    assertAbsent(ui.byTestId(`door-lock-${DOOR}`), "door-lock");
+    ui.unmount();
+  });
 
   it("the door label names its state in words, not colour alone", () => {
     const live = liveTable(PLAYER_ID, playerView({ walls: [door(false, true)] }));

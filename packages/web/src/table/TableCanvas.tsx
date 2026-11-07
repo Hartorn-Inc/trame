@@ -25,7 +25,12 @@
  * 2. `Controlled Tokens Only`:
  *    - Move input is accepted for tokens in `tokens` (controlled); public
  *      tokens can be selected (to read their health tier) but not moved.
- *      Door handles a player may not toggle (locked, secret) are disabled.
+ *      Door handles a player may not toggle (locked, secret) stay focusable
+ *      with `aria-disabled`, and activating one says why in a status line.
+ *    - Players only get handles of doors they see: a side of the door is in
+ *      a vision polygon or a GM reveal cell (`isPointUnfogged`), so a handle
+ *      never reveals a door behind the fog. The GM gets every handle plus a
+ *      lock toggle (`CONFIGURE_DOOR`) on plain doors.
  * 3. `Accessible Overlay`:
  *    - Every token and door is a real `<button>`; arrow keys move the
  *      focused controlled token one cell, `P` pings its centre, Shift+F10 /
@@ -72,11 +77,13 @@
  * │      `gm_teleport: true`); Alt+click -> pointer ping. A GM click with no
  * │      token to move selects the cell (`selectedCellSignal`); scrolling and
  * │      zooming track `viewportCenterSignal`. Compendium spawns land there.
- * ├── 6. Door handle click -> `TOGGLE_DOOR`.
+ * ├── 6. Door handle click -> `TOGGLE_DOOR` (refused locally with a reason when
+ * │      locked); GM lock toggle -> `CONFIGURE_DOOR { is_locked }`.
  * └── 7. Brush drag -> `strokeCommands` -> one `SET_FOG_OVERRIDES` /
  *        `SET_DIFFICULT_TERRAIN` per stroke; a capped stroke shows a notice.
  * ============================================================================
  */
+import { Fragment } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { ApiClient } from '../api/client.ts';
 import { selectedActorIdSignal, selectedCellSignal, selectedTokenIdSignal, viewportCenterSignal } from '../api/session.ts';
@@ -100,9 +107,9 @@ import {
   pendingAreaTemplate,
   toggleActionTarget,
 } from './actionResolution.ts';
-import { moveToken, toggleDoor } from './commands.ts';
+import { configureDoorLock, moveToken, toggleDoor } from './commands.ts';
 import type { TableRenderer } from './scene/pixiTableRenderer.ts';
-import { buildTableScene, type SceneGeometry, type TableScene } from './scene/tableScene.ts';
+import { buildTableScene, isPointUnfogged, type SceneGeometry, type TableScene } from './scene/tableScene.ts';
 import {
   BRUSH_SIZES,
   MAX_STROKE_CELLS,
@@ -210,7 +217,8 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   });
   const { cellPx: cell, widthPx: width, heightPx: height } = scene;
   const mapHash = scene.mapHash;
-  const doors = doorHandles(table, isGm);
+  const doors = doorHandles(table, isGm).filter((door) => isGm || door.sides.some((point) => isPointUnfogged(scene.fog, point)));
+  const [doorNotice, setDoorNotice] = useState('');
   const [mapUrl, setMapUrl] = useState<string | null>(null);
   const [mapImage, setMapImage] = useState<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -577,6 +585,9 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
           {t('table.teleportArmed', { name: teleportToken.name })}
         </p>
       ) : null}
+      <p class="ds-visually-hidden" role="status" data-testid="table-door-status">
+        {doorNotice}
+      </p>
       {cursorActive ? (
         <p class="ds-visually-hidden" id="table-cursor-status" role="status" data-testid="table-cursor-status">
           {cursorStatus}
@@ -622,22 +633,40 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
             {!pixi && mapUrl ? <img class="ds-board-map" src={mapUrl} alt="" data-testid="table-map" /> : null}
             {!pixi ? <div class="ds-board-grid" aria-hidden="true" /> : null}
             {doors.map((door) => (
-              <button
-                key={door.wallId}
-                type="button"
-                class={`ds-door-handle${door.isOpen ? ' is-open' : ''}${door.isLocked || door.isSecret ? ' is-locked' : ''}`}
-                data-testid={`door-${door.wallId}`}
-                aria-label={doorLabel(door)}
-                aria-pressed={door.isOpen ? 'true' : 'false'}
-                disabled={!door.canToggle}
-                style={{ left: `${door.pos.x - DOOR_HANDLE_PX / 2}px`, top: `${door.pos.y - DOOR_HANDLE_PX / 2}px` }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (door.canToggle) client.submitCommand(toggleDoor(door.wallId, !door.isOpen));
-                }}
-              >
-                <span aria-hidden="true">{door.isOpen ? '⊐' : '▮'}</span>
-              </button>
+              <Fragment key={door.wallId}>
+                <button
+                  type="button"
+                  class={`ds-door-handle${door.isOpen ? ' is-open' : ''}${door.isLocked || door.isSecret ? ' is-locked' : ''}`}
+                  data-testid={`door-${door.wallId}`}
+                  aria-label={doorLabel(door)}
+                  aria-pressed={door.isOpen ? 'true' : 'false'}
+                  aria-disabled={door.canToggle ? undefined : 'true'}
+                  style={{ left: `${door.pos.x - DOOR_HANDLE_PX / 2}px`, top: `${door.pos.y - DOOR_HANDLE_PX / 2}px` }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (door.canToggle) client.submitCommand(toggleDoor(door.wallId, !door.isOpen));
+                    else setDoorNotice(t(door.isSecret ? 'table.door.secretReason' : 'table.door.lockedReason'));
+                  }}
+                >
+                  <span aria-hidden="true">{door.isOpen ? '⊐' : '▮'}</span>
+                </button>
+                {isGm && !door.isSecret ? (
+                  <button
+                    type="button"
+                    class={`ds-door-handle${door.isLocked ? ' is-locked' : ''}`}
+                    data-testid={`door-lock-${door.wallId}`}
+                    aria-label={t('table.door.lock')}
+                    aria-pressed={door.isLocked ? 'true' : 'false'}
+                    style={{ left: `${door.pos.x + DOOR_HANDLE_PX / 2 + 4}px`, top: `${door.pos.y - DOOR_HANDLE_PX / 2}px` }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      client.submitCommand(configureDoorLock(door.wallId, !door.isLocked));
+                    }}
+                  >
+                    <span aria-hidden="true">{door.isLocked ? '●' : '○'}</span>
+                  </button>
+                ) : null}
+              </Fragment>
             ))}
             {cursorActive && anchor ? (
               <div

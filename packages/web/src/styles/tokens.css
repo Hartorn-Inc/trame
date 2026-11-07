@@ -948,7 +948,8 @@ button.ds-prof-pip {
   border-style: double;
 }
 
-.ds-door-handle:disabled {
+.ds-door-handle:disabled,
+.ds-door-handle[aria-disabled="true"] {
   cursor: not-allowed;
   color: var(--atlas-text-muted);
 }

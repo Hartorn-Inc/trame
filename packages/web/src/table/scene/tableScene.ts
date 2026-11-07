@@ -459,6 +459,31 @@ function buildFog(state: ProjectedTableState, input: TableSceneInput, cellPx: nu
   };
 }
 
+function insidePolygon(point: Point2D, polygon: Point2D[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i];
+    const b = polygon[j];
+    if (a.y > point.y !== b.y > point.y && point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+function insideRect(point: Point2D, rect: Rect): boolean {
+  return point.x >= rect.x && point.x < rect.x + rect.w && point.y >= rect.y && point.y < rect.y + rect.h;
+}
+
+/**
+ * The viewer sees `point` through the fog: no fog at all (GM), or inside a
+ * vision polygon or a GM `REVEAL` cell and not under a GM `HIDE` cell (the
+ * renderer draws hide cells over vision). Uses even-odd ray casting.
+ */
+export function isPointUnfogged(fog: SceneFog | null, point: Point2D): boolean {
+  if (!fog) return true;
+  if (fog.hide.some((rect) => insideRect(point, rect))) return false;
+  return fog.reveal.some((rect) => insideRect(point, rect)) || fog.vision.some((polygon) => polygon.length >= 3 && insidePolygon(point, polygon));
+}
+
 function buildPings(input: TableSceneInput): ScenePing[] {
   return input.pings
     .filter((ping) => input.nowMs - ping.receivedAtMs < PING_DURATION_MS)

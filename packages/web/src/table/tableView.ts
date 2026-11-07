@@ -27,7 +27,9 @@
  *    - Players never receive a closed secret door (the server sends it as
  *      `NORMAL`), so `doorHandles` cannot reveal one. A handle is actionable
  *      for the GM on every door, and for players on unlocked plain doors,
- *      the same rule the engine applies to `TOGGLE_DOOR`.
+ *      the same rule the engine applies to `TOGGLE_DOOR`. Each handle
+ *      carries one probe point per side so the board can hide handles of
+ *      doors the player does not see (both sides fogged).
  * 5. `Death Saving Throw Phase`:
  *    - `deathSavePhase` reads the server's counters and flags; the client
  *      never evaluates a roll itself, the room resolves `RECORD_DEATH_SAVE`.
@@ -96,7 +98,16 @@ export interface DoorHandle {
   isSecret: boolean;
   /** The recipient may send `TOGGLE_DOOR` for it (see invariant 4). */
   canToggle: boolean;
+  /**
+   * Two points `DOOR_SIDE_PROBE_PX` off the door's midpoint, one on each side
+   * of the segment; a player sees the handle when either is out of the fog
+   * (the midpoint itself lies on the vision polygon's edge).
+   */
+  sides: [WirePoint2D, WirePoint2D];
 }
+
+/** Distance (`px`) of the door side probes from the door line. */
+export const DOOR_SIDE_PROBE_PX = 8;
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -268,14 +279,22 @@ export function doorHandles(state: ProjectedTableState | null, isGm: boolean, sp
     if (kind?.kind !== "DOOR" && kind?.kind !== "SECRET_DOOR") return [];
     const isLocked = kind.kind === "DOOR" && kind.is_locked;
     const isSecret = kind.kind === "SECRET_DOOR";
+    const pos = { x: (wall.a.x + wall.b.x) / 2, y: (wall.a.y + wall.b.y) / 2 };
+    const length = Math.hypot(wall.b.x - wall.a.x, wall.b.y - wall.a.y) || 1;
+    const nx = (-(wall.b.y - wall.a.y) / length) * DOOR_SIDE_PROBE_PX;
+    const ny = ((wall.b.x - wall.a.x) / length) * DOOR_SIDE_PROBE_PX;
     return [
       {
         wallId: wall.id,
-        pos: { x: (wall.a.x + wall.b.x) / 2, y: (wall.a.y + wall.b.y) / 2 },
+        pos,
         isOpen: kind.is_open,
         isLocked,
         isSecret,
         canToggle: !spectator && (isGm || (!isSecret && !isLocked)),
+        sides: [
+          { x: pos.x + nx, y: pos.y + ny },
+          { x: pos.x - nx, y: pos.y - ny },
+        ],
       },
     ];
   });
