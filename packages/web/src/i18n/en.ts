@@ -1013,6 +1013,7 @@ export const EN = {
   "concentration.roll": "Roll",
   "concentration.held": "{{name}} keeps concentration ({{total}} vs DC {{dc}}).",
   "concentration.lost": "{{name}} loses concentration ({{total}} vs DC {{dc}}).",
+  "concentration.dismiss": "Dismiss result",
   "conditions.title": "{{name}} conditions",
   "conditions.heading": "Conditions",
   "conditions.picker": "Toggle conditions",

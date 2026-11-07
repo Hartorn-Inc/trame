@@ -701,6 +701,37 @@ describe("ConcentrationCheckPrompt", () => {
     ui.unmount();
   });
 
+  /** Rolls one check (DC 12, total 5) then lets `after` move the table on. */
+  const keptCases: Array<{ id: string; after: (live: LiveTable, ui: ReturnType<typeof mount>) => void; text: string | null }> = [
+    {
+      id: "an unrelated table event keeps the result",
+      after: (live) => live.client.applyServerEnvelope({ type: "CommandAccepted", seqId: seq++, state: playerView(), events: [{ event: "TOKEN_MOVED" }] } as any),
+      text: "Mira loses concentration (5 vs DC 12).",
+    },
+    { id: "Dismiss hides the result", after: (_live, ui) => ui.click("concentration-dismiss"), text: null },
+    {
+      id: "a new check replaces the result with its prompt",
+      after: (live) =>
+        live.client.applyServerEnvelope({ type: "CommandAccepted", seqId: seq++, state: playerView({ pending_concentration_checks: { [HERO]: [10] } }), events: [] } as any),
+      text: "",
+    },
+  ];
+  for (const c of keptCases) {
+    it(`result: ${c.id}`, () => {
+      const { live, ui } = table("player", playerView({ pending_concentration_checks: { [HERO]: [12] } }));
+      live.client.applyServerEnvelope({
+        type: "CommandAccepted",
+        seqId: seq++,
+        state: playerView(),
+        events: [{ event: "CONCENTRATION_CHECK_ROLLED", token_id: HERO, dc: 12, d20_rolls: [5], total: 5, success: false }],
+      } as any);
+      c.after(live, ui);
+      if (c.text === null) assertAbsent(ui.byTestId("concentration-prompt"), "concentration-prompt");
+      else assert.equal(ui.byTestId("concentration-result").textContent, c.text);
+      ui.unmount();
+    });
+  }
+
   it("stays hidden without a check", () => {
     const { ui } = table("player");
     assertAbsent(ui.byTestId("concentration-prompt"), "concentration-prompt");

@@ -1016,6 +1016,7 @@ export const FR: Record<MessageKey, string> = {
   "concentration.roll": "Lancer",
   "concentration.held": "{{name}} garde sa concentration ({{total}} contre DD {{dc}}).",
   "concentration.lost": "{{name}} perd sa concentration ({{total}} contre DD {{dc}}).",
+  "concentration.dismiss": "Masquer le résultat",
   "conditions.title": "États de {{name}}",
   "conditions.heading": "États",
   "conditions.picker": "Activer ou retirer des états",

@@ -20,13 +20,17 @@
  * 2. `Oldest DC First`:
  *    - Several hits before a roll queue several checks; the prompt shows the
  *      oldest one, as the engine resolves them in order.
- * 3. `Announced Result`:
+ * 3. `Announced Result, Kept Until Dismissed`:
  *    - The last `CONCENTRATION_CHECK_ROLLED` result is a polite live region.
+ *      It is kept across later table events (`lastEvents` only holds the
+ *      latest batch) until the user dismisses it, another result replaces
+ *      it, or a new check is queued.
  * ============================================================================
  */
+import { useRef, useState } from 'preact/hooks';
 import { resolveSavingThrowMode } from '../../../game-systems/dnd5e/src/index.ts';
 import type { ApiClient } from '../api/client.ts';
-import type { Uuid } from '../api/wire.ts';
+import type { Uuid, WireTrameEvent } from '../api/wire.ts';
 import { t } from '../i18n/index.ts';
 import { rollConcentrationCheck } from './commands.ts';
 import { listTableTokens } from './tableView.ts';
@@ -41,7 +45,19 @@ export function ConcentrationCheckPrompt({ client }: ConcentrationCheckPromptPro
   const state = client.state.table.value;
   const checks = Object.entries(state?.pending_concentration_checks ?? {}).filter(([, dcs]) => dcs.length > 0);
   const tokens = listTableTokens(state);
-  const rolled = [...client.state.lastEvents.value].reverse().find((ev) => ev.event === 'CONCENTRATION_CHECK_ROLLED');
+  const queued = checks.reduce((sum, [, dcs]) => sum + dcs.length, 0);
+
+  const kept = useRef<WireTrameEvent | null>(null);
+  const seen = useRef<WireTrameEvent | undefined>(undefined);
+  const queuedBefore = useRef(queued);
+  const [dismissed, setDismissed] = useState<WireTrameEvent | null>(null);
+  const latest = [...client.state.lastEvents.value].reverse().find((ev) => ev.event === 'CONCENTRATION_CHECK_ROLLED');
+  if (latest && latest !== seen.current) kept.current = latest;
+  else if (queued > queuedBefore.current) kept.current = null;
+  seen.current = latest;
+  queuedBefore.current = queued;
+  const rolled = kept.current !== dismissed ? kept.current : null;
+
   const rolledName = rolled ? tokens.find((tok) => tok.id === rolled.token_id)?.name : undefined;
   if (checks.length === 0 && !rolled) return null;
 
@@ -65,15 +81,22 @@ export function ConcentrationCheckPrompt({ client }: ConcentrationCheckPromptPro
           </div>
         );
       })}
-      <p class="ds-hint" role="status" aria-live="polite" data-testid="concentration-result">
-        {rolled
-          ? t(rolled.success ? 'concentration.held' : 'concentration.lost', {
-              name: rolledName ?? t('resolution.unknownTarget'),
-              total: Number(rolled.total),
-              dc: Number(rolled.dc),
-            })
-          : ''}
-      </p>
+      <div class="ds-cluster">
+        <p class="ds-hint" role="status" aria-live="polite" data-testid="concentration-result">
+          {rolled
+            ? t(rolled.success ? 'concentration.held' : 'concentration.lost', {
+                name: rolledName ?? t('resolution.unknownTarget'),
+                total: Number(rolled.total),
+                dc: Number(rolled.dc),
+              })
+            : ''}
+        </p>
+        {rolled ? (
+          <button type="button" class="ds-btn ds-btn-ghost ds-btn-sm" data-testid="concentration-dismiss" onClick={() => setDismissed(rolled)}>
+            {t('concentration.dismiss')}
+          </button>
+        ) : null}
+      </div>
     </section>
   );
 }
