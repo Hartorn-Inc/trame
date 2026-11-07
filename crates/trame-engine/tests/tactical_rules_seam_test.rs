@@ -10,7 +10,7 @@ use trame_engine::rules::DamageAffinity;
 use trame_engine::wasm_api::call_export;
 use trame_engine::{
     CampaignRole, CommandActor, CommandError, FogOverrideCell, FogOverrideMode, Point2D,
-    TableSnapshotData, TableState, TokenState, TrameCommand, TrameEvent,
+    TableSnapshotData, TableState, TokenState, TrameCommand, TrameEvent, WallKind, WallSegment,
 };
 use uuid::Uuid;
 
@@ -407,6 +407,122 @@ fn set_difficult_terrain_is_gm_only_on_map_and_undoable() {
                 let restored: Vec<GridCell> =
                     state.data.difficult_terrain.iter().copied().collect();
                 assert_eq!(restored, painted, "case {} undo restores", c.id);
+            }
+        }
+    }
+}
+
+#[test]
+fn players_toggle_only_doors_within_5_ft_and_in_sight() {
+    const DOOR_ID: Uuid = Uuid::from_u128(0xD0);
+    // Door on the edge between columns 2 and 3 of row 0, 0..10 ft high (100 px cells, 5 ft).
+    let door = |is_locked: bool| WallSegment {
+        id: DOOR_ID,
+        a: Point2D::new(300.0, 0.0),
+        b: Point2D::new(300.0, 100.0),
+        kind: WallKind::Door {
+            is_open: false,
+            is_locked,
+        },
+        blocks_movement: true,
+        blocks_vision: true,
+        blocks_light: true,
+        blocks_sound: true,
+        bottom_elevation_ft: 0.0,
+        top_elevation_ft: 10.0,
+    };
+    let screen = WallSegment::normal_wall(
+        Uuid::from_u128(0xD1),
+        Point2D::new(250.0, -50.0),
+        Point2D::new(250.0, 150.0),
+    );
+    struct Case {
+        id: &'static str,
+        actor: CommandActor,
+        hero_x: f64,
+        hero_elevation_ft: f64,
+        hero_owner: Uuid,
+        locked: bool,
+        screened: bool,
+        expect: Result<(), &'static str>,
+    }
+    let case = |id, hero_x, expect| Case {
+        id,
+        actor: player(),
+        hero_x,
+        hero_elevation_ft: 0.0,
+        hero_owner: PLAYER_ID,
+        locked: false,
+        screened: false,
+        expect,
+    };
+    let cases = [
+        case("token_touching_the_door_opens_it", 200.0, Ok(())),
+        case("token_one_square_away_is_within_5_ft", 100.0, Ok(())),
+        case(
+            "token_two_squares_away_is_out_of_reach",
+            0.0,
+            Err("door is out of reach"),
+        ),
+        Case {
+            screened: true,
+            ..case(
+                "wall_between_token_and_door_blocks_sight",
+                100.0,
+                Err("door is out of reach"),
+            )
+        },
+        Case {
+            hero_elevation_ft: 30.0,
+            ..case(
+                "token_flying_far_above_the_door_is_out_of_reach",
+                200.0,
+                Err("door is out of reach"),
+            )
+        },
+        Case {
+            hero_owner: Uuid::from_u128(0xA2),
+            ..case(
+                "another_players_token_does_not_count",
+                200.0,
+                Err("door is out of reach"),
+            )
+        },
+        Case {
+            locked: true,
+            ..case(
+                "locked_door_reports_locked_first",
+                200.0,
+                Err("door is locked"),
+            )
+        },
+        Case {
+            actor: gm(),
+            ..case("gm_needs_no_token", 0.0, Ok(()))
+        },
+    ];
+    for c in cases {
+        let mut hero = token(HERO_ID, "Kyra", c.hero_x, 0.0, Some(c.hero_owner));
+        hero.elevation_ft = c.hero_elevation_ft;
+        let mut walls = vec![door(c.locked)];
+        if c.screened {
+            walls.push(screen.clone());
+        }
+        let mut state = TableState::new(100.0, 5.0, walls);
+        state.data.tokens.insert(hero.id, hero);
+        let result = state.apply_command(
+            &c.actor,
+            TrameCommand::ToggleDoor {
+                wall_id: DOOR_ID,
+                is_open: true,
+            },
+        );
+        match c.expect {
+            Ok(()) => assert!(result.is_ok(), "case {}: {result:?}", c.id),
+            Err(prefix) => {
+                let message = result.expect_err(c.id).to_string();
+                assert!(message.starts_with(prefix), "case {}: {message}", c.id);
+                assert!(state.undo_stack.is_empty(), "case {} no undo", c.id);
             }
         }
     }

@@ -21,6 +21,11 @@
 //!        tokens where `token.owner_user_id == Some(actor.user_id)`, cannot
 //!        open locked or secret doors, and cannot move when exploration is
 //!        paused or outside their active turn in `TableMode::TurnByTurn`.
+//!      - A player toggles a door only with a token they own within
+//!        `DOOR_REACH_FT` of it and in line of sight (`DoorOutOfReach`), so a
+//!        door handle cannot open a room nobody stands next to.
+//!      - Fog rulings arrive per stroke (`SetFogOverrides`, at most
+//!        `MAX_FOG_STROKE_CELLS` cells) so one drag is one undo entry.
 //!   2. `Atomic Pre-Mutation Undo Ring Buffer`:
 //!      - `push_undo` captures a full `TableSnapshotData` clone *only after*
 //!        all RBAC, BVH collision, and movement budget checks succeed, capped
@@ -110,6 +115,7 @@ pub use crate::geometry::Point2D;
 use crate::geometry::{
     Bvh2D, CHANNEL_ETHEREAL, CHANNEL_GM_HIDDEN, CHANNEL_MATERIAL, SenseProfile, WallKind,
     WallSegment, can_token_see_target, segment_intersection, segment_intersects_segment,
+    segment_rect_distance_px, token_sample_points,
 };
 use crate::movement::MovementGrid;
 use crate::rules::{
@@ -123,6 +129,9 @@ use uuid::Uuid;
 
 /// Maximum number of compensating state snapshots retained in `TableState::undo_stack` (`50` entries).
 pub const MAX_UNDO_HISTORY: usize = 50;
+
+/// Farthest a player's token may be from a door to open or close it (`5` ft, one square).
+pub const DOOR_REACH_FT: f64 = 5.0;
 
 /// Most cells one `SetFogOverrides` brush stroke may rule (`64`, the client stroke cap).
 pub const MAX_FOG_STROKE_CELLS: usize = 64;
@@ -1680,6 +1689,10 @@ pub enum CommandError {
     /// A non-GM actor attempted to open or close a locked door (`is_locked == true`).
     #[error("door is locked")]
     DoorLocked,
+    /// A player toggled a door none of their tokens is within `DOOR_REACH_FT` of with line of
+    /// sight to it. The `door is out of reach` prefix is matched by the client.
+    #[error("door is out of reach: none of your tokens is within 5 ft and can see it")]
+    DoorOutOfReach,
     /// A scene, map, or door configuration parameter was out of valid bounds.
     #[error("invalid configuration: {0}")]
     InvalidConfiguration(String),
@@ -2299,6 +2312,51 @@ impl TableState {
         }
     }
 
+    /// `true` when a token owned by `user_id` is within `DOOR_REACH_FT` of `door` (grid
+    /// distance: footprint-to-segment horizontally, elevation gap to the door's span
+    /// vertically, the larger of the two) and has line of sight to a point of the door
+    /// (25 %, 50 % or 75 % along it; the door itself never blocks the ray, it ends on it).
+    fn player_reaches_door(&self, user_id: Uuid, door: &WallSegment) -> bool {
+        let cell_px = self.cell_size_px.max(1e-9);
+        let ft_per_px = self.feet_per_cell / cell_px;
+        let door_points = [0.25, 0.5, 0.75].map(|t| {
+            Point2D::new(
+                door.a.x + t * (door.b.x - door.a.x),
+                door.a.y + t * (door.b.y - door.a.y),
+            )
+        });
+        self.data
+            .tokens
+            .values()
+            .filter(|token| token.owner_user_id == Some(user_id))
+            .any(|token| {
+                let max = Point2D::new(
+                    token.top_left.x + f64::from(token.grid_w.max(1)) * cell_px,
+                    token.top_left.y + f64::from(token.grid_h.max(1)) * cell_px,
+                );
+                let horizontal_ft =
+                    segment_rect_distance_px(door.a, door.b, token.top_left, max) * ft_per_px;
+                let vertical_ft = (door.bottom_elevation_ft - token.elevation_ft)
+                    .max(token.elevation_ft - door.top_elevation_ft)
+                    .max(0.0);
+                if horizontal_ft.max(vertical_ft) > DOOR_REACH_FT + 1e-6 {
+                    return false;
+                }
+                let eyes = token_sample_points(token.top_left, token.grid_w, token.grid_h, cell_px);
+                eyes.iter().any(|eye| {
+                    door_points.iter().any(|point| {
+                        self.bvh.has_line_of_sight(
+                            *eye,
+                            token.elevation_ft,
+                            *point,
+                            token.elevation_ft,
+                            false,
+                        )
+                    })
+                })
+            })
+    }
+
     pub(crate) fn require_token_control(
         &self,
         actor: &CommandActor,
@@ -2684,6 +2742,11 @@ impl TableState {
                     WallKind::Door { is_locked, .. } => {
                         if *is_locked && actor.role != CampaignRole::Gm {
                             return Err(CommandError::DoorLocked);
+                        }
+                        if actor.role != CampaignRole::Gm
+                            && !self.player_reaches_door(actor.user_id, &self.data.walls[idx])
+                        {
+                            return Err(CommandError::DoorOutOfReach);
                         }
                     }
                     WallKind::SecretDoor { .. } => {

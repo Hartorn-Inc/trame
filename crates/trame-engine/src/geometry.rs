@@ -912,6 +912,47 @@ pub fn can_token_see_target(
     false
 }
 
+/// Shortest distance in pixels (`px`) between the segment `a..b` and the axis-aligned
+/// rectangle `min..max`; `0.0` when the segment touches or crosses it.
+pub fn segment_rect_distance_px(a: Point2D, b: Point2D, min: Point2D, max: Point2D) -> f64 {
+    let inside = |p: Point2D| (min.x..=max.x).contains(&p.x) && (min.y..=max.y).contains(&p.y);
+    let corners = [
+        min,
+        Point2D::new(max.x, min.y),
+        max,
+        Point2D::new(min.x, max.y),
+    ];
+    let edges = (0..4).map(|i| (corners[i], corners[(i + 1) % 4]));
+    if inside(a)
+        || inside(b)
+        || edges
+            .clone()
+            .any(|(p, q)| segment_intersection(a, b, p, q).is_some())
+    {
+        return 0.0;
+    }
+    let to_rect = |p: Point2D| {
+        let dx = (min.x - p.x).max(p.x - max.x).max(0.0);
+        let dy = (min.y - p.y).max(p.y - max.y).max(0.0);
+        dx.hypot(dy)
+    };
+    let to_segment = |p: Point2D| {
+        let (sx, sy) = (b.x - a.x, b.y - a.y);
+        let len_sq = sx * sx + sy * sy;
+        let t = if len_sq > 0.0 {
+            (((p.x - a.x) * sx + (p.y - a.y) * sy) / len_sq).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        p.distance_to(Point2D::new(a.x + t * sx, a.y + t * sy))
+    };
+    corners
+        .into_iter()
+        .map(to_segment)
+        .chain([to_rect(a), to_rect(b)])
+        .fold(f64::INFINITY, f64::min)
+}
+
 /// Computes the 2D parametric segment-segment intersection between `p0..p1` and `q0..q1`.
 ///
 /// Returns `Some((t, intersection_point))` where `t` in `[0.0, 1.0]` is the normalized distance

@@ -198,6 +198,7 @@ function actionLabel(action: string | null): string {
 const KNOWN_REASONS: readonly [RegExp, MessageKey][] = [
   [/^speed is 0\b/, 'feedback.reason.speedZero'],
   [/^door is locked\b/, 'feedback.reason.doorLocked'],
+  [/^door is out of reach\b/, 'feedback.reason.doorOutOfReach'],
 ];
 
 /** Localized explanation of a rejection reason, or the server text when unknown. */

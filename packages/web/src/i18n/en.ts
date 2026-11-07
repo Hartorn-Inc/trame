@@ -64,6 +64,7 @@ export const EN = {
   "feedback.dismissAction": "Dismiss {{action}} notice",
   "feedback.reason.speedZero": "this creature's Speed is 0 because of a condition (for example Grappled, Restrained or Paralyzed). Remove the condition or ask the Game Master to rule on it.",
   "feedback.reason.doorLocked": "the door is locked. Only the Game Master can open it.",
+  "feedback.reason.doorOutOfReach": "none of your creatures is within 5 ft of the door with a clear view of it. Move a token next to the door first.",
   "quarantine.title": "Table actions set aside after a restart",
   "quarantine.summary.one": "{{count}} table action could not be restored after the server restarted. The table shows the state without it.",
   "quarantine.summary.other": "{{count}} table actions could not be restored after the server restarted. The table shows the state without them.",

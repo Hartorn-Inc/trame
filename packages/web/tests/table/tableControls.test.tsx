@@ -554,10 +554,33 @@ describe("Rejections and redacted wire fields", () => {
   const reasons = [
     { id: "SpeedZero gets a plain-language explanation", reason: "speed is 0: a condition prevents this token from moving", expected: /Speed is 0 because of a condition/ },
     { id: "DoorLocked explains who can open it", reason: "door is locked", expected: /Only the Game Master can open it/ },
+    {
+      id: "DoorOutOfReach asks for a token next to the door",
+      reason: "door is out of reach: none of your tokens is within 5 ft and can see it",
+      expected: /^none of your creatures is within 5 ft of the door with a clear view of it/,
+    },
     { id: "an unknown reason is shown as sent", reason: "movement blocked by wall at (1.0, 2.0)", expected: /^movement blocked by wall/ },
   ];
   for (const c of reasons) {
     it(`rejectionReason: ${c.id}`, () => assert.match(rejectionReason(c.reason), c.expected));
+  }
+
+  const localized = [
+    { id: "English", locale: "en", expected: /^Open or close door was refused: none of your creatures is within 5 ft/ },
+    { id: "French", locale: "fr", expected: /aucune de vos créatures n'est à 5 ft ou moins de la porte/ },
+  ] as const;
+  for (const c of localized) {
+    it(`a refused door toggle explains the reach rule in ${c.id}`, () => {
+      localeSignal.value = c.locale;
+      const live = liveTable(PLAYER_ID, playerView());
+      live.client.state.commandFeedback.value = [
+        { id: 1, kind: "rejected", action: "TOGGLE_DOOR", reason: "door is out of reach: none of your tokens is within 5 ft and can see it" },
+      ];
+      const ui = mount(h(CommandFeedbackToasts, { client: live.client }));
+      assert.match(ui.byTestId("command-feedback-item").textContent, c.expected);
+      ui.unmount();
+      localeSignal.value = "en";
+    });
   }
 
   it("a refused move shows the SpeedZero explanation in the toast", () => {
