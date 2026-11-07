@@ -26,8 +26,9 @@
  *      requires the exact text), marked `lang="en"` inside a localized UI.
  * 5. `Full Catalog`:
  *    - Both compendium views list `CompendiumResolver.getDefault()`, which
- *      `main.tsx` replaced with the full SRD 5.2.1 packs before the first
- *      render; a GM with a loaded table can spawn any monster from them.
+ *      `main.tsx` replaces with the full SRD 5.2.1 packs in the background;
+ *      the list is rebuilt when `srdStatusSignal` changes, so a GM with a
+ *      loaded table can spawn any monster from them once they arrive.
  * 6. `Staged Spawns, Honest Announcements`:
  *    - A monster spawns hidden from players at the GM's selected cell, else
  *      at the board viewport centre (`spawnTopLeft`). The status line says
@@ -47,6 +48,7 @@ import {
 } from '../compendium/CompendiumDrawer.tsx';
 import { HudDrawers } from '../hud/HudDrawers.tsx';
 import { t, type MessageKey } from '../i18n/index.ts';
+import { srdStatusSignal } from '../srdLoading.ts';
 import { MapsWorkspaceTab } from '../maps/MapsWorkspaceTab.tsx';
 import type { UserRole } from '../maps/types.ts';
 import { TableTab } from '../table/TableTab.tsx';
@@ -105,7 +107,8 @@ export function CampaignWorkspace({ campaignId, userRole, client = apiClient, ac
   const [spawnStatus, setSpawnStatus] = useState('');
   const [pendingSpawn, setPendingSpawn] = useState<PendingSpawn | null>(null);
   const isGm = userRole === 'GM';
-  const compendium = useMemo(() => CompendiumResolver.getDefault().list(), []);
+  const srdStatus = srdStatusSignal.value;
+  const compendium = useMemo(() => CompendiumResolver.getDefault().list(), [srdStatus]);
   const table = client.state.table.value;
   const feedback = client.state.commandFeedback.value;
 

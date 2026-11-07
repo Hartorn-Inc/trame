@@ -32,6 +32,8 @@ export const FR: Record<MessageKey, string> = {
   "shell.exit": "Quitter",
   "shell.brand": "TRAME",
   "shell.loading": "Restauration de votre session...",
+  "shell.srdLoading": "Chargement du compendium SRD complet. Les fiches se mettront à jour à son arrivée.",
+  "shell.srdFallback": "Le compendium SRD complet n’est pas encore chargé. Les fiches utilisent le catalogue de base pour l’instant.",
   "shell.backToLobby": "Campagnes",
   "shell.signOut": "Se déconnecter",
   "shell.connection.idle": "Hors ligne",

@@ -29,10 +29,11 @@
  *   4. `Install Before Derivation (Sync Contract)`:
  *      - Sheet derivations (`derivations.ts`) are synchronous and read
  *        `CompendiumResolver.getDefault()`. `installFullSystemSrd()` swaps
- *        that default for the full catalog; hosts await it at startup
- *        (`packages/web/src/main.tsx`) before sheets that may reference
- *        pack-only spells are derived. Until then derivations see only the
- *        curated catalog and skip unknown spells instead of failing.
+ *        that default for the full catalog; the web host starts it at
+ *        startup without blocking the first render and re-renders (deriving
+ *        sheets again) once it resolves (`packages/web/src/srdLoading.ts`).
+ *        Until then derivations see only the curated catalog and skip
+ *        unknown spells instead of failing.
  *
  * EXECUTION LIFECYCLE:
  * --------------------

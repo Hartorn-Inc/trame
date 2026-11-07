@@ -33,6 +33,8 @@ export const EN = {
   "shell.mobileNav": "Mobile companion navigation",
   "shell.brand": "TRAME",
   "shell.loading": "Restoring your session...",
+  "shell.srdLoading": "Loading the full SRD compendium. Sheets update when it arrives.",
+  "shell.srdFallback": "The full SRD compendium is not loaded yet. Sheets use the core catalog for now.",
   "shell.backToLobby": "Campaigns",
   "shell.signOut": "Sign out",
   "shell.connection.idle": "Offline",
