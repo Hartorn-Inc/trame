@@ -28,6 +28,9 @@
  *    - Area targets are the `affected_token_ids` of the engine's
  *      `AOE_PROJECTED` event for this template id, never a client guess.
  *      A concentration spell projects a persistent zone bound to the caster.
+ *    - The only client-side removal is the caster of a cone, line or
+ *      emanation: these start at the caster's centre, which the engine's
+ *      centre-point test always counts, yet they never affect their caster.
  * 4. `Keyboard Reachable, Announced`:
  *    - Every board gesture has a form control twin (target checklist,
  *      "centre on token" select); the heading takes focus when the card
@@ -75,6 +78,13 @@ import { projectAoe, resolveAction } from './commands.ts';
 import { OUTCOME_KEYS, ResolutionReview } from './ResolutionReview.tsx';
 import { boardMetrics } from './scene/tableScene.ts';
 import { listTableTokens, type TableToken } from './tableView.ts';
+
+/**
+ * Area shapes anchored on the caster's centre (`areaTemplate`): the engine's
+ * centre-point test always counts the caster's own cell, but a cone, a line or
+ * an emanation never affects its caster (invariant 3).
+ */
+const CASTER_EXCLUDED_SHAPES: ReadonlySet<string> = new Set(['cone', 'line', 'emanation']);
 
 export interface ActionResolutionCardProps {
   client: ApiClient;
@@ -199,7 +209,7 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
     if (!hit) return;
     consumedEvents.current = events;
     const ids = (hit.affected_token_ids as Uuid[] | undefined) ?? [];
-    const excluded = action.area?.shape === 'emanation' ? attacker.tokenId : null;
+    const excluded = action.area && CASTER_EXCLUDED_SHAPES.has(action.area.shape) ? attacker.tokenId : null;
     const targets = tokens.filter((tok) => ids.includes(tok.id) && tok.id !== excluded);
     setAreaTargetIds(targets.map((tok) => tok.id));
     resolveFor(targets);

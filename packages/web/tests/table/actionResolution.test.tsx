@@ -710,6 +710,47 @@ describe("MonsterTurnPanel: the GM runs a monster's attack", () => {
     ui.unmount();
   });
 
+  const casterInArea = [
+    { id: "a cone starts at the monster and never includes it", area: { shape: "cone", sizeFt: 15 }, expected: [HERO] },
+    { id: "a line starts at the monster and never includes it", area: { shape: "line", sizeFt: 30, widthFt: 5 }, expected: [HERO] },
+    { id: "an emanation surrounds the monster and never includes it", area: { shape: "emanation", sizeFt: 10 }, expected: [HERO] },
+    { id: "a sphere placed on a point includes the monster inside it", area: { shape: "sphere", sizeFt: 10 }, expected: [GOBLIN, HERO] },
+  ] as const;
+  for (const c of casterInArea) {
+    it(`area targets: ${c.id}`, async () => {
+      const blast = {
+        id: "blast",
+        name: "Blast",
+        description: "Dexterity Saving Throw: DC 12.",
+        automation: "full",
+        save: { ability: "dex", dc: 12, area: c.area, onSuccess: "half" },
+        damage: [{ dice: "2d6", average: 7, type: "fire" }],
+      };
+      const withBlast = () => {
+        const state = gmView();
+        state.tokens[GOBLIN] = { ...state.tokens[GOBLIN], stat_block: { ...GOBLIN_BLOCK, actions: [...GOBLIN_BLOCK.actions, blast] } as unknown as Record<string, unknown> };
+        return state;
+      };
+      const { live, ui } = table("GM", withBlast());
+      selectedTokenIdSignal.value = GOBLIN;
+      ui.click("monster-turn-action-blast");
+      ui.input("action-area-token", HERO, "change");
+      ui.click("action-area-project");
+      const [projected] = live.commands();
+      live.client.applyServerEnvelope({
+        type: "CommandAccepted",
+        seqId: seq++,
+        state: withBlast(),
+        events: [{ event: "AOE_PROJECTED", template: projected.template, affected_cells: [], affected_token_ids: [GOBLIN, HERO], persisted: false }],
+      } as any);
+      await flush(6);
+      const sent = live.commands().at(-1)!;
+      assert.equal(sent.cmd, "RESOLVE_ACTION");
+      assert.deepEqual(sent.request.targets.map((t: { token_id: string }) => t.token_id), c.expected);
+      ui.unmount();
+    });
+  }
+
   it("players never get the monster panel", () => {
     const { ui } = table("player");
     selectedTokenIdSignal.value = GOBLIN;
