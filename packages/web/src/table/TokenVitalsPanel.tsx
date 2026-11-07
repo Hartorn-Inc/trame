@@ -32,6 +32,9 @@
  * 5. `Linked Sheet`:
  *    - "Open sheet" appears only when the token links an actor sheet the
  *      client has loaded; players only receive their own sheets.
+ * 6. `No State Across Tokens`:
+ *    - The panel is keyed by the selected token id, so the typed amount,
+ *      damage type, critical flag and physical die reset on every selection.
  * ============================================================================
  */
 import { useState } from 'preact/hooks';
@@ -106,7 +109,12 @@ function DeathSaves({ client, token, isGm }: { client: ApiClient; token: TableTo
   );
 }
 
-export function TokenVitalsPanel({ client, isGm = false }: TokenVitalsPanelProps) {
+/** Remounts the vitals per selected token, so a typed amount or a critical flag never carries over. */
+export function TokenVitalsPanel(props: TokenVitalsPanelProps) {
+  return <TokenVitals key={selectedTokenIdSignal.value ?? ''} {...props} />;
+}
+
+function TokenVitals({ client, isGm = false }: TokenVitalsPanelProps) {
   const [amount, setAmount] = useState('');
   const [damageType, setDamageType] = useState<DamageType | ''>('');
   const [critical, setCritical] = useState(false);

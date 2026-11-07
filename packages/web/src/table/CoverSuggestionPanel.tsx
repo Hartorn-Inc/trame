@@ -28,6 +28,9 @@
  * 5. `Total Cover Is a GM Ruling`:
  *    - The engine never suggests Total Cover (four blocked lines are
  *      Three-Quarters); only the Game Master is offered it in the choice.
+ * 6. `No State Across Tokens`:
+ *    - The panel is keyed by the selected attacker and target, so a level
+ *      picked but not accepted resets whenever either changes.
  * ============================================================================
  */
 import { signal } from '@preact/signals';
@@ -93,7 +96,12 @@ export interface CoverSuggestionPanelProps {
   isGm?: boolean;
 }
 
-export function CoverSuggestionPanel({ client, isGm = false }: CoverSuggestionPanelProps) {
+/** Remounts per attacker and target, so a cover level picked for one pair never carries over. */
+export function CoverSuggestionPanel(props: CoverSuggestionPanelProps) {
+  return <CoverSuggestionBody key={`${selectedTokenIdSignal.value ?? ''}|${targetTokenIdSignal.value ?? ''}`} {...props} />;
+}
+
+function CoverSuggestionBody({ client, isGm = false }: CoverSuggestionPanelProps) {
   const state = client.state.table.value;
   const tokens = listTableTokens(state);
   const attacker = tokens.find((tok) => tok.id === selectedTokenIdSignal.value && tok.controlled) ?? null;

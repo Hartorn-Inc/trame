@@ -315,6 +315,44 @@ describe("TableCanvas: zoom, pan and pings", () => {
   }
 });
 
+describe("Selected token panels: no local state carries over between tokens", () => {
+  const cases = [
+    {
+      id: "vitals: a typed amount, type and critical flag reset on the next token",
+      panel: TokenVitalsPanel,
+      edit: (ui: ReturnType<typeof mount>) => {
+        ui.input("vitals-amount", "6");
+        ui.input("vitals-damage-type", "fire", "change");
+        ui.click("vitals-critical");
+      },
+      read: (ui: ReturnType<typeof mount>) => [ui.byTestId("vitals-amount").value, ui.byTestId("vitals-damage-type").value, ui.byTestId("vitals-critical").getAttribute("aria-pressed")],
+      fresh: ["", "", "false"],
+    },
+    {
+      id: "cover: a picked level resets on the next attacker",
+      panel: CoverSuggestionPanel,
+      edit: (ui: ReturnType<typeof mount>) => {
+        ui.input("cover-target", GOBLIN, "change");
+        ui.input("cover-choice", "THREE_QUARTERS", "change");
+      },
+      read: (ui: ReturnType<typeof mount>) => [ui.byTestId("cover-choice").value],
+      fresh: ["NONE"],
+    },
+  ] as const;
+  for (const c of cases) {
+    it(c.id, () => {
+      const live = liveTable(GM_ID, gmView());
+      selectedTokenIdSignal.value = HERO;
+      const ui = mount(h(c.panel, { client: live.client, isGm: true }));
+      c.edit(ui);
+      selectedTokenIdSignal.value = GOBLIN;
+      targetTokenIdSignal.value = HERO;
+      assert.deepEqual(c.read(ui), c.fresh);
+      ui.unmount();
+    });
+  }
+});
+
 describe("TokenVitalsPanel: typed damage, concentration and death saving throws", () => {
   const damage = [
     { id: "untyped damage keeps damage_type null", type: "", critical: false, expected: { damage_type: null, is_critical: false } },
