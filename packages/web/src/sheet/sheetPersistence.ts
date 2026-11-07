@@ -35,13 +35,16 @@
  *    - `createSheetCommandDispatcher` turns a widget's `UPDATE_ACTOR_SHEET
  *      { path, value }` into a full-sheet PUT built from the stored sheet, so
  *      the same version check guards inline edits and modal results.
+ *    - A widget save that leaves the sheet at 0 Hit Points also switches off
+ *      the toggles that end there (Rage, `activeFeatureIdsAfterHpChange`),
+ *      as the server does for token damage.
  * 5. `Casts Spend Before They Resolve`:
  *    - `CAST_SPELL` saves the spent slot first; the table resolution it may
  *      open (`table/actionResolution.ts`) never touches the sheet, so a
  *      cancelled resolution does not refund the slot, as at a real table.
  * ============================================================================
  */
-import { CompendiumResolver } from "../../../game-systems/dnd5e/src/index.ts";
+import { CompendiumResolver, activeFeatureIdsAfterHpChange, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
 import { ApiError, VERSION_CONFLICT, type ApiClient, type CampaignActor } from "../api/client.ts";
 import { describeActionError } from "../api/errorMessages.ts";
 import type { Uuid, WireRollVisibility } from "../api/wire.ts";
@@ -137,6 +140,13 @@ export interface SheetDispatcherOptions {
   onError?: (message: string) => void;
 }
 
+/** `data` with the class feature toggles that end at 0 Hit Points switched off (invariant 4). */
+function withZeroHpTogglesEnded(data: unknown): unknown {
+  const actor = data as Dnd5eActorData;
+  if (!Array.isArray(actor?.activeFeatureIds) || (actor.attributes?.hp?.current ?? 1) > 0) return data;
+  return { ...actor, activeFeatureIds: activeFeatureIdsAfterHpChange(actor) };
+}
+
 /**
  * Routes the sheet widgets' virtual commands:
  * - `ROLL_DICE` becomes a REST roll (initiative goes to the room).
@@ -155,7 +165,7 @@ export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (
   const save = (changes: Record<string, unknown>) => {
     let next: unknown = client.state.actors.value[actorId]?.data ?? {};
     for (const [path, value] of Object.entries(changes)) next = setAtPath(next, path, value);
-    saveActorSheet(client, campaignId, actorId, next)
+    saveActorSheet(client, campaignId, actorId, withZeroHpTogglesEnded(next))
       .then((outcome) => {
         if (outcome.status === 'conflict') options.onConflict?.(outcome.currentVersion);
       })

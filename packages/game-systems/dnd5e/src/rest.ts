@@ -41,7 +41,11 @@
  *   5. `Death Is Final`:
  *      - `applyLongRest` returns a dead actor (`isDead` / `deathSaves.isDead`)
  *        unchanged: no HP, Hit Dice, slots or death-save reset can revive it.
- *   6. `State Immutability`:
+ *   6. `Rests End Class Feature Toggles`:
+ *      - Every SRD toggle (Rage, Reckless Attack, Innate Sorcery, Sacred
+ *        Weapon) lasts 10 minutes or less, and a Short Rest takes 1 hour, so
+ *        both rests clear `activeFeatureIds`.
+ *   7. `State Immutability`:
  *      - All functions return deep-cloned state records, preserving pure,
  *        deterministic transitions across client-side UI and server pipelines.
  *
@@ -209,6 +213,7 @@ export function applyShortRest(
     if (clone.spellSlots?.pact) {
       clone.spellSlots.pact.current = clone.spellSlots.pact.max;
     }
+    if (clone.activeFeatureIds) clone.activeFeatureIds = [];
 
     return clone;
   } else {
@@ -313,6 +318,7 @@ export function applyLongRest(
     recoverFeaturePools(clone, "LONG_REST");
 
     clone.concentratingOnSpellId = undefined;
+    if (clone.activeFeatureIds) clone.activeFeatureIds = [];
 
     return clone;
   } else {

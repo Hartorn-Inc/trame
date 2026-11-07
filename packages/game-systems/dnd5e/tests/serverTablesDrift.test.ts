@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { SRD_SPECIES, loadFullSystemSrd } from "../src/index.ts";
+import { SRD_SPECIES, loadFullSystemSrd, srdClassFeatures } from "../src/index.ts";
 
 const CAMPAIGNS_RS = readFileSync(
   new URL("../../../../crates/trame-server/src/campaigns.rs", import.meta.url),
@@ -30,6 +30,15 @@ describe("Server SRD tables match the dnd5e packs", () => {
         return entry.data.itemType === "weapon" && entry.data.weaponType !== "ranged" && properties.includes("reach");
       })
       .map((entry) => entry.id.split(":").pop()!)
+      .sort();
+    assert.deepEqual(rust, srd);
+  });
+
+  it("features_ending_at_zero_hp_match_class_feature_specs", () => {
+    const rust = [...rustConstBody("SRD_FEATURES_ENDING_AT_ZERO_HP").matchAll(/"([a-z_:]+)"/g)].map((m) => m[1]).sort();
+    const srd = srdClassFeatures()
+      .filter((spec) => spec.endsAtZeroHp)
+      .map((spec) => spec.id)
       .sort();
     assert.deepEqual(rust, srd);
   });

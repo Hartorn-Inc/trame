@@ -241,8 +241,40 @@ describe("class feature controls write the actor's pools and toggles", () => {
     await sheet.click("tab-btn-tab-features");
     assert.equal(sheet.byTestId("feature-badge-barbarian:rage")?.textContent, "Counter");
     assert.equal(sheet.byTestId("feature-pool-barbarian:rage")?.textContent, "2 / 2 uses");
-    assert.equal(sheet.byTestId("btn-feature-toggle-barbarian:rage")?.textContent, "Inactive");
-    assert.equal(sheet.byTestId("btn-feature-toggle-barbarian:rage")?.getAttribute("aria-pressed"), "false");
+    sheet.unmount();
+  });
+
+  const labels = [
+    { id: "an inactive Rage offers Start", active: [], hp: 12, state: "Inactive", text: "Start", aria: "Start Rage" },
+    { id: "a raging barbarian is offered End", active: ["barbarian:rage"], hp: 12, state: "Active", text: "End", aria: "End Rage" },
+    { id: "Rage at 0 Hit Points has ended", active: ["barbarian:rage"], hp: 0, state: "Inactive", text: "Start", aria: "Start Rage" },
+  ];
+  for (const c of labels) {
+    it(`toggle label: ${c.id}`, async () => {
+      const { actor } = levelOne("barbarian");
+      const sheet = await mountSheet({ ...actor, activeFeatureIds: c.active, attributes: { ...actor.attributes, hp: { ...actor.attributes.hp, current: c.hp } } });
+      await sheet.click("tab-btn-tab-features");
+      const button = sheet.byTestId("btn-feature-toggle-barbarian:rage");
+      assert.equal(sheet.byTestId("feature-state-barbarian:rage")?.textContent, c.state);
+      assert.equal(button?.textContent, c.text);
+      assert.equal(button?.getAttribute("aria-label"), c.aria);
+      assert.equal(button?.getAttribute("aria-pressed"), null);
+      sheet.unmount();
+    });
+  }
+
+  it("a sheet save that drops a raging barbarian to 0 Hit Points ends Rage", async () => {
+    const { actor } = levelOne("barbarian");
+    const sheet = await mountSheet({ ...actor, activeFeatureIds: ["barbarian:rage", "barbarian:reckless_attack"] });
+    await sheet.click("tab-btn-tab-features");
+    await sheet.click("btn-feature-spend-barbarian:rage");
+    assert.deepEqual(sheet.puts()[0].data.activeFeatureIds, ["barbarian:rage", "barbarian:reckless_attack"]);
+    sheet.state.actors.value = {
+      [ACTOR_ID]: { version: 1, data: { ...actor, activeFeatureIds: ["barbarian:rage", "barbarian:reckless_attack"], attributes: { ...actor.attributes, hp: { ...actor.attributes.hp, current: 0 } } } } as any,
+    };
+    await flush(4);
+    await sheet.click("btn-feature-spend-barbarian:rage");
+    assert.deepEqual(sheet.puts()[1].data.activeFeatureIds, ["barbarian:reckless_attack"]);
     sheet.unmount();
   });
 

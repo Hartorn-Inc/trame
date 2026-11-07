@@ -23,7 +23,12 @@
  *      turned on. Turning it off never refunds.
  * 3. `Not Colour Alone`:
  *    - Badges and toggle states are words (`Automated`, `Counter`,
- *      `Described`, `Active`) with `aria-pressed` on toggles.
+ *      `Described`, `Active` / `Inactive`). The toggle button says what it
+ *      does (`Start` / `End`, "Start Rage") instead of an ambiguous on/off.
+ * 4. `Toggles End By Themselves`:
+ *    - Rests clear every toggle and 0 Hit Points ends Rage (`rest.ts`,
+ *      `isFeatureActive`), so the button reads `Start` again without the
+ *      player switching it off.
  * ============================================================================
  */
 import { h, type VNode } from 'preact';
@@ -158,12 +163,21 @@ export function FeatureTraitListWidget(props: WidgetProps): VNode<any> {
               )
             : null,
           isToggle
-            ? smallButton(
-                `btn-feature-toggle-${id}`,
-                t(feat.active ? 'sheet.features.active' : 'sheet.features.inactive'),
-                t('sheet.features.activeAria', { name }),
-                () => setActive(id, !feat.active, pool),
-                { 'aria-pressed': feat.active ? 'true' : 'false', disabled: !feat.active && pool !== undefined && pool.current <= 0 },
+            ? h(
+                'div',
+                { class: 'ds-cluster' },
+                h(
+                  'span',
+                  { class: 'ds-meta', 'data-testid': `feature-state-${id}` },
+                  t(feat.active ? 'sheet.features.active' : 'sheet.features.inactive'),
+                ),
+                smallButton(
+                  `btn-feature-toggle-${id}`,
+                  t(feat.active ? 'sheet.features.end' : 'sheet.features.start'),
+                  t(feat.active ? 'sheet.features.endAria' : 'sheet.features.startAria', { name }),
+                  () => setActive(id, !feat.active, pool),
+                  { disabled: !feat.active && pool !== undefined && pool.current <= 0 },
+                ),
               )
             : null,
           isExpanded && description

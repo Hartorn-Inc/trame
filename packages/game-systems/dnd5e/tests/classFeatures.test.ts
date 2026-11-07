@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import "../src/node.ts";
 import {
+  activeFeatureIdsAfterHpChange,
   applyLevelUp,
   applyLongRest,
   applyShortRest,
@@ -159,6 +160,46 @@ describe("Sheet features expose pools, scaling and toggles", () => {
     assert.equal(features[critIndex].source, "subclass");
     assert.ok(!features.some((f) => f.id === "champion:survivor"));
   });
+});
+
+describe("Feature toggles end on rests and at 0 Hit Points", () => {
+  const atHp = (actor: Dnd5eActorData, current: number) => {
+    actor.attributes.hp = { ...actor.attributes.hp, current };
+    return actor;
+  };
+  const rests: [string, (actor: Dnd5eActorData) => Dnd5eActorData][] = [
+    ["a_long_rest_ends_rage_and_reckless_attack", (actor) => applyLongRest(actor)],
+    ["a_short_rest_ends_rage_and_reckless_attack", (actor) => applyShortRest(actor, {})],
+  ];
+  for (const [id, rest] of rests) {
+    it(id, () => {
+      const rested = rest(hero("barbarian", 2, { active: ["barbarian:rage", "barbarian:reckless_attack"] }));
+      assert.deepEqual(rested.activeFeatureIds, []);
+    });
+  }
+
+  const zeroHp: [string, number, string, boolean][] = [
+    ["rage_is_off_at_0_hp", 0, "barbarian:rage", false],
+    ["rage_stays_on_with_hp_left", 1, "barbarian:rage", true],
+    ["reckless_attack_does_not_end_at_0_hp", 0, "barbarian:reckless_attack", true],
+  ];
+  for (const [id, hp, featureId, active] of zeroHp) {
+    it(id, () => {
+      const actor = atHp(hero("barbarian", 2, { active: ["barbarian:rage", "barbarian:reckless_attack"] }), hp);
+      assert.equal(computeDnd5eSheetDerived(actor).features?.find((f) => f.id === featureId)?.active, active);
+    });
+  }
+
+  const cleanup: [string, number, string[]][] = [
+    ["0_hp_drops_rage_from_the_list", 0, ["barbarian:reckless_attack"]],
+    ["hp_left_keeps_the_list", 3, ["barbarian:rage", "barbarian:reckless_attack"]],
+  ];
+  for (const [id, hp, expected] of cleanup) {
+    it(id, () => {
+      const actor = atHp(hero("barbarian", 2, { active: ["barbarian:rage", "barbarian:reckless_attack"] }), hp);
+      assert.deepEqual(activeFeatureIdsAfterHpChange(actor), expected);
+    });
+  }
 });
 
 describe("Feature effects run through the 5-phase DAG", () => {

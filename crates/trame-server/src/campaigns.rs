@@ -29,7 +29,8 @@
 //!   4. `Linked Vitals Persistence`:
 //!      - `install_room_sinks` drains `LinkedVitalsChange` from rooms and writes hp /
 //!        temp hp (and changed conditions) into the linked actor sheet. Synthetic
-//!        tokens never reach storage.
+//!        tokens never reach storage. At 0 hp the class feature toggles that end
+//!        there (`SRD_FEATURES_ENDING_AT_ZERO_HP`: Rage) leave `activeFeatureIds`.
 //!   4b. `Sheet-Derived Rules Fields`:
 //!      - Threat reach (equipped reach weapon or stat-block melee reach) and darkvision
 //!        (species or stat-block senses) come from the stored sheet on every resync and
@@ -1958,9 +1959,34 @@ fn merge_sheet_conditions(sheet_conditions: Option<&Value>, ids: &[String]) -> V
     Value::Array(merged)
 }
 
+/// `ClassFeature` toggles (`activeFeatureIds`) that end when their owner drops to 0 hp:
+/// SRD 5.2.1 Rage ends early on the Incapacitated condition, which 0 hp (Unconscious)
+/// imposes. Mirrors `endsAtZeroHp` in `packages/game-systems/dnd5e/src/classFeatures.ts`,
+/// checked by `packages/game-systems/dnd5e/tests/serverTablesDrift.test.ts`.
+const SRD_FEATURES_ENDING_AT_ZERO_HP: [&str; 1] = ["barbarian:rage"];
+
+/// Drops `SRD_FEATURES_ENDING_AT_ZERO_HP` from the sheet's `activeFeatureIds` when `hp`
+/// is 0, so a healed barbarian is no longer raging. Other toggles and sheets without the
+/// list are left as they are.
+fn end_features_at_zero_hp(data: &mut Value, hp: i32) {
+    if hp > 0 {
+        return;
+    }
+    if let Some(ids) = data
+        .get_mut("activeFeatureIds")
+        .and_then(Value::as_array_mut)
+    {
+        ids.retain(|id| {
+            !id.as_str()
+                .is_some_and(|id| SRD_FEATURES_ENDING_AT_ZERO_HP.contains(&id))
+        });
+    }
+}
+
 /// Writes a linked token's hp / temp hp into its actor sheet (`attributes.hp`), and its
 /// conditions when they changed (`merge_sheet_conditions`), retrying once on a concurrent
-/// sheet edit, then broadcasts the new version (`ActorUpdated`).
+/// sheet edit, then broadcasts the new version (`ActorUpdated`). At 0 hp the toggles that
+/// end there are switched off (`end_features_at_zero_hp`).
 pub async fn persist_linked_vitals(
     state: &AppState,
     change: &LinkedVitalsChange,
@@ -1978,6 +2004,7 @@ pub async fn persist_linked_vitals(
         }
         data["attributes"]["hp"]["current"] = json!(change.hp);
         data["attributes"]["hp"]["temp"] = json!(change.temp_hp);
+        end_features_at_zero_hp(&mut data, change.hp);
         if let Some(conditions) = &change.conditions {
             data["conditions"] = merge_sheet_conditions(data.get("conditions"), conditions);
         }
@@ -2101,4 +2128,37 @@ pub fn campaign_routes() -> Router<AppState> {
             post(import_map_handler),
         )
         .route("/assets/download/{*key}", get(download_asset_handler))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn end_features_at_zero_hp_cases() {
+        let cases = [
+            (
+                "rage_ends_at_zero_hp_and_other_toggles_stay",
+                json!({ "activeFeatureIds": ["barbarian:rage", "barbarian:reckless_attack"] }),
+                0,
+                json!({ "activeFeatureIds": ["barbarian:reckless_attack"] }),
+            ),
+            (
+                "rage_stays_above_zero_hp",
+                json!({ "activeFeatureIds": ["barbarian:rage"] }),
+                1,
+                json!({ "activeFeatureIds": ["barbarian:rage"] }),
+            ),
+            (
+                "a_sheet_without_toggles_is_unchanged",
+                json!({ "attributes": {} }),
+                0,
+                json!({ "attributes": {} }),
+            ),
+        ];
+        for (id, mut data, hp, expected) in cases {
+            end_features_at_zero_hp(&mut data, hp);
+            assert_eq!(data, expected, "{id}");
+        }
+    }
 }

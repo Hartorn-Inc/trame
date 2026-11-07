@@ -27,6 +27,10 @@
  *        with the caller's effects; Base raises, Add sums, clamps last.
  *      - Toggle features (`toggle: true`) contribute effects, roll rules
  *        and resistances only while their id is in `actor.activeFeatureIds`.
+ *      - Every SRD toggle lasts 10 minutes or less, so any rest clears them
+ *        all (`rest.ts`); `endsAtZeroHp` toggles (Rage) are off at 0 Hit
+ *        Points and dropped from the list when the sheet or the server
+ *        writes 0 hp (`activeFeatureIdsAfterHpChange`).
  *   3. `Pool Maxima Come From The Level And The DAG`:
  *      - `byLevel` tables use the highest key `<= level`; ability-based
  *        maxima read the evaluated `<ability>_mod` (after effects) and
@@ -129,6 +133,12 @@ export interface ClassFeatureSpec {
   pool?: ClassFeaturePoolSpec;
   /** Effects and roll rules apply only while the id is in `actor.activeFeatureIds`. */
   toggle?: boolean;
+  /**
+   * The toggle ends when its owner drops to 0 Hit Points (Rage ends on the
+   * Incapacitated condition that Unconscious imposes). Mirrored by
+   * `SRD_FEATURES_ENDING_AT_ZERO_HP` in `crates/trame-server/src/campaigns.rs`.
+   */
+  endsAtZeroHp?: boolean;
   /** `ActiveEffect` modifiers at a class level. */
   effects?: (level: number) => readonly FeatureModifier[];
   /** Roll rules. */
@@ -208,6 +218,7 @@ const CLASS_RULES: Readonly<Record<string, FeatureRule>> = {
     ...AUTO,
     pool: pool("barbarian_rage", { byLevel: { 1: 2, 3: 3, 6: 4, 12: 5, 17: 6 } }, "LONG_REST", { shortRestRegain: 1 }),
     toggle: true,
+    endsAtZeroHp: true,
     rolls: [
       { kind: "advantage", on: { roll: "check", ability: "str" } },
       { kind: "advantage", on: { roll: "save", ability: "str" } },
@@ -561,9 +572,25 @@ export function classFeaturesFor(actor: Dnd5eActorData): ClassFeatureSpec[] {
   );
 }
 
-/** `true` when `spec` is in force: not a toggle, or toggled on in `actor.activeFeatureIds`. */
+/**
+ * `true` when `spec` is in force: not a toggle, or toggled on in
+ * `actor.activeFeatureIds` (and not ended by 0 Hit Points, `endsAtZeroHp`).
+ */
 export function isFeatureActive(actor: Dnd5eActorData, spec: ClassFeatureSpec): boolean {
-  return !spec.toggle || (actor.activeFeatureIds ?? []).includes(spec.id);
+  if (!spec.toggle) return true;
+  if (spec.endsAtZeroHp && (actor.attributes?.hp?.current ?? 1) <= 0) return false;
+  return (actor.activeFeatureIds ?? []).includes(spec.id);
+}
+
+/**
+ * `activeFeatureIds` once the toggles that end at 0 Hit Points are dropped
+ * (`endsAtZeroHp`); unchanged while `actor` has Hit Points left.
+ */
+export function activeFeatureIdsAfterHpChange(actor: Dnd5eActorData): string[] {
+  const ids = actor.activeFeatureIds ?? [];
+  if ((actor.attributes?.hp?.current ?? 1) > 0) return [...ids];
+  const ending = new Set(srdClassFeatures().filter((spec) => spec.endsAtZeroHp).map((spec) => spec.id));
+  return ids.filter((id) => !ending.has(id));
 }
 
 /** Engine `ActiveEffect` JSON (snake_case) built from feature modifiers. */
