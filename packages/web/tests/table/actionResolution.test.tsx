@@ -405,6 +405,31 @@ describe("ActionResolutionCard: a player attacks a monster", () => {
     ui.unmount();
   });
 
+  const closedElsewhere = [
+    { id: "the GM applied it from the pending list", event: "RESOLUTION_APPLIED" },
+    { id: "the GM dismissed it", event: "RESOLUTION_DISMISSED" },
+  ] as const;
+  for (const c of closedElsewhere) {
+    it(`the open card keeps the result once it leaves the projection: ${c.id}`, () => {
+      const { live, ui } = table("player");
+      startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:fire_bolt" });
+      ui.input(`action-target-${GOBLIN}`, "on", "change");
+      ui.click("action-roll");
+      const request = answer(live, playerView, [resolvedTarget({ outcome: "HIT", damage: 7 })]);
+      live.client.applyServerEnvelope({
+        type: "CommandAccepted",
+        seqId: seq++,
+        state: playerView(),
+        events: [{ event: c.event, resolution_id: request.resolution_id }],
+      } as any);
+      assert.equal(ui.byTestId("action-status").textContent, "Goblin: Hit");
+      assert.equal(ui.byTestId(`action-outcome-${GOBLIN}`).textContent, "Hit");
+      assertPresent(ui.byTestId("action-nothing-left"), "action-nothing-left");
+      assert.equal(ui.byTestId("action-apply").disabled, true);
+      ui.unmount();
+    });
+  }
+
   it("a refused roll explains it and lets the player roll again", async () => {
     const { live, ui } = table("player");
     startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:fire_bolt" });

@@ -21,6 +21,9 @@
  * 2. `Explicit Apply, Once`:
  *    - Rolling never touches HP; Apply references the resolution id, and the
  *      engine applies each target at most once (`ResolutionReview`).
+ *    - The card keeps the last copy of its resolution, so when the GM applies
+ *      or dismisses it from the pending list the result stays on screen as
+ *      fully applied instead of falling back to "Rolling…".
  * 3. `Engine Targets For Areas`:
  *    - Area targets are the `affected_token_ids` of the engine's
  *      `AOE_PROJECTED` event for this template id, never a client guess.
@@ -128,11 +131,15 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const resolutionId = activeResolutionIdSignal.value;
   const events = client.state.lastEvents.value;
-  const resolved =
+  /** Last copy seen of the active resolution: it leaves the projection once applied or dismissed elsewhere (invariant 2). */
+  const lastResolved = useRef<WirePendingResolution | undefined>(undefined);
+  const seen =
     (resolutionId ? state?.pending_resolutions?.[resolutionId] : undefined) ??
     (events.find((ev) => ev.event === 'ACTION_RESOLVED' && (ev.resolution as WirePendingResolution | undefined)?.id === resolutionId)?.resolution as
       | WirePendingResolution
       | undefined);
+  if (seen) lastResolved.current = seen;
+  const resolved = resolutionId && lastResolved.current?.id === resolutionId ? lastResolved.current : undefined;
 
   useEffect(() => headingRef.current?.focus(), [resolved !== undefined]);
 
