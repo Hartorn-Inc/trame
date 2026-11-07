@@ -5,6 +5,7 @@ import { ApiClient, type CampaignActor } from "../../src/api/client.ts";
 import { createSessionState } from "../../src/api/session.ts";
 import { CharacterBuilderModal } from "../../src/builder/CharacterBuilderModal.tsx";
 import { localeSignal } from "../../src/i18n/index.ts";
+import { assertAbsent } from "../helpers/domAssert.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
 import { actorDto, createMockTransport, flush, type RouteReply } from "../helpers/mockTransport.ts";
 
@@ -120,7 +121,7 @@ describe("CharacterBuilderModal: creation through the actor route", () => {
     const ui = await mount({ status: 201, body: { actor: actorDto() } });
     await walkToSkills(ui, "fighter");
     assert.ok(ui.byTestId("builder-step-skills"));
-    assert.equal(ui.byTestId("builder-skills-athletics"), null, "the background's skill is not offered");
+    assertAbsent(ui.byTestId("builder-skills-athletics"), "the background's skill is not offered");
     await ui.fire("builder-skills-acrobatics", "change");
     assert.equal(ui.byTestId("builder-skills-count").textContent, "1 of 2 chosen");
     await ui.fire("builder-skills-perception", "change");
@@ -164,7 +165,7 @@ describe("CharacterBuilderModal: creation through the actor route", () => {
       await ui.fire("builder-next", "click");
       assert.ok(ui.byTestId("builder-step-spells"));
       for (const id of c.present) assert.ok(ui.byTestId(id), id);
-      for (const id of c.absent) assert.equal(ui.byTestId(id), null, id);
+      for (const id of c.absent) assertAbsent(ui.byTestId(id), id);
       ui.unmount();
     });
   }
