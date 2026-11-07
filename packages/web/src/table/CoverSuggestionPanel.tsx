@@ -8,8 +8,9 @@
  * Lets the controller of the selected token pick a target and shows the cover
  * the walls between them suggest (WASM `suggestCover`, the same corner rule
  * the server would use). The user accepts the suggestion or picks another
- * level; only the accepted value (`acceptedCoverSignal`) feeds the attack
- * and saving throw resolution, so a wall misread never changes AC silently.
+ * level; only the accepted value (`acceptedCoverSignal` in `coverState.ts`)
+ * feeds the attack and saving throw resolution, so a wall misread never
+ * changes AC silently.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
@@ -33,36 +34,18 @@
  *      picked but not accepted resets whenever either changes.
  * ============================================================================
  */
-import { signal } from '@preact/signals';
 import { useState } from 'preact/hooks';
 import type { ApiClient } from '../api/client.ts';
 import { selectedTokenIdSignal } from '../api/session.ts';
-import type { ProjectedTableState, Uuid } from '../api/wire.ts';
+import type { ProjectedTableState } from '../api/wire.ts';
 import { isEngineReady, suggestCover, type CoverLevel, type CoverSuggestion } from '../engine/wasmBridge.ts';
 import { t, type MessageKey } from '../i18n/index.ts';
+import { acceptedCoverSignal, COVER_BONUS, targetTokenIdSignal } from './coverState.ts';
 import { boardMetrics, engineWalls } from './scene/tableScene.ts';
 import { listTableTokens, type TableToken } from './tableView.ts';
 
 /** Every cover level, weakest first. */
 export const COVER_LEVELS: readonly CoverLevel[] = ['NONE', 'HALF', 'THREE_QUARTERS', 'TOTAL'];
-
-/** AC and Dexterity saving throw bonus per level; `null` = cannot be targeted (SRD 5.2.1). */
-export const COVER_BONUS: Readonly<Record<CoverLevel, number | null>> = { NONE: 0, HALF: 2, THREE_QUARTERS: 5, TOTAL: null };
-
-/** Cover the user confirmed for an attacker against a target. */
-export interface AcceptedCover {
-  attackerId: Uuid;
-  targetId: Uuid;
-  cover: CoverLevel;
-  /** `COVER_BONUS[cover]`. */
-  bonus: number | null;
-}
-
-/** Token the selected attacker targets (`null` when none). */
-export const targetTokenIdSignal = signal<Uuid | null>(null);
-
-/** Last cover the user accepted (invariant 1). */
-export const acceptedCoverSignal = signal<AcceptedCover | null>(null);
 
 /** Engine cover suggestion between two tokens, `null` when the engine is not ready or fails. */
 export function coverSuggestionFor(state: ProjectedTableState | null, attacker: TableToken, target: TableToken): CoverSuggestion | null {

@@ -78,7 +78,7 @@ import {
 } from '../../../game-systems/dnd5e/src/index.ts';
 import type { AoeShapeDto, AoeTemplateDto } from '../engine/wasmBridge.ts';
 import type { ProjectedTableState, Uuid, WireActionRequest, WirePoint2D, WireResolutionCheck, WireRollMode, WireTokenState } from '../api/wire.ts';
-import { acceptedCoverSignal, targetTokenIdSignal } from './CoverSuggestionPanel.tsx';
+import { acceptedCoverSignal, targetTokenIdSignal } from './coverState.ts';
 import { boardMetrics } from './scene/tableScene.ts';
 import type { TableToken } from './tableView.ts';
 

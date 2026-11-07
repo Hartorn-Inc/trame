@@ -5,7 +5,8 @@ import { selectedActorIdSignal, selectedCellSignal, selectedTokenIdSignal } from
 import type { WireWallSegment } from "../../src/api/wire.ts";
 import { CommandFeedbackToasts, rejectionReason } from "../../src/components/RoomConnectionFeedback.tsx";
 import { localeSignal } from "../../src/i18n/index.ts";
-import { acceptedCoverSignal, CoverSuggestionPanel, targetTokenIdSignal } from "../../src/table/CoverSuggestionPanel.tsx";
+import { CoverSuggestionPanel } from "../../src/table/CoverSuggestionPanel.tsx";
+import { acceptedCoverSignal, targetTokenIdSignal } from "../../src/table/coverState.ts";
 import { DeathSaveAnnouncement } from "../../src/table/DeathSaveAnnouncement.tsx";
 import { ReactionBanner } from "../../src/table/ReactionBanner.tsx";
 import { TableCanvas } from "../../src/table/TableCanvas.tsx";

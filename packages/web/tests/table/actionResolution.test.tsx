@@ -34,7 +34,7 @@ import {
   type TargetContext,
 } from "../../src/table/actionResolution.ts";
 import { ConcentrationCheckPrompt } from "../../src/table/ConcentrationCheckPrompt.tsx";
-import { acceptedCoverSignal, targetTokenIdSignal } from "../../src/table/CoverSuggestionPanel.tsx";
+import { acceptedCoverSignal, targetTokenIdSignal } from "../../src/table/coverState.ts";
 import { MonsterTurnPanel } from "../../src/table/MonsterTurnPanel.tsx";
 import { PendingResolutionsPanel } from "../../src/table/PendingResolutionsPanel.tsx";
 import { TableCanvas } from "../../src/table/TableCanvas.tsx";
