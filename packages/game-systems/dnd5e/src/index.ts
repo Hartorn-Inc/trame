@@ -38,5 +38,6 @@ export * from "./sheetLayout.ts";
 export * from "./rest.ts";
 export * from "./conditions.ts";
 export * from "./resolution.ts";
+export * from "./spellUpcast.ts";
 export { computeDnd5eSheetDerived } from "./manifest.ts";
 export { decrementConditionDurations } from "./progression.ts";

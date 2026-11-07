@@ -38,6 +38,11 @@
  *      `extra_damage`; the server rolls each part and the engine applies
  *      the target's affinity to each type. A spell's secondary save (Ice
  *      Knife) is described (`secondarySave`), never rolled here.
+ * 6. `Upcast Dice From The Spell Text`:
+ *    - A spell cast with a higher-level slot carries `castLevel`; its damage
+ *      dice gain what the spell's higher-level text grants
+ *      (`upcastDamageDice`), and stay as written when that text scales
+ *      something else.
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -57,6 +62,7 @@ import {
   computeDnd5eSheetDerived,
   resolveAttackRollMode,
   resolveSavingThrowMode,
+  upcastDamageDice,
   type AbilityId,
   type AttackSource,
   type ConditionState,
@@ -82,8 +88,8 @@ import type { TableToken } from './tableView.ts';
  * it is placed like an area spell instead of ticking targets.
  */
 export type PendingAction =
-  | { kind: 'attack'; actorId: Uuid; attackId: string }
-  | { kind: 'area'; actorId: Uuid; spellId: string }
+  | { kind: 'attack'; actorId: Uuid; attackId: string; castLevel?: number }
+  | { kind: 'area'; actorId: Uuid; spellId: string; castLevel?: number }
   | { kind: 'monster'; tokenId: Uuid; actionId: string; area?: SpellArea };
 
 /** Action the resolution card is open for (`null` when none). */
@@ -238,9 +244,19 @@ export function resolvableFromAttack(attack: DerivedAttack, featureCriticalRange
   };
 }
 
-/** The action a pending sheet action resolves for the attacker's derived sheet, `null` when it is gone. */
+/**
+ * The action a pending sheet action resolves for the attacker's derived
+ * sheet (dice scaled to its `castLevel`, invariant 6), `null` when it is gone.
+ */
 export function resolvableFor(pending: PendingAction, derived: Dnd5eDerivedStats): ResolvableAction | null {
   if (pending.kind === 'monster') return null;
+  const action = sheetResolvable(pending, derived);
+  const higherLevel = action?.source === 'spell' ? CompendiumResolver.getDefault().get(action.id)?.data.higherLevel : undefined;
+  if (!action || !pending.castLevel || typeof higherLevel !== 'string') return action;
+  return { ...action, damageDice: upcastDamageDice(action.damageDice, higherLevel, pending.castLevel) };
+}
+
+function sheetResolvable(pending: Exclude<PendingAction, { kind: 'monster' }>, derived: Dnd5eDerivedStats): ResolvableAction | null {
   const id = pending.kind === 'attack' ? pending.attackId : pending.spellId;
   const attack = (derived.attacks ?? []).find((a) => a.id === id);
   if (attack) return resolvableFromAttack(attack, derived.featureRules?.criticalRange);

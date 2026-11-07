@@ -136,6 +136,8 @@ export interface SpentSlot {
   key: string;
   /** Tier after the cast (`current` already decremented). */
   tier: { current: number; max: number; slotLevel?: number };
+  /** Level the spell is cast at (1..9): the slot's level, or the Pact Magic slot level. */
+  castLevel: number;
 }
 
 /**

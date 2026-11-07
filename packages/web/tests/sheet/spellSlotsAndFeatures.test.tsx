@@ -7,13 +7,15 @@ import {
   createDefaultActorData,
   getClassChoices,
   type Dnd5eActorData,
+  type Dnd5eDerivedStats,
 } from "../../../game-systems/dnd5e/src/index.ts";
 import { ApiClient } from "../../src/api/client.ts";
 import { createSessionState } from "../../src/api/session.ts";
 import { localeSignal } from "../../src/i18n/index.ts";
 import { ActorSheetPanel } from "../../src/sheet/ActorSheetPanel.tsx";
-import { pickCastSlot, type SlotTierView } from "../../src/sheet/widgets/SpellbookAccordionWidget.tsx";
-import { assertPresent } from "../helpers/domAssert.ts";
+import { castSlotOptions, pickCastSlot, type SlotTierView } from "../../src/sheet/widgets/SpellbookAccordionWidget.tsx";
+import { resolvableFor } from "../../src/table/actionResolution.ts";
+import { assertAbsent, assertPresent } from "../helpers/domAssert.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
 import { actorDto, createMockTransport, flush } from "../helpers/mockTransport.ts";
 
@@ -69,20 +71,125 @@ async function mountSheet(actor: Dnd5eActorData) {
 
 describe("pickCastSlot: which slot a leveled cast spends", () => {
   const pact = (current: number, slotLevel = 1): SlotTierView => ({ current, max: 1, slotLevel });
-  const cases: Array<{ id: string; level: number; slots: Record<string, SlotTierView>; pact: SlotTierView | null; key: string | null; current?: number }> = [
-    { id: "a level-1 slot is spent first", level: 1, slots: { level1: { current: 2, max: 2 } }, pact: pact(1), key: "level1", current: 1 },
-    { id: "Pact Magic is spent when no slot of the level is left", level: 1, slots: { level1: { current: 0, max: 2 } }, pact: pact(1), key: "pact", current: 0 },
-    { id: "a Pact Magic slot casts lower-level spells", level: 1, slots: {}, pact: pact(1, 2), key: "pact", current: 0 },
+  const cases: Array<{
+    id: string;
+    level: number;
+    slots: Record<string, SlotTierView>;
+    pact: SlotTierView | null;
+    preferred?: string;
+    key: string | null;
+    current?: number;
+    castLevel?: number;
+  }> = [
+    { id: "a level-1 slot is spent first", level: 1, slots: { level1: { current: 2, max: 2 } }, pact: pact(1), key: "level1", current: 1, castLevel: 1 },
+    { id: "Pact Magic is spent when no slot of the level is left", level: 1, slots: { level1: { current: 0, max: 2 } }, pact: pact(1), key: "pact", current: 0, castLevel: 1 },
+    { id: "a Pact Magic slot casts lower-level spells at its own level", level: 1, slots: {}, pact: pact(1, 2), key: "pact", current: 0, castLevel: 2 },
     { id: "a Pact Magic slot below the spell level is not usable", level: 2, slots: {}, pact: pact(1, 1), key: null },
     { id: "no slot left means no cast", level: 1, slots: { level1: { current: 0, max: 2 } }, pact: null, key: null },
+    {
+      id: "a spent base level falls back to the next available level",
+      level: 1,
+      slots: { level1: { current: 0, max: 4 }, level2: { current: 0, max: 3 }, level3: { current: 2, max: 2 } },
+      pact: null,
+      key: "level3",
+      current: 1,
+      castLevel: 3,
+    },
+    {
+      id: "the slot picked in the selector is spent (upcast)",
+      level: 1,
+      slots: { level1: { current: 4, max: 4 }, level2: { current: 3, max: 3 } },
+      pact: null,
+      preferred: "level2",
+      key: "level2",
+      current: 2,
+      castLevel: 2,
+    },
+    {
+      id: "a picked slot with no use left falls back to the lowest available",
+      level: 1,
+      slots: { level1: { current: 4, max: 4 }, level2: { current: 0, max: 3 } },
+      pact: null,
+      preferred: "level2",
+      key: "level1",
+      current: 3,
+      castLevel: 1,
+    },
   ];
   for (const c of cases) {
     it(c.id, () => {
-      const slot = pickCastSlot(c.level, c.slots, c.pact);
+      const slot = pickCastSlot(c.level, c.slots, c.pact, c.preferred);
       assert.equal(slot?.key ?? null, c.key);
       if (c.current !== undefined) assert.equal(slot?.tier.current, c.current);
+      if (c.castLevel !== undefined) assert.equal(slot?.castLevel, c.castLevel);
     });
   }
+});
+
+describe("castSlotOptions: slots offered by the slot level selector", () => {
+  const cases: Array<{ id: string; level: number; slots: Record<string, SlotTierView>; pact: SlotTierView | null; expected: string[] }> = [
+    { id: "lower-level slots are never offered", level: 2, slots: { level1: { current: 2, max: 2 }, level2: { current: 1, max: 1 }, level3: { current: 1, max: 1 } }, pact: null, expected: ["level2:2", "level3:3"] },
+    { id: "spent tiers are skipped", level: 1, slots: { level1: { current: 0, max: 2 }, level2: { current: 1, max: 1 } }, pact: null, expected: ["level2:2"] },
+    { id: "Pact Magic sorts by its slot level after an equal regular slot", level: 1, slots: { level2: { current: 1, max: 1 }, level3: { current: 1, max: 1 } }, pact: { current: 1, max: 2, slotLevel: 2 }, expected: ["level2:2", "pact:2", "level3:3"] },
+  ];
+  for (const c of cases) {
+    it(c.id, () => {
+      assert.deepEqual(castSlotOptions(c.level, c.slots, c.pact).map((o) => `${o.key}:${o.castLevel}`), c.expected);
+    });
+  }
+});
+
+describe("resolvableFor scales an upcast spell's damage dice", () => {
+  const derived = { attacks: [], spellSaveDc: 13 } as unknown as Dnd5eDerivedStats;
+  const cases = [
+    { id: "burning hands without a cast level rolls its base dice", castLevel: undefined, expected: "3d6" },
+    { id: "burning hands at its own level rolls its base dice", castLevel: 1, expected: "3d6" },
+    { id: "burning hands with a level 3 slot rolls 5d6", castLevel: 3, expected: "5d6" },
+  ];
+  for (const c of cases) {
+    it(c.id, () => {
+      const action = resolvableFor({ kind: "area", actorId: ACTOR_ID, spellId: "srd:spell:burning_hands", castLevel: c.castLevel }, derived);
+      assert.equal(action?.damageDice, c.expected);
+    });
+  }
+});
+
+describe("the spellbook offers higher-level slots and explains a missing one", () => {
+  /** Level-3 Wizard with only Magic Missile prepared and the given level-1 / level-2 slots left. */
+  function wizard(level1: number, level2: number): Dnd5eActorData {
+    const { actor } = levelOne("wizard");
+    return {
+      ...actor,
+      attributes: { ...actor.attributes, level: 3 },
+      spellIds: ["srd:spell:magic_missile"],
+      spellSlots: { level1: { current: level1, max: 4 }, level2: { current: level2, max: 2 } },
+    } as Dnd5eActorData;
+  }
+
+  it("picking a level-2 slot spends it on cast", async () => {
+    const sheet = await mountSheet(wizard(4, 2));
+    await sheet.click("tab-btn-tab-spells");
+    const picker = sheet.byTestId("spell-slot-srd:spell:magic_missile");
+    assertPresent(picker, "slot level selector");
+    picker.value = "level2";
+    picker.dispatchEvent(new (globalThis as any).Event("change"));
+    await flush(4);
+    assert.equal(sheet.byTestId("btn-cast-spell-srd:spell:magic_missile")?.getAttribute("aria-label"), "Cast Magic Missile with a level 2 slot");
+    await sheet.click("btn-cast-spell-srd:spell:magic_missile");
+    const [body] = sheet.puts();
+    assert.deepEqual(body.data.spellSlots.level2, { current: 1, max: 2 });
+    sheet.unmount();
+  });
+
+  it("no slot left disables the cast and says why", async () => {
+    const sheet = await mountSheet(wizard(0, 0));
+    await sheet.click("tab-btn-tab-spells");
+    assertAbsent(sheet.byTestId("spell-slot-srd:spell:magic_missile"), "slot level selector");
+    const cast = sheet.byTestId("btn-cast-spell-srd:spell:magic_missile");
+    assert.equal(cast?.disabled, true);
+    assert.equal(cast?.getAttribute("aria-label"), "Cannot cast Magic Missile: no spell slot of level 1 or higher is left");
+    sheet.unmount();
+  });
 });
 
 describe("level-1 casters show and spend their slots", () => {

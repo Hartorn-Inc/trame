@@ -13,9 +13,13 @@
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
  * 1. `One Slot Per Leveled Cast`:
- *    - `pickCastSlot` spends a slot of the spell's level first, then a Pact
- *      Magic slot whose level is at least the spell's. With neither left the
- *      cast button is disabled and says so. Cantrips never spend a slot.
+ *    - `pickCastSlot` spends the slot picked in the spell's slot level
+ *      selector (shown when more than one slot can cast it), else the lowest
+ *      one left: the spell's own level, then the next level up or a Pact
+ *      Magic slot at or above it. The cast carries the slot's level so the
+ *      table scales the damage (upcasting). With no slot left the cast
+ *      button is disabled and its label says why. Cantrips never spend a
+ *      slot.
  * 2. `Whole Tier Written`:
  *    - Slot changes write the full `{ current, max }` tier at
  *      `spellSlots.<key>`, so a sheet that never tracked a tier stores a valid
@@ -59,21 +63,52 @@ function record(value: unknown): Record<string, any> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, any>) : null;
 }
 
+/** A slot a leveled spell can be cast with: its `spellSlots` key and the level it casts at. */
+export interface CastSlotOption {
+  /** `"level1"`..`"level9"` or `"pact"`. */
+  key: string;
+  /** Level the spell is cast at with this slot (1..9). */
+  castLevel: number;
+}
+
 /**
- * Slot a cast of a level-`level` spell spends (invariant 1): the spell's own
- * level first, then Pact Magic at or above it; `null` when none is left.
+ * Slots with uses left that can cast a level-`level` spell (invariant 1),
+ * lowest cast level first; at equal level a regular slot comes before Pact
+ * Magic.
+ */
+export function castSlotOptions(
+  level: number,
+  slots: Readonly<Record<string, SlotTierView>>,
+  pact: SlotTierView | null,
+): CastSlotOption[] {
+  const options: CastSlotOption[] = [];
+  for (let castLevel = level; castLevel <= 9; castLevel++) {
+    if ((slots[`level${castLevel}`]?.current ?? 0) > 0) options.push({ key: `level${castLevel}`, castLevel });
+  }
+  const pactLevel = pact?.slotLevel ?? 1;
+  if (pact && pact.current > 0 && pactLevel >= level) options.push({ key: 'pact', castLevel: pactLevel });
+  return options.sort((a, b) => a.castLevel - b.castLevel);
+}
+
+/**
+ * Slot a cast of a level-`level` spell spends (invariant 1): `preferredKey`
+ * when it still has a use, else the lowest available option (the spell's own
+ * level, then the next level up or Pact Magic); `null` when none is left.
  */
 export function pickCastSlot(
   level: number,
   slots: Readonly<Record<string, SlotTierView>>,
   pact: SlotTierView | null,
+  preferredKey?: string,
 ): SpentSlot | null {
-  const own = slots[`level${level}`];
-  if (own && own.current > 0) return { key: `level${level}`, tier: { current: own.current - 1, max: own.max } };
-  if (pact && pact.current > 0 && (pact.slotLevel ?? 1) >= level) {
-    return { key: 'pact', tier: { current: pact.current - 1, max: pact.max, slotLevel: pact.slotLevel ?? 1 } };
+  const options = castSlotOptions(level, slots, pact);
+  const option = options.find((o) => o.key === preferredKey) ?? options[0];
+  if (!option) return null;
+  if (option.key === 'pact' && pact) {
+    return { key: 'pact', tier: { current: pact.current - 1, max: pact.max, slotLevel: option.castLevel }, castLevel: option.castLevel };
   }
-  return null;
+  const tier = slots[option.key];
+  return { key: option.key, tier: { current: tier.current - 1, max: tier.max }, castLevel: option.castLevel };
 }
 
 /** Slots and spells from `derived.spells` (`DerivedSpellcasting`) or the legacy list binding. */
@@ -131,12 +166,16 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
     props.dispatchCommand?.(TrameCommand.UpdateActorSheet({ path: `${basePath}.${key}`, value: tier }));
   };
 
+  const [slotChoice, setSlotChoice] = useSafeState<Record<string, string>>({});
+  const castSlot = (spell: SpellView) =>
+    spell.level > 0 && autoDeductSlots ? pickCastSlot(spell.level, slots, pact, slotChoice[spell.id]) : null;
+
   const handleCast = (spell: SpellView) => {
     if (spell.isAoE && !onTable) {
       props.dispatchCommand?.({ cmd: 'NOTIFICATION', type: 'warning', message: t('sheet.spells.canvasNotMounted') });
       return;
     }
-    const slot = spell.level > 0 && autoDeductSlots ? pickCastSlot(spell.level, slots, pact) : null;
+    const slot = castSlot(spell);
     if (spell.level > 0 && autoDeductSlots && !slot) return;
     props.dispatchCommand?.(TrameCommand.CastSpell({ spellId: spell.id, slot, onTable }));
     if (onTable) props.onCloseDrawer?.();
@@ -194,16 +233,45 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
       filled ? '[*]' : '[ ]',
     );
 
-  const castButton = (spell: SpellView) => {
-    const slot = spell.level > 0 && autoDeductSlots ? pickCastSlot(spell.level, slots, pact) : null;
+  const slotPicker = (spell: SpellView, slot: SpentSlot | null) => {
+    const options = spell.level > 0 && autoDeductSlots ? castSlotOptions(spell.level, slots, pact) : [];
+    if (options.length < 2 || !slot) return null;
+    const id = `spell-slot-${spell.id}`;
+    return h(
+      'span',
+      { class: 'ds-field' },
+      h('label', { for: id, class: 'ds-field-label' }, t('sheet.spells.slotLevel')),
+      h(
+        'select',
+        {
+          id,
+          class: 'ds-input ds-input-compact atlas-tabular-nums',
+          'data-testid': id,
+          value: slot.key,
+          onChange: (e: Event) => setSlotChoice((prev) => ({ ...prev, [spell.id]: (e.target as HTMLSelectElement).value })),
+        },
+        options.map((o) =>
+          h(
+            'option',
+            { key: o.key, value: o.key },
+            t(o.key === 'pact' ? 'sheet.spells.slotOptionPact' : 'sheet.spells.slotOption', { level: o.castLevel }),
+          ),
+        ),
+      ),
+    );
+  };
+
+  const castButton = (spell: SpellView, slot: SpentSlot | null) => {
     const noSlot = spell.level > 0 && autoDeductSlots && !slot;
+    const castAria = t(spell.isAoE ? 'sheet.spells.castAoeAria' : 'sheet.spells.castAria', { name: spell.name });
+    const upcast = slot && slot.castLevel > spell.level ? t('sheet.spells.castAtLevelAria', { aria: castAria, level: slot.castLevel }) : castAria;
     return h(
       'button',
       {
         type: 'button',
         class: 'ds-btn ds-btn-secondary ds-btn-sm ds-btn-cast-spell',
         'data-testid': `btn-cast-spell-${spell.id}`,
-        'aria-label': t(spell.isAoE ? 'sheet.spells.castAoeAria' : 'sheet.spells.castAria', { name: spell.name }),
+        'aria-label': noSlot ? t('sheet.spells.noSlotAria', { name: spell.name, level: spell.level }) : upcast,
         disabled: noSlot,
         onClick: () => handleCast(spell),
       },
@@ -301,14 +369,16 @@ export function SpellbookAccordionWidget(props: WidgetProps): VNode<any> {
                 { id: `spell-level-body-${lvl}`, class: 'ds-spell-level-body' },
                 levelSpells.length === 0
                   ? h('span', { class: 'ds-no-spells' }, t('sheet.spells.none'))
-                  : levelSpells.map((spell) =>
-                      h(
+                  : levelSpells.map((spell) => {
+                      const slot = castSlot(spell);
+                      return h(
                         'div',
                         { key: spell.id, class: 'ds-spell-item', 'data-testid': `spell-item-${spell.id}` },
                         h('span', { class: 'ds-spell-title atlas-tabular-nums' }, t('sheet.spells.itemTitle', { name: spell.name, level: spell.level })),
-                        castButton(spell),
-                      ),
-                    ),
+                        slotPicker(spell, slot),
+                        castButton(spell, slot),
+                      );
+                    }),
               )
             : null,
         );

@@ -183,7 +183,7 @@ export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (
     if (cmd.cmd === 'CAST_SPELL' && typeof cmd.spellId === 'string') {
       const slot = cmd.slot as SpentSlot | null;
       if (slot) save({ [`spellSlots.${slot.key}`]: slot.tier });
-      castOnTable(client, actorId, cmd.spellId, cmd.onTable === true);
+      castOnTable(client, actorId, cmd.spellId, cmd.onTable === true, slot?.castLevel);
       return;
     }
     if (cmd.cmd === 'RESOLVE_ATTACK' && typeof cmd.attackId === 'string') {
@@ -196,16 +196,16 @@ export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (
  * Table side of a cast: a concentration spell starts concentration on the
  * caster's token (an area also binds its persistent zone when projected);
  * on the table an area spell opens area placement and a damaging spell opens
- * the attack / save resolution.
+ * the attack / save resolution, scaled to `castLevel` when upcast.
  */
-function castOnTable(client: ApiClient, actorId: Uuid, spellId: string, onTable: boolean): void {
+function castOnTable(client: ApiClient, actorId: Uuid, spellId: string, onTable: boolean, castLevel?: number): void {
   const data = CompendiumResolver.getDefault().get(spellId)?.data;
   if (!data) return;
   const caster = casterTokenId(client.state.table.value, actorId);
   if (data.concentration === true && caster) client.submitCommand(setConcentration(caster, true));
   if (!onTable) return;
-  if (data.area) startAction({ kind: 'area', actorId, spellId });
-  else if (typeof data.damageDice === 'string') startAction({ kind: 'attack', actorId, attackId: spellId });
+  if (data.area) startAction({ kind: 'area', actorId, spellId, castLevel });
+  else if (typeof data.damageDice === 'string') startAction({ kind: 'attack', actorId, attackId: spellId, castLevel });
 }
 
 /** Adapts `ApiClient.rollDiceRest` to the modal `DiceRollService` (invariant 3). */
