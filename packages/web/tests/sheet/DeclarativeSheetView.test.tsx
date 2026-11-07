@@ -1,7 +1,48 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { h } from "preact";
+import { localeSignal } from "../../src/i18n/index.ts";
 import { DeclarativeSheetView } from "../../src/sheet/DeclarativeSheetView.tsx";
 import { CompendiumDrawer } from "../../src/compendium/CompendiumDrawer.tsx";
+import { assertAbsent } from "../helpers/domAssert.ts";
+import { mount } from "../helpers/liveTable.ts";
+import { setupMockDom } from "../helpers/mockDom.ts";
+
+setupMockDom();
+localeSignal.value = "en";
+
+describe("DeclarativeSheetView: padlock toggle keeps a stable name", () => {
+  const cases = [
+    { id: "a locked sheet: Edit Mode not pressed", props: { coreStatsLocked: true }, pressed: "false", gmHint: false },
+    { id: "an unlocked sheet: Edit Mode pressed", props: { coreStatsLocked: false }, pressed: "true", gmHint: false },
+    { id: "a GM-locked sheet: Edit Mode disabled and described by the GM lock", props: { gm_core_locked: true, coreStatsLocked: false }, pressed: "false", gmHint: true },
+  ];
+  for (const c of cases) {
+    it(c.id, () => {
+      const ui = mount(h(DeclarativeSheetView, { actorState: { sheet: {} }, ...c.props }));
+      const toggle = ui.byTestId("sheet-padlock-toggle");
+      assert.equal(toggle.textContent, "Edit Mode");
+      assert.equal(toggle.getAttribute("aria-label"), null);
+      assert.equal(toggle.getAttribute("aria-pressed"), c.pressed);
+      if (c.gmHint) {
+        assert.equal(toggle.getAttribute("aria-describedby"), "sheet-gm-locked-hint");
+        assert.equal(ui.byTestId("sheet-gm-locked").textContent, "GM Locked");
+      } else {
+        assertAbsent(ui.byTestId("sheet-gm-locked"), "GM lock hint");
+      }
+      ui.unmount();
+    });
+  }
+
+  it("toggling keeps the name and flips aria-pressed", () => {
+    const ui = mount(h(DeclarativeSheetView, { actorState: { sheet: {} } }));
+    ui.click("sheet-padlock-toggle");
+    const toggle = ui.byTestId("sheet-padlock-toggle");
+    assert.equal(toggle.textContent, "Edit Mode");
+    assert.equal(toggle.getAttribute("aria-pressed"), "true");
+    ui.unmount();
+  });
+});
 
 describe("DeclarativeSheetView Component & CoreBuildLock", () => {
   it("evaluates isLocked = true when gm_core_locked is true", () => {

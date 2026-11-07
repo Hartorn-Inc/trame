@@ -194,7 +194,6 @@ function TokenVitals({ client, isGm = false }: TokenVitalsPanelProps) {
               type="button"
               class="ds-btn ds-btn-ghost"
               data-testid="vitals-concentration"
-              aria-pressed={token.concentrating ? 'true' : 'false'}
               onClick={() => client.submitCommand(setConcentration(token.id, !token.concentrating))}
             >
               {token.concentrating ? t('vitals.concentrationEnd') : t('vitals.concentrationStart')}

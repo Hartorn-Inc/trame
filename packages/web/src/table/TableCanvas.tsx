@@ -53,7 +53,9 @@
  *      CSS transform inside a sized scroll area, so every pointer position is
  *      divided by the zoom once (`boardPoint`) and stays in canvas pixels.
  *      Ctrl/Cmd + wheel and two-finger pinch zoom around the pointer; plain
- *      wheel, scrollbars and touch drag pan.
+ *      wheel, scrollbars and touch drag pan. The anchored scroll offset is
+ *      applied in a layout effect after the zoomed board has its new size,
+ *      otherwise the browser clamps it to the old, smaller scroll area.
  * 6. `GM-Only Brushes`:
  *    - The fog and terrain tools render for the GM only; while one is active
  *      board clicks paint instead of moving tokens (`tableTools.ts`).
@@ -167,10 +169,10 @@ function tokenLabel(token: TableToken): string {
   return label;
 }
 
+/** Name of a door handle; open / closed is its `aria-pressed` state, never part of the name. */
 function doorLabel(door: DoorHandle): string {
-  const state = t(door.isOpen ? 'table.door.open' : 'table.door.closed');
   const extra = door.isSecret ? t('table.door.secret') : door.isLocked ? t('table.door.locked') : null;
-  return t('table.door.label', { state: extra ? `${state}, ${extra}` : state });
+  return extra ? t('table.door.labelWith', { extra }) : t('table.door.label');
 }
 
 function initials(name: string): string {
@@ -223,6 +225,8 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   const [mapImage, setMapImage] = useState<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
+  /** Scroll offset (`px`) the next zoom render applies (invariant 5). */
+  const pendingScrollRef = useRef<{ left: number; top: number } | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
   const [renderer, setRenderer] = useState<TableRenderer | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -332,12 +336,18 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
     const scroller = scrollerRef.current;
     const at = anchor ?? { x: (scroller?.clientWidth ?? 0) / 2, y: (scroller?.clientHeight ?? 0) / 2 };
     const next = zoomAround({ zoom, scrollLeft: scroller?.scrollLeft ?? 0, scrollTop: scroller?.scrollTop ?? 0 }, factor, at);
+    pendingScrollRef.current = { left: next.scrollLeft, top: next.scrollTop };
     setZoom(next.zoom);
-    if (scroller) {
-      scroller.scrollLeft = next.scrollLeft;
-      scroller.scrollTop = next.scrollTop;
-    }
   };
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    const pending = pendingScrollRef.current;
+    if (!scroller || !pending) return;
+    pendingScrollRef.current = null;
+    scroller.scrollLeft = pending.left;
+    scroller.scrollTop = pending.top;
+  }, [zoom]);
 
   const scrollerAnchor = (e: { clientX: number; clientY: number }): WirePoint2D => {
     const rect = scrollerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };

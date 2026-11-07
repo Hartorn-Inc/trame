@@ -19,6 +19,9 @@
  * 2. `Verbatim SRD Prose`:
  *    - Names, descriptions, alignment and languages are SRD English text and
  *      carry `lang="en"` inside a possibly French UI; labels are localized.
+ * 2b. `Aligned Numbers`:
+ *    - The AC / HP / speed list, the ability grid and the details list use
+ *      `atlas-tabular-nums`, so scores and modifiers line up column by column.
  * 3. `Plain Text Only`:
  *    - Descriptions render as text nodes (no HTML), so a homebrew stat block
  *      cannot inject markup.
@@ -152,13 +155,13 @@ export function MonsterStatBlockView({ statBlock: sb, id, testId, onAction }: Mo
       <p class="ds-meta" lang="en">
         {`${sb.size} ${sb.creatureType}, ${sb.alignment}`}
       </p>
-      <dl class="ds-stack-sm">
+      <dl class="ds-stack-sm atlas-tabular-nums" data-testid={testId ? `${testId}-core` : undefined}>
         <Entry label={t('statBlock.armorClass')} value={String(sb.armorClass.value)} />
         <Entry label={t('statBlock.hitPoints')} value={`${sb.hitPoints.average} (${sb.hitPoints.formula})`} />
         <Entry label={t('statBlock.speed')} value={speedLine(sb.speed)} />
         <Entry label={t('statBlock.initiative')} value={signed(sb.initiativeBonus)} />
       </dl>
-      <dl class="ds-grid-3" aria-label={t('statBlock.abilities')}>
+      <dl class="ds-grid-3 atlas-tabular-nums" aria-label={t('statBlock.abilities')} data-testid={testId ? `${testId}-abilities` : undefined}>
         {ABILITIES.map((ab) => (
           <div key={ab} data-testid={testId ? `${testId}-${ab}` : undefined}>
             <dt class="ds-meta">{t(`statBlock.ability.${ab}` as MessageKey)}</dt>
@@ -166,7 +169,7 @@ export function MonsterStatBlockView({ statBlock: sb, id, testId, onAction }: Mo
           </div>
         ))}
       </dl>
-      <dl class="ds-stack-sm">
+      <dl class="ds-stack-sm atlas-tabular-nums" data-testid={testId ? `${testId}-details` : undefined}>
         <Entry label={t('statBlock.savingThrows')} value={saves} />
         <Entry label={t('statBlock.skills')} value={skills} />
         <Entry label={t('statBlock.vulnerabilities')} value={damageList(sb.damageVulnerabilities)} />

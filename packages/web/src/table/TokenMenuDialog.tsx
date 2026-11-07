@@ -26,9 +26,13 @@
  * 4. `Non-Negative Speed`:
  *    - The speed override accepts whole feet `>= 0`; otherwise the button is
  *      disabled.
+ * 5. `Removal Is Confirmed`:
+ *    - "Remove token" only asks; `REMOVE_TOKEN` is sent by the confirm button
+ *      that replaces it (focused), so a stray click cannot delete a token.
+ *      Cancel restores the menu.
  * ============================================================================
  */
-import { useRef, useState } from 'preact/hooks';
+import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { ApiClient } from '../api/client.ts';
 import { useModalFocusTrap } from '../components/a11y/useModalFocusTrap.ts';
 import { t } from '../i18n/index.ts';
@@ -47,7 +51,16 @@ export interface TokenMenuDialogProps {
 export function TokenMenuDialog({ client, token, isGm, onClose, onTeleport }: TokenMenuDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const [speed, setSpeed] = useState(token.speedRemainingFt !== null ? String(token.speedRemainingFt) : '');
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const removeRef = useRef<HTMLButtonElement>(null);
+  const askedRemove = useRef(false);
   useModalFocusTrap(dialogRef, { onEscape: onClose });
+  useLayoutEffect(() => {
+    if (confirmRemove) confirmRef.current?.focus();
+    else if (askedRemove.current) removeRef.current?.focus();
+    askedRemove.current = confirmRemove;
+  }, [confirmRemove]);
   const speedValue = Number(speed);
   const speedValid = speed !== '' && Number.isInteger(speedValue) && speedValue >= 0;
   const send = (command: Parameters<ApiClient['submitCommand']>[0]) => {
@@ -75,7 +88,6 @@ export function TokenMenuDialog({ client, token, isGm, onClose, onTeleport }: To
               type="button"
               class="ds-btn ds-btn-secondary"
               data-testid="token-menu-disengage"
-              aria-pressed={token.disengaged ? 'true' : 'false'}
               onClick={() => send(setDisengaged(token.id, !token.disengaged))}
             >
               {token.disengaged ? t('tokenMenu.disengageEnd') : t('tokenMenu.disengage')}
@@ -124,14 +136,29 @@ export function TokenMenuDialog({ client, token, isGm, onClose, onTeleport }: To
                   {t('tokenMenu.speedApply')}
                 </button>
               </div>
-              <button
-                type="button"
-                class="ds-btn ds-btn-danger"
-                data-testid="token-menu-remove"
-                onClick={() => send(removeToken(token.id))}
-              >
-                {t('tokenMenu.remove')}
-              </button>
+              {confirmRemove ? (
+                <div class="ds-cluster" role="group" aria-labelledby="token-menu-remove-question">
+                  <p id="token-menu-remove-question" class="ds-hint" data-testid="token-menu-remove-question">
+                    {t('tokenMenu.removeQuestion', { name: token.name })}
+                  </p>
+                  <button
+                    ref={confirmRef}
+                    type="button"
+                    class="ds-btn ds-btn-danger"
+                    data-testid="token-menu-remove-confirm"
+                    onClick={() => send(removeToken(token.id))}
+                  >
+                    {t('tokenMenu.removeConfirm')}
+                  </button>
+                  <button type="button" class="ds-btn ds-btn-ghost" data-testid="token-menu-remove-cancel" onClick={() => setConfirmRemove(false)}>
+                    {t('tokenMenu.removeCancel')}
+                  </button>
+                </div>
+              ) : (
+                <button ref={removeRef} type="button" class="ds-btn ds-btn-danger" data-testid="token-menu-remove" onClick={() => setConfirmRemove(true)}>
+                  {t('tokenMenu.remove')}
+                </button>
+              )}
             </>
           ) : null}
           {!token.controlled && !isGm ? <p class="ds-hint">{t('tokenMenu.noActions')}</p> : null}

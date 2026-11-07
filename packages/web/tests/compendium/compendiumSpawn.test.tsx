@@ -94,6 +94,9 @@ describe("Compendium tab: full SRD, stat blocks, GM spawn", () => {
     assert.equal(ui.byTestId(`stat-block-${ABOLETH}-str`).textContent, "STR21 (+5)");
     assert.match(block.textContent, /Armor Class17/);
     assert.match(block.textContent, /Legendary Actions/);
+    for (const part of ["core", "abilities", "details"]) {
+      assert.match(ui.byTestId(`stat-block-${ABOLETH}-${part}`).getAttribute("class"), /\batlas-tabular-nums\b/, `${part} uses tabular numerals`);
+    }
     ui.click(`btn-stat-block-${ABOLETH}`);
     assertAbsent(ui.byTestId(`stat-block-${ABOLETH}`), "stat block after second toggle");
     ui.unmount();

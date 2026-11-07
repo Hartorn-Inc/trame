@@ -123,6 +123,54 @@ describe("MapsStudioTab: drawing walls on the canvas", () => {
     });
   }
 
+  const endings = [
+    { id: "pointerup after a captured drag adds the wall", end: "pointerup", expected: /Normal.*\(70,70\) → \(490,70\)/ },
+    { id: "pointercancel drops the drag without a wall", end: "pointercancel", expected: /No wall segments yet/ },
+  ];
+  for (const c of endings) {
+    it(c.id, () => {
+      const ui = mount(h(MapsStudioTab, { campaignId: "camp-1", userRole: "GM", initialScenes: [scene] }));
+      const svg = ui.byTestId("studio-canvas");
+      const captured: number[] = [];
+      svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 100 });
+      svg.setPointerCapture = (id: number) => captured.push(id);
+      svg.dispatchEvent({ type: "pointerdown", clientX: 10, clientY: 10, pointerId: 7 });
+      svg.dispatchEvent({ type: "pointermove", clientX: 50, clientY: 10, pointerId: 7 });
+      svg.dispatchEvent({ type: c.end, pointerId: 7 });
+      assert.deepEqual(captured, [7]);
+      assertAbsent(ui.byTestId("canvas-wall-preview"), "wall preview");
+      assert.match(ui.byTestId("all-walls-list").textContent, c.expected);
+      ui.unmount();
+    });
+  }
+
+  it("the reveal toggle keeps its name and reports its state with aria-pressed", () => {
+    const ui = mount(h(MapsStudioTab, { campaignId: "camp-1", userRole: "GM", initialScenes: [scene] }));
+    for (const pressed of ["false", "true", "false"]) {
+      const toggle = ui.byTestId("toggle-revealed-btn");
+      assert.equal(toggle.textContent, "Revealed to players");
+      assert.equal(toggle.getAttribute("aria-pressed"), pressed);
+      ui.click("toggle-revealed-btn");
+    }
+    ui.unmount();
+  });
+
+  const zoomControls = [
+    { id: "zoom out is an ATLAS ghost button", testId: "studio-zoom-out", classes: ["ds-btn", "ds-btn-ghost", "ds-btn-sm"] },
+    { id: "zoom in is an ATLAS ghost button", testId: "studio-zoom-in", classes: ["ds-btn", "ds-btn-ghost", "ds-btn-sm"] },
+    { id: "the zoom level is tabular meta text", testId: "studio-zoom-level", classes: ["ds-meta", "atlas-tabular-nums"] },
+  ];
+  for (const c of zoomControls) {
+    it(`studio zoom: ${c.id} with no inline style`, () => {
+      const ui = mount(h(MapsStudioTab, { campaignId: "camp-1", userRole: "GM", initialScenes: [scene] }));
+      const node = ui.byTestId(c.testId);
+      const classes = (node.getAttribute("class") ?? "").split(/\s+/);
+      for (const name of c.classes) assert.ok(classes.includes(name), `${c.testId} has ${name}`);
+      assert.ok(!node.getAttribute("style"), `${c.testId} has no inline style`);
+      ui.unmount();
+    });
+  }
+
   it("the studio no longer fakes a fog brush and points to the live table brushes", () => {
     const ui = mount(h(MapsStudioTab, { campaignId: "camp-1", userRole: "GM", initialScenes: [scene] }));
     assertAbsent(ui.byTestId("paint-fog-btn"), "paint-fog-btn");

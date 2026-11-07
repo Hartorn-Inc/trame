@@ -151,12 +151,20 @@ describe("TableCanvas: door handles", () => {
     ui.unmount();
   });
 
-  it("the door label names its state in words, not colour alone", () => {
-    const live = liveTable(PLAYER_ID, playerView({ walls: [door(false, true)] }));
-    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
-    assert.equal(ui.byTestId(`door-${DOOR}`).getAttribute("aria-label"), "Door, closed, locked");
-    ui.unmount();
-  });
+  const doorNames = [
+    { id: "a closed door keeps the same name as an open one", open: false, locked: false, label: "Door open" },
+    { id: "an open door is named the same, its state is aria-pressed", open: true, locked: false, label: "Door open" },
+    { id: "a locked door names the lock in words", open: false, locked: true, label: "Door open (locked)" },
+  ];
+  for (const c of doorNames) {
+    it(`door label: ${c.id}`, () => {
+      const live = liveTable(PLAYER_ID, playerView({ walls: [door(c.open, c.locked)] }));
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+      assert.equal(ui.byTestId(`door-${DOOR}`).getAttribute("aria-label"), c.label);
+      assert.equal(ui.byTestId(`door-${DOOR}`).getAttribute("aria-pressed"), String(c.open));
+      ui.unmount();
+    });
+  }
 });
 
 describe("TableCanvas: token actions menu", () => {
@@ -181,7 +189,7 @@ describe("TableCanvas: token actions menu", () => {
   const commands = [
     { id: "Disengage sends SET_DISENGAGED", role: "player", token: HERO, act: "token-menu-disengage", expected: { cmd: "SET_DISENGAGED", token_id: HERO, disengaged: true } },
     { id: "Hide from players sends SET_TOKEN_VISIBILITY gm_hidden", role: "GM", token: GOBLIN, act: "token-menu-visibility", expected: { cmd: "SET_TOKEN_VISIBILITY", token_id: GOBLIN, gm_hidden: true, invisible: false } },
-    { id: "Remove sends REMOVE_TOKEN", role: "GM", token: GOBLIN, act: "token-menu-remove", expected: { cmd: "REMOVE_TOKEN", token_id: GOBLIN } },
+    { id: "Remove then confirm sends REMOVE_TOKEN", role: "GM", token: GOBLIN, act: ["token-menu-remove", "token-menu-remove-confirm"], expected: { cmd: "REMOVE_TOKEN", token_id: GOBLIN } },
   ] as const;
   for (const c of commands) {
     it(c.id, () => {
@@ -190,12 +198,26 @@ describe("TableCanvas: token actions menu", () => {
       const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm }));
       ui.click(`token-${c.token}`);
       ui.click("table-token-menu-open");
-      ui.click(c.act);
+      for (const act of typeof c.act === "string" ? [c.act] : c.act) ui.click(act);
       assert.deepEqual(live.commands(), [c.expected]);
       assertAbsent(ui.byTestId("token-menu"), "menu closes after the action");
       ui.unmount();
     });
   }
+
+  it("Remove asks first and Keep the token sends nothing", () => {
+    const live = liveTable(GM_ID, gmView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+    ui.key(`token-${GOBLIN}`, "ContextMenu");
+    ui.click("token-menu-remove");
+    assert.deepEqual(live.commands(), []);
+    assert.equal(ui.byTestId("token-menu-remove-question").textContent, "Remove Goblin from the table? Its initiative entry goes too.");
+    assertSameNode((globalThis as any).document.activeElement, ui.byTestId("token-menu-remove-confirm"), "focus moves to the confirm button");
+    ui.click("token-menu-remove-cancel");
+    assert.deepEqual(live.commands(), []);
+    assertSameNode((globalThis as any).document.activeElement, ui.byTestId("token-menu-remove"), "focus returns to Remove");
+    ui.unmount();
+  });
 
   it("a GM-hidden token offers Reveal and is labelled hidden", () => {
     const live = liveTable(GM_ID, gmView({}, {}, { visibility_channel: 0b101 }));
@@ -450,6 +472,27 @@ describe("TableCanvas: zoom, pan and pings", () => {
     assert.deepEqual(live.commands().at(-1)?.to_top_left, { x: 400, y: 200 });
     ui.click("table-zoom-reset");
     assert.equal(ui.byTestId("table-zoom-reset").textContent, "100%");
+    ui.unmount();
+  });
+
+  it("the zoom anchor scroll is applied once the board has its zoomed size", () => {
+    const live = liveTable(GM_ID, gmView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+    const scroller = ui.byTestId("table-scroller");
+    const writes: Array<[number, string]> = [];
+    let left = 0;
+    Object.assign(scroller, { clientWidth: 200, clientHeight: 100, scrollTop: 0 });
+    Object.defineProperty(scroller, "scrollLeft", {
+      configurable: true,
+      get: () => left,
+      set: (value: number) => {
+        left = value;
+        writes.push([value, ui.byTestId("table-board").style.transform]);
+      },
+    });
+    ui.click("table-zoom-in");
+    assert.deepEqual(writes, [[25, "scale(1.25)"]]);
+    assert.equal(scroller.scrollTop, 12.5);
     ui.unmount();
   });
 

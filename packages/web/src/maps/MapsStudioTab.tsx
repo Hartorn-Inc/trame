@@ -312,10 +312,16 @@ export function MapsStudioTab({
 
   const snapped = (e: PointerEvent, point: Point2D) => (e.altKey ? point : snapToGridCorner(point, selectedScene?.gridCellSizePx ?? 0));
 
+  /** Captures the pointer so a drag ending outside the canvas still ends (or cancels) the wall. */
   const handleCanvasPointerDown = (e: PointerEvent) => {
     const point = pointerScenePoint(e);
     if (!point) return;
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
     wallDragSignal.value = { start: snapped(e, point), end: snapped(e, point) };
+  };
+
+  const handleCanvasPointerCancel = () => {
+    wallDragSignal.value = null;
   };
 
   const handleCanvasPointerMove = (e: PointerEvent) => {
@@ -367,7 +373,7 @@ export function MapsStudioTab({
             onClick={handleToggleRevealed}
             style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', background: 'var(--atlas-surface-raised)', color: 'var(--atlas-text)' }}
           >
-            {selectedScene?.revealedToPlayers ? t('maps.revealedInAtlas') : t('maps.hiddenFromAtlas')}
+            {t('maps.revealToPlayers')}
           </button>
           <button
             type="button"
@@ -513,31 +519,31 @@ export function MapsStudioTab({
                 </p>
               </div>
 
-              <div role="toolbar" aria-label={t('maps.zoomToolbar')} style={{ display: 'flex', alignItems: 'center', gap: 'var(--atlas-space-xs)' }}>
+              <div role="toolbar" aria-label={t('maps.zoomToolbar')} class="ds-cluster">
                 <button
                   type="button"
+                  class="ds-btn ds-btn-ghost ds-btn-sm"
                   data-testid="studio-zoom-out"
                   aria-label={t('table.zoomOut')}
                   disabled={studioZoomSignal.value <= STUDIO_MIN_ZOOM}
                   onClick={() => { studioZoomSignal.value = Math.max(STUDIO_MIN_ZOOM, studioZoomSignal.value / STUDIO_ZOOM_STEP); }}
-                  style={{ minHeight: '40px', minWidth: '40px' }}
                 >
                   −
                 </button>
-                <span class="atlas-tabular-nums" data-testid="studio-zoom-level" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>
+                <span class="ds-meta atlas-tabular-nums" data-testid="studio-zoom-level">
                   {t('table.zoomLevel', { percent: Math.round(studioZoomSignal.value * 100) })}
                 </span>
                 <button
                   type="button"
+                  class="ds-btn ds-btn-ghost ds-btn-sm"
                   data-testid="studio-zoom-in"
                   aria-label={t('table.zoomIn')}
                   disabled={studioZoomSignal.value >= STUDIO_MAX_ZOOM}
                   onClick={() => { studioZoomSignal.value = Math.min(STUDIO_MAX_ZOOM, studioZoomSignal.value * STUDIO_ZOOM_STEP); }}
-                  style={{ minHeight: '40px', minWidth: '40px' }}
                 >
                   +
                 </button>
-                <span style={{ fontSize: 'var(--atlas-font-size-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.drawWallHint')}</span>
+                <span class="ds-hint">{t('maps.drawWallHint')}</span>
               </div>
               <div
                 data-testid="canvas-viewport"
@@ -562,6 +568,7 @@ export function MapsStudioTab({
                   onPointerDown={handleCanvasPointerDown}
                   onPointerMove={handleCanvasPointerMove}
                   onPointerUp={handleCanvasPointerUp}
+                  onPointerCancel={handleCanvasPointerCancel}
                   style={{ display: 'block', cursor: 'crosshair', touchAction: 'none' }}
                 >
                   {wallDragSignal.value ? (
