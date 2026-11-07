@@ -5,11 +5,12 @@
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use trame_engine::aoe::GridCell;
+use trame_engine::commands::MAX_FOG_STROKE_CELLS;
 use trame_engine::rules::DamageAffinity;
 use trame_engine::wasm_api::call_export;
 use trame_engine::{
-    CampaignRole, CommandActor, CommandError, Point2D, TableSnapshotData, TableState, TokenState,
-    TrameCommand, TrameEvent,
+    CampaignRole, CommandActor, CommandError, FogOverrideCell, FogOverrideMode, Point2D,
+    TableSnapshotData, TableState, TokenState, TrameCommand, TrameEvent,
 };
 use uuid::Uuid;
 
@@ -408,6 +409,113 @@ fn set_difficult_terrain_is_gm_only_on_map_and_undoable() {
                 assert_eq!(restored, painted, "case {} undo restores", c.id);
             }
         }
+    }
+}
+
+#[test]
+fn fog_strokes_are_one_bounded_undo_step() {
+    struct Case {
+        id: &'static str,
+        actor: CommandActor,
+        mode: FogOverrideMode,
+        cells: Vec<GridCell>,
+        expect_err: bool,
+        /// `(col, row, mode)` after the command, sorted.
+        expect: Vec<(i32, i32, FogOverrideMode)>,
+    }
+    let existing = FogOverrideCell {
+        cell_x: 1,
+        cell_y: 1,
+        mode: FogOverrideMode::Hide,
+    };
+    let stroke = || vec![cell(0, 0), cell(1, 1), cell(1, 1), cell(2, 1)];
+    let cases = [
+        Case {
+            id: "reveal_rules_every_cell_once_and_replaces_existing",
+            actor: gm(),
+            mode: FogOverrideMode::Reveal,
+            cells: stroke(),
+            expect_err: false,
+            expect: vec![
+                (0, 0, FogOverrideMode::Reveal),
+                (1, 1, FogOverrideMode::Reveal),
+                (2, 1, FogOverrideMode::Reveal),
+            ],
+        },
+        Case {
+            id: "clear_removes_the_stroke_rulings",
+            actor: gm(),
+            mode: FogOverrideMode::Clear,
+            cells: stroke(),
+            expect_err: false,
+            expect: vec![],
+        },
+        Case {
+            id: "player_is_rejected",
+            actor: player(),
+            mode: FogOverrideMode::Reveal,
+            cells: stroke(),
+            expect_err: true,
+            expect: vec![(1, 1, FogOverrideMode::Hide)],
+        },
+        Case {
+            id: "empty_stroke_is_rejected",
+            actor: gm(),
+            mode: FogOverrideMode::Reveal,
+            cells: vec![],
+            expect_err: true,
+            expect: vec![(1, 1, FogOverrideMode::Hide)],
+        },
+        Case {
+            id: "stroke_over_the_cap_is_rejected",
+            actor: gm(),
+            mode: FogOverrideMode::Reveal,
+            cells: (0..=MAX_FOG_STROKE_CELLS as i32)
+                .map(|c| cell(c, 0))
+                .collect(),
+            expect_err: true,
+            expect: vec![(1, 1, FogOverrideMode::Hide)],
+        },
+    ];
+    for c in cases {
+        let mut state = table(vec![]);
+        state.data.fog_overrides = vec![existing];
+        let result = state.apply_command(
+            &c.actor,
+            TrameCommand::SetFogOverrides {
+                mode: c.mode,
+                cells: c.cells.clone(),
+            },
+        );
+        let mut actual: Vec<_> = state
+            .data
+            .fog_overrides
+            .iter()
+            .map(|o| (o.cell_x, o.cell_y, o.mode))
+            .collect();
+        actual.sort_by_key(|(x, y, _)| (*x, *y));
+        assert_eq!(actual, c.expect, "case {} overrides", c.id);
+        assert_eq!(result.is_err(), c.expect_err, "case {}: {result:?}", c.id);
+        if c.expect_err {
+            assert!(state.undo_stack.is_empty(), "case {} no undo", c.id);
+            continue;
+        }
+        assert_eq!(
+            result.unwrap().len(),
+            3,
+            "case {} one event per distinct cell",
+            c.id
+        );
+        assert_eq!(state.undo_stack.len(), 1, "case {} one undo entry", c.id);
+        state
+            .apply_command(&gm(), TrameCommand::UndoLastAction)
+            .unwrap();
+        assert_eq!(
+            state.data.fog_overrides,
+            vec![existing],
+            "case {} undo",
+            c.id
+        );
     }
 }
 

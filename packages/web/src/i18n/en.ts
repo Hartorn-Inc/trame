@@ -97,6 +97,7 @@ export const EN = {
   "command.action.SET_CONCENTRATION": "Concentration",
   "command.action.RECORD_DEATH_SAVE": "Death saving throw",
   "command.action.SET_FOG_OVERRIDE": "Fog brush",
+  "command.action.SET_FOG_OVERRIDES": "Fog brush",
   "command.action.SET_DIFFICULT_TERRAIN": "Difficult terrain brush",
   "command.action.ADD_WALL": "Add wall",
 
@@ -862,6 +863,7 @@ export const EN = {
   "table.tool.terrainErase": "Erase difficult terrain",
   "table.brushSize": "Brush size",
   "table.brushCells": "{{size}} x {{size}} cells",
+  "table.strokeCapped": "That stroke reached the {{max}}-cell limit, so the rest of the drag was not painted. Paint another stroke to continue.",
   "table.teleportArmed": "Click a cell or use the arrow keys to teleport {{name}}. Escape cancels.",
   "table.token.hidden": "hidden from players",
   "table.token.disengaged": "disengaged",

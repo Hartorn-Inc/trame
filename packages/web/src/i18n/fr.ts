@@ -96,6 +96,7 @@ export const FR: Record<MessageKey, string> = {
   "command.action.SET_CONCENTRATION": "Concentration",
   "command.action.RECORD_DEATH_SAVE": "Jet de sauvegarde contre la mort",
   "command.action.SET_FOG_OVERRIDE": "Pinceau de brouillard",
+  "command.action.SET_FOG_OVERRIDES": "Pinceau de brouillard",
   "command.action.SET_DIFFICULT_TERRAIN": "Pinceau de terrain difficile",
   "command.action.ADD_WALL": "Ajouter un mur",
 
@@ -865,6 +866,7 @@ export const FR: Record<MessageKey, string> = {
   "table.tool.terrainErase": "Effacer le terrain difficile",
   "table.brushSize": "Taille du pinceau",
   "table.brushCells": "{{size}} x {{size}} cases",
+  "table.strokeCapped": "Ce trait a atteint la limite de {{max}} cases : la fin du geste n'a pas été peinte. Tracez un autre trait pour continuer.",
   "table.teleportArmed": "Cliquez sur une case ou utilisez les flèches pour téléporter {{name}}. Échap annule.",
   "table.token.hidden": "caché aux joueurs",
   "table.token.disengaged": "désengagé",

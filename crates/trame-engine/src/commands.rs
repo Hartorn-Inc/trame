@@ -124,6 +124,9 @@ use uuid::Uuid;
 /// Maximum number of compensating state snapshots retained in `TableState::undo_stack` (`50` entries).
 pub const MAX_UNDO_HISTORY: usize = 50;
 
+/// Most cells one `SetFogOverrides` brush stroke may rule (`64`, the client stroke cap).
+pub const MAX_FOG_STROKE_CELLS: usize = 64;
+
 fn default_bright_radius_ft() -> f64 {
     20.0
 }
@@ -1051,6 +1054,14 @@ pub enum TrameCommand {
         cell_x: i32,
         /// Discrete vertical grid row index (`cell_y`).
         cell_y: i32,
+    },
+    /// Applies one fog ruling to every cell of a brush stroke as a single undo step (GM only).
+    /// `cells` holds `1..=MAX_FOG_STROKE_CELLS` cells; duplicates are applied once.
+    SetFogOverrides {
+        /// Brush operation mode (`Reveal`, `Hide`, or `Clear`).
+        mode: FogOverrideMode,
+        /// Grid cells of the stroke.
+        cells: Vec<GridCell>,
     },
     /// Marks (`difficult: true`) or clears (`false`) difficult terrain on grid cells of the
     /// active map (GM only). Every cell must lie on the map; the list must not be empty.
@@ -3249,6 +3260,41 @@ impl TableState {
                     cell_x,
                     cell_y,
                 }])
+            }
+
+            TrameCommand::SetFogOverrides { mode, mut cells } => {
+                Self::require_gm(actor)?;
+                if cells.is_empty() || cells.len() > MAX_FOG_STROKE_CELLS {
+                    return Err(CommandError::InvalidConfiguration(format!(
+                        "a fog stroke covers 1..={MAX_FOG_STROKE_CELLS} cells"
+                    )));
+                }
+                let mut seen = std::collections::HashSet::new();
+                cells.retain(|cell| seen.insert(*cell));
+                self.push_undo(format!("Fog brush ({} cells)", cells.len()));
+                self.data.fog_overrides.retain(|o| {
+                    !seen.contains(&GridCell {
+                        col: o.cell_x,
+                        row: o.cell_y,
+                    })
+                });
+                if mode != FogOverrideMode::Clear {
+                    self.data
+                        .fog_overrides
+                        .extend(cells.iter().map(|cell| FogOverrideCell {
+                            cell_x: cell.col,
+                            cell_y: cell.row,
+                            mode,
+                        }));
+                }
+                Ok(cells
+                    .into_iter()
+                    .map(|cell| TrameEvent::FogOverrideChanged {
+                        mode,
+                        cell_x: cell.col,
+                        cell_y: cell.row,
+                    })
+                    .collect())
             }
 
             TrameCommand::SetDifficultTerrain { cells, difficult } => {

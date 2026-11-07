@@ -16,10 +16,12 @@
  * 1. `On-Map Cells Only`:
  *    - Every brush cell is clipped to `0..cols` x `0..rows`; the engine
  *      rejects `SET_DIFFICULT_TERRAIN` when any cell lies off the map.
- * 2. `Bounded Strokes`:
- *    - A stroke keeps at most `MAX_STROKE_CELLS` distinct cells. Fog sends one
- *      `SET_FOG_OVERRIDE` per cell (each an undo step), so a wild drag can
- *      never flood the room with hundreds of commands.
+ * 2. `Bounded Strokes, One Undo Step Each`:
+ *    - A stroke keeps at most `MAX_STROKE_CELLS` distinct cells and finishes
+ *      as one command (`SET_FOG_OVERRIDES` or `SET_DIFFICULT_TERRAIN`), so a
+ *      5x5 drag is one undo entry instead of evicting the 50-entry undo ring.
+ *    - `strokeCapped` tells the canvas that a stroke reached the cap, so the
+ *      GM is told the rest of the drag was not painted.
  * 3. `Gap-Free Drags`:
  *    - Consecutive pointer samples are joined with a Bresenham line, so a
  *      fast drag paints every cell it crossed.
@@ -33,12 +35,12 @@
  * -----
  * `pointerdown` -> `cellAt` -> `brushCells` -> stroke
  * `pointermove` -> `strokeCells(last, cell)` -> `brushCells` -> `mergeCells`
- * `pointerup`   -> `strokeCommands(tool, stroke)` -> `submitCommand` each
+ * `pointerup`   -> `strokeCommands(tool, stroke)` -> `submitCommand`; cap notice
  * ============================================================================
  */
 import type { WirePoint2D, WireTrameCommand } from "../api/wire.ts";
 import type { GridCell } from "../engine/wasmBridge.ts";
-import { setDifficultTerrain, setFogOverride } from "./commands.ts";
+import { setDifficultTerrain, setFogOverrides } from "./commands.ts";
 
 /** Board interaction mode. `select` moves and selects tokens; the rest are GM brushes. */
 export type TableTool = "select" | "fogReveal" | "fogHide" | "fogClear" | "terrainPaint" | "terrainErase";
@@ -136,16 +138,21 @@ export function mergeCells(stroke: GridCell[], added: GridCell[]): GridCell[] {
   return out;
 }
 
-/** Commands a finished stroke sends: one fog ruling per cell, or one terrain command. */
+/** A stroke reached `MAX_STROKE_CELLS`; later cells of the drag were dropped (invariant 2). */
+export function strokeCapped(cells: readonly GridCell[]): boolean {
+  return cells.length >= MAX_STROKE_CELLS;
+}
+
+/** Commands a finished stroke sends: one fog command or one terrain command (one undo step). */
 export function strokeCommands(tool: TableTool, cells: GridCell[]): WireTrameCommand[] {
   if (cells.length === 0) return [];
   switch (tool) {
     case "fogReveal":
-      return cells.map((cell) => setFogOverride("REVEAL", cell));
+      return [setFogOverrides("REVEAL", cells)];
     case "fogHide":
-      return cells.map((cell) => setFogOverride("HIDE", cell));
+      return [setFogOverrides("HIDE", cells)];
     case "fogClear":
-      return cells.map((cell) => setFogOverride("CLEAR", cell));
+      return [setFogOverrides("CLEAR", cells)];
     case "terrainPaint":
       return [setDifficultTerrain(cells, true)];
     case "terrainErase":

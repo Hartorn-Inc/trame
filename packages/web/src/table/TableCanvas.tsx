@@ -65,7 +65,8 @@
  * ├── 5. Board click / arrow key -> `snapToCell` -> `MOVE_TOKEN` (teleport armed:
  * │      `gm_teleport: true`); Alt+click -> pointer ping.
  * ├── 6. Door handle click -> `TOGGLE_DOOR`.
- * └── 7. Brush drag -> `strokeCommands` -> fog rulings / `SET_DIFFICULT_TERRAIN`.
+ * └── 7. Brush drag -> `strokeCommands` -> one `SET_FOG_OVERRIDES` /
+ *        `SET_DIFFICULT_TERRAIN` per stroke; a capped stroke shows a notice.
  * ============================================================================
  */
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -96,6 +97,7 @@ import type { TableRenderer } from './scene/pixiTableRenderer.ts';
 import { buildTableScene, type SceneGeometry, type TableScene } from './scene/tableScene.ts';
 import {
   BRUSH_SIZES,
+  MAX_STROKE_CELLS,
   TABLE_TOOLS,
   ZOOM_STEP,
   brushCells,
@@ -103,6 +105,7 @@ import {
   gridBounds,
   mergeCells,
   pinchFactor,
+  strokeCapped,
   strokeCells,
   strokeCommands,
   zoomAround,
@@ -205,6 +208,7 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   const [zoom, setZoom] = useState(1);
   const [tool, setTool] = useState<TableTool>('select');
   const [brushSize, setBrushSize] = useState(BRUSH_SIZES[0]);
+  const [capped, setStrokeCapped] = useState(false);
   const [menuTokenId, setMenuTokenId] = useState<Uuid | null>(null);
   const [teleportId, setTeleportId] = useState<Uuid | null>(null);
   const stroke = useRef<{ cells: GridCell[]; last: GridCell } | null>(null);
@@ -358,6 +362,7 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
     stroke.current = null;
     if (!done) return;
     for (const command of strokeCommands(activeTool, done.cells)) client.submitCommand(command);
+    setStrokeCapped(strokeCapped(done.cells));
   };
 
   const onScrollerWheel = (e: WheelEvent) => {
@@ -475,6 +480,11 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
           </>
         ) : null}
       </div>
+      {capped && tool !== 'select' ? (
+        <p class="ds-hint" role="status" data-testid="table-stroke-capped">
+          {t('table.strokeCapped', { max: MAX_STROKE_CELLS })}
+        </p>
+      ) : null}
       {teleportToken ? (
         <p class="ds-hint" role="status" data-testid="table-teleport-armed">
           {t('table.teleportArmed', { name: teleportToken.name })}

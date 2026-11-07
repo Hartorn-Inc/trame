@@ -225,9 +225,9 @@ export function recordDeathSave(tokenId: Uuid, d20: number | null = null): WireT
   return { cmd: "RECORD_DEATH_SAVE", token_id: tokenId, d20 };
 }
 
-/** `SET_FOG_OVERRIDE`: GM-only manual fog ruling on one grid cell. */
-export function setFogOverride(mode: FogOverrideMode, cell: GridCell): WireTrameCommand {
-  return { cmd: "SET_FOG_OVERRIDE", mode, cell_x: cell.col, cell_y: cell.row };
+/** `SET_FOG_OVERRIDES`: GM-only fog ruling on every cell of one brush stroke (`1..=64` cells, one undo step). */
+export function setFogOverrides(mode: FogOverrideMode, cells: GridCell[]): WireTrameCommand {
+  return { cmd: "SET_FOG_OVERRIDES", mode, cells };
 }
 
 /** `SET_DIFFICULT_TERRAIN`: GM-only; paints (`difficult`) or erases a non-empty set of cells. */

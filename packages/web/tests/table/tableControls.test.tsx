@@ -8,6 +8,7 @@ import { localeSignal } from "../../src/i18n/index.ts";
 import { acceptedCoverSignal, CoverSuggestionPanel, targetTokenIdSignal } from "../../src/table/CoverSuggestionPanel.tsx";
 import { ReactionBanner } from "../../src/table/ReactionBanner.tsx";
 import { TableCanvas } from "../../src/table/TableCanvas.tsx";
+import { MAX_STROKE_CELLS } from "../../src/table/tableTools.ts";
 import { deathSavePhase, listTableTokens } from "../../src/table/tableView.ts";
 import { TokenConditionsPanel } from "../../src/table/TokenConditionsPanel.tsx";
 import { TokenVitalsPanel } from "../../src/table/TokenVitalsPanel.tsx";
@@ -207,7 +208,13 @@ describe("TableCanvas: GM map brushes", () => {
       id: "a fog hide tap rules on the tapped cell",
       tool: "fogHide",
       path: [[60, 110]],
-      expected: [{ cmd: "SET_FOG_OVERRIDE", mode: "HIDE", cell_x: 1, cell_y: 2 }],
+      expected: [{ cmd: "SET_FOG_OVERRIDES", mode: "HIDE", cells: [{ col: 1, row: 2 }] }],
+    },
+    {
+      id: "a fog reveal drag is one command for every crossed cell",
+      tool: "fogReveal",
+      path: [[60, 60], [160, 60]],
+      expected: [{ cmd: "SET_FOG_OVERRIDES", mode: "REVEAL", cells: [{ col: 1, row: 1 }, { col: 2, row: 1 }, { col: 3, row: 1 }] }],
     },
   ] as const;
   for (const c of strokes) {
@@ -223,9 +230,32 @@ describe("TableCanvas: GM map brushes", () => {
       board.dispatchEvent({ type: "pointerup" });
       ui.click("table-board", at(c.path[0]));
       assert.deepEqual(live.commands(), c.expected, "the trailing click paints nothing more and moves nothing");
+      assertAbsent(ui.byTestId("table-stroke-capped"), "short strokes show no cap notice");
       ui.unmount();
     });
   }
+
+  it("a 5x5 fog drag that hits the cell cap is one command and tells the GM", () => {
+    const live = liveTable(GM_ID, gmView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+    ui.click("table-tool-fogReveal");
+    ui.input("table-brush-size", "5", "change");
+    pinBoard(ui);
+    const board = ui.byTestId("table-board");
+    const at = (x: number, y: number) => ({ clientX: 10 + x, clientY: 20 + y, pointerType: "mouse" });
+    board.dispatchEvent({ type: "pointerdown", ...at(160, 160) });
+    board.dispatchEvent({ type: "pointermove", ...at(560, 160) });
+    board.dispatchEvent({ type: "pointerup" });
+    const commands = live.commands();
+    assert.equal(commands.length, 1);
+    assert.equal(commands[0].cmd, "SET_FOG_OVERRIDES");
+    assert.equal(commands[0].cells.length, MAX_STROKE_CELLS);
+    assert.equal(
+      ui.byTestId("table-stroke-capped").textContent,
+      `That stroke reached the ${MAX_STROKE_CELLS}-cell limit, so the rest of the drag was not painted. Paint another stroke to continue.`,
+    );
+    ui.unmount();
+  });
 });
 
 describe("TableCanvas: zoom, pan and pings", () => {

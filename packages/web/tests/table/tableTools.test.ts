@@ -10,6 +10,7 @@ import {
   gridBounds,
   mergeCells,
   pinchFactor,
+  strokeCapped,
   strokeCells,
   strokeCommands,
   zoomAround,
@@ -62,26 +63,26 @@ describe("tableTools: gap-free strokes", () => {
     const many = Array.from({ length: 200 }, (_, i) => ({ col: i % 20, row: Math.floor(i / 20) }));
     assert.equal(mergeCells([], many).length, MAX_STROKE_CELLS);
   });
+
+  const capCases = [
+    { id: "a short stroke is not capped", length: 9, capped: false },
+    { id: "a stroke one cell under the cap is not capped", length: MAX_STROKE_CELLS - 1, capped: false },
+    { id: "a stroke at the cap is reported", length: MAX_STROKE_CELLS, capped: true },
+  ];
+  for (const c of capCases) {
+    it(`strokeCapped: ${c.id}`, () => {
+      const cells = Array.from({ length: c.length }, (_, i) => ({ col: i, row: 0 }));
+      assert.equal(strokeCapped(cells), c.capped);
+    });
+  }
 });
 
 describe("tableTools: stroke commands", () => {
   const cells = [{ col: 1, row: 2 }, { col: 2, row: 2 }];
   const cases = [
-    {
-      id: "fog reveal sends one SET_FOG_OVERRIDE per cell",
-      tool: "fogReveal",
-      expected: [{ cmd: "SET_FOG_OVERRIDE", mode: "REVEAL", cell_x: 1, cell_y: 2 }, { cmd: "SET_FOG_OVERRIDE", mode: "REVEAL", cell_x: 2, cell_y: 2 }],
-    },
-    {
-      id: "fog hide sends HIDE rulings",
-      tool: "fogHide",
-      expected: [{ cmd: "SET_FOG_OVERRIDE", mode: "HIDE", cell_x: 1, cell_y: 2 }, { cmd: "SET_FOG_OVERRIDE", mode: "HIDE", cell_x: 2, cell_y: 2 }],
-    },
-    {
-      id: "fog clear sends CLEAR rulings",
-      tool: "fogClear",
-      expected: [{ cmd: "SET_FOG_OVERRIDE", mode: "CLEAR", cell_x: 1, cell_y: 2 }, { cmd: "SET_FOG_OVERRIDE", mode: "CLEAR", cell_x: 2, cell_y: 2 }],
-    },
+    { id: "fog reveal sends one SET_FOG_OVERRIDES for the whole stroke", tool: "fogReveal", expected: [{ cmd: "SET_FOG_OVERRIDES", mode: "REVEAL", cells }] },
+    { id: "fog hide sends one HIDE command for the stroke", tool: "fogHide", expected: [{ cmd: "SET_FOG_OVERRIDES", mode: "HIDE", cells }] },
+    { id: "fog clear sends one CLEAR command for the stroke", tool: "fogClear", expected: [{ cmd: "SET_FOG_OVERRIDES", mode: "CLEAR", cells }] },
     { id: "terrain paint sends one SET_DIFFICULT_TERRAIN for the stroke", tool: "terrainPaint", expected: [{ cmd: "SET_DIFFICULT_TERRAIN", cells, difficult: true }] },
     { id: "terrain erase removes the stroke's cells", tool: "terrainErase", expected: [{ cmd: "SET_DIFFICULT_TERRAIN", cells, difficult: false }] },
     { id: "the select tool sends nothing", tool: "select", expected: [] },
