@@ -741,7 +741,7 @@ describe("LevelUpModal: Fighting Style feat on the features step", () => {
 
   for (const scenario of SCENARIOS) {
     it(`[${scenario.id}] the style is required before Next and recorded on confirm`, async () => {
-      let saved: Dnd5eActorData | null = null;
+      let saved = null as Dnd5eActorData | null;
       const { container, getNextButton, getConfirmButton, unmount } = await renderModal({
         isOpen: true,
         actor: scenario.actor(),
@@ -769,7 +769,7 @@ describe("LevelUpModal: Fighting Style feat on the features step", () => {
       click(getConfirmButton());
       await new Promise((r) => setTimeout(r, 10));
       assert.ok(saved, "onSave must receive the leveled actor");
-      assert.equal(saved!.features?.includes(scenario.pick), true);
+      assert.equal(saved?.features?.includes(scenario.pick), true);
       unmount();
     });
   }

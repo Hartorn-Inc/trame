@@ -213,8 +213,10 @@ describe("Fighting Style class feature grants its feat", () => {
       1,
       ["srd:feat:archery", "srd:feat:defense", "srd:feat:great_weapon_fighting", "srd:feat:two_weapon_fighting"],
     ]);
-    const selections: BuilderSelections = Object.fromEntries(choices.map((c) => [c.id, c.options.slice(0, c.count).map((o) => o.id)]));
-    selections.fighting_style = ["srd:feat:defense"];
+    const selections: BuilderSelections = {
+      ...Object.fromEntries(choices.map((c) => [c.id, c.options.slice(0, c.count).map((o) => o.id)])),
+      fighting_style: ["srd:feat:defense"],
+    };
     const actor = applyClassChoices(base, "fighter", selections);
     assert.deepEqual([actor.features?.includes("srd:feat:defense"), actor.featsTaken?.at(-1)], [true, { featId: "srd:feat:defense", level: 1 }]);
   });
