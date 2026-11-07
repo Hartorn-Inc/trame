@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { h, options, render } from "preact";
-import { bootstrapSession, stripInviteParam } from "../src/api/bootstrap.ts";
+import { bootstrapSession, readBootRoute, stripBootSecrets } from "../src/api/bootstrap.ts";
 import { ApiClient } from "../src/api/client.ts";
 import { createSessionState } from "../src/api/session.ts";
 import { localeSignal } from "../src/i18n/index.ts";
@@ -13,6 +13,7 @@ import {
   flush,
   type RouteReply,
 } from "./helpers/mockTransport.ts";
+import { assertAbsent } from "./helpers/domAssert.ts";
 
 localeSignal.value = "en";
 options.debounceRendering = (cb: () => void) => cb();
@@ -25,21 +26,25 @@ const doc = setupMockDom() as any;
 const { App } = await import("../src/App.tsx");
 
 const CAMPAIGN_ID = "22222222-2222-4222-8222-222222222222";
-const INVITE_REPLY: RouteReply = {
-  status: 200,
-  body: {
-    user_id: "33333333-3333-4333-8333-333333333333",
-    username: "Guest",
-    campaign_id: CAMPAIGN_ID,
-    character_id: null,
-    role: "PLAYER",
-    session_id: "44444444-4444-4444-8444-444444444444",
-    user: authUserDto({ id: "33333333-3333-4333-8333-333333333333", is_guest: true, username: "Guest" }),
-  },
-};
+const PLAYER_ID = "33333333-3333-4333-8333-333333333333";
 const ME_OK: RouteReply = { status: 200, body: { user: authUserDto() } };
 const ME_401: RouteReply = { status: 401, body: { code: "UNAUTHORIZED", error: "no session" } };
-const INVITE_EXPIRED: RouteReply = { status: 401, body: { code: "EXPIRED_TOKEN", error: "invite token has expired" } };
+const REGISTRATION_OPEN: RouteReply = { status: 200, body: { registration_open: true, owner_claimed: true } };
+const REGISTRATION_CLOSED: RouteReply = { status: 200, body: { registration_open: false, owner_claimed: true } };
+const PREVIEW_ACTIVE: RouteReply = {
+  status: 200,
+  body: { campaign_id: CAMPAIGN_ID, campaign_name: "Lost Mine", status: "active", expires_at: 1_900_000_000 },
+};
+const REDEEM_CREATED: RouteReply = {
+  status: 201,
+  body: {
+    campaign_id: CAMPAIGN_ID,
+    role: "PLAYER",
+    already_member: false,
+    account_created: true,
+    user: authUserDto({ id: PLAYER_ID, email: "pc@example.test", display_name: "Lyra", username: "Lyra", instance_role: "MEMBER" }),
+  },
+};
 
 function newClient(routes: Record<string, RouteReply>) {
   const transport = createMockTransport(routes);
@@ -50,66 +55,60 @@ function newClient(routes: Record<string, RouteReply>) {
 
 const loc = (search: string) => ({ pathname: "/play", search, hash: "" });
 
-describe("bootstrapSession: GuestSessionUpgrade before the auth guard", () => {
+describe("bootstrapSession: entry route before the auth guard", () => {
   const cases: Array<{
     id: string;
+    pathname: string;
     search: string;
     routes: Record<string, RouteReply>;
-    calls: string[];
+    route: unknown;
     status: string;
-    campaignId: string | null;
     replacedUrl: string | null;
-    inviteError: string | null;
   }> = [
     {
-      id: "valid invite redeems first, skips /auth/me and opens the invited campaign",
-      search: `?invite=jwt-ok`,
-      routes: { "POST /api/v1/auth/magic-link/redeem": INVITE_REPLY },
-      calls: ["POST /api/v1/auth/magic-link/redeem"],
-      status: "authenticated",
-      campaignId: CAMPAIGN_ID,
-      replacedUrl: "/play",
-      inviteError: null,
-    },
-    {
-      id: "expired invite falls back to the /auth/me restore and records the error",
-      search: `?invite=jwt-old&lang=fr`,
-      routes: { "POST /api/v1/auth/magic-link/redeem": INVITE_EXPIRED, "GET /api/v1/auth/me": ME_OK },
-      calls: ["POST /api/v1/auth/magic-link/redeem", "GET /api/v1/auth/me"],
-      status: "authenticated",
-      campaignId: null,
+      id: "invite_link_routes_to_redemption_strips_token_and_restores_session",
+      pathname: "/play",
+      search: "?invite=abc123&lang=fr",
+      routes: { "GET /api/v1/auth/me": ME_401 },
+      route: { kind: "invite", token: "abc123" },
+      status: "anonymous",
       replacedUrl: "/play?lang=fr",
-      inviteError: "EXPIRED_TOKEN",
     },
     {
-      id: "no invite restores the session via /auth/me",
+      id: "setup_path_routes_to_owner_setup_and_leaves_setup_path",
+      pathname: "/setup",
+      search: "?token=feedface",
+      routes: { "GET /api/v1/auth/me": ME_401 },
+      route: { kind: "setup", token: "feedface" },
+      status: "anonymous",
+      replacedUrl: "/",
+    },
+    {
+      id: "setup_path_without_token_still_routes_to_setup",
+      pathname: "/setup",
+      search: "",
+      routes: { "GET /api/v1/auth/me": ME_401 },
+      route: { kind: "setup", token: "" },
+      status: "anonymous",
+      replacedUrl: "/",
+    },
+    {
+      id: "plain_url_restores_the_session_via_auth_me",
+      pathname: "/play",
       search: "",
       routes: { "GET /api/v1/auth/me": ME_OK },
-      calls: ["GET /api/v1/auth/me"],
+      route: { kind: "app" },
       status: "authenticated",
-      campaignId: null,
       replacedUrl: null,
-      inviteError: null,
     },
     {
-      id: "no invite and no session leaves the user anonymous",
-      search: "",
-      routes: { "GET /api/v1/auth/me": ME_401 },
-      calls: ["GET /api/v1/auth/me"],
-      status: "anonymous",
-      campaignId: null,
-      replacedUrl: null,
-      inviteError: null,
-    },
-    {
-      id: "identity query parameters are ignored (no user_id or role trust)",
+      id: "identity_query_parameters_are_ignored",
+      pathname: "/play",
       search: "?user_id=evil&role=GM&token=abc",
       routes: { "GET /api/v1/auth/me": ME_401 },
-      calls: ["GET /api/v1/auth/me"],
+      route: { kind: "app" },
       status: "anonymous",
-      campaignId: null,
       replacedUrl: null,
-      inviteError: null,
     },
   ];
 
@@ -117,19 +116,22 @@ describe("bootstrapSession: GuestSessionUpgrade before the auth guard", () => {
     it(c.id, async () => {
       const { client, state, transport } = newClient(c.routes);
       let replaced: string | null = null;
-      await bootstrapSession(client, loc(c.search), (url) => {
+      const route = await bootstrapSession(client, { pathname: c.pathname, search: c.search, hash: "" }, (url) => {
         replaced = url;
       });
-      assert.deepEqual(transport.calls.map((call) => `${call.method} ${call.url}`), c.calls);
+      assert.deepEqual(route, c.route);
+      assert.deepEqual(transport.calls.map((call) => `${call.method} ${call.url}`), ["GET /api/v1/auth/me"]);
       assert.equal(state.status.value, c.status);
-      assert.equal(state.activeCampaignId.value, c.campaignId);
       assert.equal(replaced, c.replacedUrl);
-      assert.equal(state.inviteError.value, c.inviteError);
     });
   }
 
-  it("stripInviteParam keeps unrelated parameters and the hash", () => {
-    assert.equal(stripInviteParam({ pathname: "/", search: "?a=1&invite=x&b=2", hash: "#top" }), "/?a=1&b=2#top");
+  it("stripBootSecrets keeps unrelated parameters and the hash", () => {
+    assert.equal(stripBootSecrets({ pathname: "/", search: "?a=1&invite=x&b=2", hash: "#top" }), "/?a=1&b=2#top");
+  });
+
+  it("setup path wins over an invite parameter", () => {
+    assert.deepEqual(readBootRoute({ pathname: "/setup", search: "?token=t&invite=i", hash: "" }), { kind: "setup", token: "t" });
   });
 });
 
@@ -144,10 +146,10 @@ describe("App shell rendered against a mocked transport", () => {
     }
   });
 
-  async function mount(client: ApiClient, search = "") {
+  async function mount(client: ApiClient, search = "", pathname = "/play") {
     container = doc.createElement("div");
     doc.body.appendChild(container);
-    render(h(App, { client, location: loc(search), replaceUrl: () => undefined }), container);
+    render(h(App, { client, location: { ...loc(search), pathname }, replaceUrl: () => undefined }), container);
     await flush(5);
     return container;
   }
@@ -176,11 +178,11 @@ describe("App shell rendered against a mocked transport", () => {
       hidden: "auth-screen",
     },
     {
-      id: "failed invite shows the invite error on the sign-in screen",
-      routes: { "POST /api/v1/auth/magic-link/redeem": INVITE_EXPIRED, "GET /api/v1/auth/me": ME_401 },
-      search: "?invite=jwt-old",
-      visible: "auth-invite-error",
-      hidden: "campaign-lobby",
+      id: "invite link opens the InviteRedemption screen instead of the sign-in form",
+      routes: { "GET /api/v1/auth/me": ME_401, "POST /api/v1/invites/preview": PREVIEW_ACTIVE },
+      search: "?invite=abc",
+      visible: "invite-redemption-screen",
+      hidden: "auth-screen",
     },
   ];
 
@@ -189,9 +191,19 @@ describe("App shell rendered against a mocked transport", () => {
       const { client } = newClient(c.routes);
       await mount(client, c.search);
       assert.ok(byTestId(c.visible), `expected ${c.visible}`);
-      assert.equal(byTestId(c.hidden), null);
+      assertAbsent(byTestId(c.hidden), c.hidden);
     });
   }
+
+  it("setup path opens the owner setup screen", async () => {
+    const { client } = newClient({
+      "GET /api/v1/auth/me": ME_401,
+      "POST /api/v1/instance/bootstrap/status": { status: 200, body: { status: "valid" } },
+    });
+    await mount(client, "?token=feedface", "/setup");
+    assert.ok(byTestId("owner-setup-screen"));
+    assertAbsent(byTestId("auth-screen"), "auth-screen");
+  });
 
   it("signing in from the auth screen loads the lobby campaigns", async () => {
     const { client, transport } = newClient({
@@ -222,6 +234,23 @@ describe("App shell rendered against a mocked transport", () => {
     assert.equal(byTestId("auth-error").getAttribute("role"), "alert");
   });
 
+  const registrationCases: Array<{ id: string; instance: RouteReply | null; registerVisible: boolean; inviteOnlyVisible: boolean }> = [
+    { id: "registration_open_offers_create_account_mode", instance: REGISTRATION_OPEN, registerVisible: true, inviteOnlyVisible: false },
+    { id: "registration_closed_hides_create_account_mode", instance: REGISTRATION_CLOSED, registerVisible: false, inviteOnlyVisible: true },
+    { id: "instance_info_failure_fails_closed_to_sign_in_only", instance: null, registerVisible: false, inviteOnlyVisible: true },
+  ];
+
+  for (const c of registrationCases) {
+    it(c.id, async () => {
+      const routes: Record<string, RouteReply> = { "GET /api/v1/auth/me": ME_401 };
+      if (c.instance) routes["GET /api/v1/instance"] = c.instance;
+      const { client } = newClient(routes);
+      await mount(client);
+      assert.equal(Boolean(byTestId("auth-mode-register")), c.registerVisible);
+      assert.equal(Boolean(byTestId("auth-invite-only")), c.inviteOnlyVisible);
+    });
+  }
+
   const inviteCases: Array<{ id: string; role: string; hasInvite: boolean }> = [
     { id: "GM campaign offers the invite button", role: "GM", hasInvite: true },
     { id: "player campaign hides the invite button", role: "PLAYER", hasInvite: false },
@@ -238,22 +267,6 @@ describe("App shell rendered against a mocked transport", () => {
     });
   }
 
-  it("GM mints an invite through POST /campaigns/{id}/invites and sees the link", async () => {
-    const { client, transport } = newClient({
-      "GET /api/v1/auth/me": ME_OK,
-      "GET /api/v1/campaigns": { status: 200, body: { campaigns: [campaignDto()] } },
-      [`POST /api/v1/campaigns/${CAMPAIGN_ID}/invites`]: {
-        status: 201,
-        body: { invite_url: "https://trame.test/?invite=abc", token: "abc", expires_at: 1, campaign_id: CAMPAIGN_ID, role: "PLAYER" },
-      },
-    });
-    await mount(client);
-    byTestId(`lobby-invite-${CAMPAIGN_ID}`).dispatchEvent({ type: "click" });
-    await flush(5);
-    assert.ok(transport.calls.some((call) => call.method === "POST" && call.url.endsWith("/invites")));
-    assert.equal(byTestId(`lobby-invite-url-${CAMPAIGN_ID}`).value, "https://trame.test/?invite=abc");
-  });
-
   it("creating a campaign appends it to the lobby list", async () => {
     const { client, transport } = newClient({
       "GET /api/v1/auth/me": ME_OK,
@@ -268,12 +281,20 @@ describe("App shell rendered against a mocked transport", () => {
     assert.ok(byTestId(`lobby-campaign-${CAMPAIGN_ID}`));
   });
 
-  it("invited player lands in the workspace with the room socket connected", async () => {
+  it("invited player creates an account and lands in the workspace with the room socket connected", async () => {
     const { client, state, transport } = newClient({
-      "POST /api/v1/auth/magic-link/redeem": INVITE_REPLY,
+      "GET /api/v1/auth/me": ME_401,
+      "POST /api/v1/invites/preview": PREVIEW_ACTIVE,
+      "POST /api/v1/invites/redeem": REDEEM_CREATED,
       "GET /api/v1/campaigns": { status: 200, body: { campaigns: [campaignDto({ role: "PLAYER" })] } },
     });
-    await mount(client, "?invite=jwt-ok");
+    await mount(client, "?invite=abc");
+    typeInto("invite-display-name", "Lyra");
+    typeInto("invite-email", "pc@example.test");
+    typeInto("invite-password", "correct horse battery");
+    byTestId("invite-form").dispatchEvent({ type: "submit" });
+    await flush(6);
+
     assert.ok(byTestId("trame-app-root"));
     assert.equal(transport.sockets.length, 1);
     assert.equal(transport.sockets[0].url, `ws://table.test/api/v1/campaigns/${CAMPAIGN_ID}/ws`);
@@ -286,6 +307,32 @@ describe("App shell rendered against a mocked transport", () => {
     assert.equal(transport.sockets[0].closed, true);
     assert.equal(state.activeCampaignId.value, null);
     assert.ok(byTestId("campaign-lobby"));
+  });
+
+  it("the campaign view shows refused-action toasts and the reconnecting banner after a deploy close", async () => {
+    const { client, transport } = newClient({
+      "GET /api/v1/auth/me": ME_401,
+      "POST /api/v1/invites/preview": PREVIEW_ACTIVE,
+      "POST /api/v1/invites/redeem": REDEEM_CREATED,
+      "GET /api/v1/campaigns": { status: 200, body: { campaigns: [campaignDto({ role: "PLAYER" })] } },
+    });
+    await mount(client, "?invite=abc");
+    typeInto("invite-display-name", "Lyra");
+    typeInto("invite-email", "pc@example.test");
+    typeInto("invite-password", "correct horse battery");
+    byTestId("invite-form").dispatchEvent({ type: "submit" });
+    await flush(6);
+    transport.sockets[0].open();
+    transport.sockets[0].receive({ CommandRejected: { reason: "Not your turn" } });
+    await flush();
+    assert.match(byTestId("command-feedback-item").textContent, /^Action was refused: Not your turn/);
+
+    transport.sockets[0].serverClose(1001);
+    await flush();
+    assert.equal(byTestId("connection-banner").getAttribute("data-state"), "reconnecting");
+    assert.match(byTestId("connection-banner-message").textContent, /Connection lost\. Reconnecting, attempt 1\./);
+    assert.equal(byTestId("trame-status-badge").textContent, "Reconnecting...");
+    client.disconnect();
   });
 
   /** Holds requests whose URL ends with `suffix` until `release()` is called. */
@@ -302,69 +349,8 @@ describe("App shell rendered against a mocked transport", () => {
     return () => release();
   }
 
-  const INVITE_ROUTES: Record<string, RouteReply> = {
-    "GET /api/v1/auth/me": ME_OK,
-    "GET /api/v1/campaigns": { status: 200, body: { campaigns: [campaignDto()] } },
-    [`POST /api/v1/campaigns/${CAMPAIGN_ID}/invites`]: {
-      status: 201,
-      body: { invite_url: "https://trame.test/?invite=abc", token: "abc", expires_at: 1, campaign_id: CAMPAIGN_ID, role: "PLAYER" },
-    },
-  };
-
-  const inviteButtonCases = [
-    { id: "idle invite button is named 'Invite players to {name}'", pending: false, text: "Invite players", name: "Invite players to Lost Mine", busy: null },
-    { id: "pending invite button reads 'Creating link…' and is aria-busy", pending: true, text: "Creating link…", name: "Creating link… (Lost Mine)", busy: "true" },
-  ];
-
-  for (const c of inviteButtonCases) {
-    it(c.id, async () => {
-      const { client, transport } = newClient(INVITE_ROUTES);
-      const release = gateRequests(transport, "/invites");
-      await mount(client);
-      const button = byTestId(`lobby-invite-${CAMPAIGN_ID}`);
-      if (c.pending) {
-        button.dispatchEvent({ type: "click" });
-        await flush(2);
-      }
-      assert.equal(button.textContent, c.text);
-      assert.equal(button.getAttribute("aria-label"), c.name);
-      assert.ok(c.name.startsWith(c.text), "accessible name must start with the visible label");
-      assert.equal(button.getAttribute("aria-busy"), c.busy);
-      assert.equal(button.getAttribute("aria-disabled"), c.busy);
-      assert.equal(button.hasAttribute("disabled"), false, "button stays focusable while pending");
-      release();
-      await flush(5);
-    });
-  }
-
-  it("repeated clicks while an invite is pending mint a single link", async () => {
-    const { client, transport } = newClient(INVITE_ROUTES);
-    const release = gateRequests(transport, "/invites");
-    await mount(client);
-    const button = byTestId(`lobby-invite-${CAMPAIGN_ID}`);
-    for (let i = 0; i < 3; i++) {
-      button.dispatchEvent({ type: "click" });
-      await flush(1);
-    }
-    release();
-    await flush(5);
-    assert.equal(transport.calls.filter((call) => call.url.endsWith("/invites")).length, 1);
-  });
-
-  it("a minted invite is announced in the persistent status region and its URL field takes focus", async () => {
-    const { client } = newClient(INVITE_ROUTES);
-    await mount(client);
-    const status = byTestId("lobby-status");
-    assert.equal(status.getAttribute("role"), "status");
-    byTestId(`lobby-invite-${CAMPAIGN_ID}`).dispatchEvent({ type: "click" });
-    await flush(5);
-    assert.equal(byTestId("lobby-status"), status, "status region must persist across updates");
-    assert.equal(status.textContent, "Invite link ready for Lost Mine.");
-    assert.equal(doc.activeElement, byTestId(`lobby-invite-url-${CAMPAIGN_ID}`));
-  });
-
   it("campaign list exposes role='list' so list semantics survive list-style: none", async () => {
-    const { client } = newClient(INVITE_ROUTES);
+    const { client } = newClient({ "GET /api/v1/auth/me": ME_OK, "GET /api/v1/campaigns": { status: 200, body: { campaigns: [campaignDto()] } } });
     await mount(client);
     assert.equal(byTestId(`lobby-campaign-${CAMPAIGN_ID}`).parentNode.getAttribute("role"), "list");
   });
@@ -404,7 +390,7 @@ describe("App shell rendered against a mocked transport", () => {
 
   for (const c of authErrorCases) {
     it(c.id, async () => {
-      const { client } = newClient({ "GET /api/v1/auth/me": ME_401, [c.route]: c.reply });
+      const { client } = newClient({ "GET /api/v1/auth/me": ME_401, "GET /api/v1/instance": REGISTRATION_OPEN, [c.route]: c.reply });
       await mount(client);
       if (c.mode === "register") {
         byTestId("auth-mode-register").dispatchEvent({ type: "click" });
@@ -426,6 +412,7 @@ describe("App shell rendered against a mocked transport", () => {
   it("submit stays focusable (aria-disabled + aria-busy) and mode buttons lock while signing in", async () => {
     const { client, transport } = newClient({
       "GET /api/v1/auth/me": ME_401,
+      "GET /api/v1/instance": REGISTRATION_OPEN,
       "POST /api/v1/auth/login": { status: 401, body: { code: "INVALID_CREDENTIALS", error: "bad" } },
     });
     const release = gateRequests(transport, "/auth/login");
@@ -445,31 +432,11 @@ describe("App shell rendered against a mocked transport", () => {
   });
 
   it("selected auth mode carries a non-color check glyph", async () => {
-    const { client } = newClient({ "GET /api/v1/auth/me": ME_401 });
+    const { client } = newClient({ "GET /api/v1/auth/me": ME_401, "GET /api/v1/instance": REGISTRATION_OPEN });
     await mount(client);
     assert.ok(byTestId("auth-mode-login").textContent.startsWith("✓"));
     assert.equal(byTestId("auth-mode-register").textContent.includes("✓"), false);
   });
-
-  const inviteRegionCases: Array<{ id: string; search: string; routes: Record<string, RouteReply>; filled: boolean }> = [
-    { id: "invite live region exists empty when no invite failed", search: "", routes: { "GET /api/v1/auth/me": ME_401 }, filled: false },
-    {
-      id: "invite live region is filled after mount when the invite failed",
-      search: "?invite=jwt-old",
-      routes: { "POST /api/v1/auth/magic-link/redeem": INVITE_EXPIRED, "GET /api/v1/auth/me": ME_401 },
-      filled: true,
-    },
-  ];
-
-  for (const c of inviteRegionCases) {
-    it(c.id, async () => {
-      const { client } = newClient(c.routes);
-      await mount(client, c.search);
-      const region = byTestId("auth-invite-region");
-      assert.equal(region.getAttribute("role"), "alert");
-      assert.equal(Boolean(region.querySelector("[data-testid='auth-invite-error']")), c.filled);
-    });
-  }
 
   it("sign-in screen offers the language switch labelled in the target language", async () => {
     const { client } = newClient({ "GET /api/v1/auth/me": ME_401 });

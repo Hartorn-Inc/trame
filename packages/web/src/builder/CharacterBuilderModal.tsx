@@ -36,6 +36,7 @@ import {
   type SrdSpeciesId,
 } from '../../../game-systems/dnd5e/src/index.ts';
 import type { ApiClient, CampaignActor } from '../api/client.ts';
+import { describeActionError } from '../api/errorMessages.ts';
 import type { Uuid } from '../api/wire.ts';
 import { useModalFocusTrap } from '../components/a11y/useModalFocusTrap.ts';
 import { t, type MessageKey } from '../i18n/index.ts';
@@ -126,7 +127,7 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
       props.onCreated?.(created);
       props.onClose();
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : t('builder.createFailed'));
+      setSubmitError(describeActionError(err, t('builder.createFailed')));
     } finally {
       setSubmitting(false);
     }

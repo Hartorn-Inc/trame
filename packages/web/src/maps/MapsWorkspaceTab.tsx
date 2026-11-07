@@ -45,6 +45,7 @@
  */
 import { useEffect, useState } from 'preact/hooks';
 import { ApiError, VERSION_CONFLICT, type ApiClient } from '../api/client.ts';
+import { describeActionError } from '../api/errorMessages.ts';
 import type { Uuid } from '../api/wire.ts';
 import { t } from '../i18n/index.ts';
 import { activateScene } from '../table/commands.ts';
@@ -111,7 +112,7 @@ export function MapsWorkspaceTab({ campaignId, client, isGm }: MapsWorkspaceTabP
       setStatus(await action());
     } catch (err) {
       setStatus(null);
-      if (!(err instanceof SceneConflict)) setError(err instanceof Error ? err.message : String(err));
+      if (!(err instanceof SceneConflict)) setError(describeActionError(err, String(err), { isGm }));
     }
   };
 

@@ -7,34 +7,38 @@
  * -----
  * First screen after sign-in: lists the caller's campaigns, opens one (which
  * sets `session.activeCampaignId` and lets the shell connect the room
- * socket), creates new campaigns, and lets a GM mint an invite link.
+ * socket), creates new campaigns for `Host` / `Owner` accounts, opens the
+ * Game Master's `CampaignInvite` management, and prompts legacy guests to
+ * bind a real login.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
- * 1. `GM-Only Invite Control`:
+ * 1. `Creation Follows InstanceRole`:
+ *    - The create-campaign form renders only for `HOST` and `OWNER`; a
+ *      `MEMBER` reads why and how to join instead. The server still refuses
+ *      creation (`403 HOST_REQUIRED`), which maps to the same explanation.
+ * 2. `GM-Only Invite Control`:
  *    - The invite button renders only for campaigns where the caller's role
- *      is `GM`. The server (`POST /api/v1/campaigns/{id}/invites`) remains the
- *      authority; the UI just avoids offering a call that would be refused.
- * 2. `One Invite Request At A Time`:
- *    - While a link is being minted the button is `aria-disabled` +
- *      `aria-busy` and ignores clicks, so repeated clicks cannot mint several
- *      live invite tokens.
+ *      is `GM`; it opens `CampaignInviteDialog`. The server remains the
+ *      authority (`403 GM_REQUIRED`).
  * 3. `Explicit Loading / Error / Empty States`:
  *    - The list is never blank without explanation: it shows a busy message,
  *      a retryable error, or the cartographic `AtlasEmptyState`.
  * 4. `Announced Outcomes`:
- *    - A persistent `role="status"` region announces created campaigns and
- *      ready invite links; the new invite URL field also receives focus.
+ *    - A persistent `role="status"` region announces created campaigns and a
+ *      bound guest account.
  * 5. `ATLAS v1.1 Only`:
  *    - Layout uses `ds-*` primitives and `--atlas-*` tokens, no raw colors.
  * ============================================================================
  */
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { ApiClient } from "../api/client.ts";
+import { ApiError, type ApiClient } from "../api/client.ts";
 import type { Campaign } from "../api/session.ts";
+import { GuestBindPrompt } from "../auth/GuestBindPrompt.tsx";
 import { useFocusOnMount } from "../components/a11y/useFocusOnMount.ts";
 import { AtlasEmptyState } from "../components/icons/AtlasEmptyStates.tsx";
 import { t, type MessageKey } from "../i18n/index.ts";
+import { CampaignInviteDialog } from "./CampaignInviteDialog.tsx";
 
 /** Props for `CampaignLobby`. */
 export interface CampaignLobbyProps {
@@ -49,20 +53,18 @@ const ROLE_KEYS: Record<string, MessageKey> = {
   SPECTATOR: "lobby.role.SPECTATOR",
 };
 
-/** Campaign list, creation form, and GM invite minting. */
+/** Campaign list, Host/Owner campaign creation, GM invite management, guest bind prompt. */
 export function CampaignLobby({ client }: CampaignLobbyProps) {
   const campaigns = client.state.campaigns.value;
+  const user = client.state.user.value;
+  const canCreate = user?.instanceRole === "HOST" || user?.instanceRole === "OWNER";
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [name, setName] = useState("");
-  const [createFailed, setCreateFailed] = useState(false);
+  const [createError, setCreateError] = useState<MessageKey | null>(null);
   const [creating, setCreating] = useState(false);
-  const [invites, setInvites] = useState<Record<string, string>>({});
-  const [invitingId, setInvitingId] = useState<string | null>(null);
-  const [inviteFailedId, setInviteFailedId] = useState<string | null>(null);
+  const [inviteFor, setInviteFor] = useState<Campaign | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const titleRef = useRef<HTMLHeadingElement | null>(null);
-  const focusInviteId = useRef<string | null>(null);
-  const pendingInvites = useRef(new Set<string>());
 
   useFocusOnMount(titleRef);
 
@@ -81,104 +83,52 @@ export function CampaignLobby({ client }: CampaignLobbyProps) {
     const trimmed = name.trim();
     if (!trimmed || creating) return;
     setCreating(true);
-    setCreateFailed(false);
+    setCreateError(null);
     try {
       const campaign = await client.createCampaign({ name: trimmed });
       setName("");
       setAnnouncement(t("lobby.created", { name: campaign.name }));
-    } catch {
-      setCreateFailed(true);
+    } catch (err) {
+      setCreateError(err instanceof ApiError && err.code === "HOST_REQUIRED" ? "lobby.createRestricted" : "lobby.createFailed");
     }
     setCreating(false);
   };
 
-  const onInvite = async (campaign: Campaign) => {
-    if (pendingInvites.current.has(campaign.id)) return;
-    pendingInvites.current.add(campaign.id);
-    setInvitingId(campaign.id);
-    setInviteFailedId(null);
-    try {
-      const invite = await client.createCampaignInvite(campaign.id);
-      focusInviteId.current = campaign.id;
-      setInvites((prev) => ({ ...prev, [campaign.id]: invite.inviteUrl }));
-      setAnnouncement(t("lobby.inviteReady", { name: campaign.name }));
-    } catch {
-      setInviteFailedId(campaign.id);
-    }
-    pendingInvites.current.delete(campaign.id);
-    setInvitingId(null);
-  };
-
-  const focusNewInvite = (campaignId: string) => (el: HTMLInputElement | null) => {
-    if (el && focusInviteId.current === campaignId) {
-      focusInviteId.current = null;
-      el.focus();
-      el.select?.();
-    }
-  };
-
-  const renderCampaign = (campaign: Campaign) => {
-    const pending = invitingId === campaign.id;
-    return (
-      <li key={campaign.id} class="ds-panel ds-stack-sm" data-testid={`lobby-campaign-${campaign.id}`}>
-        <div class="ds-row" style={{ flexWrap: "wrap" }}>
-          <div class="ds-stack-sm" style={{ gap: "var(--atlas-space-xs)" }}>
-            <strong>{campaign.name}</strong>
-            <span class="ds-meta">{ROLE_KEYS[campaign.role] ? t(ROLE_KEYS[campaign.role]) : campaign.role}</span>
-          </div>
-          <div class="ds-cluster">
-            {campaign.role === "GM" && (
-              <button
-                type="button"
-                class="ds-btn ds-btn-secondary"
-                data-testid={`lobby-invite-${campaign.id}`}
-                aria-label={
-                  pending
-                    ? t("lobby.inviteCreatingAria", { name: campaign.name })
-                    : t("lobby.inviteAria", { name: campaign.name })
-                }
-                aria-busy={pending ? "true" : undefined}
-                aria-disabled={pending ? "true" : undefined}
-                onClick={() => onInvite(campaign)}
-              >
-                {pending ? t("lobby.inviteCreating") : t("lobby.invite")}
-              </button>
-            )}
+  const renderCampaign = (campaign: Campaign) => (
+    <li key={campaign.id} class="ds-panel ds-stack-sm" data-testid={`lobby-campaign-${campaign.id}`}>
+      <div class="ds-row" style={{ flexWrap: "wrap" }}>
+        <div class="ds-stack-sm" style={{ gap: "var(--atlas-space-xs)" }}>
+          <strong>{campaign.name}</strong>
+          <span class="ds-meta">{ROLE_KEYS[campaign.role] ? t(ROLE_KEYS[campaign.role]) : campaign.role}</span>
+        </div>
+        <div class="ds-cluster">
+          {campaign.role === "GM" && (
             <button
               type="button"
-              class="ds-btn ds-btn-primary"
-              data-testid={`lobby-open-${campaign.id}`}
-              aria-label={t("lobby.openAria", { name: campaign.name })}
-              onClick={() => {
-                client.state.activeCampaignId.value = campaign.id;
-              }}
+              class="ds-btn ds-btn-secondary"
+              data-testid={`lobby-invite-${campaign.id}`}
+              aria-label={t("lobby.inviteAria", { name: campaign.name })}
+              aria-haspopup="dialog"
+              onClick={() => setInviteFor(campaign)}
             >
-              {t("lobby.open")}
+              {t("lobby.invite")}
             </button>
-          </div>
+          )}
+          <button
+            type="button"
+            class="ds-btn ds-btn-primary"
+            data-testid={`lobby-open-${campaign.id}`}
+            aria-label={t("lobby.openAria", { name: campaign.name })}
+            onClick={() => {
+              client.state.activeCampaignId.value = campaign.id;
+            }}
+          >
+            {t("lobby.open")}
+          </button>
         </div>
-        {invites[campaign.id] && (
-          <label class="ds-field" for={`lobby-invite-url-${campaign.id}`}>
-            <span class="ds-field-label">{t("lobby.inviteLink", { name: campaign.name })}</span>
-            <input
-              id={`lobby-invite-url-${campaign.id}`}
-              data-testid={`lobby-invite-url-${campaign.id}`}
-              ref={focusNewInvite(campaign.id)}
-              class="ds-input"
-              type="text"
-              readOnly
-              value={invites[campaign.id]}
-            />
-          </label>
-        )}
-        {inviteFailedId === campaign.id && (
-          <p role="alert" class="ds-field-error">
-            {t("lobby.inviteFailed")}
-          </p>
-        )}
-      </li>
-    );
-  };
+      </div>
+    </li>
+  );
 
   return (
     <main
@@ -189,6 +139,15 @@ export function CampaignLobby({ client }: CampaignLobbyProps) {
       <p role="status" class="ds-visually-hidden" data-testid="lobby-status">
         {loadState === "loading" ? t("lobby.loading") : announcement}
       </p>
+      {user?.isGuest && (
+        <GuestBindPrompt
+          client={client}
+          onBound={() => {
+            setAnnouncement(t("bind.done"));
+            titleRef.current?.focus();
+          }}
+        />
+      )}
       <section aria-labelledby="lobby-title" class="ds-stack">
         <h1 id="lobby-title" ref={titleRef} tabIndex={-1} class="ds-panel-title">
           {t("lobby.title")}
@@ -207,7 +166,12 @@ export function CampaignLobby({ client }: CampaignLobbyProps) {
           </div>
         )}
         {loadState === "ready" && campaigns.length === 0 && (
-          <AtlasEmptyState kind="campaigns" data-testid="lobby-empty" heading={t("lobby.emptyHeading")} body={t("lobby.emptyBody")} />
+          <AtlasEmptyState
+            kind="campaigns"
+            data-testid="lobby-empty"
+            heading={t("lobby.emptyHeading")}
+            body={t(canCreate ? "lobby.emptyBody" : "lobby.emptyBodyMember")}
+          />
         )}
         {campaigns.length > 0 && (
           <ul role="list" class="ds-list-plain ds-stack-sm">
@@ -220,35 +184,41 @@ export function CampaignLobby({ client }: CampaignLobbyProps) {
         <h2 id="lobby-create-title" class="ds-panel-title">
           {t("lobby.createTitle")}
         </h2>
-        <form data-testid="lobby-create-form" onSubmit={onCreate} class="ds-cluster" style={{ alignItems: "flex-end" }}>
-          <label class="ds-field" for="lobby-campaign-name" style={{ flex: "1 1 16rem" }}>
-            <span class="ds-field-label">{t("lobby.campaignName")}</span>
-            <input
-              id="lobby-campaign-name"
-              data-testid="lobby-campaign-name"
-              class="ds-input"
-              type="text"
-              required
-              value={name}
-              onInput={(e) => setName((e.currentTarget as HTMLInputElement).value)}
-            />
-          </label>
-          <button
-            type="submit"
-            class="ds-btn ds-btn-primary"
-            data-testid="lobby-create"
-            aria-disabled={creating ? "true" : undefined}
-            aria-busy={creating ? "true" : undefined}
-          >
-            {t("lobby.create")}
-          </button>
-        </form>
-        {createFailed && (
+        {canCreate ? (
+          <form data-testid="lobby-create-form" onSubmit={onCreate} class="ds-cluster" style={{ alignItems: "flex-end" }}>
+            <label class="ds-field" for="lobby-campaign-name" style={{ flex: "1 1 16rem" }}>
+              <span class="ds-field-label">{t("lobby.campaignName")}</span>
+              <input
+                id="lobby-campaign-name"
+                data-testid="lobby-campaign-name"
+                class="ds-input"
+                type="text"
+                required
+                value={name}
+                onInput={(e) => setName((e.currentTarget as HTMLInputElement).value)}
+              />
+            </label>
+            <button
+              type="submit"
+              class="ds-btn ds-btn-primary"
+              data-testid="lobby-create"
+              aria-disabled={creating ? "true" : undefined}
+              aria-busy={creating ? "true" : undefined}
+            >
+              {t("lobby.create")}
+            </button>
+          </form>
+        ) : (
+          <p data-testid="lobby-create-restricted">{t("lobby.createRestricted")}</p>
+        )}
+        {createError && (
           <p role="alert" data-testid="lobby-create-error" class="ds-field-error">
-            {t("lobby.createFailed")}
+            {t(createError)}
           </p>
         )}
       </section>
+
+      {inviteFor && <CampaignInviteDialog client={client} campaign={inviteFor} onClose={() => setInviteFor(null)} />}
     </main>
   );
 }

@@ -51,11 +51,19 @@ export function tableState(overrides: Partial<ProjectedTableState> = {}): Projec
   };
 }
 
+/** Drops the per-frame `correlation_id` so assertions compare only the action payload. */
+function withoutCorrelationId(frame: Record<string, any>): Record<string, any> {
+  const [tag, payload] = Object.entries(frame)[0] ?? [];
+  if ((tag !== "SubmitCommand" && tag !== "RollDice") || !payload || typeof payload !== "object") return frame;
+  const { correlation_id: _id, ...rest } = payload as Record<string, unknown>;
+  return { [tag]: rest };
+}
+
 export interface LiveTable {
   client: ApiClient;
   transport: MockTransport;
   socket: MockSocket;
-  /** Decoded outbound envelopes (`{ SubmitCommand: {...} }`, `{ RollDice: {...} }`, ...). */
+  /** Decoded outbound envelopes without `correlation_id` (`{ SubmitCommand: {...} }`, `{ RollDice: {...} }`, ...). */
   frames(): Record<string, any>[];
   /** Inner command maps of every `SubmitCommand` frame. */
   commands(): Record<string, any>[];
@@ -66,7 +74,7 @@ export interface LiveTable {
 export function liveTable(userId: string, state: ProjectedTableState | null, routes: Record<string, RouteReply> = {}): LiveTable {
   const transport = createMockTransport(routes);
   const client = new ApiClient({ transport, state: createSessionState() });
-  client.state.user.value = { id: userId, email: "", displayName: "User", username: "user", isGuest: false, role: "PLAYER" };
+  client.state.user.value = { id: userId, email: "", displayName: "User", username: "user", isGuest: false, role: "PLAYER", instanceRole: "MEMBER", totpEnabled: false };
   client.state.status.value = "authenticated";
   client.connect(CAMPAIGN);
   const socket = transport.sockets[0];
@@ -74,7 +82,7 @@ export function liveTable(userId: string, state: ProjectedTableState | null, rou
   let seq = 0;
   const snapshot = (s: ProjectedTableState) => client.applyServerEnvelope({ type: "StateSnapshot", seqId: seq++, state: s });
   if (state) snapshot(state);
-  const frames = () => socket.sent.map((bytes) => decode(bytes) as Record<string, any>);
+  const frames = () => socket.sent.map((bytes) => withoutCorrelationId(decode(bytes) as Record<string, any>));
   return {
     client,
     transport,

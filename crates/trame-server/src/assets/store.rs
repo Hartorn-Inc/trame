@@ -6,6 +6,7 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use thiserror::Error;
+use uuid::Uuid;
 
 pub const PRESIGNED_URL_DEFAULT_TTL: Duration = Duration::from_secs(900);
 
@@ -63,6 +64,13 @@ pub trait AssetStore: Send + Sync {
         ttl: Duration,
     ) -> BoxFuture<'a, Result<String, AssetStoreError>>;
 
+    /// Total stored bytes of `campaign_id`'s assets, checked against the per-campaign storage
+    /// quota before an upload is decoded (SEC14).
+    fn campaign_usage_bytes(
+        &self,
+        campaign_id: Uuid,
+    ) -> BoxFuture<'_, Result<u64, AssetStoreError>>;
+
     /// Checks a presigned GET (`exp` epoch seconds, hex `sig`) minted by this store.
     /// Stores without signing support reject everything (fail closed).
     fn verify_presigned_get(&self, _key: &str, _exp: u64, _sig_hex: &str) -> bool {
@@ -98,7 +106,7 @@ pub fn verify_asset_signature(secret: &[u8], key: &str, exp: u64, sig_hex: &str)
 }
 
 /// Pure in-memory asset store with short-lived presigned token validation for tests and local runtime.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct InMemoryAssetStore {
     assets: Arc<RwLock<HashMap<String, StoredAssetEntry>>>,
     grants: Arc<RwLock<HashMap<String, PresignedGrant>>>,
@@ -107,26 +115,18 @@ pub struct InMemoryAssetStore {
 }
 
 impl InMemoryAssetStore {
-    pub fn new() -> Self {
+    /// Test and dev-router store signing presigned URLs with a random key that dies with the
+    /// process (SEC5). Production never calls it: `main` passes
+    /// `ServerSecrets::asset_signing_secret` through `with_base_url_and_secret`.
+    pub fn with_ephemeral_secret() -> Self {
         Self::with_base_url_and_secret(
             "http://localhost:8080/assets/download",
-            std::env::var("TRAME_JWT_SECRET")
-                .or_else(|_| std::env::var("JWT_SECRET"))
-                .map(|s| s.into_bytes())
-                .unwrap_or_else(|_| b"trame-default-hmac-sha256-signing-secret-key".to_vec()),
+            crate::security::ephemeral_secret().to_vec(),
         )
     }
 
-    pub fn with_base_url(base_url: impl Into<String>) -> Self {
-        Self::with_base_url_and_secret(
-            base_url,
-            std::env::var("TRAME_JWT_SECRET")
-                .or_else(|_| std::env::var("JWT_SECRET"))
-                .map(|s| s.into_bytes())
-                .unwrap_or_else(|_| b"trame-default-hmac-sha256-signing-secret-key".to_vec()),
-        )
-    }
-
+    /// Store signing presigned URLs under `base_url` with the configured `signing_secret`
+    /// (>= 32 bytes, `ServerSecrets::asset_signing_secret`).
     pub fn with_base_url_and_secret(
         base_url: impl Into<String>,
         signing_secret: impl Into<Vec<u8>>,
@@ -242,6 +242,24 @@ impl AssetStore for InMemoryAssetStore {
                 sig_hex
             );
             Ok(url)
+        })
+    }
+
+    fn campaign_usage_bytes(
+        &self,
+        campaign_id: Uuid,
+    ) -> BoxFuture<'_, Result<u64, AssetStoreError>> {
+        Box::pin(async move {
+            let guard = self
+                .assets
+                .read()
+                .map_err(|_| AssetStoreError::LockPoisoned)?;
+            let segment = format!("/campaigns/{campaign_id}/");
+            Ok(guard
+                .iter()
+                .filter(|(key, _)| key.contains(&segment))
+                .map(|(_, entry)| entry.data.len() as u64)
+                .sum())
         })
     }
 

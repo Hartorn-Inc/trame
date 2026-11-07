@@ -37,6 +37,20 @@
 //!      - Uploads are capped at `MAX_ASSET_UPLOAD_BYTES`, checked for PNG/JPEG/WebP
 //!        magic bytes and header dimensions before decoding, and re-encoded as WebP
 //!        under a content-addressed key. Downloads require a valid HMAC signature.
+//!      - Uploads and map imports first take one slot of the caller's upload quota
+//!        (`AuthRateLimiter::uploads_per_account`, `429 RATE_LIMITED`), then check the
+//!        per-campaign storage quota (`413 STORAGE_QUOTA_EXCEEDED`), then decode/encode
+//!        on the blocking pool behind the global decode gate (SEC14). Player uploads
+//!        are capped at `MAX_PLAYER_IMAGE_PIXEL_AREA`, GM uploads at
+//!        `MAX_IMAGE_PIXEL_AREA`.
+//!   7. `Sheet Values Feeding Server Rolls`:
+//!      - Actor create/update rejects any `abilities.<ability>.score` outside
+//!        `ABILITY_SCORES` (`400 INVALID_ABILITY_SCORE`), and the tactical sync
+//!        clamps the Dexterity score again before deriving the initiative modifier,
+//!        so no stored sheet can hand a player a +495 initiative bonus.
+//!      - `POST /dice/roll` refuses non-GM reasons starting with "initiative"
+//!        (`400 INITIATIVE_ROLL_REQUIRES_ROOM`): player initiative is rolled by the
+//!        room from the token's server-side bonus, never from a client expression.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -53,8 +67,8 @@ use crate::archive::importer::OWNER_USER_ID_FIELD;
 use crate::dice::{RollVisibility, SeededDiceRoller, project_roll_for_recipient};
 use crate::http::{AppState, error_response, resolve_authenticated_user, resolve_campaign_role};
 use crate::importers::uvtt::{
-    ImportedMapResult, MAX_PAYLOAD_SIZE_BYTES, UvttImportError, import_uvtt_map,
-    transcode_upload_to_webp,
+    ImportedMapResult, MAX_IMAGE_PIXEL_AREA, MAX_PAYLOAD_SIZE_BYTES, MAX_PLAYER_IMAGE_PIXEL_AREA,
+    UvttImportError, import_uvtt_map, transcode_upload_to_webp_blocking,
 };
 use crate::maps::{
     CampaignMapScene, LightSource, SceneSaveError, load_campaign_scene_set, save_campaign_scenes,
@@ -89,6 +103,9 @@ pub const MAX_ASSET_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
 
 /// Maximum campaign name length in characters.
 pub const MAX_CAMPAIGN_NAME_CHARS: usize = 120;
+
+/// D&D 5e ability score range accepted on actor sheets (`abilities.<ability>.score`).
+pub const ABILITY_SCORES: std::ops::RangeInclusive<i32> = 1..=30;
 
 /// Session number used for room-originated timeline records (dice, initiative, handouts);
 /// sessions are not tracked separately yet, so the live table writes to session `1`.
@@ -326,7 +343,7 @@ async fn caller_role(
     Ok((user_id, role))
 }
 
-async fn load_campaign(
+pub(crate) async fn load_campaign(
     state: &AppState,
     campaign_id: Uuid,
 ) -> Result<Option<CampaignRecord>, String> {
@@ -398,7 +415,8 @@ pub async fn list_campaigns_handler(State(state): State<AppState>, headers: Head
     Json(json!({ "campaigns": campaigns })).into_response()
 }
 
-/// `POST /api/v1/campaigns` -> `201 { campaign }`; the caller becomes GM. Guests are refused.
+/// `POST /api/v1/campaigns` -> `201 { campaign }`; the caller becomes GM. Only `Host` and
+/// `Owner` accounts may create campaigns (`403 HOST_REQUIRED` otherwise, SEC10).
 pub async fn create_campaign_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -411,11 +429,8 @@ pub async fn create_campaign_handler(
             "valid authentication credentials required",
         );
     };
-    match state.auth_state.session_store.get_user_by_id(user_id).await {
-        Ok(Some(user)) if !user.is_guest => {}
-        _ => {
-            return forbidden("only registered (non-guest) accounts can create campaigns");
-        }
+    if let Err(resp) = crate::access::require_campaign_creator(&state, user_id).await {
+        return *resp;
     }
     let name = req.name.trim();
     if name.is_empty() || name.chars().count() > MAX_CAMPAIGN_NAME_CHARS {
@@ -736,6 +751,30 @@ async fn delete_actor(state: &AppState, campaign_id: Uuid, actor_id: Uuid) -> Re
         .is_some())
 }
 
+/// `400 INVALID_ABILITY_SCORE` when a numeric `abilities.<ability>.score` of `data` lies
+/// outside `ABILITY_SCORES`; non-numeric scores are ignored by every derivation.
+fn check_ability_scores(data: &Value) -> Result<(), Box<Response>> {
+    let Some(abilities) = data.get("abilities").and_then(Value::as_object) else {
+        return Ok(());
+    };
+    for (ability, entry) in abilities {
+        let Some(score) = entry.get("score").and_then(Value::as_f64) else {
+            continue;
+        };
+        if score.fract() != 0.0 || !ABILITY_SCORES.contains(&(score as i32)) {
+            return Err(Box::new(bad_request(
+                "INVALID_ABILITY_SCORE",
+                &format!(
+                    "abilities.{ability}.score must be an integer within {}..={}",
+                    ABILITY_SCORES.start(),
+                    ABILITY_SCORES.end()
+                ),
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn can_read_actor(role: CampaignRole, user_id: Uuid, actor: &ActorRecord) -> bool {
     role == CampaignRole::Gm || actor.owner_user_id == Some(user_id)
 }
@@ -746,6 +785,26 @@ fn i32_at(v: &Value, path: &[&str]) -> Option<i32> {
         cur = cur.get(key)?;
     }
     cur.as_f64().map(|n| n.round() as i32)
+}
+
+/// Non-Dexterity part of the D&D 5e `derivedDAG` initiative
+/// (`dex_mod + initiative_prof * prof_bonus - 2 * exhaustion`): `initiative_prof` is 1 when
+/// `features` holds `srd:feat:alert`, and `prof_bonus` comes from `attributes.level` clamped
+/// to `1..=20`.
+fn derived_initiative_extra(data: &Value) -> i32 {
+    let level = i32_at(data, &["attributes", "level"])
+        .unwrap_or(1)
+        .clamp(1, 20);
+    let prof_bonus = (level - 1) / 4 + 2;
+    let has_alert = data
+        .get("features")
+        .and_then(Value::as_array)
+        .is_some_and(|f| f.iter().any(|id| id.as_str() == Some("srd:feat:alert")));
+    let exhaustion = i32_at(data, &["attributes", "exhaustion"])
+        .unwrap_or(0)
+        .clamp(0, 6);
+    let alert_bonus = if has_alert { prof_bonus } else { 0 };
+    alert_bonus - 2 * exhaustion
 }
 
 /// Extracts the token-relevant subset of a `Dnd5eActorData` sheet:
@@ -780,13 +839,16 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
             }
             (resist, immune, vuln)
         });
+    let dex_mod = i32_at(data, &["abilities", "dex", "score"])
+        .map(|s| (s.clamp(*ABILITY_SCORES.start(), *ABILITY_SCORES.end()) - 10).div_euclid(2));
     ActorTacticalSync {
         name: name.map(str::to_string),
         hp_current: i32_at(data, &["attributes", "hp", "current"]),
         hp_max: i32_at(data, &["attributes", "hp", "max"]),
         temp_hp: i32_at(data, &["attributes", "hp", "temp"]),
         ac: i32_at(data, &["attributes", "ac"]).or_else(|| i32_at(data, &["derived", "ac"])),
-        dex_mod: i32_at(data, &["abilities", "dex", "score"]).map(|s| (s - 10).div_euclid(2)),
+        dex_mod,
+        initiative_extra: dex_mod.map(|_| derived_initiative_extra(data)),
         speed_ft: data
             .get("attributes")
             .and_then(|a| a.get("speed"))
@@ -883,6 +945,9 @@ pub async fn create_actor_handler(
     if name.is_empty() {
         return bad_request("INVALID_NAME", "actor name must not be empty");
     }
+    if let Err(resp) = check_ability_scores(&req.data) {
+        return *resp;
+    }
     let actor_id = req.id.unwrap_or_else(Uuid::new_v4);
     if let Ok(Some(_)) = get_actor(&state, campaign_id, actor_id).await {
         return error_response(StatusCode::CONFLICT, "ACTOR_EXISTS", "actor already exists");
@@ -941,6 +1006,9 @@ pub async fn update_actor_handler(
     }
     if role == CampaignRole::Spectator {
         return forbidden("spectators cannot edit actors");
+    }
+    if let Err(resp) = check_ability_scores(&req.data) {
+        return *resp;
     }
     let name = req.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
     match update_actor(
@@ -1270,6 +1338,18 @@ pub async fn roll_dice_handler(
     if role == CampaignRole::Spectator {
         return forbidden("spectators cannot roll dice");
     }
+    if role != CampaignRole::Gm
+        && req.reason.as_deref().is_some_and(|r| {
+            r.trim_start()
+                .get(..10)
+                .is_some_and(|p| p.eq_ignore_ascii_case("initiative"))
+        })
+    {
+        return bad_request(
+            "INITIATIVE_ROLL_REQUIRES_ROOM",
+            "initiative is rolled by the live table: send it through the room WebSocket",
+        );
+    }
     let outcome = match SeededDiceRoller::from_os_csprng().roll(
         user_id,
         &req.expression,
@@ -1370,11 +1450,20 @@ pub async fn upload_asset_handler(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response {
-    match caller_role(&state, &headers, campaign_id).await {
+    let max_pixel_area = match caller_role(&state, &headers, campaign_id).await {
         Ok((_, CampaignRole::Spectator)) => return forbidden("spectators cannot upload assets"),
-        Ok(_) => {}
+        Ok((user_id, role)) => {
+            if let Err(wait) = state.auth_state.security.rate_limiter.take_upload(user_id) {
+                return crate::security::too_many_requests(wait);
+            }
+            if role == CampaignRole::Gm {
+                MAX_IMAGE_PIXEL_AREA
+            } else {
+                MAX_PLAYER_IMAGE_PIXEL_AREA
+            }
+        }
         Err(resp) => return *resp,
-    }
+    };
     let Ok(bytes) = axum::body::to_bytes(request.into_body(), MAX_ASSET_UPLOAD_BYTES).await else {
         return error_response(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -1382,7 +1471,10 @@ pub async fn upload_asset_handler(
             &format!("asset uploads are limited to {MAX_ASSET_UPLOAD_BYTES} bytes"),
         );
     };
-    let webp = match transcode_upload_to_webp(&bytes) {
+    if let Err(resp) = ensure_asset_quota(&state, campaign_id, bytes.len()).await {
+        return *resp;
+    }
+    let webp = match transcode_upload_to_webp_blocking(bytes, max_pixel_area).await {
         Ok(w) => w,
         Err(err) => return bad_request("INVALID_IMAGE", &err.to_string()),
     };
@@ -1412,6 +1504,30 @@ pub async fn upload_asset_handler(
             .into_response(),
         Err(err) => storage_error(err),
     }
+}
+
+/// Refuses with `413 STORAGE_QUOTA_EXCEEDED` when the campaign's stored asset bytes plus
+/// `incoming_bytes` (the raw upload, an estimate of the re-encoded size) would exceed
+/// `SecurityPolicy::campaign_asset_quota_bytes`. Runs before any decode (SEC14).
+async fn ensure_asset_quota(
+    state: &AppState,
+    campaign_id: Uuid,
+    incoming_bytes: usize,
+) -> Result<(), Box<Response>> {
+    let quota = state.auth_state.security.campaign_asset_quota_bytes;
+    let used = state
+        .asset_store
+        .campaign_usage_bytes(campaign_id)
+        .await
+        .map_err(|err| Box::new(storage_error(err)))?;
+    if used.saturating_add(incoming_bytes as u64) > quota {
+        return Err(Box::new(error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "STORAGE_QUOTA_EXCEEDED",
+            &format!("campaign asset storage is limited to {quota} bytes"),
+        )));
+    }
+    Ok(())
 }
 
 /// `GET /assets/download/{*key}?exp=&sig=` -> asset bytes when the HMAC signature is valid
@@ -1498,7 +1614,11 @@ pub async fn import_map_handler(
     request: Request<Body>,
 ) -> Response {
     match caller_role(&state, &headers, campaign_id).await {
-        Ok((_, CampaignRole::Gm)) => {}
+        Ok((user_id, CampaignRole::Gm)) => {
+            if let Err(wait) = state.auth_state.security.rate_limiter.take_upload(user_id) {
+                return crate::security::too_many_requests(wait);
+            }
+        }
         Ok(_) => return forbidden("only the GM may import maps"),
         Err(resp) => return *resp,
     }
@@ -1509,8 +1629,11 @@ pub async fn import_map_handler(
             "map imports are limited to 64 MiB",
         );
     };
+    if let Err(resp) = ensure_asset_quota(&state, campaign_id, bytes.len()).await {
+        return *resp;
+    }
     let map = match import_uvtt_map(
-        &bytes,
+        bytes,
         state.instance_id,
         campaign_id,
         state.asset_store.as_ref(),

@@ -53,7 +53,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use trame_engine::commands::{
-    LightSource as EngineLightSource, SceneActivation, TokenState, TrameCommand,
+    CampaignRole, LightSource as EngineLightSource, SceneActivation, TokenState, TrameCommand,
 };
 use trame_engine::geometry::{CHANNEL_GM_HIDDEN, Point2D as EnginePoint, WallKind, WallSegment};
 use uuid::Uuid;
@@ -538,8 +538,7 @@ pub async fn get_campaign_maps_handler(
         return unauthorized();
     };
 
-    let is_gm = crate::http::is_authorized_campaign_gm(&state, campaign_id, user_id).await;
-    if !is_gm && !crate::http::is_authorized_campaign_member(&state, campaign_id, user_id).await {
+    let Some(role) = crate::http::resolve_campaign_role(&state, campaign_id, user_id).await else {
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
@@ -548,13 +547,13 @@ pub async fn get_campaign_maps_handler(
             }),
         )
             .into_response();
-    }
+    };
 
     let (scenes, version) = match load_campaign_scene_set(&state, campaign_id).await {
         Ok(set) => set,
         Err(err) => return storage_error(err),
     };
-    let scenes = if is_gm {
+    let scenes = if role == CampaignRole::Gm {
         scenes
     } else {
         scenes
@@ -594,8 +593,8 @@ pub async fn put_campaign_maps_handler(
         return unauthorized();
     };
 
-    let is_gm = crate::http::is_authorized_campaign_gm(&state, campaign_id, user_id).await;
-    if !is_gm {
+    let role = crate::http::resolve_campaign_role(&state, campaign_id, user_id).await;
+    if role != Some(CampaignRole::Gm) {
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {

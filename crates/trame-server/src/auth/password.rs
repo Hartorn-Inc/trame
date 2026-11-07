@@ -6,6 +6,8 @@
 //! INVARIANTS & SAFETY BOUNDARIES:
 //!   - Argon2id parameters enforce 19,456 KiB (19 MiB) memory cost, 2
 //!     iterations, 1 parallelism lane, 16-byte random salt, and 32-byte output.
+//!   - Request handlers hash and verify through `*_blocking`, which run Argon2id on
+//!     the Tokio blocking pool so a burst of logins never stalls the async runtime (SEC14).
 //!   - Identity binding preserves existing campaign memberships, character
 //!     assignments, and active session tokens while setting `is_guest = false`.
 //!   - Duplicate email addresses are rejected with `PasswordError::EmailAlreadyExists`
@@ -187,6 +189,23 @@ impl PasswordService {
             .verify_password(password.as_bytes(), &parsed_hash)
             .is_ok()
     }
+
+    /// `hash_password` on the blocking pool: one Argon2id run costs 19 MiB and tens of
+    /// milliseconds of CPU, which would stall every room sharing the async worker (SEC14).
+    pub async fn hash_password_blocking(&self, password: String) -> Result<String, PasswordError> {
+        let service = self.clone();
+        tokio::task::spawn_blocking(move || service.hash_password(&password))
+            .await
+            .map_err(|e| PasswordError::HashingError(e.to_string()))?
+    }
+
+    /// `verify_password` on the blocking pool (SEC14). A panicked worker verifies as `false`.
+    pub async fn verify_password_blocking(&self, password: String, stored_hash: String) -> bool {
+        let service = self.clone();
+        tokio::task::spawn_blocking(move || service.verify_password(&password, &stored_hash))
+            .await
+            .unwrap_or(false)
+    }
 }
 
 /// Extended user store methods required for identity binding.
@@ -290,7 +309,10 @@ impl<S: IdentityStore> AuthService<S> {
             return Err(PasswordError::EmailAlreadyExists);
         }
 
-        let password_hash = self.password_service.hash_password(password)?;
+        let password_hash = self
+            .password_service
+            .hash_password_blocking(password.to_string())
+            .await?;
 
         let updated_user = self
             .store

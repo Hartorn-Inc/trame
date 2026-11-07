@@ -8,8 +8,10 @@
 //!   - PATs use prefix `trame_pat_` followed by 40 random Base62 characters.
 //!   - OAuth2 authorization employs SHA-256 PKCE RFC 7636 challenge generation.
 //!   - Active guest sessions graduate seamlessly into bound permanent identities.
+//!   - `accounts` owns `InstanceRole`, owner bootstrap, and `CampaignInvite` storage.
 //! ============================================================================
 
+pub mod accounts;
 pub mod magic_link;
 pub mod oauth;
 pub mod password;
@@ -17,6 +19,7 @@ pub mod pat;
 pub mod session;
 pub mod totp;
 
+pub use accounts::*;
 pub use magic_link::*;
 pub use oauth::*;
 pub use password::*;

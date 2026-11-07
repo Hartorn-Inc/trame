@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it, beforeEach } from "node:test";
+import { decode } from "@msgpack/msgpack";
 import { h, render, options } from "preact";
 import { createDefaultActorData, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
 import { ApiClient } from "../../src/api/client.ts";
@@ -10,6 +11,7 @@ import { HudDrawers, isSheetDrawerOpenSignal } from "../../src/hud/HudDrawers.ts
 import { createSheetCommandDispatcher, restDiceRollService, setAtPath } from "../../src/sheet/sheetPersistence.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
 import { actorDto, createMockTransport, flush, type RouteReply } from "../helpers/mockTransport.ts";
+import { assertAbsent } from "../helpers/domAssert.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -187,7 +189,7 @@ describe("CharacterSheetHeader: versioned REST save (AC2, AC4)", () => {
 
       const putVersions = transport.calls.filter((call) => call.method === "PUT").map((call) => (call.body as any).expected_version);
       assert.deepEqual(putVersions, r.expectedPutVersions);
-      assert.equal(byTestId("sheet-version-conflict"), null);
+      assertAbsent(byTestId("sheet-version-conflict"), "sheet-version-conflict");
       assert.equal(state.actors.value[ACTOR_ID].version, r.reply.body.actor.version);
       unmount();
     });
@@ -259,6 +261,53 @@ describe("sheet widget commands route to REST", () => {
     await flush();
     assert.deepEqual(transport.calls[0].body, { expression: "1d20+3", visibility: "Public", reason: "Stealth" });
   });
+
+  const rollRoutes = [
+    { id: "skill check rolls over REST", reason: "Stealth", socketOpen: true, rest: 1, frame: null, feedback: null },
+    {
+      id: "initiative check goes to the room socket as RollDice",
+      reason: "Initiative check",
+      socketOpen: true,
+      rest: 0,
+      frame: { expression: "1d20+3", visibility: "Public", reason: "Initiative check" },
+      feedback: null,
+    },
+    {
+      id: "lowercase initiative reason also goes to the room socket",
+      reason: "initiative",
+      socketOpen: true,
+      rest: 0,
+      frame: { expression: "1d20+3", visibility: "Public", reason: "initiative" },
+      feedback: null,
+    },
+    { id: "initiative with a closed socket sends nothing and reports notConnected", reason: "Initiative check", socketOpen: false, rest: 0, frame: null, feedback: "notConnected" },
+  ];
+  for (const c of rollRoutes) {
+    it(`ROLL_DICE routing: ${c.id}`, async () => {
+      const roll = `POST /api/v1/campaigns/${CAMPAIGN_ID}/dice/roll`;
+      const { client, state, transport } = newClient({ [roll]: { status: 200, body: { roll: { total: 12, terms: [] } } } });
+      client.connect(CAMPAIGN_ID);
+      if (c.socketOpen) transport.sockets[0].open();
+      createSheetCommandDispatcher({ client, campaignId: CAMPAIGN_ID, actorId: ACTOR_ID })({
+        cmd: "ROLL_DICE",
+        expression: "1d20+3",
+        visibility: "PUBLIC",
+        reason: c.reason,
+      });
+      await flush();
+      assert.equal(transport.calls.filter((call) => call.url.endsWith("/dice/roll")).length, c.rest);
+      const rolls = transport.sockets[0].sent
+        .map((bytes) => decode(bytes) as Record<string, any>)
+        .filter((frame) => "RollDice" in frame)
+        .map((frame) => {
+          const { correlation_id: _id, ...rest } = frame.RollDice;
+          return rest;
+        });
+      assert.deepEqual(rolls, c.frame ? [c.frame] : []);
+      assert.deepEqual(state.commandFeedback.value.map((f) => f.kind), c.feedback ? [c.feedback] : []);
+      client.disconnect();
+    });
+  }
 
   it("UPDATE_ACTOR_SHEET { path, value } saves the whole sheet with the stored version", async () => {
     const { client, transport } = newClient(

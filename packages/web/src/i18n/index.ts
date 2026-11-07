@@ -161,6 +161,13 @@ export function formatNumber(value: number, maximumFractionDigits = 1): string {
   return new Intl.NumberFormat(localeSignal.value, { maximumFractionDigits }).format(value);
 }
 
+/** Formats a UNIX epoch time in seconds as a medium date + short time in the active locale. */
+export function formatEpochSeconds(seconds: number): string {
+  return new Intl.DateTimeFormat(localeSignal.value, { dateStyle: "medium", timeStyle: "short" }).format(
+    new Date(seconds * 1000),
+  );
+}
+
 /**
  * Formats a grid distance given in feet for the active unit system.
  * Metric uses the D&D 5e convention 5 ft = 1.5 m and appends the square count.

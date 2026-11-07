@@ -49,6 +49,7 @@
 //!     └── 4. `sync::project_state_for_recipient` strips hidden state per recipient socket.
 //! ============================================================================
 
+pub mod access;
 pub mod archive;
 pub mod assets;
 pub mod auth;
@@ -57,6 +58,7 @@ pub mod config;
 pub mod dice;
 pub mod http;
 pub mod importers;
+pub mod instance;
 pub mod maps;
 pub mod mcp;
 pub mod notes;
@@ -70,10 +72,9 @@ pub mod wal;
 #[cfg(test)]
 mod tests {
     use crate::assets::store::{AssetStore, InMemoryAssetStore};
-    use crate::auth::magic_link::{MagicLinkService, now_epoch_seconds};
+    use crate::auth::magic_link::MagicLinkService;
     use crate::auth::session::{
-        AuthState, InMemorySessionStore, MagicLinkLoginRequest, MagicLinkLoginResponse,
-        SESSION_COOKIE_NAME, SessionStore, build_auth_router, hash_session_token,
+        AuthState, InMemorySessionStore, build_auth_router, hash_session_token,
     };
     use crate::auth::totp::TotpService;
     use crate::dice::{RollVisibility, SeededDiceRoller, project_roll_for_recipient};
@@ -124,216 +125,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_magic_link_jwt_creation_and_onboarding_lifecycle() {
-        let session_store = Arc::new(InMemorySessionStore::new());
-        let magic_service = Arc::new(MagicLinkService::new(
-            b"test_jwt_secret_1234567890",
-            "trame-test",
-        ));
-        let auth_state = AuthState {
-            magic_link_service: magic_service.clone(),
-            session_store: session_store.clone(),
-            totp_service: Arc::new(TotpService::default()),
-            security: Default::default(),
-        };
-        let router = build_auth_router(auth_state);
-
-        let gm_id = Uuid::new_v4();
-        let campaign_id = Uuid::new_v4();
-        let character_id = Uuid::new_v4();
-
-        let (token, claims) = magic_service
-            .create_invite_token(gm_id, campaign_id, Some(character_id), "PLAYER", 3600)
-            .expect("create invite token");
-
-        assert_eq!(claims.sub, gm_id.to_string());
-        assert_eq!(claims.iss, "trame-test");
-        assert_eq!(claims.campaign_id, campaign_id);
-        assert_eq!(claims.character_id, Some(character_id));
-        assert_eq!(claims.role, "PLAYER");
-        assert!(claims.exp > now_epoch_seconds());
-
-        let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
-            token: token.clone(),
-            nickname: None,
-        })
-        .unwrap();
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/magic-link")
-            .header("content-type", "application/json")
-            .body(Body::from(req_body))
-            .unwrap();
-
-        let resp = router.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let set_cookie_header = resp
-            .headers()
-            .get("set-cookie")
-            .expect("set-cookie present");
-        let set_cookie_str = set_cookie_header.to_str().unwrap();
-        assert!(set_cookie_str.contains(&format!("{SESSION_COOKIE_NAME}=")));
-        assert!(set_cookie_str.contains("HttpOnly"));
-        assert!(set_cookie_str.contains("Secure"));
-        assert!(set_cookie_str.contains("SameSite=Lax"));
-
-        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let login_resp: MagicLinkLoginResponse = serde_json::from_slice(&body_bytes).unwrap();
-        assert_eq!(login_resp.campaign_id, campaign_id);
-        assert_eq!(login_resp.character_id, Some(character_id));
-        assert_eq!(login_resp.role, "PLAYER");
-
-        let member = session_store
-            .get_campaign_member(campaign_id, login_resp.user_id)
-            .await
-            .unwrap()
-            .expect("member record exists");
-        assert_eq!(member.user_id, login_resp.user_id);
-        assert_eq!(member.character_id, Some(character_id));
-        assert_eq!(member.role, "PLAYER");
-    }
-
-    #[tokio::test]
-    async fn test_magic_link_preserves_custom_roles_such_as_spectator_and_assistant_gm() {
-        let session_store = Arc::new(InMemorySessionStore::new());
-        let magic_service = Arc::new(MagicLinkService::new(
-            b"test_jwt_secret_1234567890",
-            "trame-test",
-        ));
-        let auth_state = AuthState {
-            magic_link_service: magic_service.clone(),
-            session_store: session_store.clone(),
-            totp_service: Arc::new(TotpService::default()),
-            security: Default::default(),
-        };
-        let router = build_auth_router(auth_state);
-
-        for custom_role in ["SPECTATOR", "ASSISTANT_GM"] {
-            let gm_id = Uuid::new_v4();
-            let campaign_id = Uuid::new_v4();
-
-            let (token, claims) = magic_service
-                .create_invite_token(gm_id, campaign_id, None, custom_role, 3600)
-                .expect("create invite token");
-            assert_eq!(claims.role, custom_role);
-
-            let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
-                token,
-                nickname: None,
-            })
-            .unwrap();
-            let req = Request::builder()
-                .method("POST")
-                .uri("/api/v1/auth/magic-link")
-                .header("content-type", "application/json")
-                .body(Body::from(req_body))
-                .unwrap();
-
-            let resp = router.clone().oneshot(req).await.unwrap();
-            assert_eq!(resp.status(), StatusCode::OK);
-
-            let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let login_resp: MagicLinkLoginResponse = serde_json::from_slice(&body_bytes).unwrap();
-            assert_eq!(login_resp.role, custom_role);
-
-            let member = session_store
-                .get_campaign_member(campaign_id, login_resp.user_id)
-                .await
-                .unwrap()
-                .expect("member record exists");
-            assert_eq!(member.role, custom_role);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_magic_link_revoked_invite_returns_401() {
-        let session_store = Arc::new(InMemorySessionStore::new());
-        let magic_service = Arc::new(MagicLinkService::new(
-            b"test_jwt_secret_1234567890",
-            "trame-test",
-        ));
-        let auth_state = AuthState {
-            magic_link_service: magic_service.clone(),
-            session_store: session_store.clone(),
-            totp_service: Arc::new(TotpService::default()),
-            security: Default::default(),
-        };
-        let router = build_auth_router(auth_state);
-
-        let gm_id = Uuid::new_v4();
-        let campaign_id = Uuid::new_v4();
-        let (token, claims) = magic_service
-            .create_invite_token(gm_id, campaign_id, None, "PLAYER", 3600)
-            .unwrap();
-
-        session_store.revoke_invite(claims.jti).await.unwrap();
-
-        let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
-            token,
-            nickname: None,
-        })
-        .unwrap();
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/magic-link")
-            .header("content-type", "application/json")
-            .body(Body::from(req_body))
-            .unwrap();
-
-        let resp = router.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn test_magic_link_expired_invite_returns_401() {
-        let session_store = Arc::new(InMemorySessionStore::new());
-        let magic_service = Arc::new(MagicLinkService::new(
-            b"test_jwt_secret_1234567890",
-            "trame-test",
-        ));
-        let auth_state = AuthState {
-            magic_link_service: magic_service.clone(),
-            session_store: session_store.clone(),
-            totp_service: Arc::new(TotpService::default()),
-            security: Default::default(),
-        };
-        let router = build_auth_router(auth_state);
-
-        let gm_id = Uuid::new_v4();
-        let campaign_id = Uuid::new_v4();
-        let expired_claims = crate::auth::magic_link::MagicLinkClaims {
-            sub: gm_id.to_string(),
-            iss: "trame-test".to_string(),
-            campaign_id,
-            character_id: None,
-            role: "PLAYER".to_string(),
-            exp: now_epoch_seconds().saturating_sub(60),
-            jti: Uuid::new_v4(),
-        };
-        let token = magic_service.sign_claims(&expired_claims).unwrap();
-
-        let req_body = serde_json::to_vec(&MagicLinkLoginRequest {
-            token,
-            nickname: None,
-        })
-        .unwrap();
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/v1/auth/magic-link")
-            .header("content-type", "application/json")
-            .body(Body::from(req_body))
-            .unwrap();
-
-        let resp = router.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn test_session_token_hashing_and_randomness() {
         let token1 = crate::auth::session::generate_session_token();
         let token2 = crate::auth::session::generate_session_token();
@@ -362,6 +153,14 @@ mod tests {
         for (case, uri) in [
             ("auth_invites_removed", "/api/v1/auth/invites"),
             ("magic_link_mint_removed", "/api/v1/auth/magic-link/mint"),
+            (
+                "magic_link_guest_session_removed",
+                "/api/v1/auth/magic-link",
+            ),
+            (
+                "magic_link_redeem_guest_session_removed",
+                "/api/v1/auth/magic-link/redeem",
+            ),
         ] {
             let req = Request::builder()
                 .method("POST")
@@ -376,7 +175,7 @@ mod tests {
 
     #[tokio::test]
     async fn asset_store_put_get_and_mint_presigned_url_with_ttl() {
-        let store = InMemoryAssetStore::new();
+        let store = InMemoryAssetStore::with_ephemeral_secret();
         let key = "instances/test-inst/campaigns/c1/assets/abc.webp";
         let data = Bytes::from_static(b"FAKE_WEBP_IMAGE_BYTES");
 
@@ -407,7 +206,7 @@ mod tests {
 
     #[tokio::test]
     async fn uvtt_importer_parses_walls_doors_lights_and_scales_coordinates() {
-        let store = InMemoryAssetStore::new();
+        let store = InMemoryAssetStore::with_ephemeral_secret();
         let instance_id = Uuid::new_v4();
         let campaign_id = Uuid::new_v4();
 
@@ -457,7 +256,7 @@ mod tests {
         };
 
         let json_payload = serde_json::to_vec(&doc).unwrap();
-        let imported = import_uvtt_map(&json_payload, instance_id, campaign_id, &store)
+        let imported = import_uvtt_map(json_payload.into(), instance_id, campaign_id, &store)
             .await
             .expect("UVTT import should succeed");
 
@@ -521,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn uvtt_importer_translates_coordinates_by_map_origin() {
-        let store = InMemoryAssetStore::new();
+        let store = InMemoryAssetStore::with_ephemeral_secret();
         let instance_id = Uuid::new_v4();
         let campaign_id = Uuid::new_v4();
 
@@ -561,7 +360,7 @@ mod tests {
         };
 
         let json_payload = serde_json::to_vec(&doc).unwrap();
-        let imported = import_uvtt_map(&json_payload, instance_id, campaign_id, &store)
+        let imported = import_uvtt_map(json_payload.into(), instance_id, campaign_id, &store)
             .await
             .expect("UVTT import with offset should succeed");
 
@@ -589,13 +388,13 @@ mod tests {
 
     #[tokio::test]
     async fn uvtt_importer_enforces_magic_bytes_payload_limits_and_dimension_guards() {
-        let store = InMemoryAssetStore::new();
+        let store = InMemoryAssetStore::with_ephemeral_secret();
         let inst = Uuid::new_v4();
         let camp = Uuid::new_v4();
 
         // 1. Payload > 64 MiB rejected
         let oversized = vec![0u8; MAX_PAYLOAD_SIZE_BYTES + 1];
-        let err = import_uvtt_map(&oversized, inst, camp, &store)
+        let err = import_uvtt_map(oversized.into(), inst, camp, &store)
             .await
             .unwrap_err();
         assert!(matches!(err, UvttImportError::PayloadTooLarge(_)));
@@ -615,7 +414,7 @@ mod tests {
             lights: Vec::new(),
         };
         let payload = serde_json::to_vec(&corrupt_doc).unwrap();
-        let err = import_uvtt_map(&payload, inst, camp, &store)
+        let err = import_uvtt_map(payload.into(), inst, camp, &store)
             .await
             .unwrap_err();
         assert_eq!(err, UvttImportError::InvalidMagicBytes);
@@ -1176,12 +975,15 @@ Hidden Text
         handle
             .send_envelope(
                 session_id,
-                ClientEnvelope::SubmitCommand(Box::new(TrameCommand::MoveToken {
-                    token_id,
-                    to_top_left: Point2D::new(200.0, 0.0),
-                    to_elevation_ft: None,
-                    gm_teleport: false,
-                })),
+                ClientEnvelope::SubmitCommand(Box::new(
+                    TrameCommand::MoveToken {
+                        token_id,
+                        to_top_left: Point2D::new(200.0, 0.0),
+                        to_elevation_ft: None,
+                        gm_teleport: false,
+                    }
+                    .into(),
+                )),
             )
             .await
             .unwrap();
@@ -1202,11 +1004,10 @@ Hidden Text
             other => panic!("Expected CommandAccepted, got {other:?}"),
         }
 
-        let (recovered_state, recovered_seq) =
-            recover_table_state(wal.as_ref(), campaign_id).unwrap();
-        assert_eq!(recovered_seq, 1);
+        let recovered = recover_table_state(wal.as_ref(), campaign_id).unwrap();
+        assert_eq!(recovered.seq_id, 1);
         assert_eq!(
-            recovered_state.data.tokens[&token_id].top_left,
+            recovered.state.data.tokens[&token_id].top_left,
             Point2D::new(200.0, 0.0)
         );
 

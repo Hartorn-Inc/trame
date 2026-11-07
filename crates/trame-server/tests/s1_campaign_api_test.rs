@@ -38,6 +38,7 @@ use trame_engine::commands::{
 use trame_engine::geometry::Point2D;
 use trame_server::archive::InMemoryCampaignStore;
 use trame_server::assets::store::InMemoryAssetStore;
+use trame_server::auth::accounts::InstanceRole;
 use trame_server::auth::magic_link::MagicLinkService;
 use trame_server::auth::session::{
     AuthState, InMemorySessionStore, SessionStore, UserRecord, hash_session_token,
@@ -84,7 +85,7 @@ impl Harness {
         );
         let state = AppState {
             lease_manager: Arc::new(RoomLeaseManager::new(wal.clone(), 25, 900_000)),
-            asset_store: Arc::new(InMemoryAssetStore::new()),
+            asset_store: Arc::new(InMemoryAssetStore::with_ephemeral_secret()),
             membership: Arc::new(InMemoryMembershipValidator::new()),
             instance_id: Uuid::new_v4(),
             timeline_storage: timeline.clone(),
@@ -104,7 +105,8 @@ impl Harness {
         build_router_with_state(self.state.clone())
     }
 
-    /// Registered (non-guest) account with a live session -> `(user_id, cookie_header)`.
+    /// Registered `Host` account (may create campaigns) with a live session ->
+    /// `(user_id, cookie_header)`.
     async fn account(&self) -> (Uuid, String) {
         let user_id = Uuid::new_v4();
         let store = &self.state.auth_state.session_store;
@@ -120,6 +122,7 @@ impl Harness {
                 mfa_enabled: false,
                 totp_secret: None,
                 pending_totp_secret: None,
+                instance_role: InstanceRole::Host,
             })
             .await
             .unwrap();
@@ -399,6 +402,170 @@ async fn a02_actor_update_resyncs_only_linked_tokens() {
     for (case, id, hp, ac) in cases {
         let t = &state.data.tokens[&id];
         assert_eq!((t.hp, t.ac), (hp, ac), "case {case}");
+    }
+}
+
+#[tokio::test]
+async fn actor_ability_scores_are_bounded_on_save() {
+    let h = Harness::new();
+    let app = h.app();
+    let (campaign_id, _, gm) = h.campaign(&app).await;
+    // (case_id, abilities, expected status)
+    let cases = [
+        (
+            "in_range_accepted",
+            json!({ "dex": { "score": 18 } }),
+            StatusCode::OK,
+        ),
+        (
+            "bounds_accepted",
+            json!({ "str": { "score": 1 }, "dex": { "score": 30 } }),
+            StatusCode::OK,
+        ),
+        (
+            "dex_1000_rejected",
+            json!({ "dex": { "score": 1000 } }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "zero_rejected",
+            json!({ "con": { "score": 0 } }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "negative_rejected",
+            json!({ "wis": { "score": -4 } }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "fraction_rejected",
+            json!({ "dex": { "score": 14.5 } }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "non_numeric_ignored",
+            json!({ "dex": { "score": "high" } }),
+            StatusCode::OK,
+        ),
+    ];
+    for (case, abilities, want) in cases {
+        let data = json!({ "abilities": abilities });
+        let (status, created) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/campaigns/{campaign_id}/actors"),
+            Some(&gm),
+            json!({ "name": "Rogue", "data": data }),
+        )
+        .await;
+        let create_want = if want == StatusCode::OK {
+            StatusCode::CREATED
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        assert_eq!(status, create_want, "case {case}: create {created}");
+
+        let (_, valid) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/campaigns/{campaign_id}/actors"),
+            Some(&gm),
+            json!({ "name": "Rogue", "data": {} }),
+        )
+        .await;
+        let actor_id = valid["actor"]["id"].as_str().unwrap().to_string();
+        let (status, resp) = call(
+            &app,
+            "PUT",
+            &format!("/api/v1/campaigns/{campaign_id}/actors/{actor_id}"),
+            Some(&gm),
+            json!({ "expected_version": 1, "data": data }),
+        )
+        .await;
+        assert_eq!(status, want, "case {case}: update {resp}");
+        if want == StatusCode::BAD_REQUEST {
+            assert_eq!(resp["code"], json!("INVALID_ABILITY_SCORE"), "case {case}");
+            assert_eq!(
+                created["code"],
+                json!("INVALID_ABILITY_SCORE"),
+                "case {case}"
+            );
+        }
+    }
+}
+
+#[test]
+fn tactical_sync_clamps_dex_score_before_deriving_initiative() {
+    // (case_id, stored dex score, expected dex modifier)
+    let cases = [
+        ("normal_score", 14, 2),
+        ("huge_score_clamped_to_30", 1000, 10),
+        ("negative_score_clamped_to_1", -50, -5),
+    ];
+    for (case, score, want) in cases {
+        let sync =
+            tactical_sync_from_sheet(None, &json!({ "abilities": { "dex": { "score": score } } }));
+        assert_eq!(sync.dex_mod, Some(want), "case {case}");
+    }
+}
+
+#[tokio::test]
+async fn rest_dice_refuses_player_initiative_reasons() {
+    let h = Harness::new();
+    let app = h.app();
+    let (campaign_id, _, gm) = h.campaign(&app).await;
+    let (player, player_cookie) = h.account().await;
+    h.join(campaign_id, player, "PLAYER").await;
+    // (case_id, caller cookie, reason, expected status)
+    let cases = [
+        (
+            "player_initiative_refused",
+            player_cookie.as_str(),
+            "Initiative",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "player_lowercase_padded_refused",
+            player_cookie.as_str(),
+            "  initiative: Hero",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "player_attack_allowed",
+            player_cookie.as_str(),
+            "Attack",
+            StatusCode::OK,
+        ),
+        (
+            "player_word_inside_allowed",
+            player_cookie.as_str(),
+            "Roll for initiative later",
+            StatusCode::OK,
+        ),
+        (
+            "gm_initiative_allowed",
+            gm.as_str(),
+            "Initiative",
+            StatusCode::OK,
+        ),
+    ];
+    for (case, cookie, reason, want) in cases {
+        let (status, body) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/campaigns/{campaign_id}/dice/roll"),
+            Some(cookie),
+            json!({ "expression": "1d20+40", "reason": reason }),
+        )
+        .await;
+        assert_eq!(status, want, "case {case}: {body}");
+        if want == StatusCode::BAD_REQUEST {
+            assert_eq!(
+                body["code"],
+                json!("INITIATIVE_ROLL_REQUIRES_ROOM"),
+                "case {case}"
+            );
+        }
     }
 }
 

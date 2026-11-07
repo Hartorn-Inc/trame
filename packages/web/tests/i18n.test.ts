@@ -54,3 +54,15 @@ describe("i18n dictionary parity (G3, A39, A40)", () => {
     assert.equal(t("rest.refill", { current: 1, max: 4 }), "1 / 4 → 4 / 4");
   });
 });
+
+describe("platform-neutral copy instructions", () => {
+  const cases: Array<{ id: string; dict: Record<string, string> }> = [
+    { id: "en-copy-manual-names-no-shortcut", dict: EN },
+    { id: "fr-copy-manual-names-no-shortcut", dict: FR },
+  ];
+  for (const c of cases) {
+    it(`[${c.id}] invites.copyManual names no platform keyboard shortcut`, () => {
+      assert.doesNotMatch(c.dict["invites.copyManual"], /ctrl|cmd|⌘|command\+/i);
+    });
+  }
+});

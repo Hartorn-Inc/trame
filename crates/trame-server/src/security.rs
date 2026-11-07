@@ -14,20 +14,44 @@
 //!
 //! INVARIANTS & SAFETY BOUNDARIES:
 //! -------------------------------
-//!   1. `Dual-Key Fixed-Window Rate Limits`:
-//!      - Every request to `/auth/login`, `/auth/register`, `/auth/totp/*`, and
-//!        `/auth/magic-link*` consumes one attempt from the client IP bucket
-//!        (`per_ip`, default 30 per 60 s) and one from the account bucket
-//!        (`per_account`, default 10 per 60 s). The account key is the JSON
-//!        `email`, else the session token digest, else the invite token digest.
-//!      - Exceeding either bucket returns `429 Too Many Requests` with
-//!        `Retry-After` before the handler (and Argon2 / TOTP work) runs.
-//!      - The bucket map is pruned of expired windows once it exceeds
-//!        `MAX_TRACKED_KEYS`, bounding memory under key-spraying.
+//!   1. `Per-Route, Failure-Only Rate Limits (SEC4)`:
+//!      - `/auth/login`, `/auth/register`, `/auth/totp/*`, `/auth/bind*`,
+//!        `/invites/*` and `/instance/bootstrap*` keep separate buckets per
+//!        route family, keyed by client IP (`per_ip`, default 30 failures per
+//!        60 s) and by account
+//!        (`per_account`, default 10 failures per 60 s). The account key is the
+//!        JSON `email`, else the session token digest, else the invite token
+//!        digest.
+//!      - Only client failures (4xx other than `429`/`413`) are counted, so
+//!        normal use is never blocked; a key over its allowance gets
+//!        `429 Too Many Requests` with `Retry-After` before the handler (and
+//!        Argon2 / TOTP work) runs.
+//!      - The check and the count are one atomic step (`try_reserve`) taken
+//!        before the handler; a response that is not a counted failure returns
+//!        the attempt (`release`). Checking first and counting after the
+//!        handler would let N parallel failures all pass the same check.
+//!      - TOTP attempts (`/auth/totp/*`, or a login carrying `totp_code`) add an
+//!        exponential per-account lockout (`TotpBackoff`) cleared by a success.
+//!        A failure counts only when the handler marks its response
+//!        `TotpCodeRejected`, i.e. after the password or session was verified.
+//!      - Bucket maps are pruned once they exceed `MAX_TRACKED_KEYS`; each
+//!        bucket expires on its own window, so pruning on a credential route
+//!        never resets an hour-long import or upload quota.
 //!   2. `Client IP Resolution`:
 //!      - Uses the socket peer address (`ConnectInfo`) unless
-//!        `trust_forwarded_for` is set, in which case the right-most
-//!        `X-Forwarded-For` hop (the one appended by the trusted proxy) is used.
+//!        `trusted_proxy_hops = N > 0`, in which case the `N`-th
+//!        `X-Forwarded-For` entry from the right (the one appended by the
+//!        outermost trusted proxy) is used. IPv6 clients bucket by /64.
+//!   2b. `No Fallback Keys (SEC5)`:
+//!      - Production stores take their keys explicitly from `ServerSecrets`
+//!        (`InMemoryAssetStore::with_base_url_and_secret`,
+//!        `SqlxPostgresStore::new` / `connect_and_migrate`). Only the
+//!        test/dev-router constructor `InMemoryAssetStore::with_ephemeral_secret`
+//!        uses `ephemeral_secret()`, a random per-process key, never a
+//!        hard-coded or environment value.
+//!   2c. `Opaque Server Errors (SEC15)`:
+//!      - `opaque_server_errors_middleware` logs and replaces the message of
+//!        every `500` JSON body with `GENERIC_SERVER_ERROR`.
 //!   3. `WebSocket Origin Allow-List`:
 //!      - Browsers always send `Origin` on WebSocket upgrades; a present
 //!        `Origin` must exactly match `allowed_origins`. Absent `Origin`
@@ -70,12 +94,12 @@ use crate::config::{DEV_ALLOWED_ORIGINS, normalize_origin};
 use crate::storage::blob::Sha256Hasher;
 use axum::body::{Body, to_bytes};
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::header::{HeaderName, HeaderValue, RETRY_AFTER};
+use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderName, HeaderValue, RETRY_AFTER};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Json, Response};
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -97,14 +121,74 @@ pub struct RateLimit {
     pub window: Duration,
 }
 
+/// Exponential lockout applied to TOTP failures per account (SEC4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TotpBackoff {
+    /// Consecutive failures tolerated before the first lockout (typos).
+    pub free_failures: u32,
+    /// Lockout after the first failure beyond `free_failures`; doubles with each further one.
+    pub base: Duration,
+    /// Longest lockout.
+    pub max: Duration,
+}
+
+impl Default for TotpBackoff {
+    /// 3 free failures, then 2 s, 4 s, 8 s, ... capped at 15 minutes.
+    fn default() -> Self {
+        Self {
+            free_failures: 3,
+            base: Duration::from_secs(2),
+            max: Duration::from_secs(15 * 60),
+        }
+    }
+}
+
+impl TotpBackoff {
+    /// Lockout after `failures` consecutive failures (`Duration::ZERO` while still free).
+    pub fn lockout(&self, failures: u32) -> Duration {
+        let Some(over) = failures.checked_sub(self.free_failures).filter(|n| *n > 0) else {
+            return Duration::ZERO;
+        };
+        self.base
+            .checked_mul(1u32 << (over - 1).min(20))
+            .map_or(self.max, |d| d.min(self.max))
+    }
+}
+
 /// In-memory dual-key (IP + account) fixed-window rate limiter for credential endpoints.
+/// Only failed attempts consume allowance; successful requests are never throttled by it.
 #[derive(Debug)]
 pub struct AuthRateLimiter {
-    /// Allowance per client IP across all rate-limited auth routes.
+    /// Failed attempts allowed per client IP (IPv6 grouped by /64) per route.
     pub per_ip: RateLimit,
-    /// Allowance per account key (email, session, or invite token).
+    /// Failed attempts allowed per account key (email, session, or invite token) per route.
     pub per_account: RateLimit,
-    buckets: Mutex<HashMap<String, (Instant, u32)>>,
+    /// Extra exponential lockout for TOTP failures per account.
+    pub totp_backoff: TotpBackoff,
+    /// Archive imports allowed per account, successful or not (SEC6); default 10 per hour.
+    pub imports_per_account: RateLimit,
+    /// Asset uploads (image decodes) allowed per account, successful or not; default 60 per
+    /// 10 minutes.
+    pub uploads_per_account: RateLimit,
+    buckets: Mutex<HashMap<String, Bucket>>,
+    backoffs: Mutex<HashMap<String, (u32, Instant)>>,
+}
+
+/// One fixed window: when it started, how many attempts it holds, and its own length, so
+/// pruning never drops a live window of a longer-lived limit (an import's hour) early.
+#[derive(Debug, Clone, Copy)]
+struct Bucket {
+    start: Instant,
+    count: u32,
+    window: Duration,
+}
+
+/// An attempt counted by `AuthRateLimiter::try_reserve`; hand it to `release` when the
+/// attempt turned out not to count (a success), so only failures keep consuming allowance.
+#[derive(Debug)]
+pub struct Reservation {
+    key: String,
+    window_start: Instant,
 }
 
 impl Default for AuthRateLimiter {
@@ -123,34 +207,127 @@ impl Default for AuthRateLimiter {
 }
 
 impl AuthRateLimiter {
-    /// Creates a limiter with explicit IP and account allowances.
+    /// Creates a limiter with explicit IP and account allowances and the default TOTP backoff.
     pub fn new(per_ip: RateLimit, per_account: RateLimit) -> Self {
         Self {
             per_ip,
             per_account,
+            totp_backoff: TotpBackoff::default(),
+            imports_per_account: RateLimit {
+                max_attempts: 10,
+                window: Duration::from_secs(3600),
+            },
+            uploads_per_account: RateLimit {
+                max_attempts: 60,
+                window: Duration::from_secs(600),
+            },
             buckets: Mutex::new(HashMap::new()),
+            backoffs: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Consumes one attempt from `key`; returns the remaining wait when the window is exhausted.
-    pub fn check(&self, key: &str, limit: RateLimit) -> Result<(), Duration> {
+    /// Consumes one archive import from `user_id`'s quota, or returns the remaining wait.
+    pub fn take_import(&self, user_id: uuid::Uuid) -> Result<(), Duration> {
+        self.try_reserve(&format!("import:{user_id}"), self.imports_per_account)
+            .map(drop)
+    }
+
+    /// Consumes one asset upload from `user_id`'s quota, or returns the remaining wait.
+    pub fn take_upload(&self, user_id: uuid::Uuid) -> Result<(), Duration> {
+        self.try_reserve(&format!("upload:{user_id}"), self.uploads_per_account)
+            .map(drop)
+    }
+
+    /// Atomically checks and counts one attempt against `key`: returns the remaining wait
+    /// when the window is full, otherwise counts the attempt before returning. Checking and
+    /// counting under one lock is what stops N parallel requests from all passing a check
+    /// made before any of them was counted.
+    pub fn try_reserve(&self, key: &str, limit: RateLimit) -> Result<Reservation, Duration> {
         let now = Instant::now();
         let Ok(mut buckets) = self.buckets.lock() else {
-            return Ok(());
+            return Ok(Reservation {
+                key: key.to_string(),
+                window_start: now,
+            });
         };
         if buckets.len() > MAX_TRACKED_KEYS {
-            buckets.retain(|_, (start, _)| now.duration_since(*start) < limit.window);
+            buckets.retain(|_, b| now.duration_since(b.start) < b.window);
         }
-        let entry = buckets.entry(key.to_string()).or_insert((now, 0));
-        if now.duration_since(entry.0) >= limit.window {
-            *entry = (now, 0);
+        let bucket = buckets.entry(key.to_string()).or_insert(Bucket {
+            start: now,
+            count: 0,
+            window: limit.window,
+        });
+        if now.duration_since(bucket.start) >= bucket.window {
+            *bucket = Bucket {
+                start: now,
+                count: 0,
+                window: limit.window,
+            };
         }
-        if entry.1 >= limit.max_attempts {
-            return Err(limit.window.saturating_sub(now.duration_since(entry.0)));
+        if bucket.count >= limit.max_attempts {
+            return Err(bucket
+                .window
+                .saturating_sub(now.duration_since(bucket.start)));
         }
-        entry.1 += 1;
-        Ok(())
+        bucket.count += 1;
+        Ok(Reservation {
+            key: key.to_string(),
+            window_start: bucket.start,
+        })
     }
+
+    /// Returns a reserved attempt that did not count. Ignored once its window has rolled over,
+    /// so it never refunds an attempt of a later window.
+    pub fn release(&self, reservation: Reservation) {
+        let Ok(mut buckets) = self.buckets.lock() else {
+            return;
+        };
+        if let Some(bucket) = buckets.get_mut(&reservation.key)
+            && bucket.start == reservation.window_start
+        {
+            bucket.count = bucket.count.saturating_sub(1);
+        }
+    }
+
+    /// Returns the remaining TOTP lockout for `key`, if any.
+    pub fn totp_locked(&self, key: &str) -> Result<(), Duration> {
+        let now = Instant::now();
+        let Ok(backoffs) = self.backoffs.lock() else {
+            return Ok(());
+        };
+        match backoffs.get(key) {
+            Some((_, until)) if *until > now => Err(*until - now),
+            _ => Ok(()),
+        }
+    }
+
+    /// Records a TOTP outcome for `key`: a failure extends the lockout, a success clears it.
+    pub fn record_totp(&self, key: &str, failed: bool) {
+        let now = Instant::now();
+        let Ok(mut backoffs) = self.backoffs.lock() else {
+            return;
+        };
+        if !failed {
+            backoffs.remove(key);
+            return;
+        }
+        if backoffs.len() > MAX_TRACKED_KEYS {
+            backoffs.retain(|_, (_, until)| *until > now);
+        }
+        let entry = backoffs.entry(key.to_string()).or_insert((0, now));
+        entry.0 = entry.0.saturating_add(1);
+        entry.1 = now + self.totp_backoff.lockout(entry.0);
+    }
+}
+
+/// Random 32-byte key for constructors that have no configured secret (SEC5): unknown to
+/// anyone, valid only for the lifetime of the instance that generated it.
+pub fn ephemeral_secret() -> [u8; 32] {
+    use rand::RngExt;
+    let mut key = [0u8; 32];
+    rand::rng().fill(&mut key);
+    key
 }
 
 /// Transport security settings shared by HTTP and WebSocket handlers.
@@ -162,13 +339,34 @@ pub struct SecurityPolicy {
     pub allowed_origins: Vec<String>,
     /// WebSocket message and frame size cap in bytes.
     pub ws_max_message_bytes: usize,
-    /// Key rate limits on the right-most `X-Forwarded-For` hop instead of the peer address.
-    pub trust_forwarded_for: bool,
+    /// Trusted reverse proxies in front of the server (`TRAME_TRUSTED_PROXY_HOPS`, default `0`).
+    /// `0` keys rate limits on the socket peer; `N` on the `N`-th `X-Forwarded-For` entry
+    /// from the right.
+    pub trusted_proxy_hops: usize,
     /// Credential endpoint rate limiter.
     pub rate_limiter: AuthRateLimiter,
     /// Normalized `TRAME_PUBLIC_ORIGIN` prefixed to invite URLs; `None` yields relative URLs.
     pub public_origin: Option<String>,
+    /// `POST /api/v1/auth/register` accepts new accounts (only `TRAME_ENV=dev`, SEC10).
+    pub registration_open: bool,
+    /// `TRAME_BOOTSTRAP_OWNER_EMAIL` (normalized): the only email the owner bootstrap accepts.
+    pub bootstrap_owner_email: Option<String>,
+    /// Per-campaign asset storage quota in bytes (default 1 GiB). Uploads and map imports are
+    /// refused with `413 STORAGE_QUOTA_EXCEEDED` before decoding once stored + incoming bytes
+    /// would exceed it (SEC14).
+    pub campaign_asset_quota_bytes: u64,
+    /// Longest a WebSocket waits for its room actor to attach it or accept one frame
+    /// (default `DEFAULT_WS_ROOM_CALL_TIMEOUT`). On expiry the socket is closed with `1011`,
+    /// so a stalled actor cannot hold connections and their reconnect storm forever.
+    pub ws_room_call_timeout: Duration,
 }
+
+/// Default `SecurityPolicy::campaign_asset_quota_bytes` (1 GiB).
+pub const DEFAULT_CAMPAIGN_ASSET_QUOTA_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Default `SecurityPolicy::ws_room_call_timeout` (10 s): above the 6 s Postgres WAL call
+/// bound, so a single slow append is not enough to drop a socket.
+pub const DEFAULT_WS_ROOM_CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Default for SecurityPolicy {
     /// Development policy: secure cookies, Vite dev origins, 1 MiB frames, default limits.
@@ -177,9 +375,13 @@ impl Default for SecurityPolicy {
             cookie_secure: true,
             allowed_origins: DEV_ALLOWED_ORIGINS.map(normalize_origin).to_vec(),
             ws_max_message_bytes: DEFAULT_WS_MAX_MESSAGE_BYTES,
-            trust_forwarded_for: false,
+            trusted_proxy_hops: 0,
             rate_limiter: AuthRateLimiter::default(),
             public_origin: None,
+            registration_open: true,
+            bootstrap_owner_email: None,
+            campaign_asset_quota_bytes: DEFAULT_CAMPAIGN_ASSET_QUOTA_BYTES,
+            ws_room_call_timeout: DEFAULT_WS_ROOM_CALL_TIMEOUT,
         }
     }
 }
@@ -193,24 +395,72 @@ impl SecurityPolicy {
         }
     }
 
+    /// Rate-limit bucket of the client address: the socket peer, or the `X-Forwarded-For` entry
+    /// appended by the outermost trusted proxy. A header shorter than the hop count, or an
+    /// entry that is not an IP, falls back to the peer so spoofed headers cannot pick a bucket.
     fn client_ip(&self, request: &Request) -> String {
-        if self.trust_forwarded_for
-            && let Some(hop) = request
-                .headers()
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.rsplit(',').next())
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-        {
-            return hop.to_string();
-        }
-        request
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .map(|ci| ci.0.ip().to_string())
-            .unwrap_or_else(|| "unknown".to_string())
+        let forwarded = (self.trusted_proxy_hops > 0)
+            .then(|| request.headers().get("x-forwarded-for"))
+            .flatten()
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                v.rsplit(',')
+                    .nth(self.trusted_proxy_hops - 1)
+                    .and_then(|hop| hop.trim().parse::<IpAddr>().ok())
+            });
+        forwarded
+            .or_else(|| {
+                request
+                    .extensions()
+                    .get::<ConnectInfo<SocketAddr>>()
+                    .map(|ci| ci.0.ip())
+            })
+            .map_or_else(|| "unknown".to_string(), ip_bucket)
     }
+}
+
+/// IPv4 addresses bucket individually; IPv6 addresses bucket by their /64 prefix, the
+/// smallest block a single subscriber is usually assigned.
+pub fn ip_bucket(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+    }
+}
+
+/// Route family sharing one set of buckets, so limits on one credential route never
+/// throttle another.
+fn route_family(path: &str) -> &'static str {
+    if path.starts_with("/api/v1/invites/") {
+        return "invite";
+    }
+    if path.starts_with("/api/v1/instance/bootstrap") {
+        return "bootstrap";
+    }
+    let rest = path.trim_start_matches("/api/v1/auth/");
+    if rest.starts_with("totp") {
+        "totp"
+    } else if rest.starts_with("bind") {
+        "bind"
+    } else if rest.starts_with("register") {
+        "register"
+    } else {
+        "login"
+    }
+}
+
+/// Client-attributable failures (bad credentials, invalid input, unknown account) count
+/// against the limits; `429` and `413` do not, nor do successes or server errors.
+fn is_counted_failure(status: StatusCode) -> bool {
+    status.is_client_error()
+        && status != StatusCode::TOO_MANY_REQUESTS
+        && status != StatusCode::PAYLOAD_TOO_LARGE
 }
 
 fn account_key(headers: &HeaderMap, body: &[u8]) -> Option<String> {
@@ -231,7 +481,8 @@ fn account_key(headers: &HeaderMap, body: &[u8]) -> Option<String> {
     field("token").map(|t| format!("invite:{}", Sha256Hasher::digest(t.as_bytes())))
 }
 
-fn too_many_requests(retry_after: Duration) -> Response {
+/// `429 RATE_LIMITED` with a `Retry-After` header (whole seconds, at least 1).
+pub fn too_many_requests(retry_after: Duration) -> Response {
     let secs = retry_after.as_secs().max(1);
     let mut resp = (
         StatusCode::TOO_MANY_REQUESTS,
@@ -247,7 +498,9 @@ fn too_many_requests(retry_after: Duration) -> Response {
     resp
 }
 
-/// Axum middleware enforcing per-IP then per-account limits on credential routes.
+/// Axum middleware enforcing per-route IP and account failure limits on credential routes,
+/// plus the TOTP backoff. Blocked keys get `429` before the handler (and Argon2 / TOTP work)
+/// runs; the handler's response then decides whether the attempt counts as a failure.
 pub async fn auth_rate_limit_middleware(
     State(state): State<AuthState>,
     request: Request,
@@ -255,13 +508,22 @@ pub async fn auth_rate_limit_middleware(
 ) -> Response {
     let policy = state.security.clone();
     let limiter = &policy.rate_limiter;
-    let ip = policy.client_ip(&request);
-    if let Err(wait) = limiter.check(&format!("ip:{ip}"), limiter.per_ip) {
-        return too_many_requests(wait);
+    let family = route_family(request.uri().path());
+    let ip_key = format!("ip:{family}:{}", policy.client_ip(&request));
+    let mut reservations = Vec::with_capacity(2);
+    match limiter.try_reserve(&ip_key, limiter.per_ip) {
+        Ok(r) => reservations.push(r),
+        Err(wait) => return too_many_requests(wait),
     }
+    let release_all = |reservations: Vec<Reservation>| {
+        for r in reservations {
+            limiter.release(r);
+        }
+    };
 
     let (parts, body) = request.into_parts();
     let Ok(bytes) = to_bytes(body, MAX_AUTH_BODY_BYTES).await else {
+        release_all(reservations);
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(serde_json::json!({
@@ -271,14 +533,111 @@ pub async fn auth_rate_limit_middleware(
         )
             .into_response();
     };
-    if let Some(key) = account_key(&parts.headers, &bytes)
-        && let Err(wait) = limiter.check(&format!("acct:{key}"), limiter.per_account)
+    let account = account_key(&parts.headers, &bytes);
+    let totp_key = account
+        .as_ref()
+        .filter(|_| family == "totp" || carries_totp_code(&bytes))
+        .map(|key| format!("totp:{key}"));
+    if let Some(key) = &account {
+        match limiter.try_reserve(&format!("acct:{family}:{key}"), limiter.per_account) {
+            Ok(r) => reservations.push(r),
+            Err(wait) => {
+                release_all(reservations);
+                return too_many_requests(wait);
+            }
+        }
+    }
+    if let Some(key) = &totp_key
+        && let Err(wait) = limiter.totp_locked(key)
     {
+        release_all(reservations);
         return too_many_requests(wait);
     }
 
-    next.run(Request::from_parts(parts, Body::from(bytes)))
+    let response = next
+        .run(Request::from_parts(parts, Body::from(bytes)))
+        .await;
+    if !is_counted_failure(response.status()) {
+        release_all(reservations);
+    }
+    if let Some(key) = &totp_key {
+        if response.extensions().get::<TotpCodeRejected>().is_some() {
+            limiter.record_totp(key, true);
+        } else if response.status().is_success() {
+            limiter.record_totp(key, false);
+        }
+    }
+    response
+}
+
+/// Response extension a handler sets when it rejected a TOTP code *after* authenticating
+/// the caller (password checked, or session resolved). Only these responses extend the
+/// TOTP lockout, so a stranger sending wrong passwords with a `totp_code` cannot lock the
+/// account owner out.
+#[derive(Debug, Clone, Copy)]
+pub struct TotpCodeRejected;
+
+/// Marks `response` as a TOTP rejection for `auth_rate_limit_middleware`.
+pub fn totp_rejected(mut response: Response) -> Response {
+    response.extensions_mut().insert(TotpCodeRejected);
+    response
+}
+
+fn carries_totp_code(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|j| {
+            j.get("totp_code")
+                .and_then(|v| v.as_str())
+                .map(|v| !v.trim().is_empty())
+        })
+        .unwrap_or(false)
+}
+
+/// Generic message replacing the detail of every `500` JSON response (SEC15).
+pub const GENERIC_SERVER_ERROR: &str = "internal server error";
+
+/// Largest `500` body inspected by `opaque_server_errors_middleware`; larger bodies are
+/// replaced wholesale.
+const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// Logs the detail of every `500 Internal Server Error` JSON response and replaces its
+/// message (`error` string, or JSON-RPC `error.message`) with `GENERIC_SERVER_ERROR`, keeping
+/// the machine-readable `code`. Database and storage text therefore never reaches clients.
+pub async fn opaque_server_errors_middleware(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let response = next.run(request).await;
+    let is_json = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.trim_start().starts_with("application/json"));
+    if response.status() != StatusCode::INTERNAL_SERVER_ERROR || !is_json {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let detail = to_bytes(body, MAX_ERROR_BODY_BYTES)
         .await
+        .unwrap_or_default();
+    tracing::error!(%method, %path, detail = %String::from_utf8_lossy(&detail), "internal server error");
+    let mut value = serde_json::from_slice::<serde_json::Value>(&detail)
+        .unwrap_or_else(|_| serde_json::json!({ "error": GENERIC_SERVER_ERROR }));
+    match value.get_mut("error") {
+        Some(serde_json::Value::Object(rpc)) => {
+            rpc.insert("message".to_string(), GENERIC_SERVER_ERROR.into());
+            rpc.remove("data");
+        }
+        Some(message) => *message = GENERIC_SERVER_ERROR.into(),
+        None => {
+            value = serde_json::json!({ "error": GENERIC_SERVER_ERROR });
+        }
+    }
+    parts.headers.remove(CONTENT_LENGTH);
+    Response::from_parts(
+        parts,
+        Body::from(serde_json::to_vec(&value).unwrap_or_default()),
+    )
 }
 
 /// CSP for every non-HTML response (JSON API, bundle files, signed asset downloads):

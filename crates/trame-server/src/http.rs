@@ -9,10 +9,8 @@
 //! - Portable `.trame` campaign archive streaming export (`GET /api/v1/campaigns/{campaign_id}/export`).
 //! - Portable `.trame` campaign archive streaming import (`POST /api/v1/campaigns/import`), which
 //!   always creates a new campaign with remapped IDs owned by the caller (G8).
-//! - GM-authorized campaign Magic Link invite minting (`POST /api/v1/campaigns/{campaign_id}/invites`),
-//!   the only invite minting route.
-//! - Hybrid authentication routes (`/api/v1/auth/magic-link`, `/api/v1/auth/bind-account`,
-//!   `/api/v1/auth/pat`, `/api/v1/auth/totp/{setup,enable,verify}`).
+//! - Campaign access routes (`CampaignInvite`, `InviteRedemption`, member removal) merged from
+//!   `access.rs`, and authentication/instance routes merged from `auth::session`.
 //! - Campaign-scoped asset presigned URL endpoint (`GET /api/v1/campaigns/{campaign_id}/assets/{hash}/presign`).
 //! - Cursor-paginated session timeline endpoint (`GET /api/v1/campaigns/{campaign_id}/sessions/{session_num}/timeline`).
 //! - Binary MessagePack WebSocket upgrade endpoint (`GET /ws/campaigns/{campaign_id}`) backed by `RoomLeaseManager`.
@@ -27,34 +25,47 @@
 //!   2. `Campaign Membership & Hash Validation`:
 //!      - `presign_asset_handler` validates hexadecimal asset hashes (`_thumb` optional suffix)
 //!        and checks membership in the authoritative store before minting presigned GET URLs.
-//!      - `export_campaign_handler` verifies membership and exports only entities, notes, and
-//!        assets registered to the requested campaign.
-//!      - `timeline_handler` requires membership, hides GM-only events from non-GMs, and clamps
-//!        `limit` to `1..=MAX_TIMELINE_LIMIT`.
+//!      - `export_campaign_handler` requires the `GameMaster` role (players and spectators get
+//!        `403`) and exports only entities, notes, and assets registered to the campaign.
+//!      - `timeline_handler` requires membership, shows non-GMs only the allow-listed
+//!        `PLAYER_TIMELINE_EVENT_KINDS` minus GM-only events, and clamps `limit` to
+//!        `1..=MAX_TIMELINE_LIMIT`.
 //!   3. `Import Creates, Never Overwrites`:
-//!      - `import_campaign_handler` requires a non-guest account, always remaps IDs, and makes
-//!        the caller the GM of the new campaign.
+//!      - `import_campaign_handler` requires a `Host` or `Owner` account, always remaps IDs,
+//!        and makes the caller the GM of the new campaign.
 //!   4. `WebSocket Hardening`:
 //!      - Upgrades require credentials, campaign membership, and an allow-listed `Origin`;
 //!        messages and frames are capped at `SecurityPolicy::ws_max_message_bytes`.
+//!      - Membership is checked again once the client is attached to the room: a removal
+//!        that ran between the upgrade and the attach finds no socket to evict, so the
+//!        handler itself closes with `4403`.
+//!      - Waking/attaching to the room and handing it each frame are bounded by
+//!        `SecurityPolicy::ws_room_call_timeout`; on expiry the socket closes with `1011`
+//!        instead of hanging on a stalled actor.
 //!   5. `Hardening Headers`:
 //!      - `security_headers_middleware` wraps the whole router (CSP, `nosniff`, frame denial).
 //!   6. `Deterministic Session Cleanup & Sub-5ms Healthz`:
 //!      - When a WebSocket disconnects, `disconnect_client(session_id)` and `send_task.abort()` execute
 //!        unconditionally so `RoomLeaseManager` tracks active connections accurately.
-//!      - `healthz_handler` verifies database/storage connectivity in memory in under 5 ms without
-//!        requiring credentials.
+//!      - `healthz_handler` verifies storage connectivity without credentials; when PostgreSQL
+//!        is configured it pings it with `SELECT 1` (2 s deadline, `503` on failure) (SEC15).
+//!   7. `Opaque Server Errors (SEC15)`:
+//!      - `opaque_server_errors_middleware` logs the detail of every `500` JSON body and
+//!        replaces its message with a generic one, so database text never reaches clients.
+//!   8. `Role Checks (SEC2, SEC9)`:
+//!      - Every campaign role decision goes through `resolve_campaign_role`; export is
+//!        GM-only and the timeline returns only the event kinds allowed for the caller's role.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
 //!   `HTTP / WebSocket Request`
 //!     ├── 1. `GET /healthz` -> verify database connectivity & return `200 OK` `{"status":"ok"}` (< 5 ms).
-//!     ├── 2. `GET /api/v1/campaigns/{id}/export` -> verify member auth -> stream `.trame` ZIP archive.
-//!     ├── 3. `POST /api/v1/campaigns/import` -> non-guest auth -> remapped import -> `201 Created`.
-//!     ├── 4. `POST /api/v1/campaigns/{id}/invites` -> verify GM role -> mint JWT & return `201 Created`.
-//!     └── 5. `GET /ws/campaigns/{id}` -> auth + Origin + membership -> capped upgrade -> `TableRoomActor`.
+//!     ├── 2. `GET /api/v1/campaigns/{id}/export` -> verify GM role -> stream `.trame` ZIP archive.
+//!     ├── 3. `POST /api/v1/campaigns/import` -> Host/Owner auth -> remapped import -> `201 Created`.
+//!     └── 4. `GET /ws/campaigns/{id}` -> auth + Origin + membership -> capped upgrade -> `TableRoomActor`.
 //! ============================================================================
 
+use crate::archive::spool::{SpoolError, SpooledArchive};
 use crate::archive::{
     ArchiveError, ArchiveExporter, ArchiveImporter, CampaignExportSource, CampaignImportTarget,
     CampaignMetadata, ExportEntity, InMemoryCampaignStore, NoteRecord, stored_assets,
@@ -66,14 +77,17 @@ use crate::auth::magic_link::MagicLinkService;
 use crate::auth::password::extract_session_token;
 use crate::auth::pat::PatMiddleware;
 use crate::auth::session::{
-    AuthState, DEFAULT_SESSION_TTL_SECONDS, FullAuthStore, IdentityStore, InMemorySessionStore,
-    SessionStore, build_auth_router, hash_session_token,
+    AuthState, FullAuthStore, InMemorySessionStore, SessionStore, build_auth_router,
+    hash_session_token,
 };
 use crate::auth::totp::TotpService;
 use crate::config::ServerConfig;
 pub use crate::maps::{InMemoryMapStorage, get_campaign_maps_handler, put_campaign_maps_handler};
-use crate::room::{ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomLeaseManager};
-use crate::security::security_headers_middleware;
+use crate::room::{
+    ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomError, RoomLeaseManager,
+    WS_CLOSE_CODE_INTERNAL_ERROR, WS_CLOSE_CODE_MEMBERSHIP_REVOKED,
+};
+use crate::security::{opaque_server_errors_middleware, security_headers_middleware};
 use crate::storage::SqlxPostgresStore;
 use crate::storage::blob::{
     AssetDescriptor, BlobStore, BlobStoreError, BlobStream, Sha256Hasher, slice_to_stream,
@@ -94,7 +108,6 @@ use axum::routing::{get, post};
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
@@ -107,34 +120,8 @@ pub const MAX_ARCHIVE_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 /// Upper bound for `TimelineQuery::limit` (entries per page).
 pub const MAX_TIMELINE_LIMIT: usize = 200;
 
-/// Request payload submitted to `POST /api/v1/campaigns/{campaign_id}/invites`.
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub struct CreateCampaignInviteRequest {
-    /// Optional character UUID to pre-assign to the invited player.
-    pub character_id: Option<Uuid>,
-    /// Role granted by the invite (`"PLAYER"`, `"SPECTATOR"`, `"ASSISTANT_GM"`); defaults to `"PLAYER"`.
-    pub role: Option<String>,
-    /// Invite token time-to-live in seconds; defaults to 7 days (`DEFAULT_SESSION_TTL_SECONDS`).
-    pub ttl_seconds: Option<u64>,
-}
-
-/// Response payload returned by `POST /api/v1/campaigns/{campaign_id}/invites`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CampaignInviteResponse {
-    /// Full or relative invite URL containing the signed Magic Link JWT.
-    pub invite_url: String,
-    /// Signed HMAC-SHA256 Magic Link JWT token string.
-    pub token: String,
-    /// Expiration timestamp in UNIX epoch seconds.
-    pub expires_at: u64,
-    /// Target campaign UUID.
-    pub campaign_id: Uuid,
-    /// Granted campaign role.
-    pub role: String,
-    /// Optional pre-assigned character UUID.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub character_id: Option<Uuid>,
-}
+/// Deadline for the `/healthz` PostgreSQL `SELECT 1` ping; a slower database reports `503`.
+const HEALTHZ_DB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// JSON payload returned by the `GET /healthz` liveness and database connectivity endpoint.
 #[derive(Debug, Serialize, Deserialize)]
@@ -409,6 +396,11 @@ impl AppState {
         if !self.db_healthy.load(Ordering::Acquire) {
             return false;
         }
+        if let Some(pg) = &self.postgres_store {
+            return tokio::time::timeout(HEALTHZ_DB_TIMEOUT, pg.check_health())
+                .await
+                .unwrap_or(false);
+        }
         self.campaign_store.campaigns.read().is_ok()
     }
 }
@@ -438,7 +430,7 @@ pub fn build_app_router(
     lease_manager: Arc<RoomLeaseManager>,
     timeline_storage: Arc<dyn TimelineStorage>,
 ) -> Router {
-    let asset_store: Arc<dyn AssetStore> = Arc::new(InMemoryAssetStore::new());
+    let asset_store: Arc<dyn AssetStore> = Arc::new(InMemoryAssetStore::with_ephemeral_secret());
     let membership: Arc<dyn CampaignMembershipValidator> =
         Arc::new(InMemoryMembershipValidator::new());
     build_full_router(
@@ -496,7 +488,29 @@ pub fn build_in_memory_router_with_config(
     timeline_storage: Arc<dyn TimelineStorage>,
     config: &ServerConfig,
 ) -> Router {
-    let auth_state = auth_state_from_config(Arc::new(InMemorySessionStore::new()), config);
+    build_in_memory_router_with_store(
+        Arc::new(InMemorySessionStore::new()),
+        lease_manager,
+        asset_store,
+        membership,
+        instance_id,
+        timeline_storage,
+        config,
+    )
+}
+
+/// Same as `build_in_memory_router_with_config` over a caller-owned auth store (lets `main`
+/// prepare the owner bootstrap token on the store the router serves).
+pub fn build_in_memory_router_with_store(
+    session_store: Arc<dyn FullAuthStore>,
+    lease_manager: Arc<RoomLeaseManager>,
+    asset_store: Arc<dyn AssetStore>,
+    membership: Arc<dyn CampaignMembershipValidator>,
+    instance_id: Uuid,
+    timeline_storage: Arc<dyn TimelineStorage>,
+    config: &ServerConfig,
+) -> Router {
+    let auth_state = auth_state_from_config(session_store, config);
     let state = AppState {
         lease_manager,
         asset_store,
@@ -640,22 +654,22 @@ pub fn build_router_with_state(state: AppState) -> Router {
         )
         .route("/api/v1/campaigns/import", post(import_campaign_handler))
         .route(
-            "/api/v1/campaigns/{campaign_id}/invites",
-            post(create_campaign_invite_handler),
-        )
-        .route(
             "/api/v1/campaigns/{campaign_id}/maps",
             get(get_campaign_maps_handler).put(put_campaign_maps_handler),
         )
         .route("/api/v1/mcp", post(crate::mcp::mcp_jsonrpc_handler))
         .merge(crate::campaigns::campaign_routes())
-        .with_state(state)
-        .merge(auth_router);
+        .merge(crate::access::campaign_access_routes())
+        .with_state(state.clone())
+        .merge(auth_router)
+        .merge(crate::access::invite_redemption_router(state));
     let router = match static_dir {
         Some(dir) => router.fallback(spa_fallback(dir)),
         None => router,
     };
-    router.layer(axum::middleware::from_fn(security_headers_middleware))
+    router
+        .layer(axum::middleware::from_fn(opaque_server_errors_middleware))
+        .layer(axum::middleware::from_fn(security_headers_middleware))
 }
 
 /// Resolves an authenticated user ID from a session cookie, Bearer session token, or Bearer PAT.
@@ -740,41 +754,6 @@ pub(crate) fn error_response(status: StatusCode, code: &str, error: &str) -> Res
         .into_response()
 }
 
-/// Checks whether `user_id` is an authorized member of `campaign_id` via `membership` or `session_store`.
-pub async fn is_authorized_campaign_member(
-    state: &AppState,
-    campaign_id: Uuid,
-    user_id: Uuid,
-) -> bool {
-    if state.membership.is_member(campaign_id, user_id) {
-        return true;
-    }
-    state
-        .auth_state
-        .session_store
-        .get_campaign_member(campaign_id, user_id)
-        .await
-        .ok()
-        .flatten()
-        .is_some()
-}
-
-/// Checks whether `user_id` holds Game Master (`"GM"`) privileges for `campaign_id`.
-pub async fn is_authorized_campaign_gm(state: &AppState, campaign_id: Uuid, user_id: Uuid) -> bool {
-    if state.membership.is_gm(campaign_id, user_id) {
-        return true;
-    }
-    if let Ok(Some(member)) = state
-        .auth_state
-        .session_store
-        .get_campaign_member(campaign_id, user_id)
-        .await
-    {
-        return member.role.eq_ignore_ascii_case("GM");
-    }
-    false
-}
-
 /// Unauthenticated `GET /healthz` probe verifying database connectivity and returning `{"status":"ok"}` in under 5 ms.
 pub async fn healthz_handler(State(state): State<AppState>) -> Response {
     if IS_SHUTTING_DOWN.load(Ordering::Acquire) {
@@ -830,15 +809,22 @@ pub async fn export_campaign_handler(
         }
     };
 
-    if !is_authorized_campaign_member(&state, campaign_id, user_id).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                code: Some("FORBIDDEN".to_string()),
-                error: "user is not an active member of this campaign".to_string(),
-            }),
-        )
-            .into_response();
+    match resolve_campaign_role(&state, campaign_id, user_id).await {
+        Some(CampaignRole::Gm) => {}
+        Some(_) => {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "FORBIDDEN",
+                "only a campaign GM may export the campaign",
+            );
+        }
+        None => {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "FORBIDDEN",
+                "user is not an active member of this campaign",
+            );
+        }
     }
 
     let fallback_metadata = || CampaignMetadata {
@@ -977,8 +963,11 @@ fn is_client_archive_error(err: &ArchiveError) -> bool {
 }
 
 /// Imports a `.trame` archive stream at `POST /api/v1/campaigns/import` as a brand-new campaign
-/// (IDs always remapped, G8) whose GM is the caller. Requires a non-guest account (`401` when
-/// unauthenticated, `403` for guests); returns `201 Created` with restoration counters.
+/// (IDs always remapped, G8) whose GM is the caller. Requires a `Host` or `Owner` account
+/// (`401` when unauthenticated, `403 HOST_REQUIRED` otherwise); returns `201 Created` with
+/// restoration counters. Each account gets `AuthRateLimiter::imports_per_account` imports per
+/// window (`429` past it); the body is spooled to a temporary file instead of being buffered in
+/// memory (SEC6).
 pub async fn import_campaign_handler(
     headers: HeaderMap,
     State(state): State<AppState>,
@@ -991,38 +980,44 @@ pub async fn import_campaign_handler(
             "valid authentication credentials required",
         );
     };
-    match state
-        .auth_state
-        .session_store
-        .get_user_by_id(caller_user_id)
-        .await
-    {
-        Ok(Some(user)) if !user.is_guest => {}
-        _ => {
-            return error_response(
-                StatusCode::FORBIDDEN,
-                "GUEST_FORBIDDEN",
-                "only registered (non-guest) accounts can create campaigns",
-            );
-        }
+    if let Err(resp) = crate::access::require_campaign_creator(&state, caller_user_id).await {
+        return *resp;
     }
 
-    let body = request.into_body();
-    let body_bytes = match axum::body::to_bytes(body, MAX_ARCHIVE_UPLOAD_BYTES).await {
-        Ok(b) => b,
-        Err(err) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    code: Some("INVALID_ARCHIVE_STREAM".to_string()),
-                    error: err.to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
+    if let Err(wait) = state
+        .auth_state
+        .security
+        .rate_limiter
+        .take_import(caller_user_id)
+    {
+        return crate::security::too_many_requests(wait);
+    }
 
-    let reader = Cursor::new(body_bytes.to_vec());
+    let mut spool =
+        match SpooledArchive::from_body(request.into_body(), MAX_ARCHIVE_UPLOAD_BYTES).await {
+            Ok(spool) => spool,
+            Err(SpoolError::Io(err)) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "IMPORT_ERROR",
+                    &err.to_string(),
+                );
+            }
+            Err(err) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "INVALID_ARCHIVE_STREAM",
+                    &err.to_string(),
+                );
+            }
+        };
+    let Some(reader) = spool.reader() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "IMPORT_ERROR",
+            "archive spool unavailable",
+        );
+    };
     let imported = match &state.postgres_store {
         Some(pg) => {
             ArchiveImporter::new((**pg).clone(), state.blob_store.clone())
@@ -1101,110 +1096,6 @@ pub async fn import_campaign_handler(
     }
 }
 
-/// Mints a signed campaign Magic Link invite token at `POST /api/v1/campaigns/{campaign_id}/invites`
-/// when called by an authorized Game Master (`201 Created`).
-pub async fn create_campaign_invite_handler(
-    Path(campaign_id): Path<Uuid>,
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    body: Bytes,
-) -> Response {
-    if let Err(err) = state.auth_state.magic_link_service.validate_secret() {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "WEAK_JWT_SECRET",
-            &err.to_string(),
-        );
-    }
-
-    let payload: CreateCampaignInviteRequest = if body.is_empty() {
-        CreateCampaignInviteRequest::default()
-    } else {
-        match serde_json::from_slice(&body) {
-            Ok(p) => p,
-            Err(err) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        code: Some("INVALID_PAYLOAD".to_string()),
-                        error: err.to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-        }
-    };
-
-    let caller_id = match resolve_authenticated_user(&state, &headers).await {
-        Ok(uid) => uid,
-        Err(status) => {
-            return (
-                status,
-                Json(ErrorResponse {
-                    code: Some("UNAUTHORIZED".to_string()),
-                    error: "authentication required to create campaign invites".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    if !is_authorized_campaign_gm(&state, campaign_id, caller_id).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                code: Some("FORBIDDEN".to_string()),
-                error: "only a campaign GM may create invite links".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    let role = payload
-        .role
-        .map(|r| r.trim().to_ascii_uppercase())
-        .unwrap_or_else(|| "PLAYER".to_string());
-    let ttl = payload.ttl_seconds.unwrap_or(DEFAULT_SESSION_TTL_SECONDS);
-
-    match state.auth_state.magic_link_service.create_invite_token(
-        caller_id,
-        campaign_id,
-        payload.character_id,
-        &role,
-        ttl,
-    ) {
-        Ok((token, claims)) => {
-            let origin = state
-                .auth_state
-                .security
-                .public_origin
-                .as_deref()
-                .unwrap_or("");
-            let invite_url = format!("{origin}/?invite={token}");
-            (
-                StatusCode::CREATED,
-                Json(CampaignInviteResponse {
-                    invite_url,
-                    token,
-                    expires_at: claims.exp,
-                    campaign_id,
-                    role: claims.role,
-                    character_id: claims.character_id,
-                }),
-            )
-                .into_response()
-        }
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                code: Some("INVITE_CREATION_FAILED".to_string()),
-                error: err.to_string(),
-            }),
-        )
-            .into_response(),
-    }
-}
-
 /// Returns `true` for timeline events only the GM may read: `payload.visibility` of `gm`,
 /// `gm_only`, or `gmonly` (case-insensitive), or `payload.gm_only == true`.
 pub fn is_gm_only_timeline_event(event: &SessionTimelineEvent) -> bool {
@@ -1264,10 +1155,20 @@ async fn timeline_handler(
             has_more: false,
         });
     resp.events.truncate(limit);
-    if role != CampaignRole::Gm {
-        resp.events.retain(|e| !is_gm_only_timeline_event(e));
-    }
+    resp.events.retain(|e| is_timeline_event_visible(role, e));
     Json(resp).into_response()
+}
+
+/// Timeline event kinds a non-GM member may read (SEC9). Any other kind, including kinds
+/// added later, stays GM-only until it is listed here.
+pub const PLAYER_TIMELINE_EVENT_KINDS: [&str; 3] = ["dice_roll", "initiative", "handout_revealed"];
+
+/// GMs read every event; players and spectators read only `PLAYER_TIMELINE_EVENT_KINDS`
+/// that are not marked GM-only (`is_gm_only_timeline_event`).
+pub fn is_timeline_event_visible(role: CampaignRole, event: &SessionTimelineEvent) -> bool {
+    role == CampaignRole::Gm
+        || (PLAYER_TIMELINE_EVENT_KINDS.contains(&event.event_type.as_str())
+            && !is_gm_only_timeline_event(event))
 }
 
 /// WebSocket endpoint attaching an authenticated campaign member to the `TableRoomActor`.
@@ -1351,7 +1252,10 @@ pub async fn presign_asset_handler(
             .into_response();
     }
 
-    if !is_authorized_campaign_member(&state, campaign_id, user_id).await {
+    if resolve_campaign_role(&state, campaign_id, user_id)
+        .await
+        .is_none()
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
@@ -1406,13 +1310,13 @@ async fn resolve_client_envelope(
     campaign_id: Uuid,
     envelope: ClientEnvelope,
 ) -> ClientEnvelope {
-    let ClientEnvelope::SubmitCommand(cmd) = envelope else {
+    let ClientEnvelope::SubmitCommand(mut submission) = envelope else {
         return envelope;
     };
-    let TrameCommand::ActivateScene { scene_id, .. } = *cmd else {
-        return ClientEnvelope::SubmitCommand(cmd);
+    let TrameCommand::ActivateScene { scene_id, .. } = submission.command else {
+        return ClientEnvelope::SubmitCommand(submission);
     };
-    let resolved = crate::maps::resolve_scene_command(
+    submission.command = crate::maps::resolve_scene_command(
         state,
         campaign_id,
         TrameCommand::ActivateScene {
@@ -1425,7 +1329,27 @@ async fn resolve_client_envelope(
         scene_id,
         scene: None,
     });
-    ClientEnvelope::SubmitCommand(Box::new(resolved))
+    ClientEnvelope::SubmitCommand(submission)
+}
+
+/// Answers an undecodable frame with `CommandRejected` (no correlation id can be read, RT10).
+fn reject_frame(tx: &mpsc::UnboundedSender<OutboundClientFrame>, reason: &str) {
+    let out = crate::sync::ServerEnvelope::CommandRejected {
+        reason: reason.to_string(),
+        correlation_id: None,
+    };
+    if let Ok(bytes) = crate::sync::encode_server_envelope(&out) {
+        let _ = tx.send(OutboundClientFrame::Binary(bytes));
+    }
+}
+
+/// Sends a Close frame with `code` and drops the socket (best effort: the peer may be gone).
+async fn close_socket(mut socket: WebSocket, code: u16, reason: &str) {
+    let close_frame = axum::extract::ws::CloseFrame {
+        code,
+        reason: reason.to_string().into(),
+    };
+    let _ = socket.send(Message::Close(Some(close_frame))).await;
 }
 
 async fn handle_ws_connection(
@@ -1435,12 +1359,10 @@ async fn handle_ws_connection(
     user_id: Uuid,
     role: CampaignRole,
 ) {
-    let Ok(room_handle) = state.lease_manager.get_or_wake_room(campaign_id).await else {
-        return;
-    };
-
+    let room_timeout = state.auth_state.security.ws_room_call_timeout;
     let session_id = Uuid::new_v4();
     let (tx, mut rx) = mpsc::unbounded_channel::<OutboundClientFrame>();
+    let reject_tx = tx.clone();
     let client = ConnectedClient {
         session_id,
         user_id,
@@ -1448,13 +1370,44 @@ async fn handle_ws_connection(
         tx,
     };
 
-    if room_handle.connect_client(client).await.is_err() {
+    let attach = async {
+        let room_handle = state.lease_manager.get_or_wake_room(campaign_id).await?;
+        room_handle.connect_client(client).await?;
+        Ok::<_, RoomError>(room_handle)
+    };
+    let room_handle = match tokio::time::timeout(room_timeout, attach).await {
+        Ok(Ok(handle)) => handle,
+        Ok(Err(err)) => {
+            tracing::warn!(%campaign_id, error = %err, "room attach failed");
+            close_socket(socket, WS_CLOSE_CODE_INTERNAL_ERROR, "Room Unavailable").await;
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(%campaign_id, "room attach timed out");
+            close_socket(socket, WS_CLOSE_CODE_INTERNAL_ERROR, "Room Unavailable").await;
+            return;
+        }
+    };
+
+    // The role was resolved before the upgrade; a removal that ran in between evicted
+    // nobody, so membership is checked again now that the client is attached.
+    if resolve_campaign_role(&state, campaign_id, user_id)
+        .await
+        .is_none()
+    {
+        let _ = room_handle.disconnect_client(session_id).await;
+        close_socket(
+            socket,
+            WS_CLOSE_CODE_MEMBERSHIP_REVOKED,
+            "Membership Revoked",
+        )
+        .await;
         return;
     }
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    let send_task = tokio::spawn(async move {
+    let mut send_task = tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
             match frame {
                 OutboundClientFrame::Binary(bytes) => {
@@ -1475,16 +1428,45 @@ async fn handle_ws_connection(
     });
 
     while let Some(Ok(msg)) = ws_receiver.next().await {
-        if let Message::Binary(bin) = msg
-            && let Ok(envelope) = decode_client_envelope(&bin)
+        let Message::Binary(bin) = msg else {
+            continue;
+        };
+        let Ok(envelope) = decode_client_envelope(&bin) else {
+            reject_frame(&reject_tx, "malformed frame: not a valid client envelope");
+            continue;
+        };
+        let envelope = resolve_client_envelope(&state, campaign_id, envelope).await;
+        match tokio::time::timeout(
+            room_timeout,
+            room_handle.send_envelope(session_id, envelope),
+        )
+        .await
         {
-            let envelope = resolve_client_envelope(&state, campaign_id, envelope).await;
-            let _ = room_handle.send_envelope(session_id, envelope).await;
+            // The actor died (RT9): closing the socket makes the client reconnect, which
+            // wakes a fresh actor from storage.
+            Ok(Err(RoomError::ActorClosed)) => break,
+            Ok(_) => {}
+            Err(_) => {
+                tracing::warn!(%campaign_id, "room actor did not accept a frame in time");
+                let _ = reject_tx.send(OutboundClientFrame::Close {
+                    code: WS_CLOSE_CODE_INTERNAL_ERROR,
+                    reason: "Room Unavailable".to_string(),
+                });
+                break;
+            }
         }
     }
 
-    let _ = room_handle.disconnect_client(session_id).await;
-    send_task.abort();
+    // The mailbox is bounded, so even the disconnect notice can wait on a stalled actor.
+    let _ = tokio::time::timeout(room_timeout, room_handle.disconnect_client(session_id)).await;
+    drop(reject_tx);
+    // Lets a queued Close frame reach the peer before the writer is torn down.
+    if tokio::time::timeout(std::time::Duration::from_secs(1), &mut send_task)
+        .await
+        .is_err()
+    {
+        send_task.abort();
+    }
 }
 
 /// Seeds a campaign with sample entities, notes, and assets in `AppState` for testing or bootstrapping.

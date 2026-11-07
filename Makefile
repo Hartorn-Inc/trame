@@ -83,10 +83,23 @@ clean: ## Stop containers and remove cached build/data volumes for this checkout
 e2e-image: ## Build the production Dockerfile image used by the browser E2E suite (trame-server:e2e)
 	docker build -t trame-server:e2e "$(REPO_DIR)"
 
-e2e: ## Run the GM + player Playwright journey (with videos) against the production image and Postgres, then tear down
+# The journey writes e2e/artifacts/crash-handoff.json after its damage + undo; the
+# harness then SIGKILLs trame-server, restarts it on the same database, and runs the
+# spec again (E2E_STAGE=after-restart) to check WAL recovery. Playwright shares the
+# server's network namespace, so the kill can only happen between the two runs.
+e2e: ## Run the GM + player Playwright journey (with videos), SIGKILL + restart the server, check recovery, then tear down
 	mkdir -p "$(REPO_DIR)/e2e/artifacts"
+	rm -f "$(REPO_DIR)/e2e/artifacts/crash-handoff.json"
 	$(E2E_COMPOSE) up -d --wait postgres trame-server && \
-	$(E2E_COMPOSE) run --rm playwright; rc=$$?; \
+	setup_url=$$($(E2E_COMPOSE) logs --no-color --no-log-prefix trame-server | sed -n 's/.*"event":"owner_bootstrap_url".*"setup_url":"\([^"]*\)".*/\1/p' | tail -n 1) && \
+	{ [ -n "$$setup_url" ] || { echo "e2e: no owner_bootstrap_url setup_url in the trame-server log" >&2; false; }; } && \
+	$(E2E_COMPOSE) run --rm -e E2E_SETUP_URL="$$setup_url" playwright; rc=$$?; \
+	if [ -f "$(REPO_DIR)/e2e/artifacts/crash-handoff.json" ]; then \
+		docker kill -s KILL "$$($(E2E_COMPOSE) ps -q trame-server)" >/dev/null && \
+		$(E2E_COMPOSE) up -d --wait trame-server && \
+		$(E2E_COMPOSE) run --rm -e E2E_STAGE=after-restart playwright || rc=1; \
+	else echo "e2e: no crash handoff from the journey; SIGKILL recovery stage not run" >&2; rc=1; fi; \
+	rm -f "$(REPO_DIR)/e2e/artifacts/crash-handoff.json"; \
 	$(E2E_COMPOSE) logs --no-color --no-log-prefix trame-server > "$(REPO_DIR)/e2e/artifacts/server.log" 2>&1; \
 	$(E2E_COMPOSE) logs --no-color --no-log-prefix postgres > "$(REPO_DIR)/e2e/artifacts/postgres.log" 2>&1; \
 	$(E2E_COMPOSE) --profile e2e down -v --remove-orphans; \

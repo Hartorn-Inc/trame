@@ -25,7 +25,7 @@ use trame_server::wal::InMemoryWalStorage;
 fn create_test_app_state() -> (AppState, Arc<InMemoryMembershipValidator>) {
     let wal = Arc::new(InMemoryWalStorage::new());
     let lease_manager = Arc::new(RoomLeaseManager::new(wal, 25, 900_000));
-    let asset_store = Arc::new(InMemoryAssetStore::new());
+    let asset_store = Arc::new(InMemoryAssetStore::with_ephemeral_secret());
     let membership = Arc::new(InMemoryMembershipValidator::new());
     let instance_id = Uuid::new_v4();
     let timeline_storage = Arc::new(InMemoryTimelineStorage::new());
