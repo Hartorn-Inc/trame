@@ -5,7 +5,7 @@ import { ApiClient, type CampaignActor } from "../../src/api/client.ts";
 import { createSessionState } from "../../src/api/session.ts";
 import { CharacterBuilderModal } from "../../src/builder/CharacterBuilderModal.tsx";
 import { localeSignal } from "../../src/i18n/index.ts";
-import { assertAbsent } from "../helpers/domAssert.ts";
+import { assertAbsent, assertPresent } from "../helpers/domAssert.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
 import { actorDto, createMockTransport, flush, type RouteReply } from "../helpers/mockTransport.ts";
 
@@ -166,6 +166,29 @@ describe("CharacterBuilderModal: creation through the actor route", () => {
       assert.ok(ui.byTestId("builder-step-spells"));
       for (const id of c.present) assert.ok(ui.byTestId(id), id);
       for (const id of c.absent) assertAbsent(ui.byTestId(id), id);
+      ui.unmount();
+    });
+  }
+
+  const spellDescriptions = [
+    { id: "a cantrip option shows its SRD rules text", choice: "cantrips", spell: "srd:spell:fire_bolt", text: /mote of fire/ },
+    { id: "a level-1 spell option shows its SRD rules text", choice: "spells", spell: "srd:spell:burning_hands", text: /thin sheet of flames/ },
+  ];
+  for (const c of spellDescriptions) {
+    it(c.id, async () => {
+      const ui = await mount({ status: 201, body: { actor: actorDto() } });
+      await walkToSkills(ui, "wizard");
+      for (const skill of ["insight", "medicine"]) await ui.fire(`builder-skills-${skill}`, "change");
+      await ui.fire("builder-next", "click");
+      await ui.fire("builder-class-equipment-A", "change");
+      await ui.fire("builder-equipment-package", "change");
+      await ui.fire("builder-next", "click");
+      const descriptionId = `builder-${c.choice}-${c.spell}-description`;
+      const description = ui.byTestId(descriptionId);
+      assertPresent(description, descriptionId);
+      assert.match(description.textContent, c.text);
+      assert.equal(description.getAttribute("lang"), "en");
+      assert.equal(ui.byTestId(`builder-${c.choice}-${c.spell}`).getAttribute("aria-describedby"), descriptionId);
       ui.unmount();
     });
   }

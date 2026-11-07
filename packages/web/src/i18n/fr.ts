@@ -851,6 +851,7 @@ export const FR: Record<MessageKey, string> = {
   "builder.choice.classEquipment": "Équipement de départ de classe",
   "builder.choice.picked": "{{picked}} sur {{count}} choisis",
   "builder.spells.none": "Cette classe n'a pas de sort au niveau 1.",
+  "builder.spells.details": "Texte de règles : {{name}}",
   "builder.review.name": "Nom du personnage",
   "table.canvas": "Table tactique",
   "table.canvasHelp": "Sélectionnez un pion, puis cliquez sur une case ou utilisez les flèches pour le déplacer. Échap annule la sélection. Maj+F10 ouvre les actions du pion, P le signale et Alt+clic signale une case. Ctrl+molette ou le pincement zoome ; faites défiler pour vous déplacer.",

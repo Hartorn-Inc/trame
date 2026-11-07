@@ -848,6 +848,7 @@ export const EN = {
   "builder.choice.classEquipment": "Class starting equipment",
   "builder.choice.picked": "{{picked}} of {{count}} chosen",
   "builder.spells.none": "This class has no spells at level 1.",
+  "builder.spells.details": "Rules text: {{name}}",
   "builder.review.name": "Character name",
   "table.canvas": "Tactical table",
   "table.canvasHelp": "Select a token, then click a cell or use the arrow keys to move it. Escape clears the selection. Shift+F10 opens the token's actions, P pings it, and Alt+click pings a cell. Ctrl+wheel or pinch zooms; scroll to pan.",

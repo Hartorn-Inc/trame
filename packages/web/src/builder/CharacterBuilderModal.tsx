@@ -33,6 +33,7 @@ import { h, type ComponentChildren, type VNode } from 'preact';
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
 import {
   BACKGROUNDS,
+  CompendiumResolver,
   SRD_CLASS_PROGRESSION,
   SRD_SPECIES,
   type AbilityId,
@@ -80,6 +81,12 @@ function stepLabel(step: BuilderStep): string {
 
 function featLabel(featRef: string): string {
   return t(`builder.feat.${featRef.replace(/^srd:feat:/, '')}` as MessageKey);
+}
+
+/** SRD rules text of a spell option (English, verbatim), `null` when the compendium has none. */
+function spellDescription(spellId: string): string | null {
+  const description = CompendiumResolver.getDefault().get(spellId)?.data.description;
+  return typeof description === 'string' && description.trim() ? description : null;
 }
 
 export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<any> | null {
@@ -316,17 +323,32 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
         t('builder.choice.picked', { picked: picked.length, count: choice.count })),
       ...choice.options.map((option) => {
         const checked = picked.includes(option.id);
+        const description = choice.kind === 'spell' ? spellDescription(option.id) : null;
+        const descriptionId = `builder-${choice.id}-${option.id}-description`;
         return h(
-          'label',
-          { key: option.id, class: cx('ds-choice', checked && 'is-selected') },
-          h('input', {
-            type: 'checkbox',
-            checked,
-            disabled: !checked && full,
-            'data-testid': `builder-${choice.id}-${option.id}`,
-            onChange: () => wizard.toggleClassOption(choice.id, option.id),
-          }),
-          h('span', { class: 'ds-value' }, optionLabel(choice, option)),
+          'div',
+          { key: option.id, class: 'ds-stack-sm' },
+          h(
+            'label',
+            { class: cx('ds-choice', checked && 'is-selected') },
+            h('input', {
+              type: 'checkbox',
+              checked,
+              disabled: !checked && full,
+              'data-testid': `builder-${choice.id}-${option.id}`,
+              'aria-describedby': description ? descriptionId : undefined,
+              onChange: () => wizard.toggleClassOption(choice.id, option.id),
+            }),
+            h('span', { class: 'ds-value' }, optionLabel(choice, option)),
+          ),
+          description
+            ? h(
+                'details',
+                { class: 'ds-meta', 'data-testid': `builder-${choice.id}-${option.id}-details` },
+                h('summary', null, t('builder.spells.details', { name: option.label })),
+                h('p', { id: descriptionId, lang: 'en', 'data-testid': descriptionId }, description),
+              )
+            : null,
         );
       }),
     ]);
