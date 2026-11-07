@@ -6,6 +6,7 @@ import type { WireWallSegment } from "../../src/api/wire.ts";
 import { CommandFeedbackToasts, rejectionReason } from "../../src/components/RoomConnectionFeedback.tsx";
 import { localeSignal } from "../../src/i18n/index.ts";
 import { acceptedCoverSignal, CoverSuggestionPanel, targetTokenIdSignal } from "../../src/table/CoverSuggestionPanel.tsx";
+import { DeathSaveAnnouncement } from "../../src/table/DeathSaveAnnouncement.tsx";
 import { ReactionBanner } from "../../src/table/ReactionBanner.tsx";
 import { TableCanvas } from "../../src/table/TableCanvas.tsx";
 import { MAX_STROKE_CELLS } from "../../src/table/tableTools.ts";
@@ -599,6 +600,35 @@ describe("TokenVitalsPanel: typed damage, concentration and death saving throws"
     assert.equal(ui.byTestId("vitals-stat-block").textContent, "Stat block: Goblin Warrior");
     ui.unmount();
   });
+});
+
+describe("DeathSaveAnnouncement: the room's death saving throw, announced", () => {
+  const outcome = (over = {}) => ({ successes: 0, failures: 0, regains_hp: false, stable: false, dead: false, ...over });
+  const cases = [
+    { id: "the controller hears the roll and both counters", role: "player", d20: 14, outcome: outcome({ successes: 2, failures: 1 }), text: "Brakka rolled 14 on a death saving throw. Successes 2 of 3, failures 1 of 3" },
+    { id: "the controller hears Stable", role: "player", d20: 12, outcome: outcome({ stable: true }), text: "Brakka rolled 12 on a death saving throw. Brakka is Stable." },
+    { id: "the controller hears the regained hit point on a 20", role: "player", d20: 20, outcome: outcome({ regains_hp: true }), text: "Brakka rolled 20 on a death saving throw. Brakka regains 1 Hit Point and wakes up." },
+    { id: "the controller hears death", role: "player", d20: 1, outcome: outcome({ failures: 3, dead: true }), text: "Brakka rolled 1 on a death saving throw. Brakka dies." },
+    { id: "another player hears only the roll (redacted counters)", role: "other", d20: 14, outcome: outcome(), text: "Brakka rolled 14 on a death saving throw." },
+    { id: "another player still hears death", role: "other", d20: 3, outcome: outcome({ dead: true }), text: "Brakka rolled 3 on a death saving throw. Brakka dies." },
+  ] as const;
+  for (const c of cases) {
+    it(c.id, () => {
+      const state =
+        c.role === "player"
+          ? playerView()
+          : tableState({ tokens: {}, public_tokens: { [HERO]: publicToken(HERO, "Brakka", { top_left: { x: 100, y: 50 } }) } });
+      const live = liveTable(PLAYER_ID, state);
+      const ui = mount(h(DeathSaveAnnouncement, { client: live.client }));
+      assert.equal(ui.byTestId("death-save-result").textContent, "");
+      live.client.applyServerEnvelope({ type: "CommandAccepted", seqId: 10, state, events: [{ event: "DEATH_SAVE_RECORDED", token_id: HERO, d20: c.d20, outcome: c.outcome }] } as any);
+      assert.equal(ui.byTestId("death-save-result").textContent, c.text);
+      assert.equal(ui.byTestId("death-save-result").getAttribute("role"), "status");
+      live.client.applyServerEnvelope({ type: "CommandAccepted", seqId: 11, state, events: [{ event: "TOKEN_MOVED" }] } as any);
+      assert.equal(ui.byTestId("death-save-result").textContent, c.text, "kept across later table events");
+      ui.unmount();
+    });
+  }
 });
 
 describe("tableView: death saving throw phase", () => {

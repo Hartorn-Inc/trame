@@ -7,7 +7,7 @@
  * -----
  * Composes the live table: GM toolbar, combat tracker, reaction prompts,
  * board, the pending attack / spell resolution card, concentration check
- * prompts, the pending resolutions list, selected-token vitals, the selected
+ * prompts, the death saving throw announcement, the pending resolutions list, selected-token vitals, the selected
  * monster's stat block (GM), conditions and cover suggestion, and dice tray
  * (the sheet/compendium drawers
  * are mounted by the workspace). Each child reads the session signals itself;
@@ -30,6 +30,7 @@ import { t } from '../i18n/index.ts';
 import { ActionResolutionCard } from './ActionResolutionCard.tsx';
 import { CombatTrackerBar } from './CombatTrackerBar.tsx';
 import { ConcentrationCheckPrompt } from './ConcentrationCheckPrompt.tsx';
+import { DeathSaveAnnouncement } from './DeathSaveAnnouncement.tsx';
 import { DiceTray } from './DiceTray.tsx';
 import { GmOverrideToolbar } from './GmOverrideToolbar.tsx';
 import { MonsterTurnPanel } from './MonsterTurnPanel.tsx';
@@ -65,6 +66,7 @@ export function TableTab({ campaignId, client, isGm }: TableTabProps) {
       <aside class="ds-stack-sm ds-table-side" aria-label={t('table.sidebar')}>
         <ActionResolutionCard client={client} isGm={isGm} />
         <ConcentrationCheckPrompt client={client} />
+        <DeathSaveAnnouncement client={client} />
         <PendingResolutionsPanel client={client} isGm={isGm} />
         <TokenVitalsPanel client={client} isGm={isGm} />
         <MonsterTurnPanel client={client} isGm={isGm} />
