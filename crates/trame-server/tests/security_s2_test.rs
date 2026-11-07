@@ -1505,8 +1505,8 @@ async fn connect(
     room: &TableRoomHandle,
     user_id: Uuid,
     role: CampaignRole,
-) -> (Uuid, mpsc::UnboundedReceiver<OutboundClientFrame>) {
-    let (tx, rx) = mpsc::unbounded_channel();
+) -> (Uuid, mpsc::Receiver<OutboundClientFrame>) {
+    let (tx, rx) = trame_server::room::client_channel();
     let session_id = Uuid::new_v4();
     room.connect_client(ConnectedClient {
         session_id,
@@ -1521,8 +1521,8 @@ async fn connect(
 
 struct Table {
     room: TableRoomHandle,
-    gm: (Uuid, mpsc::UnboundedReceiver<OutboundClientFrame>),
-    player: (Uuid, mpsc::UnboundedReceiver<OutboundClientFrame>),
+    gm: (Uuid, mpsc::Receiver<OutboundClientFrame>),
+    player: (Uuid, mpsc::Receiver<OutboundClientFrame>),
 }
 
 impl Table {
@@ -1542,7 +1542,7 @@ impl Table {
         self.room.send_envelope(session, envelope).await.unwrap();
     }
 
-    fn drain(rx: &mut mpsc::UnboundedReceiver<OutboundClientFrame>) -> Vec<ServerEnvelope> {
+    fn drain(rx: &mut mpsc::Receiver<OutboundClientFrame>) -> Vec<ServerEnvelope> {
         let mut out = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             if let OutboundClientFrame::Binary(bytes) = frame {
@@ -1979,6 +1979,136 @@ async fn a65_vitality_events_reach_only_the_controller() {
             assert_eq!(view.bloodied, BloodiedState::Bloodied, "case {case}");
         }
         Table::drain(&mut table.gm.1);
+    }
+}
+
+#[tokio::test]
+async fn condition_events_follow_token_visibility_and_control() {
+    use trame_engine::commands::{OverrideMode, OverrideSubject};
+    let player_user = Uuid::new_v4();
+    let (state, [hero, goblin, lich], _) = privacy_table(player_user, 1);
+    let mut table = Table::open(state, player_user).await;
+    Table::drain(&mut table.gm.1);
+    Table::drain(&mut table.player.1);
+
+    enum Seen {
+        Rejected,
+        Nothing,
+        Conditions,
+        Rulings { kept: bool },
+    }
+    let set = |token_id| TrameCommand::SetTokenConditions {
+        token_id,
+        conditions: vec!["Prone".to_string()],
+    };
+    let force = |token_id| TrameCommand::ConditionOverride {
+        token_id,
+        subject: OverrideSubject::Condition,
+        id: "frightened".to_string(),
+        mode: Some(OverrideMode::Force),
+    };
+    // (case_id, submitted by GM, command, what the player receives)
+    let cases = [
+        (
+            "player_sets_own_token_conditions",
+            false,
+            set(hero),
+            Seen::Conditions,
+        ),
+        (
+            "player_cannot_set_npc_conditions",
+            false,
+            set(goblin),
+            Seen::Rejected,
+        ),
+        (
+            "gm_sets_visible_npc_conditions",
+            true,
+            set(goblin),
+            Seen::Conditions,
+        ),
+        (
+            "hidden_npc_conditions_withheld",
+            true,
+            set(lich),
+            Seen::Nothing,
+        ),
+        ("player_cannot_override", false, force(hero), Seen::Rejected),
+        (
+            "own_token_ruling_kept",
+            true,
+            force(hero),
+            Seen::Rulings { kept: true },
+        ),
+        (
+            "npc_ruling_stripped",
+            true,
+            force(goblin),
+            Seen::Rulings { kept: false },
+        ),
+        (
+            "hidden_npc_ruling_withheld",
+            true,
+            force(lich),
+            Seen::Nothing,
+        ),
+    ];
+    for (case, as_gm, command, expected) in cases {
+        let target = match &command {
+            TrameCommand::SetTokenConditions { token_id, .. }
+            | TrameCommand::ConditionOverride { token_id, .. } => *token_id,
+            _ => unreachable!(),
+        };
+        table
+            .submit(
+                as_gm,
+                ClientEnvelope::SubmitCommand(Box::new(command.into())),
+            )
+            .await;
+        let frames = Table::drain(&mut table.player.1);
+        Table::drain(&mut table.gm.1);
+        let (events, projected) = match frames.first() {
+            Some(ServerEnvelope::CommandAccepted { events, state, .. }) => (events, state),
+            Some(ServerEnvelope::CommandRejected { .. }) => {
+                assert!(matches!(expected, Seen::Rejected), "case {case}: rejected");
+                continue;
+            }
+            other => panic!("case {case}: unexpected frame {other:?}"),
+        };
+        let conditions_event = events
+            .iter()
+            .any(|e| matches!(e, TrameEvent::TokenConditionsChanged { .. }));
+        let ruling = events.iter().find_map(|e| match e {
+            TrameEvent::ConditionOverrideChanged {
+                overrides,
+                effective_conditions,
+                ..
+            } => Some((overrides.len(), effective_conditions.clone())),
+            _ => None,
+        });
+        match expected {
+            Seen::Rejected => panic!("case {case}: expected a rejection"),
+            Seen::Nothing => {
+                assert!(
+                    !conditions_event && ruling.is_none(),
+                    "case {case}: {events:?}"
+                );
+            }
+            Seen::Conditions => assert!(conditions_event, "case {case}: {events:?}"),
+            Seen::Rulings { kept } => {
+                let (rulings, effective) = ruling.unwrap_or_else(|| panic!("case {case}"));
+                assert_eq!(rulings > 0, kept, "case {case}: rulings");
+                assert!(effective.contains(&"frightened".to_string()), "case {case}");
+                if !kept {
+                    assert!(
+                        projected.public_tokens[&target]
+                            .conditions
+                            .contains(&"frightened".to_string()),
+                        "case {case}: public view shows effective conditions"
+                    );
+                }
+            }
+        }
     }
 }
 

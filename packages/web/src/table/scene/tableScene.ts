@@ -25,8 +25,16 @@
  *      raycaster, clipped by walls that block sight). The GM sees the whole
  *      map unless `previewPlayerView` is on, which applies the same fog from
  *      player-owned tokens at the explored-dim alpha.
+ *    - The sight radius comes from each token's own `senses` (server-derived
+ *      darkvision, truesight...) under the ambient preset, resolved by the
+ *      engine (`computeTokenVisionPolygon`); a token without senses sees
+ *      normally with no darkvision.
  *    - Without the engine (still loading or failed) a viewer sees only its
  *      own footprint: fog fails closed instead of revealing the map.
+ * 2b. `Wall Kinds Resolved By The Engine`:
+ *    - Every wall reaches the raycaster with its `kind` (`engineWalls`);
+ *      windows, open doors, terrain two-hit and one-way normals are decided
+ *      in Rust, never pre-filtered here, so client and server agree.
  * 3. `Theme Palette Only`:
  *    - Every colour comes from `CanvasThemePaletteSpec` (or from the data
  *      itself: light `color_hex`, the ping sender's colour); health tiers pair
@@ -40,7 +48,8 @@
  * -----
  * `buildTableScene(input)`
  * ├── 1. `boardMetrics` -> cell size and board extent (px).
- * ├── 2. Walls -> palette style per `WallKind`; AoEs -> engine cells.
+ * ├── 2. Walls -> palette style per `WallKind`; AoEs -> engine cells;
+ * │      difficult terrain -> hatched cells.
  * ├── 3. `listTableTokens` -> rings (disposition or health tier), selection.
  * ├── 4. Ambient preset -> darkness tint; lights -> wall-clipped polygons.
  * ├── 5. Fog -> vision polygons of the viewers + GM reveal/hide cells.
@@ -48,7 +57,15 @@
  * ============================================================================
  */
 import type { PointerPing } from "../../api/session.ts";
-import type { ProjectedTableState, Uuid, WireBloodiedState, WireWallKind, WireWallSegment } from "../../api/wire.ts";
+import type {
+  ProjectedTableState,
+  WireAmbientLighting,
+  WireBloodiedState,
+  WireSenseProfile,
+  WireWallKind,
+  WireWallSegment,
+  Uuid,
+} from "../../api/wire.ts";
 import {
   CANVAS_AMBIENT_TINTS,
   type CanonicalWallKind,
@@ -65,9 +82,22 @@ export const PING_DURATION_MS = 1500;
 /** Board size, in cells, used before a scene with dimensions is active. */
 const FALLBACK_BOARD_CELLS = 20;
 const FALLBACK_CELL_PX = 50;
-/** `SenseProfile::default().normal_range_ft`. */
-const DEFAULT_SIGHT_FT = 120;
+/** Senses of a token the projection sent without any: normal sight, no special sense. */
+const PLAIN_SENSES: WireSenseProfile = {
+  normal_range_ft: 120,
+  darkvision_range_ft: 0,
+  blindsight_range_ft: 0,
+  tremorsense_range_ft: 0,
+  truesight_range_ft: 0,
+  devils_sight: false,
+  see_invisibility: false,
+  perceives_channels: 1,
+};
 const DEFAULT_HEIGHT_FT = 5;
+/** Fill alpha of a difficult terrain cell; the diagonal hatch carries the meaning without colour. */
+const TERRAIN_FILL_ALPHA = 0.12;
+/** Stroke alpha of the difficult terrain hatch lines. */
+const TERRAIN_HATCH_ALPHA = 0.6;
 
 /**
  * Darkness overlay alpha per ambient preset (`0` = no overlay). Lights are
@@ -94,6 +124,15 @@ const WALL_KIND_STYLE: Record<WireWallKind["kind"], CanonicalWallKind> = {
 export interface SceneGeometry {
   /** Visibility polygon around `origin` (px) clipped by `walls`, `rangePx` deep. */
   visibilityPolygon(walls: WallSegmentDto[], origin: Point2D, eyeFt: number, rangePx: number, truesight: boolean): Point2D[];
+  /** Vision polygon of one token from its `senses` under `ambient` (`computeTokenVisionPolygon`). */
+  tokenVisionPolygon(
+    walls: WallSegmentDto[],
+    origin: Point2D,
+    eyeFt: number,
+    senses: WireSenseProfile,
+    ambient: WireAmbientLighting,
+    pxPerFt: number,
+  ): Point2D[];
   /** Grid cells covered by `template`, clipped by `walls` when it stops at walls. */
   aoeCells(template: AoeTemplateDto, walls: WallSegmentDto[], cellPx: number, feetPerCell: number): GridCell[];
 }
@@ -186,6 +225,16 @@ export interface SceneLight {
   polygon: Point2D[] | null;
 }
 
+/** Difficult terrain cells: a faint fill plus a diagonal hatch (non-colour cue). */
+export interface SceneTerrain {
+  cells: Rect[];
+  color: number;
+  /** Cell fill alpha in `0..=1`. */
+  fillAlpha: number;
+  /** Hatch stroke alpha in `0..=1`. */
+  hatchAlpha: number;
+}
+
 export interface SceneFog {
   color: number;
   alpha: number;
@@ -209,6 +258,7 @@ export interface TableScene extends BoardMetrics {
   mapHash: string | null;
   grid: { color: number; alpha: number };
   walls: SceneWall[];
+  terrain: SceneTerrain;
   aoes: SceneAoe[];
   tokens: SceneToken[];
   ambient: { tint: number; alpha: number };
@@ -241,41 +291,28 @@ function rgbOf(color: number): [number, number, number] {
   return [((color >> 16) & 0xff) / 255, ((color >> 8) & 0xff) / 255, (color & 0xff) / 255];
 }
 
-/** Whether `kind` stops sight (`truesight` pierces illusions that allow it). */
-function kindBlocksSight(kind: WireWallKind, truesight: boolean): boolean {
-  switch (kind.kind) {
-    case "WINDOW":
-      return false;
-    case "DOOR":
-    case "SECRET_DOOR":
-      return !kind.is_open;
-    case "ILLUSION":
-      return !(truesight && kind.pierced_by_truesight);
-    default:
-      return true;
-  }
-}
-
 /**
- * Walls the WASM raycaster should treat as opaque. The bridge request has no
- * wall kind, so kind semantics are resolved here: windows and open doors are
- * dropped; terrain and one-way walls are treated as fully opaque.
+ * Projected walls in the WASM request shape, every wall kept with its `kind`
+ * (invariant 2b). `channel` picks the base flag the raycaster reads as
+ * `blocksVision`: `blocks_vision` for sight, `blocks_light` for lights and
+ * AoE spread.
  */
-export function sightWalls(walls: WireWallSegment[], channel: "vision" | "light", truesight = false): WallSegmentDto[] {
-  return walls
-    .filter((wall) => (channel === "vision" ? wall.blocks_vision : wall.blocks_light) && kindBlocksSight(wall.kind, truesight))
-    .map((wall) => ({
-      id: wall.id,
-      a: wall.a,
-      b: wall.b,
-      blocksVision: true,
-      bottomElevationFt: wall.bottom_elevation_ft,
-      topElevationFt: wall.top_elevation_ft,
-    }));
+export function engineWalls(walls: WireWallSegment[], channel: "vision" | "light"): WallSegmentDto[] {
+  return walls.map((wall) => ({
+    id: wall.id,
+    a: wall.a,
+    b: wall.b,
+    kind: wall.kind,
+    blocksVision: channel === "vision" ? wall.blocks_vision : wall.blocks_light,
+    blocksMovement: wall.blocks_movement,
+    blocksSound: wall.blocks_sound,
+    bottomElevationFt: wall.bottom_elevation_ft,
+    topElevationFt: wall.top_elevation_ft,
+  }));
 }
 
-function ambientPreset(raw: string): keyof typeof CANVAS_AMBIENT_TINTS {
-  return raw in CANVAS_AMBIENT_TINTS ? (raw as keyof typeof CANVAS_AMBIENT_TINTS) : "DAYLIGHT";
+function ambientPreset(raw: string): WireAmbientLighting {
+  return raw in CANVAS_AMBIENT_TINTS ? (raw as WireAmbientLighting) : "DAYLIGHT";
 }
 
 function cellRect(col: number, row: number, cellPx: number): Rect {
@@ -327,7 +364,7 @@ function safely<T>(compute: () => T, fallback: T): T {
 
 function buildAoes(state: ProjectedTableState, input: TableSceneInput, cellPx: number): SceneAoe[] {
   const style = input.palette.aoeTemplate;
-  const walls = sightWalls(state.walls ?? [], "light");
+  const walls = engineWalls(state.walls ?? [], "light");
   return Object.entries(state.persistent_aoes ?? {}).map(([id, template]) => {
     const cells = input.geometry
       ? safely(() => input.geometry!.aoeCells(template, walls, cellPx, state.feet_per_cell || 5), [] as GridCell[])
@@ -374,7 +411,7 @@ function buildTokens(state: ProjectedTableState, input: TableSceneInput, cellPx:
 
 function buildLights(state: ProjectedTableState, input: TableSceneInput, cellPx: number): SceneLight[] {
   const pxPerFt = cellPx / (state.feet_per_cell || 5);
-  const walls = sightWalls(state.walls ?? [], "light");
+  const walls = engineWalls(state.walls ?? [], "light");
   const fallback = input.palette.textHex;
   return (state.lights ?? []).map((light) => {
     const dimPx = Math.max(light.dim_radius_ft, light.bright_radius_ft) * pxPerFt;
@@ -392,29 +429,31 @@ function buildLights(state: ProjectedTableState, input: TableSceneInput, cellPx:
   });
 }
 
-/** Sight range in feet for a token's senses under the ambient preset. */
-export function sightRangeFt(senses: ProjectedTableState["tokens"][Uuid]["senses"], preset: string): number {
-  if (!senses) return DEFAULT_SIGHT_FT;
-  if (preset === "PITCH_DARKNESS" && !senses.devils_sight) return senses.darkvision_range_ft;
-  return Math.max(senses.normal_range_ft, senses.darkvision_range_ft);
+function buildTerrain(state: ProjectedTableState, input: TableSceneInput, cellPx: number): SceneTerrain {
+  return {
+    cells: (state.difficult_terrain ?? []).map((cell) => cellRect(cell.col, cell.row, cellPx)),
+    color: input.palette.textMutedHex,
+    fillAlpha: TERRAIN_FILL_ALPHA,
+    hatchAlpha: TERRAIN_HATCH_ALPHA,
+  };
 }
 
 function buildFog(state: ProjectedTableState, input: TableSceneInput, cellPx: number): SceneFog | null {
   if (input.isGm && !input.previewPlayerView) return null;
   const viewers = Object.values(state.tokens).filter((raw) => !input.isGm || (raw.owner_user_id ?? null) !== null);
   const pxPerFt = cellPx / (state.feet_per_cell || 5);
+  const ambient = ambientPreset(state.ambient_lighting);
+  const walls = engineWalls(state.walls ?? [], "vision");
   const vision = viewers.map((raw) => {
     const topLeft = raw.top_left ?? { x: 0, y: 0 };
     const w = Math.max(1, raw.grid_w ?? 1) * cellPx;
     const h = Math.max(1, raw.grid_h ?? 1) * cellPx;
     const footprint = [topLeft, { x: topLeft.x + w, y: topLeft.y }, { x: topLeft.x + w, y: topLeft.y + h }, { x: topLeft.x, y: topLeft.y + h }];
     if (!input.geometry) return footprint;
-    const truesight = (raw.senses?.truesight_range_ft ?? 0) > 0;
     const origin = { x: topLeft.x + w / 2, y: topLeft.y + h / 2 };
     const eyeFt = (raw.elevation_ft ?? 0) + (raw.height_ft ?? DEFAULT_HEIGHT_FT);
-    const rangePx = sightRangeFt(raw.senses, state.ambient_lighting) * pxPerFt;
-    const walls = sightWalls(state.walls ?? [], "vision", truesight);
-    return safely(() => input.geometry!.visibilityPolygon(walls, origin, eyeFt, rangePx, truesight), footprint);
+    const senses = { ...PLAIN_SENSES, ...raw.senses };
+    return safely(() => input.geometry!.tokenVisionPolygon(walls, origin, eyeFt, senses, ambient, pxPerFt), footprint);
   });
   const overrides = state.fog_overrides ?? [];
   return {
@@ -424,6 +463,31 @@ function buildFog(state: ProjectedTableState, input: TableSceneInput, cellPx: nu
     reveal: overrides.filter((o) => o.mode === "REVEAL").map((o) => cellRect(o.cell_x, o.cell_y, cellPx)),
     hide: overrides.filter((o) => o.mode === "HIDE").map((o) => cellRect(o.cell_x, o.cell_y, cellPx)),
   };
+}
+
+function insidePolygon(point: Point2D, polygon: Point2D[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i];
+    const b = polygon[j];
+    if (a.y > point.y !== b.y > point.y && point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+function insideRect(point: Point2D, rect: Rect): boolean {
+  return point.x >= rect.x && point.x < rect.x + rect.w && point.y >= rect.y && point.y < rect.y + rect.h;
+}
+
+/**
+ * The viewer sees `point` through the fog: no fog at all (GM), or inside a
+ * vision polygon or a GM `REVEAL` cell and not under a GM `HIDE` cell (the
+ * renderer draws hide cells over vision). Uses even-odd ray casting.
+ */
+export function isPointUnfogged(fog: SceneFog | null, point: Point2D): boolean {
+  if (!fog) return true;
+  if (fog.hide.some((rect) => insideRect(point, rect))) return false;
+  return fog.reveal.some((rect) => insideRect(point, rect)) || fog.vision.some((polygon) => polygon.length >= 3 && insidePolygon(point, polygon));
 }
 
 function buildPings(input: TableSceneInput): ScenePing[] {
@@ -460,6 +524,7 @@ export function buildTableScene(input: TableSceneInput): TableScene {
     mapHash: state?.background_asset_hash ?? null,
     grid: { color: palette.gridLineHex, alpha: palette.gridLineAlpha },
     walls: state ? buildWalls(state, palette) : [],
+    terrain: state ? buildTerrain(state, input, metrics.cellPx) : { cells: [], color: palette.textMutedHex, fillAlpha: TERRAIN_FILL_ALPHA, hatchAlpha: TERRAIN_HATCH_ALPHA },
     aoes: state ? buildAoes(state, input, metrics.cellPx) : [],
     tokens: state ? buildTokens(state, input, metrics.cellPx) : [],
     ambient,

@@ -39,6 +39,10 @@
 //!        the map-editor input shape (`p1`/`p2`, `wallType`, `doorState`) on
 //!        deserialization and `masked_for_players` is the one place that turns
 //!        closed secret doors and illusions into plain walls for non-GMs.
+//!   6. `Per-Token Sight Radius`:
+//!      - `SenseProfile::sight_range_ft` derives each token's vision radius from its own
+//!        senses and the ambient preset, so darkness hides the map from a token without
+//!        darkvision while a dwarf beside it still sees 120 ft.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -50,6 +54,7 @@
 //!          └── Query `bvh.has_line_of_sight(...)` with 2.5D elevation interpolation and two-hit terrain rule.
 //! ============================================================================
 
+use crate::commands::AmbientLightingPreset;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -447,6 +452,33 @@ impl Default for SenseProfile {
             devils_sight: false,
             see_invisibility: false,
             perceives_channels: CHANNEL_MATERIAL,
+        }
+    }
+}
+
+impl SenseProfile {
+    /// Radius in feet (`ft`) this token sees under the scene's `ambient` preset.
+    ///
+    /// - `PitchDarkness`: only senses that work without light count, so the radius is
+    ///   `max(darkvision, blindsight, truesight)`; Devil's Sight adds `normal_range_ft`.
+    ///   A token with none of them sees `0` ft and relies on light sources.
+    /// - `Daylight`, `Dusk`, `NightMoonlight`: bright or dim light is enough for normal sight,
+    ///   so the radius is `max(normal, darkvision)`.
+    pub fn sight_range_ft(&self, ambient: AmbientLightingPreset) -> f64 {
+        let without_light = self
+            .darkvision_range_ft
+            .max(self.blindsight_range_ft)
+            .max(self.truesight_range_ft);
+        match ambient {
+            AmbientLightingPreset::PitchDarkness if self.devils_sight => {
+                without_light.max(self.normal_range_ft)
+            }
+            AmbientLightingPreset::PitchDarkness => without_light,
+            AmbientLightingPreset::Daylight
+            | AmbientLightingPreset::Dusk
+            | AmbientLightingPreset::NightMoonlight => {
+                self.normal_range_ft.max(self.darkvision_range_ft)
+            }
         }
     }
 }
@@ -878,6 +910,47 @@ pub fn can_token_see_target(
         }
     }
     false
+}
+
+/// Shortest distance in pixels (`px`) between the segment `a..b` and the axis-aligned
+/// rectangle `min..max`; `0.0` when the segment touches or crosses it.
+pub fn segment_rect_distance_px(a: Point2D, b: Point2D, min: Point2D, max: Point2D) -> f64 {
+    let inside = |p: Point2D| (min.x..=max.x).contains(&p.x) && (min.y..=max.y).contains(&p.y);
+    let corners = [
+        min,
+        Point2D::new(max.x, min.y),
+        max,
+        Point2D::new(min.x, max.y),
+    ];
+    let edges = (0..4).map(|i| (corners[i], corners[(i + 1) % 4]));
+    if inside(a)
+        || inside(b)
+        || edges
+            .clone()
+            .any(|(p, q)| segment_intersection(a, b, p, q).is_some())
+    {
+        return 0.0;
+    }
+    let to_rect = |p: Point2D| {
+        let dx = (min.x - p.x).max(p.x - max.x).max(0.0);
+        let dy = (min.y - p.y).max(p.y - max.y).max(0.0);
+        dx.hypot(dy)
+    };
+    let to_segment = |p: Point2D| {
+        let (sx, sy) = (b.x - a.x, b.y - a.y);
+        let len_sq = sx * sx + sy * sy;
+        let t = if len_sq > 0.0 {
+            (((p.x - a.x) * sx + (p.y - a.y) * sy) / len_sq).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        p.distance_to(Point2D::new(a.x + t * sx, a.y + t * sy))
+    };
+    corners
+        .into_iter()
+        .map(to_segment)
+        .chain([to_rect(a), to_rect(b)])
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Computes the 2D parametric segment-segment intersection between `p0..p1` and `q0..q1`.

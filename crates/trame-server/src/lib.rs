@@ -62,8 +62,10 @@ pub mod instance;
 pub mod maps;
 pub mod mcp;
 pub mod notes;
+pub mod resolution;
 pub mod room;
 pub mod security;
+pub mod statblock;
 pub mod storage;
 pub mod sync;
 pub mod timeline;
@@ -104,7 +106,6 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::mpsc;
     use tower::ServiceExt;
     use trame_engine::commands::{CampaignRole, TableState, TokenState, TrameCommand};
     use trame_engine::geometry::{Bvh2D, Point2D, WallKind, WallSegment};
@@ -950,7 +951,7 @@ Hidden Text
         let handle = lease_mgr.get_or_wake_room(campaign_id).await.unwrap();
         assert_eq!(lease_mgr.active_room_count().await, 1);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::room::client_channel();
         let session_id = Uuid::new_v4();
         handle
             .connect_client(ConnectedClient {

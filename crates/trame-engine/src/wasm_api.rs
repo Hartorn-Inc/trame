@@ -6,8 +6,8 @@
 //! --------
 //! One JSON-in / JSON-out function per engine capability the browser and Node
 //! consumers need: visibility polygon, wall-clipped AoE cells, move preview with
-//! wall collision, sound occlusion count, and `derivedDAG` evaluation (G1: the
-//! single formula evaluator). `lib.rs` wraps each function in a thin
+//! wall collision, cover suggestion, sound occlusion count, `derivedDAG` evaluation (G1: the
+//! single formula evaluator), and the engine-enforced condition effects. `lib.rs` wraps each function in a thin
 //! `#[wasm_bindgen]` export; native tests call the same functions directly, so
 //! the shared parity fixtures (`tests/fixtures/wasm_parity.json`) prove that
 //! native and WASM outputs are identical without a second implementation in
@@ -32,13 +32,19 @@
 //!        `AoeTemplate` and `ActiveEffect` are snake_case).
 //! ============================================================================
 
-use crate::aoe::AoeTemplate;
-use crate::commands::{MovePreview, TableState, TokenState};
-use crate::geometry::{Bvh2D, CHANNEL_ETHEREAL, Point2D, WallSegment, count_sound_occluding_walls};
+use crate::aoe::{AoeTemplate, GridCell};
+use crate::commands::{
+    AmbientLightingPreset, ConditionOverrideEntry, MovePreview, TableState, TokenState,
+    condition_effects,
+};
+use crate::cover::{CoverLevel, suggest_cover};
+use crate::geometry::{
+    Bvh2D, CHANNEL_ETHEREAL, Point2D, SenseProfile, WallSegment, count_sound_occluding_walls,
+};
 use crate::rules::{ActiveEffect, evaluate_actor_attributes};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use std::collections::BTreeMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 fn parse<T: DeserializeOwned>(request_json: &str) -> Result<T, String> {
@@ -53,29 +59,61 @@ fn to_json<T: serde::Serialize>(value: &T) -> Result<String, String> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VisibilityRequest {
-    /// Walls to raycast against.
+    /// Walls to raycast against; each wall's `kind` decides whether it stops the ray
+    /// (windows and open doors never do, see `WallSegment::effective_blocks_vision`).
     walls: Vec<WallSegment>,
     /// Observer position in pixels (`px`).
     origin: Point2D,
     /// Observer eye elevation in feet (`ft`).
     observer_eye_ft: f64,
-    /// Ray length in pixels (`px`).
-    max_range_px: f64,
+    /// Ray length in pixels (`px`). Required unless `sight` is given; ignored when it is.
+    #[serde(default)]
+    max_range_px: Option<f64>,
     /// When `true`, illusions with `pierced_by_truesight` do not block rays.
     #[serde(default)]
     has_truesight: bool,
+    /// Observer token's senses; when present the ray length comes from them.
+    #[serde(default)]
+    sight: Option<TokenSight>,
 }
 
-/// Visibility polygon: `{ walls, origin, observerEyeFt, maxRangePx, hasTruesight? }` ->
-/// `Point2D[]` ordered by ray angle from `-PI`.
+/// Per-token sight input of `compute_visibility_polygon_json`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenSight {
+    /// Token senses in their snake_case engine shape (`SenseProfile`).
+    senses: SenseProfile,
+    /// Scene ambient preset (`SCREAMING_SNAKE_CASE`).
+    ambient_lighting: AmbientLightingPreset,
+    /// Pixels per foot (`cellSizePx / feetPerCell`, `> 0`).
+    px_per_ft: f64,
+}
+
+/// Visibility polygon: `{ walls, origin, observerEyeFt, maxRangePx?, hasTruesight?, sight? }`
+/// -> `Point2D[]` ordered by ray angle from `-PI`.
+///
+/// With `sight = { senses, ambientLighting, pxPerFt }` the radius is
+/// `senses.sight_range_ft(ambientLighting) * pxPerFt` and truesight comes from the senses too,
+/// so darkvision is per token. Without `sight`, `maxRangePx` is required.
 pub fn compute_visibility_polygon_json(request_json: &str) -> Result<String, String> {
     let req: VisibilityRequest = parse(request_json)?;
+    let (max_range_px, has_truesight) = match &req.sight {
+        Some(sight) => (
+            sight.senses.sight_range_ft(sight.ambient_lighting) * sight.px_per_ft,
+            req.has_truesight || sight.senses.truesight_range_ft > 0.0,
+        ),
+        None => (
+            req.max_range_px
+                .ok_or("invalid request: maxRangePx or sight is required")?,
+            req.has_truesight,
+        ),
+    };
     let bvh = Bvh2D::build(req.walls);
     to_json(&bvh.compute_visibility_polygon(
         req.origin,
         req.observer_eye_ft,
-        req.max_range_px,
-        req.has_truesight,
+        max_range_px,
+        has_truesight,
     ))
 }
 
@@ -104,10 +142,10 @@ pub fn preview_aoe_cells_json(request_json: &str) -> Result<String, String> {
     to_json(&cells)
 }
 
-/// Footprint of the token being previewed in `preview_move_json`.
+/// Footprint of a token in `preview_move_json` and `suggest_cover_json`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MoverFootprint {
+struct TokenFootprint {
     /// Current top-left position in pixels (`px`).
     top_left: Point2D,
     /// Width in grid cells (default `1`).
@@ -130,6 +168,22 @@ struct MoverFootprint {
     is_ethereal: bool,
 }
 
+impl TokenFootprint {
+    /// A default token (nil id) carrying this footprint.
+    fn to_token(&self) -> TokenState {
+        let mut token = TokenState::new_default(Uuid::nil(), "preview", self.top_left);
+        token.grid_w = self.grid_w;
+        token.grid_h = self.grid_h;
+        token.elevation_ft = self.elevation_ft;
+        token.height_ft = self.height_ft;
+        token.is_squeezing = self.is_squeezing;
+        if self.is_ethereal {
+            token.visibility_channel |= CHANNEL_ETHEREAL;
+        }
+        token
+    }
+}
+
 fn one_cell() -> u8 {
     1
 }
@@ -145,7 +199,7 @@ struct MoveRequest {
     /// Walls checked for movement collision.
     walls: Vec<WallSegment>,
     /// Mover footprint and current position.
-    token: MoverFootprint,
+    token: TokenFootprint,
     /// Destination top-left in pixels (`px`).
     to_top_left: Point2D,
     /// Destination elevation in feet (`ft`); defaults to the current elevation.
@@ -155,25 +209,63 @@ struct MoveRequest {
     cell_size_px: f64,
     /// Feet per grid cell (`ft`, typically `5`).
     feet_per_cell: f64,
+    /// Difficult terrain cells of the map (`{col, row}`, default none).
+    #[serde(default)]
+    difficult_terrain: BTreeSet<GridCell>,
 }
 
-/// Move preview: `{ walls, token, toTopLeft, toElevationFt?, cellSizePx, feetPerCell }` ->
-/// `{ collision: {x, y} | null, costFt }`, using the server's `MoveToken` rules.
+/// Move preview: `{ walls, token, toTopLeft, toElevationFt?, cellSizePx, feetPerCell,
+/// difficultTerrain? }` -> `{ collision: {x, y} | null, costFt }`, using the server's
+/// `MoveToken` rules (Chebyshev squares, difficult terrain doubled).
 pub fn preview_move_json(request_json: &str) -> Result<String, String> {
     let req: MoveRequest = parse(request_json)?;
-    let table = TableState::new(req.cell_size_px, req.feet_per_cell, req.walls);
-    let mut token = TokenState::new_default(Uuid::nil(), "preview", req.token.top_left);
-    token.grid_w = req.token.grid_w;
-    token.grid_h = req.token.grid_h;
-    token.elevation_ft = req.token.elevation_ft;
-    token.height_ft = req.token.height_ft;
-    token.is_squeezing = req.token.is_squeezing;
-    if req.token.is_ethereal {
-        token.visibility_channel |= CHANNEL_ETHEREAL;
-    }
+    let mut table = TableState::new(req.cell_size_px, req.feet_per_cell, req.walls);
+    table.data.difficult_terrain = req.difficult_terrain;
+    let token = req.token.to_token();
     let to_elevation_ft = req.to_elevation_ft.unwrap_or(token.elevation_ft);
     let preview: MovePreview = table.preview_move(&token, req.to_top_left, to_elevation_ft);
     to_json(&preview)
+}
+
+/// Request for `suggest_cover_json`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CoverRequest {
+    /// Walls between the two tokens (kinds decide which ones physically block).
+    walls: Vec<WallSegment>,
+    /// Attacker footprint; squeezing shrinks it like on the table.
+    attacker: TokenFootprint,
+    /// Target footprint.
+    target: TokenFootprint,
+    /// Grid cell edge in pixels (`px`, `> 0`).
+    cell_size_px: f64,
+}
+
+/// Response of `suggest_cover_json`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CoverResponse {
+    /// Suggested cover level.
+    cover: CoverLevel,
+    /// AC and Dexterity save bonus (`0`, `2`, `5`).
+    bonus: Option<i32>,
+}
+
+/// Cover suggestion (never applied by the engine): `{ walls, attacker, target, cellSizePx }`
+/// -> `{ cover: "NONE" | "HALF" | "THREE_QUARTERS", bonus }`, using the corner-to-corner
+/// rule of `cover::suggest_cover` (`TOTAL` is never suggested; the GM picks it).
+pub fn suggest_cover_json(request_json: &str) -> Result<String, String> {
+    let req: CoverRequest = parse(request_json)?;
+    let cover = suggest_cover(
+        &req.walls,
+        &req.attacker.to_token().spatial_ref(),
+        &req.target.to_token().spatial_ref(),
+        req.cell_size_px,
+    );
+    to_json(&CoverResponse {
+        cover,
+        bonus: cover.bonus(),
+    })
 }
 
 /// Request for `count_sound_occluding_walls_json`.
@@ -232,14 +324,34 @@ pub fn evaluate_derived_dag_json(request_json: &str) -> Result<String, String> {
     to_json(&values)
 }
 
+/// Request for `condition_effects_json`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConditionEffectsRequest {
+    /// Token condition ids (any case).
+    conditions: Vec<String>,
+    /// `ConditionOverride` rulings in their engine shape (`{ subject, id, mode }`).
+    #[serde(default)]
+    overrides: Vec<ConditionOverrideEntry>,
+}
+
+/// Condition effects: `{ conditions, overrides? }` -> `{ effectiveConditions, incapacitated,
+/// speedZero }`, the values `MoveToken` and reaction prompts enforce.
+pub fn condition_effects_json(request_json: &str) -> Result<String, String> {
+    let req: ConditionEffectsRequest = parse(request_json)?;
+    to_json(&condition_effects(&req.conditions, &req.overrides))
+}
+
 /// Dispatches `export` (the JS export name) to its JSON function; used by the parity fixtures.
 pub fn call_export(export: &str, request_json: &str) -> Result<String, String> {
     match export {
         "computeVisibilityPolygon" => compute_visibility_polygon_json(request_json),
         "previewAoeCells" => preview_aoe_cells_json(request_json),
         "previewMove" => preview_move_json(request_json),
+        "suggestCover" => suggest_cover_json(request_json),
         "countSoundOccludingWalls" => count_sound_occluding_walls_json(request_json),
         "evaluateDerivedDag" => evaluate_derived_dag_json(request_json),
+        "conditionEffects" => condition_effects_json(request_json),
         other => Err(format!("unknown export '{other}'")),
     }
 }

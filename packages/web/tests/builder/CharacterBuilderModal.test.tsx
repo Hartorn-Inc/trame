@@ -5,6 +5,7 @@ import { ApiClient, type CampaignActor } from "../../src/api/client.ts";
 import { createSessionState } from "../../src/api/session.ts";
 import { CharacterBuilderModal } from "../../src/builder/CharacterBuilderModal.tsx";
 import { localeSignal } from "../../src/i18n/index.ts";
+import { assertAbsent, assertPresent } from "../helpers/domAssert.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
 import { actorDto, createMockTransport, flush, type RouteReply } from "../helpers/mockTransport.ts";
 
@@ -57,9 +58,28 @@ async function walkToReview(ui: Awaited<ReturnType<typeof mount>>) {
   await ui.fire("builder-next", "click");
   await ui.fire("builder-method-standardArray", "change");
   await ui.fire("builder-next", "click");
+  await ui.fire("builder-skills-acrobatics", "change");
+  await ui.fire("builder-skills-perception", "change");
+  await ui.fire(`builder-class-fighting_style-${FIGHTING_STYLE}`, "change");
+  await ui.fire("builder-next", "click");
+  await ui.fire("builder-class-equipment-A", "change");
   await ui.fire("builder-equipment-package", "change");
   await ui.fire("builder-next", "click");
+  await ui.fire("builder-next", "click");
   await ui.fire("builder-name", "input", "Brakka");
+}
+
+const FIGHTING_STYLE = "srd:feat:defense";
+
+async function walkToSkills(ui: Awaited<ReturnType<typeof mount>>, classId: string) {
+  await ui.fire("builder-species-dwarf", "change");
+  await ui.fire("builder-next", "click");
+  await ui.fire(`builder-class-${classId}`, "change");
+  await ui.fire("builder-next", "click");
+  await ui.fire("builder-background-soldier", "change");
+  await ui.fire("builder-next", "click");
+  await ui.fire("builder-method-standardArray", "change");
+  await ui.fire("builder-next", "click");
 }
 
 describe("CharacterBuilderModal: creation through the actor route", () => {
@@ -97,6 +117,82 @@ describe("CharacterBuilderModal: creation through the actor route", () => {
     ui.unmount();
   });
 
+  it("caps class skill picks: unpicked boxes disable once the count is reached", async () => {
+    const ui = await mount({ status: 201, body: { actor: actorDto() } });
+    await walkToSkills(ui, "fighter");
+    assert.ok(ui.byTestId("builder-step-skills"));
+    assertAbsent(ui.byTestId("builder-skills-athletics"), "the background's skill is not offered");
+    await ui.fire("builder-skills-acrobatics", "change");
+    assert.equal(ui.byTestId("builder-skills-count").textContent, "1 of 2 chosen");
+    await ui.fire("builder-skills-perception", "change");
+    assert.equal(ui.byTestId("builder-skills-history").disabled, true);
+    assert.equal(ui.byTestId("builder-skills-acrobatics").disabled, false);
+    ui.unmount();
+  });
+
+  const fightingStyleSteps = [
+    { id: "a Fighter cannot leave the skills step without a Fighting Style feat", pick: false, step: "builder-step-skills", error: /Choose a Fighting Style feat/ },
+    { id: "a Fighter with a Fighting Style feat moves on to equipment", pick: true, step: "builder-step-equipment", error: null },
+  ];
+  for (const c of fightingStyleSteps) {
+    it(c.id, async () => {
+      const ui = await mount({ status: 201, body: { actor: actorDto() } });
+      await walkToSkills(ui, "fighter");
+      await ui.fire("builder-skills-acrobatics", "change");
+      await ui.fire("builder-skills-perception", "change");
+      assert.ok(ui.byTestId(`builder-class-fighting_style-${FIGHTING_STYLE}`), "the Fighting Style feats are offered as radios");
+      if (c.pick) await ui.fire(`builder-class-fighting_style-${FIGHTING_STYLE}`, "change");
+      await ui.fire("builder-next", "click");
+      assert.ok(ui.byTestId(c.step), c.step);
+      if (c.error) assert.match(ui.byTestId("builder-errors").textContent, c.error);
+      ui.unmount();
+    });
+  }
+
+  const spellSteps = [
+    { id: "a Wizard picks cantrips and level-1 spells", classId: "wizard", skills: ["insight", "medicine"], present: ["builder-cantrips-count", "builder-spells-count"], absent: ["builder-no-spells"] },
+    { id: "a Fighter is told it has no spells", classId: "fighter", skills: ["acrobatics", "perception"], present: ["builder-no-spells"], absent: ["builder-cantrips-count"] },
+  ];
+  for (const c of spellSteps) {
+    it(c.id, async () => {
+      const ui = await mount({ status: 201, body: { actor: actorDto() } });
+      await walkToSkills(ui, c.classId);
+      for (const skill of c.skills) await ui.fire(`builder-skills-${skill}`, "change");
+      if (c.classId === "fighter") await ui.fire(`builder-class-fighting_style-${FIGHTING_STYLE}`, "change");
+      await ui.fire("builder-next", "click");
+      await ui.fire("builder-class-equipment-A", "change");
+      await ui.fire("builder-equipment-package", "change");
+      await ui.fire("builder-next", "click");
+      assert.ok(ui.byTestId("builder-step-spells"));
+      for (const id of c.present) assert.ok(ui.byTestId(id), id);
+      for (const id of c.absent) assertAbsent(ui.byTestId(id), id);
+      ui.unmount();
+    });
+  }
+
+  const spellDescriptions = [
+    { id: "a cantrip option shows its SRD rules text", choice: "cantrips", spell: "srd:spell:fire_bolt", text: /mote of fire/ },
+    { id: "a level-1 spell option shows its SRD rules text", choice: "spells", spell: "srd:spell:burning_hands", text: /thin sheet of flames/ },
+  ];
+  for (const c of spellDescriptions) {
+    it(c.id, async () => {
+      const ui = await mount({ status: 201, body: { actor: actorDto() } });
+      await walkToSkills(ui, "wizard");
+      for (const skill of ["insight", "medicine"]) await ui.fire(`builder-skills-${skill}`, "change");
+      await ui.fire("builder-next", "click");
+      await ui.fire("builder-class-equipment-A", "change");
+      await ui.fire("builder-equipment-package", "change");
+      await ui.fire("builder-next", "click");
+      const descriptionId = `builder-${c.choice}-${c.spell}-description`;
+      const description = ui.byTestId(descriptionId);
+      assertPresent(description, descriptionId);
+      assert.match(description.textContent, c.text);
+      assert.equal(description.getAttribute("lang"), "en");
+      assert.equal(ui.byTestId(`builder-${c.choice}-${c.spell}`).getAttribute("aria-describedby"), descriptionId);
+      ui.unmount();
+    });
+  }
+
   const outcomes: Array<{ id: string; reply: RouteReply; createdCount: number; closed: number; stillOpen: boolean }> = [
     { id: "201 stores the actor, notifies the caller, and closes", reply: { status: 201, body: { actor: actorDto({ name: "Brakka" }) } }, createdCount: 1, closed: 1, stillOpen: false },
     { id: "a server error keeps the dialog open on review with an alert", reply: { status: 500, body: { code: "STORAGE_ERROR", error: "db down" } }, createdCount: 0, closed: 0, stillOpen: true },
@@ -114,6 +210,9 @@ describe("CharacterBuilderModal: creation through the actor route", () => {
       assert.equal(body.id, body.data.id, "the sheet id is reused as the actor id");
       assert.equal(body.data.abilities.str.score, 17);
       assert.equal(body.data.backgroundId, "srd:background:soldier");
+      assert.equal(body.data.skills.perception.proficiencyRank, 1);
+      assert.ok(body.data.features.includes(FIGHTING_STYLE), "the Fighting Style feat is recorded");
+      assert.equal(body.data.derived.armorClass, 16, "Fighter option A equips Chain Mail");
       assert.equal(ui.created.length, o.createdCount);
       assert.equal(ui.closedCount(), o.closed);
       assert.equal(Boolean(ui.byTestId("builder-step-review")), o.stillOpen);

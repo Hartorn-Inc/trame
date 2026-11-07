@@ -1,0 +1,71 @@
+{
+  "srdVersion": "5.2.1",
+  "license": "CC-BY-4.0",
+  "attribution": "This work includes material from the System Reference Document 5.2.1 (\"SRD 5.2.1\") by Wizards of the Coast LLC, available at https://www.dndbeyond.com/srd. The SRD 5.2.1 is licensed under the Creative Commons Attribution 4.0 International License, available at https://creativecommons.org/licenses/by/4.0/legalcode. It also includes material taken from the System Reference Document 5.1 (\"SRD 5.1\") by Wizards of the Coast LLC and available at https://dnd.wizards.com/resources/systems-reference-document. The SRD 5.1 is licensed under the Creative Commons Attribution 4.0 International License available at https://creativecommons.org/licenses/by/4.0/legalcode.",
+  "generator": "packages/game-systems/dnd5e/scripts/generate-srd-content.ts",
+  "source": {
+    "repository": "https://github.com/open5e/open5e-api",
+    "tag": "v2.2.3",
+    "commit": "0692d64c1438c848c1da11fbed2d84014b131452",
+    "documentKey": "srd-2024",
+    "inputs": [
+      {
+        "file": "data/v2/wizards-of-the-coast/srd-2024/Creature.json",
+        "sha256": "1d0a4980f816390865b93894813bed9fd22a8104b579946c20fb9664510b9009",
+        "bytes": 866836
+      },
+      {
+        "file": "data/v2/wizards-of-the-coast/srd-2024/CreatureAction.json",
+        "sha256": "28c82fabbf6b5cb83d9eb6ccb5b73dbb31ccdda131e77cafd0aafa0422024867",
+        "bytes": 525117
+      },
+      {
+        "file": "data/v2/wizards-of-the-coast/srd-2024/CreatureTrait.json",
+        "sha256": "f9ad51a72a47a8ac9798694c34b422bfcd7e109917482ea25d884e4cf840223d",
+        "bytes": 111122
+      },
+      {
+        "file": "data/v2/wizards-of-the-coast/srd-2024/Spell.json",
+        "sha256": "ba87b7bd39fb57a2e2121a2d0f88bd23c731df9f90358ac8201f985e1702df4a",
+        "bytes": 576936
+      },
+      {
+        "file": "data/v2/wizards-of-the-coast/srd-2024/MagicItem.json",
+        "sha256": "30354f10e94d28eae784f738affe9ff47a845d799e18335ff52dc8a3d80d6c97",
+        "bytes": 869811
+      },
+      {
+        "file": "data/v2/wizards-of-the-coast/srd-2024/Item.json",
+        "sha256": "01a8bc82d2957d0aa9fc3a619e91e140b989bc5e3e47173ef1f7602ee58edbc0",
+        "bytes": 147706
+      },
+      {
+        "file": "data/v2/wizards-of-the-coast/srd-2024/Document.json",
+        "sha256": "c9a85da12a2a90cf272f35f061f7ec60adf52f501312c45ee59fb17890611b1a",
+        "bytes": 607
+      }
+    ]
+  },
+  "counts": {
+    "spells": 339,
+    "monsters": 331,
+    "magicItems": 255
+  },
+  "packs": [
+    {
+      "file": "spells.json",
+      "sha256": "f98885838b3ee11918f444967e8a6603403daf72dd31f03b849ebd217eb10662",
+      "bytes": 387126
+    },
+    {
+      "file": "monsters.json",
+      "sha256": "73d5274adca0a883844479e8dcfafc989db5c8ee827c5260497b4378c182925f",
+      "bytes": 947334
+    },
+    {
+      "file": "magic-items.json",
+      "sha256": "ac31b811f1a6b862b12c56f4e1bce8c2c8e9f833c72676a12850fd79ef1f2c8c",
+      "bytes": 298948
+    }
+  ]
+}

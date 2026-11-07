@@ -46,8 +46,15 @@
  * --------------------
  *   `computeDnd5eSheetDerived(actor, activeEffects?)`
  *     ├── 1. Map the actor to the `derivedInputs` record (`level`, scores, flags).
- *     ├── 2. `evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, activeEffects)` (WASM).
- *     └── 3. Project the evaluated attributes onto `Dnd5eDerivedStats`.
+ *     │      Equipped armor and shields override the armor inputs (`derivations.ts`).
+ *     ├── 2. `evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, effects)` (WASM),
+ *     │      `effects` = `ClassFeature` effects (`classFeatures.ts`) then the
+ *     │      caller's `activeEffects`, all in the 5-phase order.
+ *     │      `ConditionOverride` rulings (options) can suspend exhaustion first.
+ *     ├── 3. Project the evaluated attributes onto `Dnd5eDerivedStats`.
+ *     └── 4. Add `attacks`, `spells`, `features`, `resourcePools` and
+ *            `featureRules` from the evaluated values; Magic Initiate
+ *            abilities re-run the DAG.
  * ============================================================================
  */
 
@@ -63,6 +70,17 @@ import type {
   Dnd5eDerivedStats,
 } from "./pipeline.ts";
 import { evaluateDerivedDag, extractFormulaIdentifiers } from "./formulaEvaluator.ts";
+import { classFeatureEffects, classFeaturesFor, deriveFeatureRules, deriveResourcePools } from "./classFeatures.ts";
+import {
+  abilityModsOf,
+  deriveAttacks,
+  deriveFeatures,
+  deriveSheetFeatures,
+  deriveSpellcasting,
+  equippedArmorInputs,
+} from "./derivations.ts";
+import { getClassProgression } from "./progression.ts";
+import { resolveConditionEffects, type ConditionOverrideRuling } from "./conditions.ts";
 
 /**
  * Symbolic proficiency tier string used on `Dnd5eActorSheet`:
@@ -224,7 +242,9 @@ function normalizedClassId(classId: unknown): string {
 
 /**
  * Maps a `Dnd5eActorData` record onto the `system.json` `derivedInputs`.
- * Barbarians and Monks receive their Unarmored Defense candidate from their class.
+ * Barbarians and Monks receive their Unarmored Defense candidate from their
+ * class, equipped armor and shields replace the armor inputs, and the class
+ * spellcasting ability applies when the actor stores none.
  */
 export function derivedInputsForActorData(actor: Dnd5eActorData): Record<string, number> {
   const inputs: Record<string, number> = {
@@ -240,10 +260,12 @@ export function derivedInputsForActorData(actor: Dnd5eActorData): Record<string,
   );
   inputs.unarmored_defense_con = classId === "barbarian" ? 1 : 0;
   inputs.unarmored_defense_wis = classId === "monk" ? 1 : 0;
+  Object.assign(inputs, equippedArmorInputs(actor));
+  const spellAbility = actor.attributes.spellcastingAbility ?? getClassProgression(classId)?.spellcastingAbility;
   for (const ab of ABILITY_IDS) {
     inputs[ab] = actor.abilities[ab].score;
     inputs[`save_${ab}_prof`] = actor.abilities[ab].saveProficiency ? 1 : 0;
-    inputs[`spell_ability_${ab}`] = actor.attributes.spellcastingAbility === ab ? 1 : 0;
+    inputs[`spell_ability_${ab}`] = spellAbility === ab ? 1 : 0;
   }
   for (const skill of DND5E_SKILLS) {
     inputs[`skill_${skill.id}_prof`] = proficiencyMultiplier(actor.skills[skill.id]?.proficiencyRank);
@@ -289,6 +311,16 @@ export function calculateProficiencyBonus(level: number): number {
   ).prof_bonus;
 }
 
+/** Optional inputs of `computeDnd5eSheetDerived` beyond the actor and its active effects. */
+export interface SheetDerivationOptions {
+  /**
+   * `ConditionOverride` rulings on the actor's token. They decide
+   * `conditionEffects`; a `REMOVE` ruling on `exhaustion` evaluates the DAG
+   * with exhaustion `0`.
+   */
+  conditionOverrides?: readonly ConditionOverrideRuling[];
+}
+
 /**
  * Computes every derived D&D 5e statistic—proficiency bonus, ability modifiers,
  * saving throws, skills, passive senses, Armor Class, speed (`ft`), spell save
@@ -300,13 +332,46 @@ export function calculateProficiencyBonus(level: number): number {
  * Exhaustion (SRD 5.2.1) applies `-2 * level` to saves, skills, initiative and
  * spell attacks and `-5 ft * level` to speed; passive scores and the spell
  * save DC are never reduced.
+ *
+ * For `Dnd5eActorData` it also lists `attacks` (equipped weapons, damaging
+ * spells), `spells` (slots, Pact Magic, spell lists; absent for non-casters)
+ * and `features`. A `Dnd5eActorSheet` gets `attacks: []` and the features
+ * named in `sheet.features`.
  */
 export function computeDnd5eSheetDerived(
   actor: Dnd5eActorData | Dnd5eActorSheet,
-  activeEffects?: unknown[]
+  activeEffects?: unknown[],
+  options: SheetDerivationOptions = {}
 ): Dnd5eDerivedStats {
   const inputs = "attributes" in actor ? derivedInputsForActorData(actor) : derivedInputsForSheet(actor);
-  const v = evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, activeEffects);
+  const conditionEffects = resolveConditionEffects({
+    conditions: (actor.conditions ?? []).map((c) => (typeof c === "string" ? c : c.id)),
+    overrides: options.conditionOverrides,
+  });
+  if (!conditionEffects.exhaustionApplies) inputs.exhaustion = 0;
+  const effects = "attributes" in actor ? [...classFeatureEffects(actor), ...(activeEffects ?? [])] : activeEffects;
+  const v = evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, effects);
+
+  let extras: Pick<Dnd5eDerivedStats, "attacks" | "spells" | "features" | "resourcePools" | "featureRules">;
+  if ("attributes" in actor) {
+    const spellNumbersFor = (ability: AbilityId) => {
+      const flags = Object.fromEntries(ABILITY_IDS.map((ab) => [`spell_ability_${ab}`, ab === ability ? 1 : 0]));
+      const r = evaluateDerivedDag({ ...inputs, ...flags }, DND5E_DERIVED_FORMULAS, effects);
+      return { spellSaveDc: r.spell_save_dc, spellAttackBonus: r.spell_attack_bonus };
+    };
+    const spells = deriveSpellcasting(actor, v, spellNumbersFor);
+    const classFeatures = classFeaturesFor(actor).length > 0
+      ? { resourcePools: deriveResourcePools(actor, abilityModsOf(v)), featureRules: deriveFeatureRules(actor) }
+      : {};
+    extras = {
+      attacks: deriveAttacks(actor, v, spells),
+      ...(spells ? { spells } : {}),
+      features: deriveFeatures(actor, v),
+      ...classFeatures,
+    };
+  } else {
+    extras = { attacks: [], features: deriveSheetFeatures(actor.features) };
+  }
 
   const abilityMods = {} as Record<AbilityId, number>;
   const savingThrows = {} as Record<AbilityId, number>;
@@ -339,6 +404,8 @@ export function computeDnd5eSheetDerived(
       heavilyEncumbered: v.heavily_encumbered,
       encumbered: v.encumbered,
     },
+    ...extras,
+    conditionEffects,
   };
 }
 

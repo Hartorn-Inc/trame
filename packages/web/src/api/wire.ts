@@ -44,7 +44,7 @@
  * ============================================================================
  */
 import { Decoder, encode } from "@msgpack/msgpack";
-import type { AoeTemplateDto } from "../engine/wasmBridge.ts";
+import type { AoeTemplateDto, GridCell } from "../engine/wasmBridge.ts";
 
 /** Canonical hyphenated UUID string (`8-4-4-4-12` lowercase hex). */
 export type Uuid = string;
@@ -110,6 +110,32 @@ export interface WireTokenState {
   bloodied?: WireBloodiedState;
   /** Visible condition labels. */
   conditions?: string[];
+  /** GM `ConditionOverride` rulings (full tokens only). */
+  condition_overrides?: { subject: "CONDITION" | "EFFECT"; id: string; mode: "FORCE" | "REMOVE" }[];
+  /** Concentrating without a zone (`SetConcentration`); omitted when `false`. */
+  concentrating?: boolean;
+  /** Persistent AoE the token concentrates on, when any. */
+  concentrating_on_aoe_id?: Uuid | null;
+  /** Death saving throw counters `0..=3` (full tokens only). */
+  death_save_successes?: number;
+  death_save_failures?: number;
+  /** Stable at 0 HP after three successes; omitted when `false`. */
+  is_stable?: boolean;
+  is_dead?: boolean;
+  /** Disengage taken this turn. */
+  disengaged?: boolean;
+  /** Visibility channel bitmask (`0b100` = hidden from players by the GM). */
+  visibility_channel?: number;
+  invisible?: boolean;
+  /** Walking speed in feet (`ft`, full tokens only; remaining is `0` for non-controllers). */
+  speed_max_ft?: number;
+  speed_remaining_ft?: number;
+  /**
+   * Server-validated monster or actor-template stat block copy (full tokens only); the
+   * source of the token's HP, AC, speed, senses, reach and damage affinities. Absent for
+   * plain and sheet-linked tokens.
+   */
+  stat_block?: Record<string, unknown>;
   [field: string]: unknown;
 }
 
@@ -194,6 +220,10 @@ export interface WireReactionPrompt {
   reactor_owner_user_id?: Uuid | null;
   /** `true` after `Trigger`: waiting for `ResolveReaction`. */
   awaiting_resolution?: boolean;
+  /** Mover's intended destination (px); `null` for players who cannot see the mover. */
+  pending_destination?: WirePoint2D | null;
+  /** Reactors already resolved on this trigger; always empty for players. */
+  resolved_reactor_ids?: Uuid[];
   [field: string]: unknown;
 }
 
@@ -223,6 +253,7 @@ export interface ProjectedTableState {
   /** Reduced views of visible tokens the recipient does not control (always empty for GMs). */
   public_tokens?: Record<Uuid, WireTokenState>;
   walls: WireWallSegment[];
+  /** Active AoE zones; `concentration_caster_id` is `null` when the recipient cannot see the caster. */
   persistent_aoes: Record<Uuid, WireAoeTemplate>;
   initiative_order: Uuid[];
   /** Totals keyed by token id, limited to `initiative_order` (no hidden combatant's total). */
@@ -232,14 +263,138 @@ export interface ProjectedTableState {
   round: number;
   lights: WireLightSource[];
   fog_overrides: WireFogOverrideCell[];
+  /** Difficult terrain cells of the active map (entering one costs double movement). */
+  difficult_terrain?: GridCell[];
   background_asset_hash: string | null;
   /** Battlemap width in canvas pixels (`px`). */
   map_width_px: number;
   /** Battlemap height in canvas pixels (`px`). */
   map_height_px: number;
+  /**
+   * Open reaction prompts. Players only receive the prompts of reactors they own or
+   * control, never the prompts their own movement triggered.
+   */
   active_reaction_prompts: Record<Uuid, WireReactionPrompt>;
+  /** Scene shown on the table (`null` before the first scene); echoed in `PointerPing.sceneId`. */
+  active_scene_id?: Uuid | null;
   /** Pending MCP proposals; always empty for non-GM recipients. */
   mcp_staging_proposals: Record<Uuid, McpStagingProposal>;
+  /**
+   * Server-rolled actions waiting for their Apply (ADR-0042): every one for GMs, only the
+   * recipient's own for players, with the d20s and totals of targets they do not control removed.
+   */
+  pending_resolutions?: Record<Uuid, WirePendingResolution>;
+  /** Open Concentration check DCs (oldest first) by token: every token for GMs, controlled ones otherwise. */
+  pending_concentration_checks?: Record<Uuid, number[]>;
+}
+
+/** Advantage state of a server d20 roll (`RollMode` in `resolution.rs`). */
+export type WireRollMode = "NORMAL" | "ADVANTAGE" | "DISADVANTAGE";
+
+/** Cover accepted for a target (`CoverLevel`). */
+export type WireCoverLevel = "NONE" | "HALF" | "THREE_QUARTERS" | "TOTAL";
+
+/** How the targets of an action are checked (`ResolutionCheck`, tagged by `kind`). */
+export type WireResolutionCheck =
+  /** One attack roll per target against its AC; `attack_bonus` in `-10..=30`, `critical_range` in `18..=20`. */
+  | { kind: "ATTACK"; attack_bonus: number; critical_range: number }
+  /** One save per target against `dc` (`1..=30`); damage rolled once. */
+  | { kind: "SAVE"; ability: string; dc: number; half_on_success: boolean }
+  /** Every target takes the damage (Magic Missile). */
+  | { kind: "AUTOMATIC" };
+
+/** One target of a `RESOLVE_ACTION` request (`ActionTargetRequest`). */
+export interface WireActionTargetRequest {
+  token_id: Uuid;
+  /** Client-computed advantage state; the server ignores it for saves of targets the issuer does not control. */
+  roll_mode: WireRollMode;
+  cover: WireCoverLevel;
+}
+
+/** What the client asks the server to roll (`ActionRequest`). */
+export interface WireActionRequest {
+  /** Client-chosen UUID; the card follows the `ACTION_RESOLVED` event carrying it. */
+  resolution_id: Uuid;
+  /** Attacker or caster token (`null`: none on the table, no automatic critical hit). */
+  attacker_token_id: Uuid | null;
+  /** `1..=120` characters. */
+  action_name: string;
+  check: WireResolutionCheck;
+  /** Dice terms only (`"2d6"`, `"1d8+1d6"`), `""` for none. */
+  damage_dice: string;
+  /** Flat damage added once (`-20..=50`). */
+  damage_modifier: number;
+  /** Lowercase SRD damage type, `null` for untyped damage. */
+  damage_type: string | null;
+  /** Further damage parts with their own type (`0..=3`), rolled like the primary part. */
+  extra_damage: WireDamageComponentRequest[];
+  /** `1..=32` distinct targets. */
+  targets: WireActionTargetRequest[];
+}
+
+/** One extra damage part of an action (`DamageComponentRequest`). */
+export interface WireDamageComponentRequest {
+  /** Dice terms only (`"2d6"`), `""` for flat damage. */
+  dice: string;
+  /** Flat damage added once (`-20..=50`). */
+  modifier: number;
+  /** Lowercase SRD damage type, `null` for untyped damage. */
+  damage_type: string | null;
+}
+
+/** Extra damage part of a pending resolution (`ExtraDamage`). */
+export interface WireExtraDamage {
+  damage_type: string | null;
+  /** Expression rolled before critical doubling (`"2d6"`). */
+  expression: string;
+}
+
+/** Result of one target (`TargetOutcome`). */
+export type WireTargetOutcome = "HIT" | "CRITICAL" | "MISS" | "BLOCKED" | "SAVE_SUCCESS" | "SAVE_FAILURE";
+
+/** Server-rolled result of one target (`ResolvedTarget`). */
+export interface WireResolvedTarget {
+  token_id: Uuid;
+  roll_mode: WireRollMode;
+  outcome: WireTargetOutcome;
+  /** Natural d20s; empty when nothing was rolled or the recipient may not see them (hidden numbers). */
+  d20_rolls: number[];
+  /** Attack or save total; `null` when nothing was rolled or hidden from the recipient. */
+  total: number | null;
+  /** Damage to apply (`>= 0`), after save-for-half and before the target's affinity. */
+  damage: number;
+  /** Damage of each `extra_damage` part of the resolution, same order (absent or empty: single type). */
+  extra_damage?: number[];
+  is_critical: boolean;
+  /** Already applied (or nothing to apply); never applied twice. */
+  applied: boolean;
+}
+
+/** Server-held result waiting for `APPLY_RESOLUTION` (`PendingResolution`, ADR-0042). */
+export interface WirePendingResolution {
+  id: Uuid;
+  /** User who requested it; they may apply it as rolled. */
+  issuer_user_id: Uuid;
+  attacker_token_id: Uuid | null;
+  action_name: string;
+  check: WireResolutionCheck;
+  damage_type: string | null;
+  /** Damage expression rolled (`"1d8+3"`; critical hits doubled the dice). */
+  damage_expression: string;
+  /** Extra damage parts with their own type (absent or empty: single type). */
+  extra_damage?: WireExtraDamage[];
+  targets: WireResolvedTarget[];
+  /** Creation order on the table. */
+  sequence: number;
+}
+
+/** Game Master changes before applying (`ResolutionAdjustment`); every field optional. */
+export interface WireResolutionAdjustment {
+  /** New amount (`>= 0`); only with a single target. */
+  damage?: number | null;
+  /** New damage type; `""` makes the damage untyped. */
+  damage_type?: string | null;
+  is_critical?: boolean | null;
 }
 
 /** Recipient-projected dice roll (`ProjectedDiceRoll` in `dice.rs`). */
@@ -289,7 +444,11 @@ export interface QuarantinedWalSummary {
 export type ClientEnvelope =
   | { type: "SubmitCommand"; command: WireTrameCommand; correlationId?: string }
   | { type: "RollDice"; expression: string; visibility: WireRollVisibility; reason: string; correlationId?: string }
-  | { type: "PointerPing"; pos: WirePoint2D; colorHex: string }
+  /**
+   * Dropped by the server unless `pos` is finite and on the map, `colorHex` is a palette
+   * color, and `sceneId` (when sent) is `active_scene_id`; at most one ping per 250 ms.
+   */
+  | { type: "PointerPing"; pos: WirePoint2D; colorHex: string; sceneId?: Uuid }
   | { type: "Ping"; clientTimeMs: number };
 
 /** Inbound frames after external-tag unwrapping. */
@@ -324,7 +483,13 @@ export function toWireClientEnvelope(envelope: ClientEnvelope): Record<string, u
         },
       };
     case "PointerPing":
-      return { PointerPing: { pos: envelope.pos, color_hex: envelope.colorHex } };
+      return {
+        PointerPing: {
+          pos: envelope.pos,
+          color_hex: envelope.colorHex,
+          ...(envelope.sceneId ? { scene_id: envelope.sceneId } : {}),
+        },
+      };
     case "Ping":
       return { Ping: { client_time_ms: envelope.clientTimeMs } };
   }

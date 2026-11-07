@@ -271,13 +271,13 @@ describe("App shell rendered against a mocked transport", () => {
     const { client, transport } = newClient({
       "GET /api/v1/auth/me": ME_OK,
       "GET /api/v1/campaigns": { status: 200, body: { campaigns: [] } },
-      "POST /api/v1/campaigns": { status: 201, body: { campaign: campaignDto({ name: "Curse of Strahd" }) } },
+      "POST /api/v1/campaigns": { status: 201, body: { campaign: campaignDto({ name: "Shadows Over Thornvale" }) } },
     });
     await mount(client);
-    typeInto("lobby-campaign-name", "  Curse of Strahd ");
+    typeInto("lobby-campaign-name", "  Shadows Over Thornvale ");
     byTestId("lobby-create-form").dispatchEvent({ type: "submit" });
     await flush(5);
-    assert.deepEqual(transport.calls.find((call) => call.method === "POST")?.body, { name: "Curse of Strahd" });
+    assert.deepEqual(transport.calls.find((call) => call.method === "POST")?.body, { name: "Shadows Over Thornvale" });
     assert.ok(byTestId(`lobby-campaign-${CAMPAIGN_ID}`));
   });
 

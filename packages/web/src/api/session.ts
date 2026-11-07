@@ -235,3 +235,9 @@ export const selectedActorIdSignal = signal<Uuid | null>(null);
 
 /** Token selected on the table canvas; target of move, damage, and heal controls. */
 export const selectedTokenIdSignal = signal<Uuid | null>(null);
+
+/** Empty board cell the GM last clicked (top-left, `px`); where compendium spawns land. */
+export const selectedCellSignal = signal<WirePoint2D | null>(null);
+
+/** Board point (`px`) at the centre of the board viewport, kept after the table tab unmounts. */
+export const viewportCenterSignal = signal<WirePoint2D | null>(null);

@@ -32,7 +32,8 @@
 //! EXECUTION LIFECYCLE:
 //! --------------------
 //!   JS `computeVisibilityPolygon(requestJson)` (likewise `previewAoeCells`,
-//!   `previewMove`, `countSoundOccludingWalls`, `evaluateDerivedDag`)
+//!   `previewMove`, `suggestCover`, `countSoundOccludingWalls`, `evaluateDerivedDag`,
+//!   `conditionEffects`)
 //!     ├── 1. `#[wasm_bindgen]` wrapper below forwards to `wasm_api::*_json`.
 //!     ├── 2. Deserialize the camelCase request (walls, template, token...).
 //!     ├── 3. Run the same engine code the server uses.
@@ -41,21 +42,27 @@
 
 pub mod aoe;
 pub mod commands;
+pub mod cover;
 pub mod geometry;
+pub mod movement;
+pub mod resolution;
 pub mod rules;
 pub mod wasm_api;
 
 pub use crate::commands::{
-    AmbientLightingPreset, CampaignRole, CommandActor, CommandError, FogOverrideCell,
-    FogOverrideMode, LightSource, McpStagingProposal, MovePreview, ReactionDecision,
-    ReactionPrompt, ReactionPromptCloseReason, RefundableResource, SceneActivation, TableMode,
-    TableSnapshotData, TableState, TokenState, TrameCommand, TrameEvent, UndoEntry,
+    AmbientLightingPreset, CampaignRole, CommandActor, CommandError, ConditionEffects,
+    ConditionOverrideEntry, FogOverrideCell, FogOverrideMode, LightSource, McpStagingProposal,
+    MovePreview, OverrideMode, OverrideSubject, ReactionDecision, ReactionPrompt,
+    ReactionPromptCloseReason, RefundableResource, SceneActivation, TableMode, TableSnapshotData,
+    TableState, TokenState, TrameCommand, TrameEvent, UndoEntry,
 };
+pub use crate::cover::CoverLevel;
 pub use crate::geometry::{Bvh2D, Point2D, SenseProfile, WallKind, WallSegment};
 pub use crate::rules::{
-    ActiveEffect, AttributeModifier, DEATH_SAVE_FAILURES_TO_DIE, DamageAffinity, DamageResolution,
-    FormulaError, ModifierPhase, RulesEngineError, evaluate_actor_attributes, evaluate_derived_dag,
-    resolve_damage_application,
+    ActiveEffect, AttributeModifier, DEATH_SAVE_FAILURES_TO_DIE, DEATH_SAVE_SUCCESSES_TO_STABILIZE,
+    DamageAffinity, DamageResolution, DeathSaveOutcome, FormulaError, ModifierPhase,
+    RulesEngineError, evaluate_actor_attributes, evaluate_derived_dag, resolve_damage_application,
+    resolve_death_save,
 };
 use wasm_bindgen::prelude::*;
 
@@ -84,6 +91,13 @@ pub fn preview_move(request_json: &str) -> Result<String, JsError> {
     into_js(wasm_api::preview_move_json(request_json))
 }
 
+/// Cover a target has against an attacker, as a suggestion only. Request/response shapes:
+/// `wasm_api::suggest_cover_json`.
+#[wasm_bindgen(js_name = suggestCover)]
+pub fn suggest_cover(request_json: &str) -> Result<String, JsError> {
+    into_js(wasm_api::suggest_cover_json(request_json))
+}
+
 /// Number of sound-blocking walls between an emitter and a listener. Request/response shapes:
 /// `wasm_api::count_sound_occluding_walls_json`.
 #[wasm_bindgen(js_name = countSoundOccludingWalls)]
@@ -96,6 +110,13 @@ pub fn count_sound_occluding_walls(request_json: &str) -> Result<String, JsError
 #[wasm_bindgen(js_name = evaluateDerivedDag)]
 pub fn evaluate_derived_dag_wasm(request_json: &str) -> Result<String, JsError> {
     into_js(wasm_api::evaluate_derived_dag_json(request_json))
+}
+
+/// Engine-enforced condition effects (Incapacitated, Speed 0) after `ConditionOverride`
+/// rulings. Request/response shapes: `wasm_api::condition_effects_json`.
+#[wasm_bindgen(js_name = conditionEffects)]
+pub fn condition_effects_wasm(request_json: &str) -> Result<String, JsError> {
+    into_js(wasm_api::condition_effects_json(request_json))
 }
 
 #[cfg(test)]
@@ -492,7 +513,12 @@ mod tests {
         let mut token = TokenState::new_default(token_id, "Kyra", Point2D::new(100.0, 100.0));
         token.owner_user_id = Some(player_id);
         state
-            .apply_command(&gm, TrameCommand::SpawnToken { token })
+            .apply_command(
+                &gm,
+                TrameCommand::SpawnToken {
+                    token: Box::new(token),
+                },
+            )
             .unwrap();
         assert!(state.data.tokens.contains_key(&token_id));
 
@@ -599,11 +625,11 @@ mod tests {
                 proposal_id,
                 summary: "Spawn Goblin".to_string(),
                 commands: vec![TrameCommand::SpawnToken {
-                    token: TokenState::new_default(
+                    token: Box::new(TokenState::new_default(
                         spawned_by_mcp,
                         "Goblin",
                         Point2D::new(250.0, 250.0),
-                    ),
+                    )),
                 }],
             },
         );

@@ -1,10 +1,23 @@
 import { useSignal } from '@preact/signals';
 import { useEffect } from 'preact/hooks';
-import type { CampaignMapScene, StudioWallSegment, StagedToken, StudioLightSource, AudioEmitterConfig, UserRole, WallType } from './types.ts';
+import type { CampaignMapScene, StagedToken, StudioLightSource, AudioEmitterConfig, UserRole, WallType } from './types.ts';
 import { createStarterDungeonScene, generateEntityUuid, mapBackendSceneToFrontend, toggleDoorState } from './domain.ts';
 import { SceneAtlas } from './SceneAtlas.tsx';
 import { DARK_CANVAS_PALETTE, SHARED_WALL_KINDS, type CanonicalWallKind } from '../canvas/CanvasThemePalette.ts';
+import type { Point2D } from '../engine/wasmBridge.ts';
 import { t, type MessageKey } from '../i18n/index.ts';
+import { scenePoint, snapToGridCorner, wallFromDrag } from './wallDrawing.ts';
+
+/** Studio canvas zoom bounds and step (the SVG is resized inside a scrolling viewport). */
+const STUDIO_MIN_ZOOM = 1;
+const STUDIO_MAX_ZOOM = 6;
+const STUDIO_ZOOM_STEP = 1.5;
+
+/** Wall being drawn by a canvas drag, in scene pixels. */
+interface WallDrag {
+  start: Point2D;
+  end: Point2D;
+}
 
 const WALL_TYPE_LABEL_KEYS: Record<WallType, MessageKey> = {
   Normal: 'maps.wallType.normal',
@@ -52,8 +65,12 @@ export function MapsStudioTab({
   let audioYSignal: { value: number };
   let audioClipUrlSignal: { value: string };
   let doorFeedbackSignal: { value: Record<string, string> };
+  let wallDragSignal: { value: WallDrag | null };
+  let studioZoomSignal: { value: number };
 
   try {
+    wallDragSignal = useSignal<WallDrag | null>(null);
+    studioZoomSignal = useSignal<number>(1);
     scenesSignal = useSignal<CampaignMapScene[]>(normalizedInitialScenes);
     selectedSceneIdSignal = useSignal<string | null>(normalizedInitialScenes[0]?.id ?? null);
     isSavingSignal = useSignal<boolean>(false);
@@ -72,6 +89,8 @@ export function MapsStudioTab({
     audioClipUrlSignal = useSignal<string>('ambience.ogg');
     doorFeedbackSignal = useSignal<Record<string, string>>({});
   } catch {
+    wallDragSignal = { value: null };
+    studioZoomSignal = { value: 1 };
     scenesSignal = { value: normalizedInitialScenes };
     selectedSceneIdSignal = { value: normalizedInitialScenes[0]?.id ?? null };
     isSavingSignal = { value: false };
@@ -219,33 +238,19 @@ export function MapsStudioTab({
     selectedSceneIdSignal.value = newId;
   };
 
-  const handleAddWall = () => {
+  const addWall = (a: Point2D, b: Point2D) => {
     if (!selectedScene) return;
-    const type = wallTypeSignal.value;
-    const blocksVision = type === 'Normal' || type === 'Terrain' || type === 'Illusion' || type === 'Door' || type === 'SecretDoor' || type === 'OneWay';
-    const blocksMovement = type === 'Normal' || type === 'Window' || type === 'Terrain' || type === 'Door' || type === 'SecretDoor' || type === 'OneWay';
-    const blocksLight = type === 'Normal' || type === 'Illusion' || type === 'Terrain' || type === 'Door' || type === 'SecretDoor' || type === 'OneWay';
-    const blocksSound = type === 'Normal' || type === 'Window' || type === 'Door' || type === 'SecretDoor' || type === 'OneWay';
-
-    const newWall: StudioWallSegment = {
-      id: generateEntityUuid(),
-      a: { x: wallP1XSignal.value, y: wallP1YSignal.value },
-      b: { x: wallP2XSignal.value, y: wallP2YSignal.value },
-      wallType: type,
-      blocksMovement,
-      blocksVision,
-      blocksLight,
-      blocksSound,
-      bottomElevationFt: wallBottomFtSignal.value,
-      topElevationFt: wallTopFtSignal.value,
-      doorState: type === 'Door' ? { isOpen: false, isLocked: false } : undefined,
-      secretDoorState: type === 'SecretDoor' ? { isOpen: false } : undefined,
-    };
+    const newWall = wallFromDrag(generateEntityUuid(), a, b, wallTypeSignal.value, wallBottomFtSignal.value, wallTopFtSignal.value);
+    if (!newWall) return;
     const updatedScene: CampaignMapScene = {
       ...selectedScene,
       walls: [...selectedScene.walls, newWall],
     };
     scenesSignal.value = scenesSignal.value.map((s) => (s.id === updatedScene.id ? updatedScene : s));
+  };
+
+  const handleAddWall = () => {
+    addWall({ x: wallP1XSignal.value, y: wallP1YSignal.value }, { x: wallP2XSignal.value, y: wallP2YSignal.value });
   };
 
   const handleDeleteWall = (wallId: string) => {
@@ -299,31 +304,47 @@ export function MapsStudioTab({
     scenesSignal.value = scenesSignal.value.map((s) => (s.id === updatedScene.id ? updatedScene : s));
   };
 
-  const handlePaintFog = () => {
-    if (!selectedScene) return;
-    const currentFog = selectedScene.exploredFogTexture ?? [];
-    const updatedFog = currentFog.length > 0 ? [...currentFog, 255] : [255, 255, 255, 255];
-    const updatedScene: CampaignMapScene = {
-      ...selectedScene,
-      exploredFogTexture: updatedFog,
-    };
-    scenesSignal.value = scenesSignal.value.map((s) => (s.id === updatedScene.id ? updatedScene : s));
+  const pointerScenePoint = (e: PointerEvent | MouseEvent): Point2D | null => {
+    if (!selectedScene) return null;
+    const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
+    return scenePoint(rect, selectedScene.widthPx, selectedScene.heightPx, e.clientX, e.clientY);
+  };
+
+  const snapped = (e: PointerEvent, point: Point2D) => (e.altKey ? point : snapToGridCorner(point, selectedScene?.gridCellSizePx ?? 0));
+
+  /** Captures the pointer so a drag ending outside the canvas still ends (or cancels) the wall. */
+  const handleCanvasPointerDown = (e: PointerEvent) => {
+    const point = pointerScenePoint(e);
+    if (!point) return;
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+    wallDragSignal.value = { start: snapped(e, point), end: snapped(e, point) };
+  };
+
+  const handleCanvasPointerCancel = () => {
+    wallDragSignal.value = null;
+  };
+
+  const handleCanvasPointerMove = (e: PointerEvent) => {
+    const drag = wallDragSignal.value;
+    const point = drag ? pointerScenePoint(e) : null;
+    if (drag && point) wallDragSignal.value = { start: drag.start, end: snapped(e, point) };
+  };
+
+  const handleCanvasPointerUp = () => {
+    const drag = wallDragSignal.value;
+    wallDragSignal.value = null;
+    if (drag) addWall(drag.start, drag.end);
   };
 
   const handleCanvasClick = (e: MouseEvent) => {
-    if (!selectedScene) return;
-    const svg = e.currentTarget as SVGSVGElement;
-    const rect = svg.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      const x = Math.round(((e.clientX - rect.left) / rect.width) * selectedScene.widthPx);
-      const y = Math.round(((e.clientY - rect.top) / rect.height) * selectedScene.heightPx);
-      wallP1XSignal.value = x;
-      wallP1YSignal.value = y;
-      lightXSignal.value = x;
-      lightYSignal.value = y;
-      audioXSignal.value = x;
-      audioYSignal.value = y;
-    }
+    const point = pointerScenePoint(e);
+    if (!point) return;
+    wallP1XSignal.value = point.x;
+    wallP1YSignal.value = point.y;
+    lightXSignal.value = point.x;
+    lightYSignal.value = point.y;
+    audioXSignal.value = point.x;
+    audioYSignal.value = point.y;
   };
 
   const handleSave = async () => {
@@ -352,7 +373,7 @@ export function MapsStudioTab({
             onClick={handleToggleRevealed}
             style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', background: 'var(--atlas-surface-raised)', color: 'var(--atlas-text)' }}
           >
-            {selectedScene?.revealedToPlayers ? t('maps.revealedInAtlas') : t('maps.hiddenFromAtlas')}
+            {t('maps.revealToPlayers')}
           </button>
           <button
             type="button"
@@ -498,6 +519,32 @@ export function MapsStudioTab({
                 </p>
               </div>
 
+              <div role="toolbar" aria-label={t('maps.zoomToolbar')} class="ds-cluster">
+                <button
+                  type="button"
+                  class="ds-btn ds-btn-ghost ds-btn-sm"
+                  data-testid="studio-zoom-out"
+                  aria-label={t('table.zoomOut')}
+                  disabled={studioZoomSignal.value <= STUDIO_MIN_ZOOM}
+                  onClick={() => { studioZoomSignal.value = Math.max(STUDIO_MIN_ZOOM, studioZoomSignal.value / STUDIO_ZOOM_STEP); }}
+                >
+                  −
+                </button>
+                <span class="ds-meta atlas-tabular-nums" data-testid="studio-zoom-level">
+                  {t('table.zoomLevel', { percent: Math.round(studioZoomSignal.value * 100) })}
+                </span>
+                <button
+                  type="button"
+                  class="ds-btn ds-btn-ghost ds-btn-sm"
+                  data-testid="studio-zoom-in"
+                  aria-label={t('table.zoomIn')}
+                  disabled={studioZoomSignal.value >= STUDIO_MAX_ZOOM}
+                  onClick={() => { studioZoomSignal.value = Math.min(STUDIO_MAX_ZOOM, studioZoomSignal.value * STUDIO_ZOOM_STEP); }}
+                >
+                  +
+                </button>
+                <span class="ds-hint">{t('maps.drawWallHint')}</span>
+              </div>
               <div
                 data-testid="canvas-viewport"
                 style={{
@@ -507,18 +554,35 @@ export function MapsStudioTab({
                   border: '1px solid var(--atlas-border)',
                   borderRadius: 'var(--atlas-radius-md)',
                   position: 'relative',
-                  overflow: 'hidden',
+                  overflow: 'auto',
                 }}
               >
                 <svg
                   role="img"
                   aria-label={t('maps.canvasLabel')}
-                  width="100%"
-                  height="100%"
+                  data-testid="studio-canvas"
+                  width={`${studioZoomSignal.value * 100}%`}
+                  height={`${studioZoomSignal.value * 100}%`}
                   viewBox={`0 0 ${selectedScene.widthPx} ${selectedScene.heightPx}`}
                   onClick={handleCanvasClick}
-                  style={{ display: 'block', cursor: 'crosshair' }}
+                  onPointerDown={handleCanvasPointerDown}
+                  onPointerMove={handleCanvasPointerMove}
+                  onPointerUp={handleCanvasPointerUp}
+                  onPointerCancel={handleCanvasPointerCancel}
+                  style={{ display: 'block', cursor: 'crosshair', touchAction: 'none' }}
                 >
+                  {wallDragSignal.value ? (
+                    <line
+                      data-testid="canvas-wall-preview"
+                      x1={wallDragSignal.value.start.x}
+                      y1={wallDragSignal.value.start.y}
+                      x2={wallDragSignal.value.end.x}
+                      y2={wallDragSignal.value.end.y}
+                      stroke="var(--atlas-focus)"
+                      strokeWidth={3}
+                      strokeDasharray={SHARED_WALL_KINDS[wallTypeSignal.value as CanonicalWallKind]?.dashPatternPx?.join(' ')}
+                    />
+                  ) : null}
                   {selectedScene.walls.map((wall) => {
                     const wallStyle = SHARED_WALL_KINDS[wall.wallType as CanonicalWallKind];
                     const strokeDasharray = wallStyle?.dashPatternPx ? wallStyle.dashPatternPx.join(' ') : undefined;
@@ -717,15 +781,10 @@ export function MapsStudioTab({
                     {t('maps.addAudio')}
                   </button>
 
-                  <button
-                    type="button"
-                    data-testid="paint-fog-btn"
-                    onClick={handlePaintFog}
-                    style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)', marginLeft: 'var(--atlas-space-sm)' }}
-                  >
-                    {t('maps.paintFog')}
-                  </button>
                 </div>
+                <p data-testid="studio-live-brushes-hint" style={{ margin: 0, fontSize: 'var(--atlas-font-size-xs)', color: 'var(--atlas-text-muted)' }}>
+                  {t('maps.liveBrushesHint')}
+                </p>
               </section>
 
               <div>

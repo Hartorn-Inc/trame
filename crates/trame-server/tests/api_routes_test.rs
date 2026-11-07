@@ -127,6 +127,7 @@ async fn test_campaign_maps_rbac_and_sanitization() {
             id: Uuid::new_v4(),
             name: "Ambush Goblin".to_string(),
             monster_template_id: None,
+            stat_block: None,
             x: 50.0,
             y: 50.0,
             elevation_ft: 0.0,

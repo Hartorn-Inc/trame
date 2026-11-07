@@ -41,6 +41,37 @@
 //!        them in `InitiativeUpdated` and in the snapshot's `initiative_totals`,
 //!        both limited to combatants in `visible_ids`, so GM-hidden or occluded
 //!        tokens contribute neither an entry nor a total.
+//!   6. `Controller-Only, Visibility-Gated Events (RT4, RT6, RT8)`:
+//!      - HP (`DamageApplied`, `TokenHealed`, `TokenResourcesOverridden`), action
+//!        economy (`ActionRefunded`) and full `TokenSpawned` payloads reach the
+//!        controller of a token they can see; other players get the
+//!        `BloodiedState` of the projection. `speed_remaining_ft` in `TokenMoved`
+//!        / `TokenSqueezeToggled` is `0.0` for non-controllers.
+//!      - Condition rulings follow the same rule: raw `conditions`
+//!        (`TokenConditionsChanged`) and `overrides` (`ConditionOverrideChanged`)
+//!        reach the controller of a visible token only, everyone else sees the
+//!        effective list. `DeathSaveRecorded` keeps its counters for the
+//!        controller only; others get the d20 and the Stable / dead flags.
+//!      - The GM's `stat_block` copy never leaves the server for a non-GM: it is
+//!        stripped from controlled tokens in snapshots and in `TokenSpawned`.
+//!      - `TokenRemoved` reaches only players who could see the token before the
+//!        command (line of sight in the pre-command state), and a token moving
+//!        into view never reveals where it came from.
+//!   7. `Reaction Prompt Audience (RT8)`:
+//!      - One rule for snapshot prompts and prompt events: the GM, the reactor's
+//!        owner, and the reactor token's controller. The trigger's controller is
+//!        excluded, so a mover never learns which hidden creature may react;
+//!        other reactors (`resolved_reactor_ids`) and a hidden mover's
+//!        destination are redacted.
+//!   8. `Pending Resolutions & Concentration Checks (D6, story 58)`:
+//!      - A `PendingResolution` (snapshot and `ActionResolved`) reaches the GM
+//!        and its issuer only. For the issuer, every target they do not
+//!        control loses its natural d20s and total: hit / miss / critical or
+//!        save success / failure and the damage remain, never a number that
+//!        bounds AC or a save bonus. `ResolutionApplied` / `Dismissed` follow
+//!        the same audience.
+//!      - Concentration checks (state, `ConcentrationCheckRequested`,
+//!        `ConcentrationCheckRolled`) reach the token's controller only.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -55,7 +86,7 @@
 use crate::dice::{ProjectedDiceRoll, RollVisibility};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
-use trame_engine::aoe::AoeTemplate;
+use trame_engine::aoe::{AoeTemplate, GridCell};
 pub use trame_engine::commands::McpStagingProposal;
 use trame_engine::commands::{
     AmbientLightingPreset, CampaignRole, FogOverrideCell, LightSource, ReactionPrompt, TableMode,
@@ -64,6 +95,7 @@ use trame_engine::commands::{
 use trame_engine::geometry::{
     CHANNEL_GM_HIDDEN, Point2D, WallKind, WallSegment, can_token_see_target,
 };
+use trame_engine::resolution::PendingResolution;
 use uuid::Uuid;
 
 /// A submitted `TrameCommand` plus the client's correlation id (RT10).
@@ -106,12 +138,21 @@ pub enum ClientEnvelope {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         correlation_id: Option<String>,
     },
-    /// Broadcasts a transient Ephemeral Pointer ping onto the shared map canvas.
+    /// Broadcasts a transient Ephemeral Pointer ping onto the shared map canvas. The room
+    /// drops it unless `pos` is finite and on the map, `color_hex` is a palette color, and
+    /// `scene_id` (when sent) is the active scene; at most one ping per
+    /// `POINTER_PING_MIN_INTERVAL_MS` per session is broadcast (RT2).
     PointerPing {
-        /// Canvas coordinate of the pointer ping in pixels (`px`).
+        /// Canvas coordinate of the pointer ping in pixels (`px`), within
+        /// `0..=map_width_px` x `0..=map_height_px`.
         pos: Point2D,
-        /// Hexadecimal color string (e.g., `"#FFAA00"`) identifying the pinging user.
+        /// `#RGB`, `#RRGGBB`, `#RRGGBBAA`, or an ATLAS token (`var(--atlas-info)`), at most
+        /// `MAX_POINTER_PING_COLOR_LEN` bytes.
         color_hex: String,
+        /// Scene the ping was aimed at (`ProjectedTableState::active_scene_id`); omitted by
+        /// older clients, which skips the check.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scene_id: Option<Uuid>,
     },
     /// Round-trip latency probe carrying the client's monotonic timestamp in milliseconds (`ms`).
     Ping {
@@ -177,13 +218,30 @@ pub struct ProjectedTableState {
     #[serde(default)]
     pub map_height_px: u32,
     /// Active tactical reaction prompts keyed by `prompt_id`; prompts never expire on a timer
-    /// (G2). Non-GM recipients only receive prompts they are party to, without
-    /// `resolved_reactor_ids` and without hidden movers' `pending_destination`.
+    /// (G2). Non-GM recipients only receive the prompts of reactors they own or control (not
+    /// the prompts their own movement triggered), without `resolved_reactor_ids` and without
+    /// hidden movers' `pending_destination`.
     #[serde(default)]
     pub active_reaction_prompts: BTreeMap<Uuid, ReactionPrompt>,
+    /// Scene shown on the table (`None` before the first scene); clients echo it in
+    /// `PointerPing.scene_id`.
+    #[serde(default)]
+    pub active_scene_id: Option<Uuid>,
+    /// Difficult-terrain grid cells of the active map (public map knowledge: every recipient
+    /// gets the whole set), so clients draw them and preview movement cost.
+    #[serde(default)]
+    pub difficult_terrain: Vec<GridCell>,
     /// Queued MCP dry-run staging proposals keyed by `proposal_id` (included only for `Gm` recipients).
     #[serde(default)]
     pub mcp_staging_proposals: BTreeMap<Uuid, McpStagingProposal>,
+    /// Server-rolled actions waiting for their Apply: every one for GMs; for other recipients
+    /// only those they issued, redacted by `redact_resolution` (invariant 8).
+    #[serde(default)]
+    pub pending_resolutions: BTreeMap<Uuid, PendingResolution>,
+    /// Open Concentration check DCs (oldest first) keyed by token: every token for GMs, the
+    /// tokens the recipient controls otherwise.
+    #[serde(default)]
+    pub pending_concentration_checks: BTreeMap<Uuid, Vec<i32>>,
 }
 
 /// Coarse health tier shown to participants who do not control a token (G5, `GLOSSARY.md`).
@@ -238,7 +296,8 @@ pub struct PublicTokenView {
     pub height_ft: f64,
     /// Whether the token has the Invisible condition (only sent when the recipient perceives it).
     pub invisible: bool,
-    /// Visible D&D 5e condition labels.
+    /// Effective condition ids (`TokenState::effective_conditions`: GM rulings applied, the
+    /// rulings themselves withheld).
     pub conditions: Vec<String>,
     /// Coarse health tier derived from `hp` / `max_hp`.
     pub bloodied: BloodiedState,
@@ -258,7 +317,7 @@ impl From<&TokenState> for PublicTokenView {
             elevation_ft: t.elevation_ft,
             height_ft: t.height_ft,
             invisible: t.invisible,
-            conditions: t.conditions.clone(),
+            conditions: t.effective_conditions(),
             bloodied: BloodiedState::from_hp(t.hp, t.max_hp),
         }
     }
@@ -460,6 +519,15 @@ fn mask_aoe_caster(template: &AoeTemplate, visible_ids: &HashSet<Uuid>) -> AoeTe
     masked
 }
 
+/// Full `TokenState` as sent to its non-GM controller: everything but the GM's `stat_block`
+/// copy (attack bonuses, save DCs, legendary actions and homebrew notes stay GM knowledge
+/// even when the GM hands the token to a player).
+fn controller_token_view(token: &TokenState) -> TokenState {
+    let mut view = token.clone();
+    view.stat_block = None;
+    view
+}
+
 /// Returns `true` when `recipient_user_id` controls `token_id` (`owner_user_id` match).
 fn recipient_controls(state: &TableState, token_id: &Uuid, recipient_user_id: Uuid) -> bool {
     state
@@ -469,8 +537,9 @@ fn recipient_controls(state: &TableState, token_id: &Uuid, recipient_user_id: Uu
         .is_some_and(|t| t.owner_user_id == Some(recipient_user_id))
 }
 
-/// Recipient predicate shared by prompt projection and prompt events: the reactor's owner,
-/// the controller of the reactor token, or the controller of the triggering token.
+/// Non-GM audience of a reaction prompt, shared by the snapshot and the prompt events: the
+/// reactor's owner and the controller of the reactor token. The trigger's controller is not
+/// part of it, so a mover never learns which hidden creature is about to react.
 fn prompt_concerns_recipient(
     state: &TableState,
     prompt: &ReactionPrompt,
@@ -478,7 +547,6 @@ fn prompt_concerns_recipient(
 ) -> bool {
     prompt.reactor_owner_user_id == Some(recipient_user_id)
         || recipient_controls(state, &prompt.reactor_actor_id, recipient_user_id)
-        || recipient_controls(state, &prompt.trigger_token_id, recipient_user_id)
 }
 
 /// Strips GM knowledge from a prompt sent to a non-GM: the list of other reactors already
@@ -494,6 +562,34 @@ fn redact_prompt_for_player(
         redacted.pending_elevation_ft = None;
     }
     redacted
+}
+
+/// Issuer view of a resolution (invariant 8): targets the recipient does not control keep
+/// their outcome and damage but lose their natural d20s and total.
+pub fn redact_resolution(
+    state: &TableState,
+    resolution: &PendingResolution,
+    recipient_user_id: Uuid,
+) -> PendingResolution {
+    let mut redacted = resolution.clone();
+    for target in &mut redacted.targets {
+        if !recipient_controls(state, &target.token_id, recipient_user_id) {
+            target.d20_rolls.clear();
+            target.total = None;
+        }
+    }
+    redacted
+}
+
+/// Issuer of the resolution `id` before or after the command (it leaves the table once
+/// fully applied or dismissed).
+fn resolution_issuer(state: &TableState, prior: &TableState, id: &Uuid) -> Option<Uuid> {
+    prior
+        .data
+        .pending_resolutions
+        .get(id)
+        .or_else(|| state.data.pending_resolutions.get(id))
+        .map(|r| r.issuer_user_id)
 }
 
 /// Initiative totals of the combatants the recipient can see.
@@ -535,8 +631,10 @@ pub fn project_state_for_recipient(
         if !visible_ids.contains(id) {
             continue;
         }
-        if is_gm || tok.owner_user_id == Some(recipient_user_id) {
+        if is_gm {
             tokens.insert(*id, tok.clone());
+        } else if tok.owner_user_id == Some(recipient_user_id) {
+            tokens.insert(*id, controller_token_view(tok));
         } else {
             public_tokens.insert(*id, PublicTokenView::from(tok));
         }
@@ -606,33 +704,67 @@ pub fn project_state_for_recipient(
         map_width_px: state.data.map_width_px,
         map_height_px: state.data.map_height_px,
         active_reaction_prompts,
+        active_scene_id: state.data.active_scene_id,
+        difficult_terrain: state.data.difficult_terrain.iter().copied().collect(),
         mcp_staging_proposals: if is_gm {
             state.data.mcp_staging_proposals.clone()
         } else {
             BTreeMap::new()
         },
+        pending_resolutions: if is_gm {
+            state.data.pending_resolutions.clone()
+        } else {
+            state
+                .data
+                .pending_resolutions
+                .iter()
+                .filter(|(_, r)| r.issuer_user_id == recipient_user_id)
+                .map(|(id, r)| (*id, redact_resolution(state, r, recipient_user_id)))
+                .collect()
+        },
+        pending_concentration_checks: state
+            .data
+            .pending_concentration_checks
+            .iter()
+            .filter(|(id, _)| is_gm || recipient_controls(state, id, recipient_user_id))
+            .map(|(id, dcs)| (*id, dcs.clone()))
+            .collect(),
     }
 }
 
-/// Filters and redacts `TrameEvent` notifications for a non-GM recipient (GMs get everything):
-/// - Vitality events (`DamageApplied`, `TokenResourcesOverridden`) and full `TokenSpawned`
-///   payloads reach only the token's controller; others learn the outcome through the
-///   `PublicTokenView` in the accompanying state projection.
-/// - Movement, squeeze, visibility, and ownership events require the token to be visible.
+/// Filters and redacts `TrameEvent` notifications for a non-GM recipient (GMs get everything).
+/// `state` is the table after the command, `prior` the table before it (RT4, RT6, RT8):
+/// - Controller-only events (`DamageApplied`, `TokenHealed`, `TokenResourcesOverridden`,
+///   `ActionRefunded`, full `TokenSpawned` payloads) reach the token's controller, and only
+///   while the token is visible to them. Everyone else learns the outcome through the
+///   `PublicTokenView` (`BloodiedState`, never HP) of the accompanying state projection.
+/// - Movement, squeeze, disengage, conditions, visibility, and ownership events require the
+///   token to be visible. `TokenMoved` and `TokenSqueezeToggled` carry `speed_remaining_ft`
+///   for the controller only (`0.0` for others), and a token that comes into view hides
+///   where it came from (`from_top_left` is its destination).
+/// - `TokenRemoved` reaches recipients who could see the token before the command.
+/// - `ConditionOverrideChanged` keeps its rulings for the controller of a visible token only;
+///   other recipients who see the token get it with `overrides` emptied.
+/// - `TokenConditionsChanged` carries the raw `conditions` for the controller only; other
+///   recipients get the effective list in both fields, so a hidden `Remove` ruling never
+///   shows through the difference.
+/// - `DeathSaveRecorded` is full for the controller only; other recipients get the d20 and
+///   the Stable / dead flags, with the counters zeroed and `regains_hp` cleared.
+/// - The GM's `stat_block` copy is stripped from the `TokenSpawned` a controller receives.
 /// - Secret door / illusion geometry in `DoorToggled`, `DoorConfigured`, and `WallAdded` is
 ///   masked; closing a secret door is dropped entirely.
 /// - `AoeProjected` keeps only visible affected tokens and hides invisible casters.
 /// - Turn events clear `active_turn_token_id` when the active combatant is hidden.
 /// - `InitiativeUpdated` keeps only visible combatants' order entries and totals.
 /// - Reaction prompt events (`ReactionPromptOpened`, `ReactionDecided`,
-///   `ReactionPromptClosed`) reach only the prompt's reactor owner and the controllers of the
-///   reactor and trigger tokens. Decided and closed prompts are usually gone from `state`, so
-///   the predicate is evaluated against `prior_prompts` (the prompts open before the command).
+///   `ReactionPromptClosed`) reach only the prompt's reactor owner and the reactor token's
+///   controller, never the trigger's controller. Decided and closed prompts are usually gone
+///   from `state`, so the predicate is evaluated against the prompts open in `prior`.
 /// - `AoeCleared` drops the caster ID when the caster is hidden from the recipient.
 /// - MCP staging and undo descriptions are GM-only.
 pub fn filter_events_for_recipient(
     state: &TableState,
-    prior_prompts: &BTreeMap<Uuid, ReactionPrompt>,
+    prior: &TableState,
     events: &[TrameEvent],
     recipient_user_id: Uuid,
     recipient_role: CampaignRole,
@@ -642,6 +774,17 @@ pub fn filter_events_for_recipient(
     }
 
     let visible_ids = visible_token_ids_for_recipient(state, recipient_user_id, recipient_role);
+    // Line of sight in `prior` is only computed when an event needs it.
+    let prior_visible_ids = std::cell::OnceCell::new();
+    let was_visible = |id: &Uuid| {
+        prior_visible_ids
+            .get_or_init(|| {
+                visible_token_ids_for_recipient(prior, recipient_user_id, recipient_role)
+            })
+            .contains(id)
+    };
+    let controls_visible =
+        |id: &Uuid| visible_ids.contains(id) && recipient_controls(state, id, recipient_user_id);
     let visible_turn = |active: &Option<Uuid>| active.filter(|id| visible_ids.contains(id));
     let wall_kind = |wall_id: &Uuid| {
         state
@@ -656,21 +799,114 @@ pub fn filter_events_for_recipient(
         .iter()
         .filter_map(|ev| match ev {
             TrameEvent::DamageApplied { token_id, .. }
-            | TrameEvent::TokenResourcesOverridden { token_id, .. } => {
-                recipient_controls(state, token_id, recipient_user_id).then(|| ev.clone())
+            | TrameEvent::TokenResourcesOverridden { token_id, .. }
+            | TrameEvent::TokenHealed { token_id, .. }
+            | TrameEvent::ActionRefunded { token_id, .. } => {
+                controls_visible(token_id).then(|| ev.clone())
             }
             TrameEvent::TokenSpawned { token } => {
-                (token.owner_user_id == Some(recipient_user_id)).then(|| ev.clone())
+                controls_visible(&token.id).then(|| TrameEvent::TokenSpawned {
+                    token: Box::new(controller_token_view(token)),
+                })
             }
-            TrameEvent::TokenMoved { token_id, .. }
-            | TrameEvent::TokenSqueezeToggled { token_id, .. }
+            TrameEvent::TokenMoved {
+                token_id,
+                from_top_left,
+                to_top_left,
+                elevation_ft,
+                speed_remaining_ft,
+            } => {
+                if !visible_ids.contains(token_id) {
+                    return None;
+                }
+                let controls = recipient_controls(state, token_id, recipient_user_id);
+                Some(TrameEvent::TokenMoved {
+                    token_id: *token_id,
+                    from_top_left: if was_visible(token_id) {
+                        *from_top_left
+                    } else {
+                        *to_top_left
+                    },
+                    to_top_left: *to_top_left,
+                    elevation_ft: *elevation_ft,
+                    speed_remaining_ft: if controls { *speed_remaining_ft } else { 0.0 },
+                })
+            }
+            TrameEvent::TokenSqueezeToggled {
+                token_id,
+                is_squeezing,
+                speed_remaining_ft,
+            } => visible_ids.contains(token_id).then(|| {
+                let controls = recipient_controls(state, token_id, recipient_user_id);
+                TrameEvent::TokenSqueezeToggled {
+                    token_id: *token_id,
+                    is_squeezing: *is_squeezing,
+                    speed_remaining_ft: if controls { *speed_remaining_ft } else { 0.0 },
+                }
+            }),
+            TrameEvent::TokenDisengaged { token_id, .. }
+            | TrameEvent::ConcentrationChanged { token_id, .. }
             | TrameEvent::TokenVisibilityChanged { token_id, .. }
-            | TrameEvent::TokenOwnerAssigned { token_id, .. }
-            | TrameEvent::ActionRefunded { token_id, .. } => {
+            | TrameEvent::TokenOwnerAssigned { token_id, .. } => {
                 visible_ids.contains(token_id).then(|| ev.clone())
             }
-            TrameEvent::TokenHealed { token_id, .. } => {
-                recipient_controls(state, token_id, recipient_user_id).then(|| ev.clone())
+            TrameEvent::DeathSaveRecorded {
+                token_id,
+                d20,
+                outcome,
+            } => {
+                if controls_visible(token_id) {
+                    Some(ev.clone())
+                } else {
+                    visible_ids
+                        .contains(token_id)
+                        .then_some(TrameEvent::DeathSaveRecorded {
+                            token_id: *token_id,
+                            d20: *d20,
+                            outcome: trame_engine::rules::DeathSaveOutcome {
+                                successes: 0,
+                                failures: 0,
+                                regains_hp: false,
+                                stable: outcome.stable,
+                                dead: outcome.dead,
+                            },
+                        })
+                }
+            }
+            TrameEvent::TokenConditionsChanged {
+                token_id,
+                effective_conditions,
+                ..
+            } => {
+                if controls_visible(token_id) {
+                    Some(ev.clone())
+                } else {
+                    visible_ids
+                        .contains(token_id)
+                        .then(|| TrameEvent::TokenConditionsChanged {
+                            token_id: *token_id,
+                            conditions: effective_conditions.clone(),
+                            effective_conditions: effective_conditions.clone(),
+                        })
+                }
+            }
+            TrameEvent::TokenRemoved { token_id } => was_visible(token_id).then(|| ev.clone()),
+            TrameEvent::ConditionOverrideChanged {
+                token_id,
+                effective_conditions,
+                ..
+            } => {
+                if controls_visible(token_id) {
+                    Some(ev.clone())
+                } else {
+                    visible_ids
+                        .contains(token_id)
+                        .then(|| TrameEvent::ConditionOverrideChanged {
+                            token_id: *token_id,
+                            overrides: Vec::new(),
+                            effective_conditions: effective_conditions.clone(),
+                        })
+                }
             }
             TrameEvent::ReactionPromptOpened { prompt } => {
                 prompt_concerns_recipient(state, prompt, recipient_user_id).then(|| {
@@ -680,7 +916,9 @@ pub fn filter_events_for_recipient(
                 })
             }
             TrameEvent::ReactionDecided { prompt_id, .. }
-            | TrameEvent::ReactionPromptClosed { prompt_id, .. } => prior_prompts
+            | TrameEvent::ReactionPromptClosed { prompt_id, .. } => prior
+                .data
+                .active_reaction_prompts
                 .get(prompt_id)
                 .or_else(|| state.data.active_reaction_prompts.get(prompt_id))
                 .is_some_and(|p| prompt_concerns_recipient(state, p, recipient_user_id))
@@ -764,14 +1002,28 @@ pub fn filter_events_for_recipient(
                 active_turn_token_id: visible_turn(active_turn_token_id),
                 round: *round,
             }),
+            TrameEvent::ActionResolved { resolution } => (resolution.issuer_user_id
+                == recipient_user_id)
+                .then(|| TrameEvent::ActionResolved {
+                    resolution: Box::new(redact_resolution(state, resolution, recipient_user_id)),
+                }),
+            TrameEvent::ResolutionApplied { resolution_id, .. }
+            | TrameEvent::ResolutionDismissed { resolution_id } => {
+                (resolution_issuer(state, prior, resolution_id) == Some(recipient_user_id))
+                    .then(|| ev.clone())
+            }
+            TrameEvent::ConcentrationCheckRequested { token_id, .. }
+            | TrameEvent::ConcentrationCheckRolled { token_id, .. } => {
+                controls_visible(token_id).then(|| ev.clone())
+            }
             TrameEvent::McpStagingCommitted { .. }
             | TrameEvent::McpStagingRejected { .. }
             | TrameEvent::ActionUndone { .. } => None,
             TrameEvent::AmbientLightingChanged { .. }
             | TrameEvent::SceneLoaded { .. }
-            | TrameEvent::TokenRemoved { .. }
             | TrameEvent::LightAdded { .. }
             | TrameEvent::FogOverrideChanged { .. }
+            | TrameEvent::DifficultTerrainChanged { .. }
             | TrameEvent::MapConfigChanged { .. } => Some(ev.clone()),
         })
         .collect()

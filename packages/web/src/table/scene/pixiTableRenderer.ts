@@ -36,7 +36,8 @@
  * ├── 1. `Application.init({ canvas, preference: "webgl" })`, reject non-WebGL.
  * └── 2. One `Container` per tactical layer, in spec order.
  * `update(scene, mapImage)`
- * ├── 1. Resize, battlemap sprite, grid + walls, AoE cells, tokens.
+ * ├── 1. Resize, battlemap sprite, grid + hatched difficult terrain + walls,
+ * │      AoE cells, tokens.
  * ├── 2. Ambient darkness (offscreen) with `RADIAL_LIGHT_GLSL_FRAG` meshes
  * │      erasing each light's falloff, plus a faint additive coloured glow.
  * ├── 3. Fog rectangle with an inverse vision mask, GM hide cells on top.
@@ -210,13 +211,24 @@ export async function createTableRenderer(canvas: HTMLCanvasElement, initial: Ta
     for (let x = 0; x <= scene.widthPx; x += scene.cellPx) grid.moveTo(x, 0).lineTo(x, scene.heightPx);
     for (let y = 0; y <= scene.heightPx; y += scene.cellPx) grid.moveTo(0, y).lineTo(scene.widthPx, y);
     grid.stroke({ width: 1, color: scene.grid.color, alpha: scene.grid.alpha });
+    const terrain = new Graphics();
+    for (const cell of scene.terrain.cells) terrain.rect(cell.x, cell.y, cell.w, cell.h);
+    if (scene.terrain.cells.length > 0) terrain.fill({ color: scene.terrain.color, alpha: scene.terrain.fillAlpha });
+    for (const { x, y, w } of scene.terrain.cells) {
+      terrain.moveTo(x, y + w).lineTo(x + w, y);
+      for (const d of [w / 2, w / 4]) {
+        terrain.moveTo(x, y + d).lineTo(x + d, y);
+        terrain.moveTo(x + w - d, y + w).lineTo(x + w, y + w - d);
+      }
+    }
+    if (scene.terrain.cells.length > 0) terrain.stroke({ width: 1, color: scene.terrain.color, alpha: scene.terrain.hatchAlpha });
     const walls = new Graphics();
     for (const wall of scene.walls) {
       strokePath(walls, [wall.a, wall.b], false, wall.dash, { width: wall.widthPx, color: wall.color, alpha: wall.alpha });
       drawWallMarker(walls, wall.a, wall);
       drawWallMarker(walls, wall.b, wall);
     }
-    layers.gridOverlay.addChild(grid, walls);
+    layers.gridOverlay.addChild(grid, terrain, walls);
   };
 
   const drawAoes = (scene: TableScene) => {

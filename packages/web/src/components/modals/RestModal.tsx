@@ -435,7 +435,7 @@ function RestDialog(props: RestModalProps): VNode<any> {
                     h(
                       "strong",
                       { class: "atlas-tabular-nums" },
-                      t("rest.long.hitDiceRecoveryValue", { count: longRestRecoveredDice, from: currentHitDice, to: projectedLongRestHitDice, max: maxHitDice })
+                      t("rest.long.hitDiceRecoveryValue", { count: projectedLongRestHitDice - currentHitDice, from: currentHitDice, to: projectedLongRestHitDice, max: maxHitDice })
                     )
                   ),
                   h(

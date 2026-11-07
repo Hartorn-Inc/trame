@@ -19,7 +19,7 @@ import {
 describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", () => {
   describe("AC1 & AC2: Level Increment Boundaries & Max Level Cap", () => {
     it("WHEN options.targetLevel does not equal actor.attributes.level + 1, applyLevelUp throws an Error with message 'Invalid level increment'.", () => {
-      const actor = createDefaultActorData("hero-1", "Valeros");
+      const actor = createDefaultActorData("hero-1", "Kael");
       actor.attributes.level = 1;
 
       // Skipping a level (1 -> 3)
@@ -105,7 +105,7 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
     });
 
     it("WHEN options.hitPointsMode equals 'rolled' and options.rolledHp is absent, less than 1, or greater than hitDieSize, applyLevelUp throws an Error with message 'Invalid rolledHp value'.", () => {
-      const actor = createDefaultActorData("barbarian-roll", "Conan");
+      const actor = createDefaultActorData("barbarian-roll", "Brakka");
       actor.attributes.level = 1;
       actor.attributes.hitDieSize = 12;
 
@@ -133,7 +133,7 @@ describe("[Ticket #82] D&D 5e applyLevelUp & Progression System Specification", 
     });
 
     it("WHEN options.hitPointsMode equals 'rolled' and options.rolledHp is valid, applyLevelUp increases actor max and current hit points by Math.max(1, options.rolledHp + conModifier).", () => {
-      const actor = createDefaultActorData("ranger-roll", "Strider");
+      const actor = createDefaultActorData("ranger-roll", "Wren");
       actor.attributes.level = 1;
       actor.attributes.hitDieSize = 10;
       actor.abilities.con.score = 16; // conModifier = +3

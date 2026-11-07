@@ -23,12 +23,70 @@
  * 3. `Integer Hit Points`:
  *    - Damage and healing amounts are truncated to non-negative integers,
  *      matching the engine `i32` fields and rejecting negative "healing damage".
+ * 4. `Typed Damage, Server Affinity`:
+ *    - `applyDamage` sends a lowercase SRD `damage_type`; the engine derives
+ *      the target's resistance, vulnerability or immunity from it, and the
+ *      room refuses a manual affinity from players.
+ * 5. `Server-Rolled Death Saving Throws`:
+ *    - `recordDeathSave` sends `d20: null` unless the GM typed a physical die
+ *      result; the room rolls the d20 for players whatever they send.
+ * 6. `Server-Rolled Resolutions (ADR-0042)`:
+ *    - `resolveAction` and `rollConcentrationCheck` send `null` for the
+ *      server-filled payload; the room rolls and overwrites it.
  * ============================================================================
  */
-import type { Uuid, WirePoint2D, WireTrameCommand } from "../api/wire.ts";
+import type {
+  Uuid,
+  WireActionRequest,
+  WirePoint2D,
+  WireResolutionAdjustment,
+  WireRollMode,
+  WireTrameCommand,
+  WireWallSegment,
+} from "../api/wire.ts";
+import type { AoeTemplateDto, GridCell } from "../engine/wasmBridge.ts";
 
 /** Target affinity toward the damage type (`DamageAffinity`). */
 export type DamageAffinity = "NORMAL" | "RESISTANT" | "VULNERABLE" | "IMMUNE";
+
+/** SRD 5.2.1 damage types, lowercase as the engine matches them against `damage_*` lists. */
+export const DAMAGE_TYPES = [
+  "acid",
+  "bludgeoning",
+  "cold",
+  "fire",
+  "force",
+  "lightning",
+  "necrotic",
+  "piercing",
+  "poison",
+  "psychic",
+  "radiant",
+  "slashing",
+  "thunder",
+] as const;
+
+/** One SRD damage type (`DAMAGE_TYPES`). */
+export type DamageType = (typeof DAMAGE_TYPES)[number];
+
+/** Options of `applyDamage`. */
+export interface DamageOptions {
+  /** Typed damage; `null` (default) sends untyped damage resolved with `affinity`. */
+  damageType?: DamageType | null;
+  /** Critical hit: at 0 HP it adds two death saving throw failures instead of one. */
+  critical?: boolean;
+  /** Manual affinity (GM only; ignored by the engine when `damageType` is set). */
+  affinity?: DamageAffinity;
+}
+
+/** What a `CONDITION_OVERRIDE` rules on (`OverrideSubject`). */
+export type ConditionOverrideSubject = "CONDITION" | "EFFECT";
+
+/** `FORCE` applies, `REMOVE` suppresses, `null` clears the ruling (`OverrideMode`). */
+export type ConditionOverrideMode = "FORCE" | "REMOVE" | null;
+
+/** Manual fog ruling on one cell (`FogOverrideMode`). */
+export type FogOverrideMode = "REVEAL" | "HIDE" | "CLEAR";
 
 function nonNegativeInt(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
@@ -59,16 +117,132 @@ export function endTurnByTurn(): WireTrameCommand {
   return { cmd: "END_TURN_BY_TURN" };
 }
 
-/** `APPLY_DAMAGE`: raw damage before affinity; the engine resolves temp HP and resistance. */
-export function applyDamage(tokenId: Uuid, rawDamage: number, affinity: DamageAffinity = "NORMAL"): WireTrameCommand {
+/**
+ * `APPLY_DAMAGE`: raw damage before mitigation; the engine resolves the type's affinity, temp
+ * HP, concentration and, at 0 HP, death saving throw failures (two on a critical hit).
+ */
+export function applyDamage(tokenId: Uuid, rawDamage: number, options: DamageOptions = {}): WireTrameCommand {
   return {
     cmd: "APPLY_DAMAGE",
     token_id: tokenId,
     raw_damage: nonNegativeInt(rawDamage),
-    affinity,
-    is_critical: false,
-    damage_type: null,
+    affinity: options.affinity ?? "NORMAL",
+    is_critical: options.critical ?? false,
+    damage_type: options.damageType ?? null,
   };
+}
+
+/**
+ * `PROJECT_AOE`: the engine evaluates the wall-clipped template and answers
+ * `AOE_PROJECTED` with the affected tokens; `persistZone` keeps it on the map
+ * (bound to `concentration_caster_id`'s concentration when set).
+ */
+export function projectAoe(template: AoeTemplateDto, persistZone: boolean): WireTrameCommand {
+  return {
+    cmd: "PROJECT_AOE",
+    template: { ...template, concentration_caster_id: template.concentration_caster_id ?? null },
+    persist_zone: persistZone,
+  };
+}
+
+/** `TOGGLE_DOOR`: opens or closes a door (players: unlocked doors; GM: any door). */
+export function toggleDoor(wallId: Uuid, isOpen: boolean): WireTrameCommand {
+  return { cmd: "TOGGLE_DOOR", wall_id: wallId, is_open: isOpen };
+}
+
+/** `CONFIGURE_DOOR`: GM-only; locks or unlocks a plain door, leaving its open and secret state unchanged. */
+export function configureDoorLock(wallId: Uuid, isLocked: boolean): WireTrameCommand {
+  return { cmd: "CONFIGURE_DOOR", wall_id: wallId, is_open: null, is_locked: isLocked, is_secret: null };
+}
+
+/** `REMOVE_TOKEN`: GM-only; also drops the token from the initiative order. */
+export function removeToken(tokenId: Uuid): WireTrameCommand {
+  return { cmd: "REMOVE_TOKEN", token_id: tokenId };
+}
+
+/** `SET_TOKEN_VISIBILITY`: GM-only; `gmHidden` hides the token from every player. */
+export function setTokenVisibility(tokenId: Uuid, gmHidden: boolean, invisible: boolean): WireTrameCommand {
+  return { cmd: "SET_TOKEN_VISIBILITY", token_id: tokenId, gm_hidden: gmHidden, invisible };
+}
+
+/** `GM_OVERRIDE_TOKEN_RESOURCES` with only the remaining speed (`ft`, `>= 0`) set. */
+export function overrideRemainingSpeed(tokenId: Uuid, speedFt: number): WireTrameCommand {
+  return {
+    cmd: "GM_OVERRIDE_TOKEN_RESOURCES",
+    token_id: tokenId,
+    hp: null,
+    temp_hp: null,
+    speed_remaining_ft: Number.isFinite(speedFt) ? Math.max(0, speedFt) : 0,
+    has_action: null,
+    has_bonus_action: null,
+    has_reaction: null,
+  };
+}
+
+/** `SET_DISENGAGED`: Disengage for this turn (GM: any token; players: owned tokens). */
+export function setDisengaged(tokenId: Uuid, disengaged: boolean): WireTrameCommand {
+  return { cmd: "SET_DISENGAGED", token_id: tokenId, disengaged };
+}
+
+/** `SET_TOKEN_CONDITIONS`: replaces the token's condition ids (GM: any token; players: owned). */
+export function setTokenConditions(tokenId: Uuid, conditions: string[]): WireTrameCommand {
+  return { cmd: "SET_TOKEN_CONDITIONS", token_id: tokenId, conditions };
+}
+
+/** `CONDITION_OVERRIDE`: GM ruling forcing, removing or clearing (`null`) a condition or effect. */
+export function conditionOverride(tokenId: Uuid, subject: ConditionOverrideSubject, id: string, mode: ConditionOverrideMode): WireTrameCommand {
+  return { cmd: "CONDITION_OVERRIDE", token_id: tokenId, subject, id, mode };
+}
+
+/** `SET_CONCENTRATION`: starts or ends concentration without a zone (GM: any; players: owned). */
+export function setConcentration(tokenId: Uuid, concentrating: boolean): WireTrameCommand {
+  return { cmd: "SET_CONCENTRATION", token_id: tokenId, concentrating };
+}
+
+/**
+ * `RESOLVE_ACTION`: the room rolls `request` against the targets' server-side AC and save
+ * bonuses and stores a `PendingResolution`; `resolution` is always `null` from a client.
+ */
+export function resolveAction(request: WireActionRequest): WireTrameCommand {
+  return { cmd: "RESOLVE_ACTION", request, resolution: null };
+}
+
+/**
+ * `APPLY_RESOLUTION`: applies the server-rolled damage of one target (`tokenId`) or of every
+ * target not yet applied; `adjustment` is GM-only.
+ */
+export function applyResolution(resolutionId: Uuid, tokenId: Uuid | null = null, adjustment: WireResolutionAdjustment | null = null): WireTrameCommand {
+  return { cmd: "APPLY_RESOLUTION", resolution_id: resolutionId, token_id: tokenId, adjustment };
+}
+
+/** `DISMISS_RESOLUTION`: GM-only; drops a pending resolution without damage. */
+export function dismissResolution(resolutionId: Uuid): WireTrameCommand {
+  return { cmd: "DISMISS_RESOLUTION", resolution_id: resolutionId };
+}
+
+/** `ROLL_CONCENTRATION_CHECK`: the room rolls the token's Constitution save against its oldest open DC. */
+export function rollConcentrationCheck(tokenId: Uuid, rollMode: WireRollMode = "NORMAL"): WireTrameCommand {
+  return { cmd: "ROLL_CONCENTRATION_CHECK", token_id: tokenId, roll_mode: rollMode, roll: null };
+}
+
+/** `RECORD_DEATH_SAVE`: `d20` is a GM's physical die (`1..=20`), else `null` for a server roll. */
+export function recordDeathSave(tokenId: Uuid, d20: number | null = null): WireTrameCommand {
+  return { cmd: "RECORD_DEATH_SAVE", token_id: tokenId, d20 };
+}
+
+/** `SET_FOG_OVERRIDES`: GM-only fog ruling on every cell of one brush stroke (`1..=64` cells, one undo step). */
+export function setFogOverrides(mode: FogOverrideMode, cells: GridCell[]): WireTrameCommand {
+  return { cmd: "SET_FOG_OVERRIDES", mode, cells };
+}
+
+/** `SET_DIFFICULT_TERRAIN`: GM-only; paints (`difficult`) or erases a non-empty set of cells. */
+export function setDifficultTerrain(cells: GridCell[], difficult: boolean): WireTrameCommand {
+  return { cmd: "SET_DIFFICULT_TERRAIN", cells, difficult };
+}
+
+/** `ADD_WALL`: GM-only; adds a wall segment to the live map. */
+export function addWall(wall: WireWallSegment): WireTrameCommand {
+  return { cmd: "ADD_WALL", wall };
 }
 
 /** `HEAL_ACTOR`: restores hit points up to the token's maximum. */
@@ -109,18 +283,34 @@ export interface SpawnTokenInput {
   dexMod: number;
   /** Walking speed in feet (`ft`). */
   speedFt: number;
+  /**
+   * Monster stat block: an SRD reference (`srd:monster:<slug>`), an actor
+   * template UUID, or a full stat block object. The server resolves and
+   * validates it, then overwrites HP, AC, speed, senses, size, reach and
+   * damage affinities from its own copy. Omitted for plain and linked tokens.
+   */
+  statBlock?: string | Record<string, unknown>;
+  /** Spawn hidden from players (`CHANNEL_GM_HIDDEN`); the GM reveals it from the token menu. */
+  gmHidden?: boolean;
 }
+
+/** `TokenState::visibility_channel` bits (`geometry.rs`): material plane, GM-hidden. */
+const CHANNEL_MATERIAL = 0b001;
+const CHANNEL_GM_HIDDEN = 0b100;
 
 /**
  * `SPAWN_TOKEN`: GM-only. Sends a complete `TokenState` (the engine has no
  * defaults for most fields): a 1x1 Medium token on the material channel with
- * the engine's default senses, full action economy, and no effects.
+ * plain sight and no darkvision, full action economy, and no effects. The
+ * server replaces the senses of sheet-linked and stat-block tokens with the
+ * species or stat-block values, so no sense is assumed here.
  */
 export function spawnToken(input: SpawnTokenInput): WireTrameCommand {
   const maxHp = Math.max(1, Math.trunc(input.maxHp));
   return {
     cmd: "SPAWN_TOKEN",
     token: {
+      ...(input.statBlock === undefined ? {} : { stat_block: input.statBlock }),
       id: input.tokenId,
       name: input.name,
       owner_user_id: input.ownerUserId,
@@ -131,11 +321,11 @@ export function spawnToken(input: SpawnTokenInput): WireTrameCommand {
       is_squeezing: false,
       elevation_ft: 0,
       height_ft: 5,
-      visibility_channel: 1,
+      visibility_channel: input.gmHidden ? CHANNEL_MATERIAL | CHANNEL_GM_HIDDEN : CHANNEL_MATERIAL,
       invisible: false,
       senses: {
         normal_range_ft: 120,
-        darkvision_range_ft: 60,
+        darkvision_range_ft: 0,
         blindsight_range_ft: 0,
         tremorsense_range_ft: 0,
         truesight_range_ft: 0,

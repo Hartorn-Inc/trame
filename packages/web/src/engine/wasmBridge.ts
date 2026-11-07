@@ -42,7 +42,9 @@ import initWasm, {
   initSync,
   previewAoeCells as wasmPreviewAoeCells,
   previewMove as wasmPreviewMove,
+  suggestCover as wasmSuggestCover,
 } from "../wasm/trame_engine.js";
+import type { WireAmbientLighting, WireSenseProfile, WireWallKind } from "../api/wire.ts";
 
 export interface Point2D {
   x: number;
@@ -53,6 +55,11 @@ export interface WallSegmentDto {
   id: string;
   a: Point2D;
   b: Point2D;
+  /**
+   * Engine `WallKind`; missing means `NORMAL`. Vision honours it: windows, open doors and a
+   * single terrain wall let sight through, one-way walls block from their normal side only.
+   */
+  kind?: WireWallKind;
   blocksVision: boolean;
   blocksMovement?: boolean;
   /** Missing means blocking, matching the engine default. */
@@ -103,7 +110,7 @@ export interface AoeTemplateDto {
   concentration_caster_id?: string | null;
 }
 
-/** Footprint of the token whose move is previewed. Optional fields use engine defaults. */
+/** Footprint of a token (move preview, cover). Optional fields use engine defaults. */
 export interface MoverFootprint {
   /** Current top-left in canvas pixels. */
   topLeft: Point2D;
@@ -124,8 +131,20 @@ export interface MoverFootprint {
 export interface MovePreview {
   /** First blocking wall crossing in canvas pixels, or `null` when the path is clear. */
   collision: Point2D | null;
-  /** Movement cost in feet (3D distance, doubled while squeezing). */
+  /**
+   * Movement cost in feet: Chebyshev squares (diagonals cost one cell), difficult squares
+   * doubled, elevation change as a third axis (`max`), doubled while squeezing.
+   */
   costFt: number;
+}
+
+/** Cover level suggested from the walls between an attacker and a target. */
+export type CoverLevel = "NONE" | "HALF" | "THREE_QUARTERS" | "TOTAL";
+
+export interface CoverSuggestion {
+  cover: CoverLevel;
+  /** AC and Dexterity save bonus (`0`, `2`, `5`); `null` for `TOTAL` (cannot be targeted). */
+  bonus: number | null;
 }
 
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
@@ -223,6 +242,28 @@ export function computeVisibilityPolygon(
   });
 }
 
+/**
+ * Visibility polygon of one token: the radius comes from the token's own `senses` under the
+ * scene's `ambientLighting` (in pitch darkness only darkvision, blindsight, truesight or
+ * Devil's Sight see), and truesight from `senses.truesight_range_ft`. `pxPerFt` is
+ * `cellSizePx / feetPerCell`.
+ */
+export function computeTokenVisionPolygon(
+  walls: WallSegmentDto[],
+  origin: Point2D,
+  observerEyeFt: number,
+  senses: WireSenseProfile,
+  ambientLighting: WireAmbientLighting,
+  pxPerFt: number,
+): Point2D[] {
+  return callEngine(wasmComputeVisibilityPolygon, {
+    walls: toEngineWalls(walls),
+    origin,
+    observerEyeFt,
+    sight: { senses, ambientLighting, pxPerFt },
+  });
+}
+
 /** Grid cells covered by `template`, clipped against `walls` when `stops_at_walls` is set. */
 export function previewAoeCells(
   template: AoeTemplateDto,
@@ -263,7 +304,10 @@ export function previewSphereAoeCells(
   );
 }
 
-/** Previews a straight move with the server's `MoveToken` wall-collision and cost rules. */
+/**
+ * Previews a straight move with the server's `MoveToken` wall-collision and cost rules.
+ * `difficultTerrain` is the map's `difficult_terrain` cell list; entering one costs double.
+ */
 export function previewMove(
   token: MoverFootprint,
   toTopLeft: Point2D,
@@ -271,6 +315,7 @@ export function previewMove(
   cellSizePx: number,
   feetPerCell: number,
   toElevationFt?: number,
+  difficultTerrain: GridCell[] = [],
 ): MovePreview {
   return callEngine(wasmPreviewMove, {
     walls: toEngineWalls(walls),
@@ -279,6 +324,26 @@ export function previewMove(
     toElevationFt,
     cellSizePx,
     feetPerCell,
+    difficultTerrain,
+  });
+}
+
+/**
+ * Suggests the cover `target` has against `attacker` from movement-blocking walls (closed
+ * doors, windows; not open doors or illusions), by the corner-to-corner grid rule. A
+ * suggestion only: the attacker or GM confirms it before it changes AC or a save.
+ */
+export function suggestCover(
+  attacker: MoverFootprint,
+  target: MoverFootprint,
+  walls: WallSegmentDto[],
+  cellSizePx: number,
+): CoverSuggestion {
+  return callEngine(wasmSuggestCover, {
+    walls: toEngineWalls(walls),
+    attacker,
+    target,
+    cellSizePx,
   });
 }
 

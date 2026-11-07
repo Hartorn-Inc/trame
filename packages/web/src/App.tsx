@@ -29,6 +29,10 @@
  *      `WalQuarantineBanner` and `CommandFeedbackToasts`, which own the only
  *      connection, recovery and action-failure live regions (the header
  *      badge is plain text).
+ * 6. `SRD Packs Never Block`:
+ *    - The shell renders while the SRD packs load; `SrdLoadingNotice` says
+ *      so, and reading `srdStatusSignal` re-renders the tree (sheets derive
+ *      again) when the full catalog arrives (`srdLoading.ts`).
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -56,6 +60,7 @@ import { CampaignLobby } from './lobby/CampaignLobby.tsx';
 import { InstanceAdminPanel } from './lobby/InstanceAdminPanel.tsx';
 import type { UserRole } from './maps/types.ts';
 import { MobileCompanionView } from './mobile/MobileCompanionView.tsx';
+import { srdStatusSignal } from './srdLoading.ts';
 import { CampaignWorkspace } from './workspace/CampaignWorkspace.tsx';
 import {
   HandoutRevealModal,
@@ -257,6 +262,8 @@ export function App({ client = apiClient, location, replaceUrl = browserReplaceU
 
   const status = client.state.status.value;
   const campaignId = client.state.activeCampaignId.value;
+  // Read so the tree re-renders, and sheets derive again, when the SRD packs arrive.
+  void srdStatusSignal.value;
   const leaveEntryRoute = () => setRoute(APP_ROUTE);
 
   if (status === 'restoring' || route === null) {
@@ -281,8 +288,20 @@ export function App({ client = apiClient, location, replaceUrl = browserReplaceU
 
   return (
     <>
+      <SrdLoadingNotice />
       {campaignId ? <CampaignView client={client} campaignId={campaignId} /> : <LobbyView client={client} />}
       <HandoutRevealModal />
     </>
+  );
+}
+
+/** Non-blocking notice while the full SRD packs load in the background (`srdLoading.ts`). */
+export function SrdLoadingNotice() {
+  const status = srdStatusSignal.value;
+  if (status === 'ready') return null;
+  return (
+    <p class="ds-hint" role="status" aria-busy={status === 'loading' ? 'true' : 'false'} data-testid="srd-loading">
+      {t(status === 'loading' ? 'shell.srdLoading' : 'shell.srdFallback')}
+    </p>
   );
 }

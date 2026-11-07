@@ -143,7 +143,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ConcentrationCheckPrompt
 
-- **Definition**: Interactive prompt emitted by the damage pipeline when a concentrating actor takes damage, with a Difficulty Class equal to `Math.max(10, Math.floor(damageTaken / 2))`.
+- **Definition**: Interactive prompt emitted by the damage pipeline when a concentrating actor takes damage, with a Difficulty Class equal to `Math.min(30, Math.max(10, Math.floor(damageTaken / 2)))` (minimum 10, capped at 30). The engine queues the DC in `TableSnapshotData::pending_concentration_checks` (`ConcentrationCheckRequested`) for the token's controller, or the Game Master for monsters; `RollConcentrationCheck` rolls the Constitution save on the server and a failure ends concentration and its persistent zone.
 - **Allowed Context**: `ConcentrationCheckPrompt`, `concentration check prompt`.
 - **_Avoid_**: `concentration check`, `concentration save prompt`, `concentration DC`.
 
@@ -155,9 +155,15 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ConditionOverride
 
-- **Definition**: Game Master-only `TrameCommand` that forces or removes any `Condition` or `ActiveEffect` on a `LinkedActorToken` or `SyntheticToken`. It always wins over automated condition effects and pushes an `UndoEntry`.
+- **Definition**: Game Master-only `TrameCommand` that forces or removes any `Condition` or `ActiveEffect` on a `LinkedActorToken` or `SyntheticToken`. It always wins over automated condition effects and pushes an `UndoEntry`. Effect rulings name one automated rule of one condition as `<condition>.<rule>` (for example `grappled.speed_zero`, `paralyzed.auto_crit_within_5ft`).
 - **Allowed Context**: Game Master rulings on condition edge cases and the condition picker override control.
 - **_Avoid_**: ForceCondition, ManualStatus, ConditionHack.
+
+### CoverLevel
+
+- **Definition**: Cover a target has against one attacker (`None`, `Half`, `ThreeQuarters`, `Total`), suggested by the engine (`suggestCover`) from the movement-blocking `WallSegment`s between them with the corner-to-corner grid rule: from the attacker's best corner to the corners of one target square, `0` blocked lines is `None`, `1-2` is `Half` (`+2` AC and Dexterity saves), `3-4` is `ThreeQuarters` (`+5`). Creatures never provide cover in this rule. `Total` (cannot be targeted directly) is never suggested: only the Game Master picks it in the cover panel. Never applied automatically: the attacker or Game Master confirms it.
+- **Allowed Context**: Attack and saving throw resolution, the cover suggestion shown before Apply.
+- **_Avoid_**: Obstruction, CoverBonus, AutoCover.
 
 ### CRDTDocument
 
@@ -185,7 +191,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### DeathSavingThrow
 
-- **Definition**: Untyped d20 saving throw rolled by an unconscious actor at 0 HP at the start of their turn, tracking successes (`>= 10`) and failures (`< 10`, 2 failures on natural 1, regain 1 HP on natural 20).
+- **Definition**: Untyped d20 saving throw rolled by an unconscious actor at 0 HP at the start of their turn, tracking successes (`>= 10`) and failures (`< 10`, 2 failures on natural 1, regain 1 HP on natural 20). Three successes make the actor Stable (counters reset, no further rolls until damaged); three failures kill it. The server rolls the d20 for players (`RecordDeathSave`).
 - **Allowed Context**: `DeathSavingThrow`, `death saving throw`.
 - **_Avoid_**: `death save`, `dying roll`.
 
@@ -251,9 +257,15 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### LongRest
 
-- **Definition**: Extended rest period of at least 8 hours restoring all HP, resetting temporary HP to 0, restoring `Math.max(1, Math.floor(hitDiceMax / 2))` hit dice, reducing exhaustion by 1 level, and resetting all spell slots and long-rest resource pools.
+- **Definition**: Extended rest period of at least 8 hours restoring all HP, resetting temporary HP to 0, restoring all spent hit dice (`hitDiceCurrent = hitDiceMax`), reducing exhaustion by 1 level, and resetting all spell slots and long-rest resource pools.
 - **Allowed Context**: `LongRest`, `long rest`.
 - **_Avoid_**: `extended rest`, `full rest`.
+
+### MonsterStatBlock
+
+- **Definition**: Complete SRD 5.2.1 monster record (size, speeds by mode, senses, AC, HP, CR, XP, proficiency bonus, traits, actions with Multiattack, typed damage with riders, bonus actions, reactions, legendary actions, damage and condition affinities) stored in `data.statBlock` of a monster compendium entry and copied into staged and spawned tokens. Each action declares an automation level (`full`, `partial`, `text`). Bounds live in `schemas/monster-stat-block.schema.json`.
+- **Allowed Context**: Monster compendium entries, `StagedToken` and `SyntheticToken` stat-block copies, server bounds validation, homebrew monster editing.
+- **_Avoid_**: MonsterTemplate, CreatureSheet, NpcStats.
 
 ### PadlockEditMode
 
@@ -333,6 +345,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: Server persistence, SQL migrations, and production runtime wiring.
 - **_Avoid_**: InMemoryProdStore, OrmAdapter, PrismaStore.
 
+### SrdPack
+
+- **Definition**: Generated, committed JSON file of `SystemSRD` compendium entries (`packs/spells.json`, `packs/monsters.json`, `packs/magic-items.json`) written by `make srd-content` from the pinned Open5e SRD 5.2.1 snapshot and never edited by hand. `loadSrdPacks()` loads the packs lazily and `loadFullSystemSrd()` merges them by id over the curated catalog, keeping curated French metadata. `packs/manifest.json` records the source pin, checksums and the CC-BY-4.0 attribution.
+- **Allowed Context**: `SrdPack`, `SRD pack`, `generated pack`, `make srd-content`.
+- **_Avoid_**: `content dump`, `data bundle`, `seed file`.
+
 ### SystemSRD
 
 - **Definition**: Read-only baseline game reference data from the CC-BY-4.0 System Reference Document 5.2.1 (2024 rules) bundled with the game system pack; SRD 5.1 (also CC-BY-4.0) fills only the entries SRD 5.2.1 lacks (ADR-0038).
@@ -353,7 +371,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ThreatReach
 
-- **Definition**: Radial spatial perimeter within which an actor threatens adjacent hostile entities and triggers opportunity reactions upon exit.
+- **Definition**: Radial spatial perimeter within which an actor threatens adjacent hostile entities and triggers opportunity reactions upon exit. Its radius (`TokenState::reach_ft`) is set by the server from the linked `Actor` sheet: 10 ft with an equipped Reach weapon, otherwise 5 ft; a stat block uses its longest melee attack reach.
 - **Allowed Context**: Movement validation, reaction triggers, and token combat ranges.
 - **_Avoid_**: MeleeRange, OpportunityZone, DangerArea.
 
@@ -519,6 +537,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: Player-facing health indicator on enemy tokens and in the combat tracker.
 - **_Avoid_**: HealthBarPercent, HpHint, WoundLevel.
 
+### PendingResolution
+
+- **Definition**: Server-held result of an attack or area action (`ResolveAction`): per target the outcome (hit, miss, critical, blocked, save success or failure) and the server-rolled damage after save-for-half, split into one part per damage type when the action deals several (each part meets the target's own affinity to that type), waiting for an explicit `ApplyResolution`. The issuer may apply it as rolled, the Game Master may apply, adjust or dismiss it, and each target is applied at most once. It lives in `TableSnapshotData`, so the WAL and undo restore it ([ADR-0042](./docs/adr/0042-server-held-pending-resolutions.md)).
+- **Allowed Context**: Decision D6 attack and area resolution, the attack card, and the Game Master pending list.
+- **_Avoid_**: PendingAttack, DamageQueue, UnappliedRoll.
+
 ### McpStagingProposal
 
 - **Definition**: Pending batch of destructive or bulk `TrameCommand` mutations submitted via `/api/v1/mcp` while `MCP Staging Mode` is active, stored in the table snapshot data (`mcp_staging_proposals`) rather than in transient actor memory, projected to Game Masters only, and rendered as translucent purple ghost previews until the Game Master dispatches `CommitMcpStaging` (applied all-or-nothing) or `RejectMcpStaging`.
@@ -545,7 +569,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### ReactionPrompt
 
-- **Definition**: Pending opportunity-reaction decision opened by a Turn-by-Turn `MoveToken` that leaves the `ThreatReach` of a hostile token that still has its reaction, is not GM-hidden or incapacitated, and can see the mover. It is addressed to the reactor's owner (the Game Master for unowned tokens), has no timer, and blocks player movement of the interrupted token until `DecideReaction` (`Trigger` or `Pass`, which the Game Master can force). After `Trigger`, `ResolveReaction` resumes the remaining move. Its `prompt_id` is a one-way SHA-256-derived UUID, so players cannot recover a hidden reactor's ID, and WAL replay reproduces the same IDs.
+- **Definition**: Pending opportunity-reaction decision opened by a Turn-by-Turn `MoveToken` that leaves the `ThreatReach` of a hostile token that still has its reaction, is not GM-hidden or incapacitated, and can see the mover. It is addressed to the reactor's owner (the Game Master for unowned tokens), has no timer, and blocks player movement of the interrupted token until `DecideReaction` (`Trigger` or `Pass`, which the Game Master can force). A mover that took the Disengage action (`SetDisengaged`) opens none until the next turn starts. After `Trigger`, `ResolveReaction` resumes the remaining move. Its `prompt_id` is a one-way SHA-256-derived UUID, so players cannot recover a hidden reactor's ID, and WAL replay reproduces the same IDs.
 - **Allowed Context**: `ProjectedTableState.active_reaction_prompts`, `ReactionPromptOpened` / `ReactionPromptClosed` events, and `ReactionBanner` rendering.
 - **_Avoid_**: OpportunityWindow, ReactionTimer, InterruptToken.
 

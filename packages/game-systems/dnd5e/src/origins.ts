@@ -30,11 +30,18 @@
  *      - `SRD_FEATS` holds exactly the 17 SRD 5.2.1 feats. Level-up checks
  *        their level / ability prerequisites, repeatability, and the `+1`
  *        ability increase of General feats (cap `20`) and Epic Boons (cap `30`).
- *        Fighting Style feats come from class features, never from an ASI.
+ *      - Fighting Style feats have the prerequisite "Fighting Style feature":
+ *        they are offered at a feat slot (`getFeatSlotOptions`) only to an
+ *        actor whose class has that feature (Fighter 1, Paladin 2, Ranger 2).
  *   4. `Original Backgrounds`:
  *      - Caravan Guide and Lamplighter are TRAME originals built with the same
  *        shape (three abilities, one Origin feat, two skills, one tool,
  *        equipment or 50 GP) to replace non-SRD Folk Hero and Noble.
+ *   5. `Feat Choices Are Data`:
+ *      - Magic Initiate (spell list, ability, 2 cantrips, 1 level-1 spell) and
+ *        Skilled (3 skills or tools) publish their required picks as
+ *        `FEAT_CHOICE_SPECS`; `builderChoices.ts` turns them into renderable
+ *        `BuilderChoice`s and validates selections.
  *
  * EXECUTION LIFECYCLE:
  * --------------------
@@ -48,6 +55,7 @@
 
 import type { AbilityId, Dnd5eActorData, SkillId } from "./types.ts";
 import { computeDnd5eSheetDerived } from "./manifest.ts";
+import { getActorProficiencies } from "./classRules.ts";
 
 // ============================================================================
 // SPECIES
@@ -162,7 +170,7 @@ export type FeatCategory = "origin" | "general" | "fighting_style" | "epic_boon"
 
 /** Rule data of one SRD 5.2.1 feat. */
 export interface FeatRules {
-  /** Feat category. Fighting Style feats are only granted by class features. */
+  /** Feat category. Fighting Style feats require the Fighting Style class feature. */
   category: FeatCategory;
   /** Minimum character level to take the feat (`4` for General, `19` for Epic Boons). */
   minLevel: number;
@@ -334,6 +342,12 @@ export interface FeatSelectionContext {
   heldFeatIds: readonly string[];
   /** Whether the actor has the Spellcasting or Pact Magic feature. */
   hasSpellcasting: boolean;
+  /**
+   * Whether the actor has the Fighting Style class feature (Fighter 1+,
+   * Paladin 2+, Ranger 2+), the prerequisite of Fighting Style feats.
+   * Defaults to `false`.
+   */
+  hasFightingStyle?: boolean;
   /** Ability chosen for the feat's `+1` increase, if any. */
   abilityIncrease?: AbilityId;
 }
@@ -342,14 +356,15 @@ export interface FeatSelectionContext {
  * Validates an SRD feat chosen on level-up and returns the ability it raises
  * (or `undefined`). Non-SRD (homebrew) feat ids pass without checks.
  * Throws on unmet level/ability/spellcasting prerequisites, Fighting Style
- * feats, repeated non-repeatable feats, and missing or invalid increases.
+ * feats without the Fighting Style feature, repeated non-repeatable feats,
+ * and missing or invalid increases.
  */
 export function validateFeatSelection(featId: string, ctx: FeatSelectionContext): AbilityId | undefined {
   const key = srdFeatKey(featId);
   if (!key) return undefined;
   const feat = SRD_FEATS[key];
-  if (feat.category === "fighting_style") {
-    throw new Error("Fighting Style feats are granted by class features");
+  if (feat.category === "fighting_style" && !ctx.hasFightingStyle) {
+    throw new Error("Fighting Style feats require the Fighting Style feature");
   }
   if (key === "ability_score_improvement") {
     throw new Error("Use the ASI selection for Ability Score Improvement");
@@ -376,6 +391,96 @@ export function validateFeatSelection(featId: string, ctx: FeatSelectionContext)
   }
   return ability;
 }
+
+/**
+ * SRD feats an actor qualifies for at a feat slot (an ASI level), in
+ * `SRD_FEATS` order. Ability Score Improvement is excluded (it is the `"asi"`
+ * selection). A feat with a `+1` increase is offered only when at least one
+ * of its abilities can still rise; `ctx.abilityIncrease` is ignored.
+ */
+export function getFeatSlotOptions(ctx: FeatSelectionContext): SrdFeatId[] {
+  return (Object.keys(SRD_FEATS) as SrdFeatId[]).filter((key) => {
+    if (key === "ability_score_improvement") return false;
+    const increase = SRD_FEATS[key].abilityIncrease;
+    const abilityIncrease = increase?.abilities.find((ab) => ctx.abilities[ab] < increase.max);
+    if (increase && !abilityIncrease) return false;
+    try {
+      validateFeatSelection(key, { ...ctx, abilityIncrease });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** The SRD 5.2.1 spell lists Magic Initiate draws from. */
+export type MagicInitiateSpellList = "cleric" | "druid" | "wizard";
+
+/** Abilities Magic Initiate may use as its spellcasting ability. */
+export const MAGIC_INITIATE_ABILITIES: readonly AbilityId[] = ["int", "wis", "cha"];
+
+/** Spell lists Magic Initiate may draw from. */
+export const MAGIC_INITIATE_SPELL_LISTS: readonly MagicInitiateSpellList[] = ["cleric", "druid", "wizard"];
+
+/** SRD 5.2.1 tools (Artisan's Tools and Other Tools) a proficiency can name. */
+export const SRD_TOOLS: readonly string[] = [
+  "Alchemist's Supplies",
+  "Brewer's Supplies",
+  "Calligrapher's Supplies",
+  "Carpenter's Tools",
+  "Cartographer's Tools",
+  "Cobbler's Tools",
+  "Cook's Utensils",
+  "Glassblower's Tools",
+  "Jeweler's Tools",
+  "Leatherworker's Tools",
+  "Mason's Tools",
+  "Painter's Supplies",
+  "Potter's Tools",
+  "Smith's Tools",
+  "Tinker's Tools",
+  "Weaver's Tools",
+  "Woodcarver's Tools",
+  "Disguise Kit",
+  "Forgery Kit",
+  "Gaming Set",
+  "Herbalism Kit",
+  "Musical Instrument",
+  "Navigator's Tools",
+  "Poisoner's Kit",
+  "Thieves' Tools",
+];
+
+/**
+ * Picks one feat requires when it is taken, as data the builder renders:
+ * - `"spell_list"`: one of `MAGIC_INITIATE_SPELL_LISTS`.
+ * - `"ability"`: one of `MAGIC_INITIATE_ABILITIES` (spellcasting ability).
+ * - `"spell"`: `count` spells of `spellLevel` from the chosen spell list.
+ * - `"skill_or_tool"`: `count` skills or `SRD_TOOLS`, in any combination.
+ */
+export interface FeatChoiceSpec {
+  /** Stable selection key (e.g. `"cantrips"`). */
+  id: string;
+  /** Kind of value picked. */
+  kind: "spell_list" | "ability" | "spell" | "skill_or_tool";
+  /** English label. */
+  label: string;
+  /** Exact number of picks. */
+  count: number;
+  /** Spell level (`0` = cantrip) for `"spell"` picks. */
+  spellLevel?: number;
+}
+
+/** Required picks of the SRD feats that have choices (Magic Initiate, Skilled). */
+export const FEAT_CHOICE_SPECS: Readonly<Partial<Record<SrdFeatId, readonly FeatChoiceSpec[]>>> = {
+  magic_initiate: [
+    { id: "spell_list", kind: "spell_list", label: "Spell list", count: 1 },
+    { id: "spellcasting_ability", kind: "ability", label: "Spellcasting ability", count: 1 },
+    { id: "cantrips", kind: "spell", label: "Cantrips", count: 2, spellLevel: 0 },
+    { id: "level_1_spell", kind: "spell", label: "Level 1 spell", count: 1, spellLevel: 1 },
+  ],
+  skilled: [{ id: "proficiencies", kind: "skill_or_tool", label: "Skills or tools", count: 3 }],
+};
 
 // ============================================================================
 // BACKGROUNDS
@@ -493,7 +598,9 @@ export function backgroundAbilityIncreases(
 /**
  * Applies `backgroundId` to a new character: raises abilities per `choice`
  * (cap `20`, with the retroactive CON HP delta for every level), grants the
- * two skill proficiencies, records the background and its Origin feat, and
+ * two skill proficiencies and the tool proficiency (stored in
+ * `proficiencies`, seeded from the class), records the background and its
+ * Origin feat (taken at level 1), and
  * recomputes derived statistics. Throws on unknown backgrounds, a second
  * background, invalid choices or scores above 20.
  */
@@ -533,6 +640,10 @@ export function applyBackground(
   }
   clone.backgroundId = `srd:background:${backgroundId.replace(/^srd:background:/, "").toLowerCase()}`;
   clone.features = [...(clone.features ?? []), background.originFeat];
+  clone.featsTaken = [...(clone.featsTaken ?? []), { featId: background.originFeat, level: 1 }];
+  const proficiencies = getActorProficiencies(clone);
+  if (!proficiencies.tools.includes(background.toolProficiency)) proficiencies.tools.push(background.toolProficiency);
+  clone.proficiencies = proficiencies;
   clone.derived = computeDnd5eSheetDerived(clone);
   return clone;
 }

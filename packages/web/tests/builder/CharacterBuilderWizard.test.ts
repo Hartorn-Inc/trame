@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { computeDnd5eSheetDerived } from "../../../game-systems/dnd5e/src/index.ts";
 import {
   BuilderDraftStore,
   CharacterBuilderWizard,
@@ -23,14 +24,22 @@ const COMPLETE: Partial<CharacterDraft> = {
   abilityScores: { ...STANDARD },
   abilityGenerationMethod: "standardArray",
   equipmentIds: ["Spear", "Shortbow"],
+  classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:archery"], equipment: ["A"] },
 };
+
+/** Fills every class choice with its first `count` options. */
+function pickFirstClassOptions(wizard: CharacterBuilderWizard): void {
+  for (const choice of wizard.getClassChoices()) {
+    for (const option of choice.options.slice(0, choice.count)) wizard.toggleClassOption(choice.id, option.id);
+  }
+}
 
 describe("CharacterBuilderWizard: 2024 step order and gating", () => {
   it("starts on species with an empty draft and follows the SRD 5.2.1 order", () => {
     const wizard = wizardWith(COMPLETE);
     const visited = [wizard.currentStep];
     while (wizard.nextStep()) visited.push(wizard.currentStep);
-    assert.deepEqual(visited, ["species", "class", "background", "abilityScores", "equipment", "review"]);
+    assert.deepEqual(visited, ["species", "class", "background", "abilityScores", "skills", "equipment", "spells", "review"]);
   });
 
   const blocked: Array<{ id: string; draft: Partial<CharacterDraft>; step: string; error: string }> = [
@@ -61,7 +70,44 @@ describe("CharacterBuilderWizard: 2024 step order and gating", () => {
       step: "abilityScores",
       error: "builder.error.pointBuy",
     },
+    { id: "missing class skills block the skills step", draft: { ...COMPLETE, classSelections: { equipment: ["A"] } }, step: "skills", error: "builder.error.skills" },
+    {
+      id: "a skill outside the class list is rejected",
+      draft: { ...COMPLETE, classSelections: { skills: ["acrobatics", "arcana"], equipment: ["A"] } },
+      step: "skills",
+      error: "builder.error.skills",
+    },
+    {
+      id: "a skill the background already grants is not offered",
+      draft: { ...COMPLETE, classSelections: { skills: ["acrobatics", "athletics"], equipment: ["A"] } },
+      step: "skills",
+      error: "builder.error.skills",
+    },
+    {
+      id: "a missing Fighting Style feat blocks a Fighter's skills step",
+      draft: { ...COMPLETE, classSelections: { skills: ["acrobatics", "perception"], equipment: ["A"] } },
+      step: "skills",
+      error: "builder.error.fightingStyle",
+    },
+    {
+      id: "a general feat is not a Fighting Style pick",
+      draft: { ...COMPLETE, classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:alert"], equipment: ["A"] } },
+      step: "skills",
+      error: "builder.error.fightingStyle",
+    },
     { id: "empty equipment blocks the equipment step", draft: { ...COMPLETE, equipmentIds: [] }, step: "equipment", error: "builder.error.equipment" },
+    {
+      id: "a missing class equipment option blocks the equipment step",
+      draft: { ...COMPLETE, classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:archery"] } },
+      step: "equipment",
+      error: "builder.error.classEquipment",
+    },
+    {
+      id: "a Wizard without spells is blocked on the spells step",
+      draft: { ...COMPLETE, classId: "wizard", classSelections: { skills: ["insight", "medicine"], equipment: ["A"] } },
+      step: "spells",
+      error: "builder.error.spells",
+    },
     { id: "a blank name blocks the review", draft: { ...COMPLETE, name: "  " }, step: "review", error: "builder.error.name" },
   ];
 
@@ -83,11 +129,45 @@ describe("CharacterBuilderWizard: 2024 step order and gating", () => {
     assert.equal(wizard.currentStep, "species");
   });
 
-  it("changing the background resets the split to +1/+1/+1", () => {
+  it("changing the background resets the split to +1/+1/+1 and the class skills", () => {
     const wizard = wizardWith(COMPLETE);
     wizard.setBackground("sage");
     assert.deepEqual(wizard.getDraft()?.backgroundChoice, { mode: "plus1_each" });
+    assert.deepEqual(wizard.getDraft()?.classSelections, { fighting_style: ["srd:feat:archery"], equipment: ["A"] });
   });
+
+  it("changing the class clears every class pick", () => {
+    const wizard = wizardWith(COMPLETE);
+    wizard.setClass("rogue");
+    assert.deepEqual(wizard.getDraft()?.classSelections, {});
+  });
+
+  const toggles: Array<{ id: string; choice: string; clicks: string[]; picked: string[] }> = [
+    { id: "multi-pick choices stop at their count", choice: "skills", clicks: ["acrobatics", "perception", "history"], picked: ["acrobatics", "perception"] },
+    { id: "picking an option again removes it", choice: "skills", clicks: ["acrobatics", "perception", "acrobatics", "history"], picked: ["perception", "history"] },
+    { id: "a single-pick choice replaces its pick", choice: "equipment", clicks: ["A", "B"], picked: ["B"] },
+  ];
+  for (const c of toggles) {
+    it(`toggleClassOption: ${c.id}`, () => {
+      const wizard = wizardWith({ ...COMPLETE, classSelections: {} });
+      for (const option of c.clicks) wizard.toggleClassOption(c.choice, option);
+      assert.deepEqual(wizard.getClassSelection(c.choice), c.picked);
+    });
+  }
+
+  const offered: Array<{ id: string; draft: Partial<CharacterDraft>; step: "skills" | "spells"; choices: string[] }> = [
+    { id: "a Fighter picks skills and a Fighting Style feat on the skills step", draft: COMPLETE, step: "skills", choices: ["skills", "fighting_style"] },
+    { id: "a Paladin has no Fighting Style feat at level 1", draft: { ...COMPLETE, classId: "paladin" }, step: "skills", choices: ["skills"] },
+    { id: "a Bard also picks tools on the skills step", draft: { ...COMPLETE, classId: "bard" }, step: "skills", choices: ["skills", "tools"] },
+    { id: "a Fighter has no spell picks", draft: COMPLETE, step: "spells", choices: [] },
+    { id: "a Wizard picks cantrips and spellbook spells", draft: { ...COMPLETE, classId: "wizard" }, step: "spells", choices: ["cantrips", "spells"] },
+  ];
+  for (const c of offered) {
+    it(c.id, () => {
+      const wizard = wizardWith(c.draft);
+      assert.deepEqual(wizard.choicesForStep(c.step).map((choice) => choice.id), c.choices);
+    });
+  }
 });
 
 describe("CharacterBuilderWizard: finalized level-1 actor", () => {
@@ -113,7 +193,7 @@ describe("CharacterBuilderWizard: finalized level-1 actor", () => {
     },
     {
       id: "elf sage wizard with +1/+1/+1: CON delta raises HP, Magic Initiate origin feat",
-      draft: { ...COMPLETE, speciesId: "elf", classId: "wizard", backgroundId: "sage", backgroundChoice: { mode: "plus1_each" } },
+      draft: { ...COMPLETE, speciesId: "elf", classId: "wizard", backgroundId: "sage", backgroundChoice: { mode: "plus1_each" }, classSelections: {} },
       scores: { str: 15, dex: 14, con: 14, int: 13, wis: 11, cha: 8 },
       hp: 6 + 2,
       speedFt: 30,
@@ -126,6 +206,7 @@ describe("CharacterBuilderWizard: finalized level-1 actor", () => {
   for (const c of cases) {
     it(c.id, () => {
       const wizard = wizardWith(c.draft);
+      if (Object.keys(c.draft.classSelections ?? {}).length === 0) pickFirstClassOptions(wizard);
       while (wizard.nextStep());
       const actor = wizard.confirm();
       assert.ok(actor);
@@ -136,6 +217,7 @@ describe("CharacterBuilderWizard: finalized level-1 actor", () => {
       assert.equal(actor.attributes.hp.max, c.hp);
       assert.equal(actor.attributes.speedFt, c.speedFt);
       assert.ok(actor.features?.includes(c.feat));
+      if (actor.classId === "fighter") assert.ok(actor.features?.includes("srd:feat:archery"), "the Fighting Style feat is recorded");
       for (const skill of c.skills) assert.equal(actor.skills[skill as keyof typeof actor.skills].proficiencyRank, 1);
       assert.deepEqual(
         Object.entries(actor.abilities).filter(([, v]) => v.saveProficiency).map(([k]) => k),
@@ -145,11 +227,40 @@ describe("CharacterBuilderWizard: finalized level-1 actor", () => {
     });
   }
 
-  it("writes the chosen equipment to the sheet items", () => {
-    const wizard = wizardWith({ ...COMPLETE, equipmentIds: ["50 GP"] });
+  it("writes the background and class equipment to the sheet items", () => {
+    const wizard = wizardWith({ ...COMPLETE, equipmentIds: ["50 GP"], classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:archery"], equipment: ["C"] } });
     while (wizard.nextStep());
     const actor = wizard.confirm() as unknown as { items: Array<{ name: string }> };
-    assert.deepEqual(actor.items.map((i) => i.name), ["50 GP"]);
+    assert.deepEqual(actor.items.map((i) => i.name), ["50 GP", "155 GP"]);
+  });
+
+  const armor = [
+    { id: "Fighter option A equips Chain Mail (AC 16)", equipment: "A", ac: 16 },
+    { id: "Fighter option B equips Studded Leather (AC 12 + DEX 2)", equipment: "B", ac: 14 },
+    { id: "Fighter option C (gold only) leaves AC at 10 + DEX", equipment: "C", ac: 12 },
+  ];
+  for (const c of armor) {
+    it(`class starting equipment feeds Armor Class: ${c.id}`, () => {
+      const wizard = wizardWith({ ...COMPLETE, classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:archery"], equipment: [c.equipment] } });
+      while (wizard.nextStep());
+      const actor = wizard.confirm();
+      assert.ok(actor);
+      assert.equal(computeDnd5eSheetDerived(actor).armorClass, c.ac);
+    });
+  }
+
+  it("class skills, cantrips, spellbook spells and level-1 slots reach the Wizard sheet", () => {
+    const wizard = wizardWith({ ...COMPLETE, classId: "wizard", classSelections: {} });
+    pickFirstClassOptions(wizard);
+    const picks = wizard.getDraft()!.classSelections;
+    while (wizard.nextStep());
+    const actor = wizard.confirm();
+    assert.ok(actor);
+    for (const skill of picks.skills) assert.equal(actor.skills[skill as keyof typeof actor.skills].proficiencyRank, 1);
+    assert.deepEqual(actor.spellIds, [...picks.cantrips, ...picks.spells]);
+    assert.equal(picks.cantrips.length, 3);
+    assert.equal(picks.spells.length, 6);
+    assert.equal(actor.spellSlots?.level1?.max, 2);
   });
 });
 
