@@ -221,7 +221,7 @@ export async function createTableRenderer(canvas: HTMLCanvasElement, initial: Ta
         terrain.moveTo(x + w - d, y + w).lineTo(x + w, y + w - d);
       }
     }
-    if (scene.terrain.cells.length > 0) terrain.stroke({ width: 1, color: scene.terrain.color, alpha: 0.6 });
+    if (scene.terrain.cells.length > 0) terrain.stroke({ width: 1, color: scene.terrain.color, alpha: scene.terrain.hatchAlpha });
     const walls = new Graphics();
     for (const wall of scene.walls) {
       strokePath(walls, [wall.a, wall.b], false, wall.dash, { width: wall.widthPx, color: wall.color, alpha: wall.alpha });

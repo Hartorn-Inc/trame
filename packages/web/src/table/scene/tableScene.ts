@@ -96,6 +96,8 @@ const PLAIN_SENSES: WireSenseProfile = {
 const DEFAULT_HEIGHT_FT = 5;
 /** Fill alpha of a difficult terrain cell; the diagonal hatch carries the meaning without colour. */
 const TERRAIN_FILL_ALPHA = 0.12;
+/** Stroke alpha of the difficult terrain hatch lines. */
+const TERRAIN_HATCH_ALPHA = 0.6;
 
 /**
  * Darkness overlay alpha per ambient preset (`0` = no overlay). Lights are
@@ -227,7 +229,10 @@ export interface SceneLight {
 export interface SceneTerrain {
   cells: Rect[];
   color: number;
+  /** Cell fill alpha in `0..=1`. */
   fillAlpha: number;
+  /** Hatch stroke alpha in `0..=1`. */
+  hatchAlpha: number;
 }
 
 export interface SceneFog {
@@ -429,6 +434,7 @@ function buildTerrain(state: ProjectedTableState, input: TableSceneInput, cellPx
     cells: (state.difficult_terrain ?? []).map((cell) => cellRect(cell.col, cell.row, cellPx)),
     color: input.palette.textMutedHex,
     fillAlpha: TERRAIN_FILL_ALPHA,
+    hatchAlpha: TERRAIN_HATCH_ALPHA,
   };
 }
 
@@ -518,7 +524,7 @@ export function buildTableScene(input: TableSceneInput): TableScene {
     mapHash: state?.background_asset_hash ?? null,
     grid: { color: palette.gridLineHex, alpha: palette.gridLineAlpha },
     walls: state ? buildWalls(state, palette) : [],
-    terrain: state ? buildTerrain(state, input, metrics.cellPx) : { cells: [], color: palette.textMutedHex, fillAlpha: TERRAIN_FILL_ALPHA },
+    terrain: state ? buildTerrain(state, input, metrics.cellPx) : { cells: [], color: palette.textMutedHex, fillAlpha: TERRAIN_FILL_ALPHA, hatchAlpha: TERRAIN_HATCH_ALPHA },
     aoes: state ? buildAoes(state, input, metrics.cellPx) : [],
     tokens: state ? buildTokens(state, input, metrics.cellPx) : [],
     ambient,

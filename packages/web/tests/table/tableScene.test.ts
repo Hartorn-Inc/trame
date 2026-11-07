@@ -246,6 +246,12 @@ describe("buildTableScene: difficult terrain and redacted fields", () => {
     assert.deepEqual(scene.terrain.cells, [{ x: 50, y: 100, w: 50, h: 50 }]);
   });
 
+  it("the scene carries both terrain alphas so the renderer holds no styling constants", () => {
+    const scene = buildTableScene(input(tableState({ difficult_terrain: [{ col: 1, row: 2 }] })));
+    assert.equal(scene.terrain.fillAlpha, 0.12);
+    assert.equal(scene.terrain.hatchAlpha, 0.6);
+  });
+
   it("an AoE whose caster is hidden (concentration_caster_id: null) still renders", () => {
     const aoe = {
       id: WALL_ID,
