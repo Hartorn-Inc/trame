@@ -411,15 +411,50 @@ async fn sec3_initiative_and_death_save_modes_are_derived_server_side() {
     };
     let cases = [
         initiative("poisoned_has_disadvantage", &["poisoned"], &[], "2d20kl1+2"),
-        initiative("frightened_has_disadvantage", &["frightened"], &[], "2d20kl1+2"),
-        initiative("incapacitated_has_disadvantage", &["incapacitated"], &[], "2d20kl1+2"),
-        initiative("stunned_includes_incapacitated", &["stunned"], &[], "2d20kl1+2"),
+        initiative(
+            "frightened_has_disadvantage",
+            &["frightened"],
+            &[],
+            "2d20kl1+2",
+        ),
+        initiative(
+            "incapacitated_has_disadvantage",
+            &["incapacitated"],
+            &[],
+            "2d20kl1+2",
+        ),
+        initiative(
+            "stunned_includes_incapacitated",
+            &["stunned"],
+            &[],
+            "2d20kl1+2",
+        ),
         initiative("invisible_has_advantage", &["invisible"], &[], "2d20kh1+2"),
-        initiative("feral_instinct_has_advantage", &[], &["initiative"], "2d20kh1+2"),
-        initiative("invisible_and_poisoned_cancel", &["invisible", "poisoned"], &[], "1d20+2"),
-        initiative("feral_instinct_and_poisoned_cancel", &["poisoned"], &["initiative"], "1d20+2"),
+        initiative(
+            "feral_instinct_has_advantage",
+            &[],
+            &["initiative"],
+            "2d20kh1+2",
+        ),
+        initiative(
+            "invisible_and_poisoned_cancel",
+            &["invisible", "poisoned"],
+            &[],
+            "1d20+2",
+        ),
+        initiative(
+            "feral_instinct_and_poisoned_cancel",
+            &["poisoned"],
+            &["initiative"],
+            "1d20+2",
+        ),
         initiative("prone_changes_nothing", &["prone"], &[], "1d20+2"),
-        initiative("survivor_does_not_touch_initiative", &[], &["death_save"], "1d20+2"),
+        initiative(
+            "survivor_does_not_touch_initiative",
+            &[],
+            &["death_save"],
+            "1d20+2",
+        ),
         Case {
             id: "survivor_death_save_has_advantage",
             conditions: &[],
@@ -471,12 +506,12 @@ async fn sec3_initiative_and_death_save_modes_are_derived_server_side() {
         assert_eq!(got[0].1, c.expected, "case {}", c.id);
         if c.death_save {
             let kept = frames.iter().find_map(|e| match e {
-                ServerEnvelope::CommandAccepted { events, .. } => events.iter().find_map(|ev| {
-                    match ev {
+                ServerEnvelope::CommandAccepted { events, .. } => {
+                    events.iter().find_map(|ev| match ev {
                         TrameEvent::DeathSaveRecorded { d20, .. } => Some(i32::from(*d20)),
                         _ => None,
-                    }
-                }),
+                    })
+                }
                 _ => None,
             });
             assert_eq!(kept, got[0].2, "case {}: the kept die is the d20", c.id);

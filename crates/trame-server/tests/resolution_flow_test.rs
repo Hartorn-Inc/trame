@@ -668,7 +668,8 @@ fn sheet_save_bonuses_follow_the_sheet_shape() {
 #[test]
 fn feature_roll_advantages_follow_the_derived_feature_rules() {
     // (case_id, sheet, expected list or None)
-    let rolls = |rolls: serde_json::Value| json!({ "derived": { "featureRules": { "rolls": rolls } } });
+    let rolls =
+        |rolls: serde_json::Value| json!({ "derived": { "featureRules": { "rolls": rolls } } });
     let cases = [
         (
             "feral_instinct_and_survivor_are_kept",
@@ -696,8 +697,8 @@ fn feature_roll_advantages_follow_the_derived_feature_rules() {
         ("no_feature_rules_keeps_the_token_list", json!({}), None),
     ];
     for (id, sheet, expected) in cases {
-        let got = trame_server::campaigns::tactical_sync_from_sheet(None, &sheet)
-            .feature_roll_advantages;
+        let got =
+            trame_server::campaigns::tactical_sync_from_sheet(None, &sheet).feature_roll_advantages;
         let expected = expected.map(|v| v.into_iter().map(str::to_string).collect::<Vec<_>>());
         assert_eq!(got, expected, "{id}");
     }
@@ -706,7 +707,8 @@ fn feature_roll_advantages_follow_the_derived_feature_rules() {
 #[test]
 fn active_feature_resistances_reach_the_token() {
     // (case_id, sheet, damage type, raw damage, HP lost)
-    let rage = json!({ "featureRules": { "resistances": ["bludgeoning", "piercing", "slashing"] } });
+    let rage =
+        json!({ "featureRules": { "resistances": ["bludgeoning", "piercing", "slashing"] } });
     let cases = [
         (
             "raging_barbarian_halves_slashing",
@@ -750,8 +752,10 @@ fn active_feature_resistances_reach_the_token() {
             TokenState::new_default(Uuid::new_v4(), "Barbarian", Point2D::new(0.0, 0.0));
         barbarian.max_hp = 60;
         barbarian.hp = 60;
-        trame_server::campaigns::tactical_sync_from_sheet(None, &sheet)
-            .apply_to_token(&mut barbarian, trame_engine::commands::TableMode::Exploration);
+        trame_server::campaigns::tactical_sync_from_sheet(None, &sheet).apply_to_token(
+            &mut barbarian,
+            trame_engine::commands::TableMode::Exploration,
+        );
         let token_id = barbarian.id;
         let mut table = TableState::new(100.0, 5.0, Vec::new());
         table.data.tokens.insert(token_id, barbarian);
