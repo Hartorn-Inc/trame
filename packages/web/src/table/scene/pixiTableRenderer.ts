@@ -35,26 +35,34 @@
  * 4. `Incremental Updates`:
  *    - `update` hands the scene to the retained layers, which redraw only
  *      what changed (`sceneDiff.ts`), then renders one frame.
+ * 5. `Zoom In The Stage, Not In CSS`:
+ *    - The canvas is sized to the zoomed board (`autoDensity` sets its CSS
+ *      size) and the stage is scaled by the zoom, so vector layers are
+ *      re-rasterised at the zoomed size and token labels at the matching
+ *      text resolution. The resolution is the device pixel ratio capped by
+ *      `canvasResolution`.
  *
  * EXECUTION LIFECYCLE:
  * -----
  * `createTableRenderer(canvas, scene)`
  * ├── 1. `Application.init({ canvas, preference: "webgl" })`, reject non-WebGL.
  * └── 2. `createSceneLayers(app.stage)`.
- * `update(scene, mapImage)`
- * ├── 1. Resize; new battlemap image -> new texture.
+ * `update(scene, mapImage, zoom)`
+ * ├── 1. Resize to board x zoom at `canvasResolution`; scale the stage;
+ * │      new battlemap image -> new texture.
  * ├── 2. `layers.sync(scene, texture)`; then destroy the replaced texture.
  * └── 3. Render; animate pings on `requestAnimationFrame` while any is live.
  * ============================================================================
  */
 import "pixi.js/unsafe-eval";
 import { Application, Texture } from "pixi.js";
+import { canvasResolution } from "../tableTools.ts";
 import { createSceneLayers } from "./pixiSceneLayers.ts";
 import type { TableScene } from "./tableScene.ts";
 
 export interface TableRenderer {
-  /** Brings the canvas in line with `scene`; `mapImage` is the decoded battlemap, if any. */
-  update(scene: TableScene, mapImage: HTMLImageElement | null): void;
+  /** Brings the canvas in line with `scene` shown at `zoom`; `mapImage` is the decoded battlemap, if any. */
+  update(scene: TableScene, mapImage: HTMLImageElement | null, zoom: number): void;
   destroy(): void;
 }
 
@@ -72,7 +80,7 @@ export async function createTableRenderer(canvas: HTMLCanvasElement, initial: Ta
     background: initial.voidColor,
     antialias: true,
     autoDensity: true,
-    resolution: globalThis.devicePixelRatio || 1,
+    resolution: canvasResolution(initial.widthPx, initial.heightPx, 1, globalThis.devicePixelRatio),
     autoStart: false,
     sharedTicker: false,
   });
@@ -98,11 +106,17 @@ export async function createTableRenderer(canvas: HTMLCanvasElement, initial: Ta
   };
 
   return {
-    update(scene, mapImage) {
+    update(scene, mapImage, zoom) {
       current = scene;
-      if (app.renderer.width !== scene.widthPx || app.renderer.height !== scene.heightPx) {
-        app.renderer.resize(scene.widthPx, scene.heightPx);
+      const width = scene.widthPx * zoom;
+      const height = scene.heightPx * zoom;
+      const resolution = canvasResolution(scene.widthPx, scene.heightPx, zoom, globalThis.devicePixelRatio);
+      const { screen } = app.renderer;
+      if (screen.width !== width || screen.height !== height || app.renderer.resolution !== resolution) {
+        app.renderer.resize(width, height, resolution);
       }
+      app.stage.scale.set(zoom);
+      layers.setTextResolution(resolution * zoom);
       app.renderer.background.color = scene.voidColor;
       const replaced = mapImage !== mapSource ? mapTexture : null;
       if (mapImage !== mapSource) {

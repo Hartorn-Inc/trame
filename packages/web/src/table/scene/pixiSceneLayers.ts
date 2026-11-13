@@ -90,6 +90,8 @@ export interface SyncReport {
 export interface SceneLayers {
   /** Brings the display list in line with `scene`; `mapTexture` is the battlemap, owned by the caller. */
   sync(scene: TableScene, mapTexture: Texture | null): SyncReport;
+  /** Rasterises token labels at `resolution` texels per board pixel (canvas resolution times zoom) so they stay sharp when zoomed. */
+  setTextResolution(resolution: number): void;
   /** Redraws live pings at `nowMs`; returns whether any ping is still running. */
   drawPings(scene: TableScene, nowMs: number): boolean;
   /** Destroys every display object this module created (invariant 3). */
@@ -252,6 +254,7 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
   let lightSigs = new Map<string, string>();
   let mapTexture: Texture | null = null;
   let mapSize = "";
+  let textResolution = 1;
 
   const drawLayer: Record<SceneLayerKey, (scene: TableScene) => void> = {
     grid(scene) {
@@ -350,7 +353,7 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
     }
     const byId = new Map(scene.tokens.map((token) => [token.id, token]));
     for (const id of diff.added) {
-      const label = new Text({ text: "", style: { fontWeight: "600" } });
+      const label = new Text({ text: "", style: { fontWeight: "600" }, resolution: textResolution });
       label.anchor.set(0.5);
       const view = { root: new Container({ label: `token:${id}` }), body: new Graphics(), label };
       view.root.addChild(view.body, view.label);
@@ -392,6 +395,11 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
       for (const key of redraw) drawLayer[key](scene);
       signatures = next;
       return { layers: redraw, tokens: syncTokens(scene), lights: syncLights(scene), mapChanged };
+    },
+    setTextResolution(resolution) {
+      if (resolution === textResolution) return;
+      textResolution = resolution;
+      for (const view of tokens.values()) view.label.resolution = resolution;
     },
     drawPings(scene, nowMs) {
       pings.clear();

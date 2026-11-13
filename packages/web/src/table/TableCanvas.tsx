@@ -51,9 +51,12 @@
  *      battlemap `<img>`, a CSS grid and visible token buttons, so the table
  *      stays usable without WebGL.
  * 5. `Zoom Without Reprojection`:
- *    - Zoom scales the whole board (canvas and overlay buttons together) by a
- *      CSS transform inside a sized scroll area, so every pointer position is
- *      divided by the zoom once (`boardPoint`) and stays in canvas pixels.
+ *    - The PixiJS canvas is not CSS-scaled: it sits under the board, sized
+ *      to the zoomed board, and the renderer scales its stage and resolution
+ *      (`canvasResolution`), so zoomed maps stay sharp. The DOM overlay
+ *      (token and door buttons, fallback map and grid) is scaled by a CSS
+ *      transform on top of it, so every pointer position is divided by the
+ *      zoom once (`boardPoint`) and stays in canvas pixels.
  *      Ctrl/Cmd + wheel and two-finger pinch zoom around the pointer; plain
  *      wheel, scrollbars and touch drag pan. The anchored scroll offset is
  *      applied in a layout effect after the zoomed board has its new size,
@@ -328,7 +331,7 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   useEffect(() => {
     if (!renderer) return;
     try {
-      renderer.update(scene, mapImage);
+      renderer.update(scene, mapImage, zoom);
     } catch {
       renderer.destroy();
       setRenderer(null);
@@ -624,6 +627,14 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
         onPointerCancel={onScrollerPointerEnd}
       >
         <div class="ds-board-viewport" style={{ width: `${width * zoom}px`, height: `${height * zoom}px` }}>
+          <canvas
+            ref={canvasRef}
+            class="ds-board-canvas trame-pixijs-canvas"
+            role="img"
+            aria-label={t('table.render')}
+            hidden={!pixi}
+            data-testid={pixi && mapImage ? 'table-map' : 'table-render'}
+          />
           <div
             ref={boardRef}
             class={`ds-board${pixi ? ' is-pixi' : ''}${activeTool === 'select' ? '' : ' is-brushing'}`}
@@ -641,14 +652,6 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
             onPointerUp={onBoardPointerUp}
             onPointerLeave={onBoardPointerUp}
           >
-            <canvas
-              ref={canvasRef}
-              class="ds-board-canvas trame-pixijs-canvas"
-              role="img"
-              aria-label={t('table.render')}
-              hidden={!pixi}
-              data-testid={pixi && mapImage ? 'table-map' : 'table-render'}
-            />
             {!pixi && mapUrl ? <img class="ds-board-map" src={mapUrl} alt="" data-testid="table-map" /> : null}
             {!pixi ? <div class="ds-board-grid" aria-hidden="true" /> : null}
             {doors.map((door) => (

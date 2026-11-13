@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  MAX_CANVAS_PIXELS,
+  MAX_CANVAS_SIDE_PX,
   MAX_STROKE_CELLS,
   MAX_ZOOM,
   MIN_ZOOM,
   brushCells,
+  canvasResolution,
   cellAt,
   clampZoom,
   gridBounds,
@@ -175,5 +178,20 @@ describe("tableTools: zoom and pan", () => {
   ] as const;
   for (const c of pinches) {
     it(`pinchFactor: ${c.id}`, () => assert.equal(pinchFactor([c.before[0], c.before[1]], [c.after[0], c.after[1]]), c.expected));
+  }
+
+  const resolutions = [
+    { id: "a small board keeps the device pixel ratio at any zoom", w: 1000, h: 1000, zoom: 2, dpr: 2, expected: 2 },
+    { id: "a missing device pixel ratio counts as 1", w: 1000, h: 1000, zoom: 1, dpr: 0, expected: 1 },
+    { id: "a long board at max zoom is capped by the longest-side limit", w: 4000, h: 500, zoom: MAX_ZOOM, dpr: 2, expected: MAX_CANVAS_SIDE_PX / 16000 },
+    { id: "a big square board at max zoom is capped by the total-pixel budget", w: 2000, h: 2000, zoom: MAX_ZOOM, dpr: 3, expected: 4096 / 8000 },
+  ];
+  for (const c of resolutions) {
+    it(`canvasResolution: ${c.id}`, () => {
+      const resolution = canvasResolution(c.w, c.h, c.zoom, c.dpr);
+      assert.ok(Math.abs(resolution - c.expected) < 1e-9, `${resolution} ~ ${c.expected}`);
+      const [bw, bh] = [c.w * c.zoom * resolution, c.h * c.zoom * resolution];
+      assert.ok(Math.max(bw, bh) <= MAX_CANVAS_SIDE_PX && bw * bh <= MAX_CANVAS_PIXELS + 1, "backing store within limits");
+    });
   }
 });

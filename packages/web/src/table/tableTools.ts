@@ -30,6 +30,13 @@
  *      `scroll' = (scroll + anchor) * zoom' / zoom - anchor`, with the zoom
  *      clamped to `MIN_ZOOM..=MAX_ZOOM`. Panning is the scroll container's
  *      own scrolling, so scrollbars, trackpads and touch all pan natively.
+ * 5. `Crisp, Bounded Canvas`:
+ *    - The canvas is drawn at the zoomed size times the device pixel ratio
+ *      (`canvasResolution`) instead of being scaled by CSS, so zooming in
+ *      never stretches a bitmap. The backing store is capped at
+ *      `MAX_CANVAS_SIDE_PX` per side and `MAX_CANVAS_PIXELS` in total: a big
+ *      map at high zoom on a dense screen would otherwise ask WebGL for a
+ *      drawing buffer past its limits (or gigabytes of memory).
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -60,6 +67,11 @@ export const MAX_STROKE_CELLS = 64;
 export const MIN_ZOOM = 0.25;
 export const MAX_ZOOM = 4;
 export const ZOOM_STEP = 1.25;
+
+/** Longest side of the board canvas backing store (`px`), within every WebGL2 drawing buffer limit in use. */
+export const MAX_CANVAS_SIDE_PX = 8192;
+/** Total backing-store pixels of the board canvas (4096², 64 MiB of RGBA). */
+export const MAX_CANVAS_PIXELS = 4096 * 4096;
 
 /** Board size in whole grid cells. */
 export interface GridBounds {
@@ -205,6 +217,19 @@ export function zoomAround(view: ViewportState, factor: number, anchor: WirePoin
     scrollLeft: Math.max(0, (view.scrollLeft + anchor.x) * ratio - anchor.x),
     scrollTop: Math.max(0, (view.scrollTop + anchor.y) * ratio - anchor.y),
   };
+}
+
+/**
+ * Canvas resolution (backing pixels per CSS pixel) for a `widthPx` x
+ * `heightPx` board shown at `zoom` on a `devicePixelRatio` screen: the
+ * device ratio, lowered just enough to respect `MAX_CANVAS_SIDE_PX` and
+ * `MAX_CANVAS_PIXELS` (invariant 5). A missing or non-positive ratio counts as `1`.
+ */
+export function canvasResolution(widthPx: number, heightPx: number, zoom: number, devicePixelRatio: number): number {
+  const dpr = devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const w = Math.max(1, widthPx * zoom);
+  const h = Math.max(1, heightPx * zoom);
+  return Math.min(dpr, MAX_CANVAS_SIDE_PX / Math.max(w, h), Math.sqrt(MAX_CANVAS_PIXELS / (w * h)));
 }
 
 /** Zoom factor of a two-finger pinch: current finger distance over the previous one. */

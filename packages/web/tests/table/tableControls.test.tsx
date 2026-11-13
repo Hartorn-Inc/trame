@@ -472,6 +472,8 @@ describe("TableCanvas: zoom, pan and pings", () => {
     ui.click("table-zoom-in");
     assert.equal(ui.byTestId("table-zoom-reset").textContent, "125%");
     assert.equal(ui.byTestId("table-board").style.transform, "scale(1.25)");
+    const canvas = ui.byTestId("table-render");
+    assertSameNode(canvas.parentNode, ui.byTestId("table-board").parentNode, "the canvas sits beside the CSS-scaled board, not inside it");
     ui.click(`token-${GOBLIN}`);
     pinBoard(ui);
     ui.click("table-board", { clientX: 10 + 500, clientY: 20 + 250 });
