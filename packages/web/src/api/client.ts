@@ -45,8 +45,8 @@
  *      heartbeat. Across a reconnect the stale `table` stays visible under
  *      the connection banner; the first `StateSnapshot` on the new socket
  *      replaces it and resets every derived signal (initiative totals,
- *      events, prompt closures, pings), so nothing from before the drop is
- *      merged into the fresh state.
+ *      events, prompt closures, last undoable action, pings), so nothing from
+ *      before the drop is merged into the fresh state.
  * 8. `Every Failed Action Is Reported (RT10 / UA16)`:
  *    - Each `SubmitCommand` / `RollDice` carries a fresh `correlation_id`;
  *      `CommandRejected` is matched back to the action (`PendingCommands`)
@@ -1082,6 +1082,7 @@ export class ApiClient {
     s.mcpProposals.value = {};
     s.initiativeTotals.value = {};
     s.lastClosedPrompt.value = null;
+    s.lastUndoableAction.value = null;
     s.commandFeedback.value = [];
     s.walQuarantine.value = [];
     this.roomCampaignId = campaignId;
@@ -1203,6 +1204,7 @@ export class ApiClient {
           s.initiativeTotals.value = {};
           s.lastEvents.value = [];
           s.lastClosedPrompt.value = null;
+          s.lastUndoableAction.value = null;
           s.pointerPings.value = [];
           s.lastRejection.value = null;
           this.room.markHealthy();
@@ -1299,9 +1301,12 @@ export class ApiClient {
       state.mode === "TURN_BY_TURN" ? { ...s.initiativeTotals.value, ...(state.initiative_totals ?? {}) } : {};
   }
 
-  /** Folds the event-only facts (initiative totals, prompt closures) into session signals. */
+  /** Folds the event-only facts (initiative totals, prompt closures, last undoable action) into session signals. */
   private applyEvents(events: WireTrameEvent[]): void {
     const s = this.state;
+    const undoAction = undoableActionFromEvents(events);
+    if (undoAction === "CLEAR") s.lastUndoableAction.value = null;
+    else if (undoAction !== null) s.lastUndoableAction.value = undoAction;
     for (const ev of events) {
       if (ev.event === "INITIATIVE_UPDATED") {
         s.initiativeTotals.value = { ...((ev.initiative_totals as Record<Uuid, number>) ?? {}) };
@@ -1313,6 +1318,62 @@ export class ApiClient {
       }
     }
   }
+}
+
+const SINGLE_EVENT_COMMAND_TAGS: Readonly<Record<string, string>> = {
+  TOKEN_MOVED: "MOVE_TOKEN",
+  TOKEN_DISENGAGED: "SET_DISENGAGED",
+  CONCENTRATION_CHANGED: "SET_CONCENTRATION",
+  DEATH_SAVE_RECORDED: "RECORD_DEATH_SAVE",
+  TOKEN_CONDITIONS_CHANGED: "SET_TOKEN_CONDITIONS",
+  CONDITION_OVERRIDE_CHANGED: "CONDITION_OVERRIDE",
+  TOKEN_SQUEEZE_TOGGLED: "TOGGLE_SQUEEZE",
+  DOOR_TOGGLED: "TOGGLE_DOOR",
+  INITIATIVE_UPDATED: "SET_INITIATIVE_TOTAL",
+  TURN_ADVANCED: "ADVANCE_TURN",
+  AOE_CLEARED: "CLEAR_AOE",
+  ACTION_REFUNDED: "REFUND_ACTION",
+  CONCENTRATION_BROKEN: "BREAK_CONCENTRATION",
+  AMBIENT_LIGHTING_CHANGED: "SET_AMBIENT_LIGHTING",
+  SCENE_LOADED: "LOAD_SCENE",
+  TOKEN_SPAWNED: "SPAWN_TOKEN",
+  TOKEN_REMOVED: "REMOVE_TOKEN",
+  WALL_ADDED: "ADD_WALL",
+  LIGHT_ADDED: "ADD_LIGHT",
+  DIFFICULT_TERRAIN_CHANGED: "SET_DIFFICULT_TERRAIN",
+  MAP_CONFIG_CHANGED: "SET_MAP_CONFIG",
+  TOKEN_VISIBILITY_CHANGED: "SET_TOKEN_VISIBILITY",
+  TOKEN_OWNER_ASSIGNED: "ASSIGN_TOKEN_OWNER",
+  DOOR_CONFIGURED: "CONFIGURE_DOOR",
+  REACTION_DECIDED: "DECIDE_REACTION",
+  MCP_STAGING_REJECTED: "REJECT_MCP_STAGING",
+  ACTION_RESOLVED: "RESOLVE_ACTION",
+  RESOLUTION_DISMISSED: "DISMISS_RESOLUTION",
+};
+
+/**
+ * Derives the `command.action.<TAG>` identifier of an accepted command from its
+ * `TrameEvent` batch. Returns `"CLEAR"` for `UNDO_LAST_ACTION` and
+ * `ACTIVATE_SCENE`, and `null` for non-undoable commands (`REVEAL_HANDOUT`).
+ */
+export function undoableActionFromEvents(events: readonly WireTrameEvent[]): string | "CLEAR" | null {
+  if (events.length === 0) return null;
+  if (events.some((e) => e.event === "ACTION_UNDONE" || e.event === "SCENE_ACTIVATED")) return "CLEAR";
+  if (events.some((e) => e.event === "MCP_STAGING_COMMITTED")) return "COMMIT_MCP_STAGING";
+  if (events.some((e) => e.event === "RESOLUTION_APPLIED")) return "APPLY_RESOLUTION";
+  if (events.some((e) => e.event === "AOE_PROJECTED")) return "PROJECT_AOE";
+  if (events.some((e) => e.event === "CONCENTRATION_CHECK_ROLLED")) return "ROLL_CONCENTRATION_CHECK";
+  const first = events[0];
+  if (first.event === "REACTION_PROMPT_CLOSED" && first.reason === "RESOLVED") return "RESOLVE_REACTION";
+  if (first.event === "DAMAGE_APPLIED") return "APPLY_DAMAGE";
+  if (first.event === "TOKEN_HEALED") return "HEAL_ACTOR";
+  if (first.event === "TOKEN_RESOURCES_OVERRIDDEN") return "GM_OVERRIDE_TOKEN_RESOURCES";
+  if (first.event === "FOG_OVERRIDE_CHANGED") return events.length > 1 ? "SET_FOG_OVERRIDES" : "SET_FOG_OVERRIDE";
+  if (first.event === "TABLE_MODE_CHANGED") {
+    if (first.mode === "TURN_BY_TURN") return "START_TURN_BY_TURN";
+    return first.exploration_paused === true ? "SET_TABLE_MODE" : "END_TURN_BY_TURN";
+  }
+  return typeof first.event === "string" ? (SINGLE_EVENT_COMMAND_TAGS[first.event] ?? null) : null;
 }
 
 /** Application-wide client bound to the browser transport and `session`. */

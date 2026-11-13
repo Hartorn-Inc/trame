@@ -1050,6 +1050,8 @@ export const EN = {
   "gm.lighting.NIGHT_MOONLIGHT": "Moonlit night",
   "gm.lighting.PITCH_DARKNESS": "Pitch darkness",
   "gm.undo": "Undo last action",
+  "gm.undoNamed": "Undo: {{action}}",
+  "gm.undoMemoryHint": "Undo history is kept in server memory only and is lost if the server restarts.",
   "gm.mcp.title": "Staged MCP changes",
   "gm.mcp.commands": "{{count}} commands: {{list}}",
   "gm.mcp.commitAll": "Commit all",

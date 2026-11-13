@@ -16,6 +16,7 @@ import { selectedTokenIdSignal } from "../../src/api/session.ts";
 import type { ProjectedTableState, WirePendingResolution, WireResolvedTarget } from "../../src/api/wire.ts";
 import { monsterStatBlockOf, type CompendiumEntry } from "../../src/compendium/CompendiumDrawer.tsx";
 import { localeSignal } from "../../src/i18n/index.ts";
+import { createSheetCommandDispatcher } from "../../src/sheet/sheetPersistence.ts";
 import { ActionResolutionCard } from "../../src/table/ActionResolutionCard.tsx";
 import {
   areaOriginSignal,
@@ -42,7 +43,7 @@ import type { TableToken } from "../../src/table/tableView.ts";
 import { assertAbsent, assertPresent, assertSameNode } from "../helpers/domAssert.ts";
 import { CAMPAIGN, GM_ID, GOBLIN, HERO, HERO_ACTOR, PLAYER_ID, fullToken, liveTable, mount, publicToken, tableState, type LiveTable } from "../helpers/liveTable.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
-import { flush } from "../helpers/mockTransport.ts";
+import { actorDto, flush } from "../helpers/mockTransport.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -1038,6 +1039,169 @@ describe("ConcentrationCheckPrompt", () => {
 
       ui.unmount();
       localeSignal.value = "en";
+    });
+  }
+});
+
+describe("Spell cast slot expenditure and concentration rollback (UA #15)", () => {
+  const ACTOR_PUT_URL = `PUT /api/v1/campaigns/${CAMPAIGN}/actors/${HERO_ACTOR}`;
+
+  const castCases: Array<{
+    id: string;
+    classId: string;
+    spellId: string;
+    wasConcentrating: boolean;
+    step: "project" | "roll" | "cancel" | "immediate";
+    expectedPutCurrents: number[];
+    expectedConcentrationCmds: boolean[];
+    cardRemainsOpenAfterCast: boolean;
+  }> = [
+    {
+      id: "normal-area-concentration-cast-keeps-slot-spent-and-concentration-set",
+      classId: "druid",
+      spellId: "srd:spell:faerie_fire",
+      wasConcentrating: false,
+      step: "project",
+      expectedPutCurrents: [1],
+      expectedConcentrationCmds: [true],
+      cardRemainsOpenAfterCast: true,
+    },
+    {
+      id: "cancelled-area-concentration-cast-refunds-slot-and-reverts-concentration",
+      classId: "druid",
+      spellId: "srd:spell:faerie_fire",
+      wasConcentrating: false,
+      step: "cancel",
+      expectedPutCurrents: [1, 2],
+      expectedConcentrationCmds: [true, false],
+      cardRemainsOpenAfterCast: true,
+    },
+    {
+      id: "cancelled-concentration-cast-preserves-existing-concentration",
+      classId: "druid",
+      spellId: "srd:spell:faerie_fire",
+      wasConcentrating: true,
+      step: "cancel",
+      expectedPutCurrents: [1, 2],
+      expectedConcentrationCmds: [],
+      cardRemainsOpenAfterCast: true,
+    },
+    {
+      id: "normal-attack-spell-cast-keeps-slot-spent",
+      classId: "cleric",
+      spellId: "srd:spell:guiding_bolt",
+      wasConcentrating: false,
+      step: "roll",
+      expectedPutCurrents: [1],
+      expectedConcentrationCmds: [],
+      cardRemainsOpenAfterCast: true,
+    },
+    {
+      id: "cancelled-attack-spell-cast-before-roll-refunds-slot",
+      classId: "cleric",
+      spellId: "srd:spell:guiding_bolt",
+      wasConcentrating: false,
+      step: "cancel",
+      expectedPutCurrents: [1, 2],
+      expectedConcentrationCmds: [],
+      cardRemainsOpenAfterCast: true,
+    },
+    {
+      id: "immediate-non-resolution-concentration-cast-spends-and-sets-immediately",
+      classId: "cleric",
+      spellId: "srd:spell:bless",
+      wasConcentrating: false,
+      step: "immediate",
+      expectedPutCurrents: [1],
+      expectedConcentrationCmds: [true],
+      cardRemainsOpenAfterCast: false,
+    },
+  ];
+
+  for (const tc of castCases) {
+    it(`[${tc.id}]`, async () => {
+      const actor = casterKnowing(tc.classId, 1, tc.spellId);
+      actor.spellSlots = { level1: { current: 2, max: 2 } };
+      const initialView = playerView({
+        tokens: {
+          [HERO]: fullToken(HERO, "Mira", {
+            owner_user_id: PLAYER_ID,
+            actor_id: HERO_ACTOR,
+            top_left: { x: 100, y: 50 },
+            concentrating: tc.wasConcentrating,
+          }),
+        },
+        public_tokens: { [GOBLIN]: publicToken(GOBLIN, "Goblin", { top_left: { x: 200, y: 200 } }) },
+      });
+      const live = liveTable(PLAYER_ID, initialView, {
+        [ACTOR_PUT_URL]: {
+          status: 200,
+          body: { actor: actorDto({ id: HERO_ACTOR, version: 2, data: { ...actor, spellSlots: { level1: { current: 1, max: 2 } } } }) },
+        },
+      });
+      live.client.state.actors.value = {
+        [HERO_ACTOR]: { version: 1, data: actor, name: "Mira", ownerUserId: PLAYER_ID },
+      };
+      const ui = mount(h(ActionResolutionCard, { client: live.client, isGm: false }));
+      const dispatch = createSheetCommandDispatcher({
+        client: live.client,
+        campaignId: CAMPAIGN,
+        actorId: HERO_ACTOR,
+      });
+
+      dispatch({
+        cmd: "CAST_SPELL",
+        type: "CAST_SPELL",
+        spellId: tc.spellId,
+        slot: { key: "level1", tier: { current: 1, max: 2 }, castLevel: 1 },
+        onTable: true,
+      });
+      await flush(4);
+
+      if (tc.cardRemainsOpenAfterCast) {
+        assertPresent(ui.byTestId("action-card"), "resolution card opens for table spell");
+      } else {
+        assertAbsent(ui.byTestId("action-card"), "non-resolution spell skips card");
+      }
+
+      if (tc.step === "project") {
+        ui.input("action-area-token", GOBLIN, "change");
+        ui.click("action-area-project");
+        await flush(4);
+        ui.click("action-cancel");
+        await flush(4);
+      } else if (tc.step === "roll") {
+        ui.click(`action-target-${GOBLIN}`);
+        ui.click("action-roll");
+        await flush(4);
+        ui.click("action-cancel");
+        await flush(4);
+      } else if (tc.step === "cancel") {
+        ui.click("action-cancel");
+        await flush(6);
+      }
+
+      const puts = live.transport.calls
+        .filter((call) => call.method === "PUT")
+        .map((call) => call.body as { expected_version: number; data: Dnd5eActorData });
+      assert.deepEqual(
+        puts.map((body) => body.data.spellSlots?.level1?.current),
+        tc.expectedPutCurrents,
+      );
+      if (puts.length === 2) {
+        assert.deepEqual(
+          puts.map((body) => body.expected_version),
+          [1, 2],
+        );
+      }
+
+      const concentrationCmds = live
+        .commands()
+        .filter((cmd) => cmd.cmd === "SET_CONCENTRATION")
+        .map((cmd) => Boolean(cmd.concentrating));
+      assert.deepEqual(concentrationCmds, tc.expectedConcentrationCmds);
+
+      ui.unmount();
     });
   }
 });

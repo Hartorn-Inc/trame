@@ -59,11 +59,13 @@
  *
  * EXECUTION LIFECYCLE:
  * -----
- * `startAction(pending)` (sheet dispatcher or monster stat block)
+ * `startAction(pending, onCancel)` (sheet dispatcher or monster stat block)
  * ├── attack / monster: targets <- `targetTokenIdSignal`, board clicks toggle more.
  * ├── area (spell, or monster save action with an area such as a breath weapon):
  * │           board click sets `areaOriginSignal`; `PROJECT_AOE` -> engine
  * │           `AOE_PROJECTED.affected_token_ids` become the targets.
+ * ├── cancel before `commitAction()` -> runs `onCancel` (refunds pre-spent spell
+ * │           slot and restores prior concentration state).
  * ├── `buildActionRequest` -> `RESOLVE_ACTION` -> `ACTION_RESOLVED`.
  * └── review -> Apply -> `APPLY_RESOLUTION` (GM adjustments per target).
  * ============================================================================
@@ -146,8 +148,18 @@ export function monsterPendingAction(tokenId: Uuid, action: MonsterAction): Pend
   return area ? { kind: 'monster', tokenId, actionId: action.id, area } : { kind: 'monster', tokenId, actionId: action.id };
 }
 
-/** Opens the resolution card; an attack starts on the cover panel's target. */
-export function startAction(action: PendingAction): void {
+/** Rollback invoked if the open resolution card is cancelled or replaced before rolling/projecting. */
+let pendingCancelRollback: (() => void) | null = null;
+
+/**
+ * Opens the resolution card; an attack starts on the cover panel's target.
+ * Replacing an uncommitted pending action runs its `onCancel` rollback first
+ * so pre-spent spell slots and concentration never leak.
+ */
+export function startAction(action: PendingAction, onCancel?: () => void): void {
+  const previousRollback = pendingCancelRollback;
+  pendingCancelRollback = onCancel ?? null;
+  previousRollback?.();
   pendingActionSignal.value = action;
   const target = targetTokenIdSignal.value;
   actionTargetIdsSignal.value = !isAreaAction(action) && target ? [target] : [];
@@ -157,13 +169,27 @@ export function startAction(action: PendingAction): void {
   activeResolutionIdSignal.value = null;
 }
 
-/** Closes the resolution card; an unapplied resolution stays in the pending list. */
+/**
+ * Marks the pending action as committed to the room (rolled or projected), so
+ * subsequently closing the card keeps the spent spell slot and concentration.
+ */
+export function commitAction(): void {
+  pendingCancelRollback = null;
+}
+
+/**
+ * Closes the resolution card; an unapplied resolution stays in the pending list.
+ * When called before `commitAction()`, invokes the pending cast rollback.
+ */
 export function cancelAction(): void {
+  const rollback = pendingCancelRollback;
+  pendingCancelRollback = null;
   pendingActionSignal.value = null;
   actionTargetIdsSignal.value = [];
   areaOriginSignal.value = null;
   areaProjectedSignal.value = false;
   activeResolutionIdSignal.value = null;
+  rollback?.();
 }
 
 /** Adds or removes a target of the pending attack. */

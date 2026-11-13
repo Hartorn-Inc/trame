@@ -1053,6 +1053,8 @@ export const FR: Record<MessageKey, string> = {
   "gm.lighting.NIGHT_MOONLIGHT": "Nuit au clair de lune",
   "gm.lighting.PITCH_DARKNESS": "Obscurité totale",
   "gm.undo": "Annuler la dernière action",
+  "gm.undoNamed": "Annuler : {{action}}",
+  "gm.undoMemoryHint": "L'historique d'annulation est conservé uniquement dans la mémoire du serveur et est perdu si le serveur redémarre.",
   "gm.mcp.title": "Modifications MCP en attente",
   "gm.mcp.commands": "{{count}} commandes : {{list}}",
   "gm.mcp.commitAll": "Tout valider",

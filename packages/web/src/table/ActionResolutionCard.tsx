@@ -71,6 +71,7 @@ import {
   attackerContext,
   buildActionRequests,
   cancelAction,
+  commitAction,
   isAreaAction,
   newUuid,
   pendingActionSignal,
@@ -165,7 +166,10 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
     (events.find((ev) => ev.event === 'ACTION_RESOLVED' && (ev.resolution as WirePendingResolution | undefined)?.id === resolutionId)?.resolution as
       | WirePendingResolution
       | undefined);
-  if (seen) lastResolved.current = seen;
+  if (seen) {
+    lastResolved.current = seen;
+    commitAction();
+  }
   const resolved = resolutionId && lastResolved.current?.id === resolutionId ? lastResolved.current : undefined;
 
   useEffect(() => headingRef.current?.focus(), [resolved !== undefined]);
@@ -220,6 +224,7 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
       setError(t('resolution.offline'));
       return;
     }
+    commitAction();
     setError(null);
     activeResolutionIdSignal.value = requests[0].resolution_id;
   };
@@ -229,6 +234,7 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
     const hit = events.find((ev) => ev.event === 'AOE_PROJECTED' && (ev.template as { id?: string } | undefined)?.id === templateId);
     if (!hit) return;
     consumedEvents.current = events;
+    commitAction();
     const ids = (hit.affected_token_ids as Uuid[] | undefined) ?? [];
     const excluded = action.area && CASTER_EXCLUDED_SHAPES.has(action.area.shape) ? attacker.tokenId : null;
     const targets = tokens.filter((tok) => ids.includes(tok.id) && tok.id !== excluded);
@@ -245,8 +251,13 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
     areaProjectedSignal.value = false;
   };
 
+  const handleClose = () => {
+    if (sent || projected) commitAction();
+    cancelAction();
+  };
+
   const close = (
-    <button type="button" class="ds-btn ds-btn-ghost" data-testid="action-cancel" onClick={cancelAction}>
+    <button type="button" class="ds-btn ds-btn-ghost" data-testid="action-cancel" onClick={handleClose}>
       {t(sent ? 'resolution.close' : 'resolution.cancel')}
     </button>
   );
@@ -265,8 +276,12 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
   const project = () => {
     if (!template) return;
     setError(null);
-    if (client.submitCommand(projectAoe(template, action.concentration))) areaProjectedSignal.value = true;
-    else setError(t('resolution.offline'));
+    if (client.submitCommand(projectAoe(template, action.concentration))) {
+      commitAction();
+      areaProjectedSignal.value = true;
+    } else {
+      setError(t('resolution.offline'));
+    }
   };
   const picking = !sent && !isArea;
   const retryArea = !sent && isArea && areaTargetIds !== null;
@@ -415,7 +430,7 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
       </p>
 
       {resolved ? (
-        <ResolutionReview client={client} isGm={isGm} resolution={resolved} testIdPrefix="action" modeSources={modeSources} onDone={cancelAction} />
+        <ResolutionReview client={client} isGm={isGm} resolution={resolved} testIdPrefix="action" modeSources={modeSources} onDone={handleClose} />
       ) : null}
 
       {error ? (
