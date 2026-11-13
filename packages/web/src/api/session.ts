@@ -36,6 +36,7 @@ import type {
   ReactionPromptCloseReason,
   Uuid,
   WirePoint2D,
+  WireRejectionDetail,
   WireTrameEvent,
 } from "./wire.ts";
 
@@ -126,6 +127,8 @@ export interface CommandFeedback {
   action: string | null;
   /** Server rejection reason (`rejected` only). */
   reason: string | null;
+  /** Engine refusal code and numbers (`rejected` only); absent for server-side refusals. */
+  detail?: WireRejectionDetail | null;
 }
 
 /**

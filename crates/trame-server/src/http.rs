@@ -1442,6 +1442,7 @@ pub(crate) async fn resolve_client_envelope(
 fn reject_frame(tx: &ClientSender, reason: &str, correlation_id: Option<String>) {
     let out = crate::sync::ServerEnvelope::CommandRejected {
         reason: reason.to_string(),
+        detail: None,
         correlation_id,
     };
     if let Ok(bytes) = crate::sync::encode_server_envelope(&out) {

@@ -353,6 +353,10 @@ pub enum ServerEnvelope {
     CommandRejected {
         /// Human-readable rejection reason (never a raw storage error).
         reason: String,
+        /// Stable code and numbers of an engine refusal (`CommandError::rejection_detail`), so
+        /// clients explain it in the reader's language; `None` for server-side refusals.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<trame_engine::commands::RejectionDetail>,
         /// The `correlation_id` the client sent with the rejected envelope; `None` when the
         /// client sent none or the frame could not be decoded.
         #[serde(default, skip_serializing_if = "Option::is_none")]

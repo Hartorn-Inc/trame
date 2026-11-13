@@ -993,10 +993,57 @@ describe("Rejections and redacted wire fields", () => {
       reason: "door is out of reach: none of your tokens is within 5 ft and can see it",
       expected: /^none of your creatures is within 5 ft of the door with a clear view of it/,
     },
-    { id: "an unknown reason is shown as sent", reason: "movement blocked by wall at (1.0, 2.0)", expected: /^movement blocked by wall/ },
+    { id: "an unknown server-side reason is shown as sent", reason: "campaign is archived", expected: /^campaign is archived$/ },
   ];
   for (const c of reasons) {
     it(`rejectionReason: ${c.id}`, () => assert.match(rejectionReason(c.reason), c.expected));
+  }
+
+  const detail = (code: string, neededFt: number | null = null, remainingFt: number | null = null) => ({
+    code,
+    neededFt,
+    remainingFt,
+    condition: null,
+  });
+  const coded = [
+    {
+      id: "wall collision in English names no coordinates",
+      locale: "en",
+      detail: detail("WALL_COLLISION"),
+      expected: /^a wall blocks that path\. Go around it or through an open door\.$/,
+    },
+    { id: "wall collision in French", locale: "fr", detail: detail("WALL_COLLISION"), expected: /^un mur bloque ce chemin/ },
+    {
+      id: "insufficient movement in English gives both distances in feet",
+      locale: "en",
+      detail: detail("INSUFFICIENT_MOVEMENT", 35, 12.5),
+      expected: /^this move costs 35 ft but only 12\.5 ft of movement is left this turn/,
+    },
+    {
+      id: "insufficient movement in French uses the French decimal comma",
+      locale: "fr",
+      detail: detail("INSUFFICIENT_MOVEMENT", 35, 12.5),
+      expected: /^ce déplacement coûte 35 ft mais il ne reste que 12,5 ft de mouvement/,
+    },
+    {
+      id: "insufficient movement without numbers falls back to a generic sentence",
+      locale: "en",
+      detail: detail("INSUFFICIENT_MOVEMENT"),
+      expected: /^this move costs more movement than is left this turn/,
+    },
+    { id: "not your turn in English", locale: "en", detail: detail("NOT_ACTIVE_TURN"), expected: /^it is not your turn/ },
+    { id: "paused table in French", locale: "fr", detail: detail("EXPLORATION_PAUSED"), expected: /^le MJ a mis les déplacements en pause/ },
+    { id: "empty undo in English", locale: "en", detail: detail("NOTHING_TO_UNDO"), expected: /^there is nothing left to undo\.$/ },
+    { id: "pending reaction in English", locale: "en", detail: detail("REACTION_PENDING"), expected: /^this token is waiting for a reaction decision/ },
+    { id: "an unknown future code shows the server text", locale: "en", detail: detail("SOMETHING_NEW"), expected: /^raw text$/ },
+  ] as const;
+  for (const c of coded) {
+    it(`rejectionReason with detail: ${c.id}`, () => {
+      localeSignal.value = c.locale;
+      const text = rejectionReason(c.id === "an unknown future code shows the server text" ? "raw text" : "movement blocked by a wall", c.detail);
+      localeSignal.value = "en";
+      assert.match(text, c.expected);
+    });
   }
 
   const localized = [
@@ -1058,6 +1105,22 @@ describe("Rejections and redacted wire fields", () => {
       localeSignal.value = "en";
     });
   }
+
+  it("a refused move with an engine code explains it in the toast, in feet", () => {
+    const live = liveTable(PLAYER_ID, playerView());
+    live.client.state.commandFeedback.value = [
+      {
+        id: 1,
+        kind: "rejected",
+        action: "MOVE_TOKEN",
+        reason: "insufficient movement budget: need 35.0 ft, have 10.0 ft",
+        detail: { code: "INSUFFICIENT_MOVEMENT", neededFt: 35, remainingFt: 10, condition: null },
+      },
+    ];
+    const ui = mount(h(CommandFeedbackToasts, { client: live.client }));
+    assert.match(ui.byTestId("command-feedback-item").textContent, /^Move token was refused: this move costs 35 ft but only 10 ft/);
+    ui.unmount();
+  });
 
   it("a refused move shows the SpeedZero explanation in the toast", () => {
     const live = liveTable(PLAYER_ID, playerView());

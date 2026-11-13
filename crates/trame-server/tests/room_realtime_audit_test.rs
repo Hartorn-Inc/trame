@@ -162,6 +162,7 @@ fn tally(frames: &[ServerEnvelope]) -> (usize, Vec<String>) {
             ServerEnvelope::CommandRejected {
                 reason,
                 correlation_id,
+                ..
             } if reason.starts_with("rate limited") => correlation_id.clone(),
             _ => None,
         })

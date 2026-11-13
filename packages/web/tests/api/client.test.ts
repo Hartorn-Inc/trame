@@ -109,13 +109,13 @@ describe("ApiClient: server frame reconciliation", () => {
     },
     {
       id: "CommandRejected records the reason",
-      frames: [{ type: "CommandRejected", reason: "Not your turn", correlationId: null }],
+      frames: [{ type: "CommandRejected", reason: "Not your turn", detail: null, correlationId: null }],
       check: (s) => assert.equal(s.lastRejection.value, "Not your turn"),
     },
     {
       id: "an accepted command clears the previous rejection",
       frames: [
-        { type: "CommandRejected", reason: "Not your turn", correlationId: null },
+        { type: "CommandRejected", reason: "Not your turn", detail: null, correlationId: null },
         { type: "CommandAccepted", seqId: 1, events: [], state: table() },
       ],
       check: (s) => assert.equal(s.lastRejection.value, null),

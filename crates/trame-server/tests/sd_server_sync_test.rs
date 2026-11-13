@@ -826,12 +826,14 @@ async fn websocket_spawn_derives_combat_numbers_and_rejects_bad_blocks() {
             Err(fragment) => {
                 let ServerEnvelope::CommandRejected {
                     reason,
+                    detail,
                     correlation_id,
                 } = reply
                 else {
                     panic!("case {case}: expected CommandRejected, got {reply:?}");
                 };
                 assert!(reason.contains(fragment), "case {case}: {reason}");
+                assert_eq!(detail, None, "case {case}: server-side refusals carry no engine code");
                 assert_eq!(correlation_id.as_deref(), Some(case), "case {case}");
                 assert!(
                     !table(&room).await.data.tokens.contains_key(&t.id),
@@ -839,6 +841,46 @@ async fn websocket_spawn_derives_combat_numbers_and_rejects_bad_blocks() {
                 );
             }
         }
+    }
+}
+
+#[tokio::test]
+async fn websocket_engine_refusals_carry_a_stable_code() {
+    let h = Harness::new();
+    let app = h.app();
+    let (campaign_id, _, gm) = h.campaign(&app).await;
+    let _room = h.room(campaign_id).await;
+    let addr = serve(app).await;
+    let mut ws = ws_open(addr, &format!("/ws/campaigns/{campaign_id}"), &gm).await;
+    assert!(matches!(
+        ws_read(&mut ws).await,
+        ServerEnvelope::StateSnapshot { .. }
+    ));
+    // (case_id, command, expected code)
+    let cases: Vec<(&str, TrameCommand, &str)> = vec![
+        (
+            "undo_on_a_fresh_table_is_nothing_to_undo",
+            TrameCommand::UndoLastAction,
+            "NOTHING_TO_UNDO",
+        ),
+        (
+            "removing_an_unknown_token_is_not_found",
+            TrameCommand::RemoveToken {
+                token_id: Uuid::new_v4(),
+            },
+            "NOT_FOUND",
+        ),
+    ];
+    for (case, cmd, code) in cases {
+        ws_write(&mut ws, &submit_frame(cmd, case)).await;
+        let ServerEnvelope::CommandRejected { detail, .. } = ws_read(&mut ws).await else {
+            panic!("case {case}: expected CommandRejected");
+        };
+        assert_eq!(
+            detail.map(|d| d.code),
+            Some(code.to_string()),
+            "case {case}"
+        );
     }
 }
 

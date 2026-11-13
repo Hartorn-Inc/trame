@@ -1740,7 +1740,8 @@ pub enum CommandError {
     #[error("speed is 0: a condition prevents this token from moving")]
     SpeedZero,
     /// The movement path intersected a movement-blocking `WallSegment` at `(x, y)` in pixels (`px`).
-    #[error("movement blocked by wall at ({x:.1}, {y:.1})")]
+    /// The message carries no coordinates: clients explain it from `RejectionDetail::code`.
+    #[error("movement blocked by a wall")]
     WallCollision {
         /// Horizontal collision coordinate in canvas pixels (`px`).
         x: f64,
@@ -1785,6 +1786,92 @@ pub enum CommandError {
         /// Error returned by the failing sub-command.
         source: Box<CommandError>,
     },
+}
+
+/// Every stable `RejectionDetail::code`, one per `CommandError` variant except
+/// `BatchCommandFailed`, which reports the code of the sub-command that failed. Clients key
+/// their localized explanations on these (`feedback.reason.<CODE>`).
+pub const COMMAND_ERROR_CODES: [&str; 15] = [
+    "PERMISSION_DENIED",
+    "NOT_FOUND",
+    "EXPLORATION_PAUSED",
+    "NOT_ACTIVE_TURN",
+    "INSUFFICIENT_MOVEMENT",
+    "SPEED_ZERO",
+    "WALL_COLLISION",
+    "DOOR_LOCKED",
+    "DOOR_OUT_OF_REACH",
+    "RATE_LIMITED",
+    "CONDITION_IMMUNE",
+    "INVALID_CONFIGURATION",
+    "NOTHING_TO_UNDO",
+    "REACTION_PENDING",
+    "REACTION_UNAVAILABLE",
+];
+
+/// Machine-readable form of a `CommandError` sent next to its English message in
+/// `CommandRejected`, so clients explain a refusal in the reader's language with real
+/// numbers instead of parsing (or showing) the message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RejectionDetail {
+    /// One of `COMMAND_ERROR_CODES`.
+    pub code: String,
+    /// `INSUFFICIENT_MOVEMENT`: movement the move needed, in feet (`ft`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needed_ft: Option<f64>,
+    /// `INSUFFICIENT_MOVEMENT`: movement left this turn, in feet (`ft`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_ft: Option<f64>,
+    /// `CONDITION_IMMUNE`: SRD condition id the creature is immune to (`paralyzed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
+
+impl CommandError {
+    /// Stable code of this error; a batch failure reports its failing sub-command's code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::PermissionDenied(_) => "PERMISSION_DENIED",
+            Self::NotFound(_) => "NOT_FOUND",
+            Self::ExplorationPaused => "EXPLORATION_PAUSED",
+            Self::NotActiveTurn => "NOT_ACTIVE_TURN",
+            Self::InsufficientMovement { .. } => "INSUFFICIENT_MOVEMENT",
+            Self::SpeedZero => "SPEED_ZERO",
+            Self::WallCollision { .. } => "WALL_COLLISION",
+            Self::DoorLocked => "DOOR_LOCKED",
+            Self::DoorOutOfReach => "DOOR_OUT_OF_REACH",
+            Self::RateLimited => "RATE_LIMITED",
+            Self::ConditionImmune(_) => "CONDITION_IMMUNE",
+            Self::InvalidConfiguration(_) => "INVALID_CONFIGURATION",
+            Self::NothingToUndo => "NOTHING_TO_UNDO",
+            Self::ReactionPending => "REACTION_PENDING",
+            Self::ReactionUnavailable => "REACTION_UNAVAILABLE",
+            Self::BatchCommandFailed { source, .. } => source.code(),
+        }
+    }
+
+    /// The structured `CommandRejected` detail of this error (see `RejectionDetail`).
+    pub fn rejection_detail(&self) -> RejectionDetail {
+        let mut detail = RejectionDetail {
+            code: self.code().to_string(),
+            needed_ft: None,
+            remaining_ft: None,
+            condition: None,
+        };
+        match self {
+            Self::InsufficientMovement {
+                needed_ft,
+                remaining_ft,
+            } => {
+                detail.needed_ft = Some(*needed_ft);
+                detail.remaining_ft = Some(*remaining_ft);
+            }
+            Self::ConditionImmune(condition) => detail.condition = Some(condition.clone()),
+            Self::BatchCommandFailed { source, .. } => return source.rejection_detail(),
+            _ => {}
+        }
+        detail
+    }
 }
 
 impl Default for TableState {

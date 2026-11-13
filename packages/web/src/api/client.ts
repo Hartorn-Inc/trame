@@ -1165,6 +1165,7 @@ export class ApiClient {
           kind: "rejected",
           action: this.pending.take(envelope.correlationId, nowMs),
           reason: envelope.reason,
+          detail: envelope.detail,
         });
         return;
       case "WalEntriesQuarantined":

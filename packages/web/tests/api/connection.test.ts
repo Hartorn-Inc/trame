@@ -316,7 +316,7 @@ describe("rejected_command_toast_matches_correlation_id", () => {
 
       const correlationId = c.rejectWith(ids);
       socket(0).receive({ CommandRejected: { reason: "Not your turn", ...(correlationId ? { correlation_id: correlationId } : {}) } });
-      assert.deepEqual(state.commandFeedback.value, [{ id: 1, kind: "rejected", action: c.expected, reason: "Not your turn" }]);
+      assert.deepEqual(state.commandFeedback.value, [{ id: 1, kind: "rejected", action: c.expected, reason: "Not your turn", detail: null }]);
       assert.equal(state.lastRejection.value, "Not your turn");
       client.disconnect();
     });

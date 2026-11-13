@@ -169,7 +169,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use trame_engine::commands::{
-    CampaignRole, CommandActor, TableMode, TableState, TrameCommand, TrameEvent,
+    CampaignRole, CommandActor, RejectionDetail, TableMode, TableState, TrameCommand, TrameEvent,
 };
 use trame_engine::rules::DamageAffinity;
 use uuid::Uuid;
@@ -436,6 +436,10 @@ pub enum RoomError {
     /// Authoritative command execution rejected by `TableState`.
     #[error("Command rejected: {0}")]
     CommandRejected(String),
+    /// `TableState::apply_command` / `apply_batch` refused the command; the client receives
+    /// its message plus its structured `RejectionDetail`.
+    #[error("Command rejected: {0}")]
+    Engine(trame_engine::commands::CommandError),
 }
 
 /// Armor Class a synced sheet can give a token, the stat block bound (`statblock.rs`).
@@ -1004,6 +1008,7 @@ pub struct TableRoomActor {
 fn rejection_reason(err: &RoomError) -> String {
     match err {
         RoomError::CommandRejected(reason) => reason.clone(),
+        RoomError::Engine(err) => err.to_string(),
         RoomError::Wal(_) => {
             "storage unavailable: the action was not saved and has not been applied".to_string()
         }
@@ -1011,10 +1016,24 @@ fn rejection_reason(err: &RoomError) -> String {
     }
 }
 
+/// Structured detail of an engine refusal; `None` for server-side refusals.
+fn rejection_detail(err: &RoomError) -> Option<RejectionDetail> {
+    match err {
+        RoomError::Engine(err) => Some(err.rejection_detail()),
+        _ => None,
+    }
+}
+
 /// Unicasts `CommandRejected` to one client.
-fn send_rejection(tx: &ClientSender, reason: String, correlation_id: Option<String>) {
+fn send_rejection(
+    tx: &ClientSender,
+    reason: String,
+    detail: Option<RejectionDetail>,
+    correlation_id: Option<String>,
+) {
     let out = ServerEnvelope::CommandRejected {
         reason,
+        detail,
         correlation_id,
     };
     if let Ok(bytes) = encode_server_envelope(&out) {
@@ -1388,9 +1407,11 @@ impl TableRoomActor {
         }
         .filter(|_| !self.take_command_token(session_id));
         if let Some(correlation_id) = rate_limited {
+            let limited = trame_engine::commands::CommandError::RateLimited;
             send_rejection(
                 &sender_tx,
-                trame_engine::commands::CommandError::RateLimited.to_string(),
+                limited.to_string(),
+                Some(limited.rejection_detail()),
                 correlation_id,
             );
             return Ok(());
@@ -1408,7 +1429,12 @@ impl TableRoomActor {
                     correlation_id,
                 } = *submission;
                 if let Err(err) = self.execute_and_broadcast_command(actor, command) {
-                    send_rejection(&sender_tx, rejection_reason(&err), correlation_id);
+                    send_rejection(
+                        &sender_tx,
+                        rejection_reason(&err),
+                        rejection_detail(&err),
+                        correlation_id,
+                    );
                 }
             }
             ClientEnvelope::RollDice {
@@ -1440,7 +1466,7 @@ impl TableRoomActor {
                         }
                         self.note_timeline(roll_timeline_note(self.campaign_id, &outcome));
                     }
-                    Err(reason) => send_rejection(&sender_tx, reason, correlation_id),
+                    Err(reason) => send_rejection(&sender_tx, reason, None, correlation_id),
                 }
             }
             ClientEnvelope::PointerPing {
@@ -1450,7 +1476,7 @@ impl TableRoomActor {
             } => {
                 if let Err(reason) = validate_pointer_ping(&self.state, &pos, &color_hex, scene_id)
                 {
-                    send_rejection(&sender_tx, reason, None);
+                    send_rejection(&sender_tx, reason, None, None);
                     return Ok(());
                 }
                 let now = tokio::time::Instant::now();
@@ -1513,7 +1539,7 @@ impl TableRoomActor {
         let prior_vitals = self.linked_vitals();
         let is_undo = matches!(resolved_cmd, TrameCommand::UndoLastAction);
         let persisted = match self.state.apply_command(&actor, resolved_cmd.clone()) {
-            Err(err) => Err(RoomError::CommandRejected(err.to_string())),
+            Err(err) => Err(RoomError::Engine(err)),
             Ok(events) if is_undo => self.persist_snapshot_at(self.seq_id + 1).map(|()| events),
             Ok(events) => self
                 .wal
@@ -1719,7 +1745,7 @@ impl TableRoomActor {
         let prior_mode = self.state.data.mode;
         let prior_vitals = self.linked_vitals();
         let persisted = match self.state.apply_batch(&actor, commands, description) {
-            Err(err) => Err(RoomError::CommandRejected(err.to_string())),
+            Err(err) => Err(RoomError::Engine(err)),
             Ok(events) => self.persist_snapshot_at(self.seq_id + 1).map(|()| events),
         };
         let events = match persisted {

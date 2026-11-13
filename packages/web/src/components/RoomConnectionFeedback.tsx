@@ -41,12 +41,19 @@
  * 6. `Quarantine Is GM-Only`:
  *    - The server unicasts `WalEntriesQuarantined` to Game Masters only; the
  *      banner also renders nothing unless the active campaign role is `GM`.
+ * 7. `Coded Refusals`:
+ *    - An engine refusal is explained from its `RejectionDetail.code`
+ *      (`feedback.reason.<CODE>`, one sentence per `CommandError` variant,
+ *      distances through `formatDistanceFt`), never from the English message,
+ *      which never carries pixel coordinates. Server-side refusals without a
+ *      code show the server text.
  * ============================================================================
  */
 import { useEffect, useState } from 'preact/hooks';
 import type { ApiClient } from '../api/client.ts';
 import type { CommandFeedback, ConnectionStatus } from '../api/session.ts';
-import { hasMessage, t, tn, type MessageKey } from '../i18n/index.ts';
+import type { WireRejectionDetail } from '../api/wire.ts';
+import { formatDistanceFt, hasMessage, t, tn } from '../i18n/index.ts';
 
 export interface RoomConnectionFeedbackProps {
   client: ApiClient;
@@ -192,28 +199,39 @@ function actionLabel(action: string | null): string {
 }
 
 /**
- * Engine rejections (`CommandError` display strings) that get a plain-language,
- * localized explanation instead of the raw English reason.
+ * Codes of engine refusals that predate `RejectionDetail`, recognised from the English
+ * message when a frame carries no `detail` (a server still running the previous release).
  */
-const KNOWN_REASONS: readonly [RegExp, MessageKey][] = [
-  [/^speed is 0\b/, 'feedback.reason.speedZero'],
-  [/^door is locked\b/, 'feedback.reason.doorLocked'],
-  [/^door is out of reach\b/, 'feedback.reason.doorOutOfReach'],
-  [/^rate limited\b/, 'feedback.reason.rateLimited'],
-  [/^condition immunity\b/, 'feedback.reason.conditionImmune'],
+const LEGACY_REASON_CODES: readonly [RegExp, string][] = [
+  [/^speed is 0\b/, 'SPEED_ZERO'],
+  [/^door is locked\b/, 'DOOR_LOCKED'],
+  [/^door is out of reach\b/, 'DOOR_OUT_OF_REACH'],
+  [/^rate limited\b/, 'RATE_LIMITED'],
+  [/^condition immunity\b/, 'CONDITION_IMMUNE'],
 ];
 
-/** Localized explanation of a rejection reason, or the server text when unknown. */
-export function rejectionReason(reason: string | null): string {
-  const known = KNOWN_REASONS.find(([pattern]) => pattern.test(reason ?? ''));
-  return known ? t(known[1]) : reason ?? '';
+/**
+ * Localized, plain-language explanation of a refusal: keyed on the engine code
+ * (`feedback.reason.<CODE>`, distances in the reader's unit), else the server text.
+ */
+export function rejectionReason(reason: string | null, detail: WireRejectionDetail | null = null): string {
+  const code = detail?.code ?? LEGACY_REASON_CODES.find(([pattern]) => pattern.test(reason ?? ''))?.[1];
+  if (code === 'INSUFFICIENT_MOVEMENT') {
+    if (detail?.neededFt == null || detail.remainingFt == null) return t('feedback.reason.INSUFFICIENT_MOVEMENT_GENERIC');
+    return t('feedback.reason.INSUFFICIENT_MOVEMENT', {
+      needed: formatDistanceFt(detail.neededFt),
+      remaining: formatDistanceFt(detail.remainingFt),
+    });
+  }
+  const key = `feedback.reason.${code ?? ''}`;
+  return code && hasMessage(key) ? t(key) : reason ?? '';
 }
 
 function feedbackMessage(item: CommandFeedback): string {
   const action = actionLabel(item.action);
   switch (item.kind) {
     case 'rejected':
-      return t('feedback.rejected', { action, reason: rejectionReason(item.reason) });
+      return t('feedback.rejected', { action, reason: rejectionReason(item.reason, item.detail ?? null) });
     case 'maybeLost':
       return t('feedback.maybeLost', { action });
     default:
