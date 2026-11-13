@@ -37,8 +37,11 @@
 //!        on actor-linked `SpawnToken` (`resolve_spawn`), never from the client.
 //!      - Armor Class comes from the sheet's `derived.armorClass` and speed from
 //!        `derived.speed` (class features applied), else `attributes.speedFt` minus
-//!        exhaustion (GS6). Both are bounded like stat block values (AC `1..=30`,
-//!        speed `0..=200` ft) and sheet conditions are normalized and capped like
+//!        exhaustion (GS6). Saves come from `derived.savingThrows` (clamped to
+//!        `-10..=30`) before the recomputed bonus, and the active feature
+//!        resistances in `derived.featureRules.resistances` (SRD damage types only)
+//!        join the sheet's resistances. AC and speed are bounded like stat block
+//!        values (AC `1..=30`, speed `0..=200` ft) and sheet conditions are normalized and capped like
 //!        `SetTokenConditions`. A token whose conditions impose Speed 0 keeps the
 //!        sheet speed as its maximum but has no movement left.
 //!      - A `SpawnToken` whose `stat_block` names an actor template UUID gets a copy of
@@ -821,7 +824,39 @@ fn derived_initiative_extra(data: &Value) -> i32 {
     alert_bonus - 2 * exhaustion
 }
 
-/// Saving throw bonuses of a sheet, keyed by ability id, for server-rolled saves (D6):
+/// Range a synced saving throw bonus is clamped to (the stat block `savingThrows` bound).
+const SHEET_SAVE_BONUS_RANGE: std::ops::RangeInclusive<i32> = -10..=30;
+
+/// Saving throw bonuses of a sheet, keyed by ability id, for server-rolled saves (D6). The
+/// derived saves the client stores with the sheet (`derived.savingThrows`: class features
+/// such as Aura of Protection applied) win per ability, with the same trust model as
+/// `derived.armorClass`: each is clamped to `SHEET_SAVE_BONUS_RANGE`. Abilities without a
+/// finite derived value keep the recomputed bonus (`recomputed_save_bonuses`).
+fn sheet_save_bonuses(data: &Value) -> Option<BTreeMap<String, i32>> {
+    use trame_engine::resolution::ABILITY_IDS;
+    let mut bonuses = recomputed_save_bonuses(data);
+    if let Some(derived) = data
+        .pointer("/derived/savingThrows")
+        .and_then(Value::as_object)
+    {
+        for ab in ABILITY_IDS {
+            if let Some(bonus) = derived
+                .get(ab)
+                .and_then(Value::as_f64)
+                .filter(|b| b.is_finite())
+            {
+                let bonus = (bonus.round() as i32)
+                    .clamp(*SHEET_SAVE_BONUS_RANGE.start(), *SHEET_SAVE_BONUS_RANGE.end());
+                bonuses
+                    .get_or_insert_with(BTreeMap::new)
+                    .insert(ab.to_string(), bonus);
+            }
+        }
+    }
+    bonuses
+}
+
+/// Saving throw bonuses recomputed from the sheet's own fields, keyed by ability id:
 /// - Stat block sheet (`statBlock` object, or numeric `abilities.<ability>`): the printed
 ///   `savingThrows`, else the score modifier (`resolution::stat_block_save_bonus`).
 /// - Character sheet (`abilities.<ability>.score`, clamped to `ABILITY_SCORES`): the modifier,
@@ -830,7 +865,7 @@ fn derived_initiative_extra(data: &Value) -> i32 {
 ///   `saveProficiencies` map, `level`, `exhaustionLevel`) follows the same formula. Feats and
 ///   magic items are not folded in.
 /// - Neither: `None`, so the token keeps its current bonuses.
-fn sheet_save_bonuses(data: &Value) -> Option<BTreeMap<String, i32>> {
+fn recomputed_save_bonuses(data: &Value) -> Option<BTreeMap<String, i32>> {
     use trame_engine::resolution::ABILITY_IDS;
     let collect = |f: &dyn Fn(&str) -> i32| {
         Some(
@@ -999,11 +1034,43 @@ fn sheet_speed_ft(data: &Value) -> Option<f64> {
     Some((base - 5.0 * f64::from(exhaustion)).max(0.0))
 }
 
+/// `(resistances, immunities, vulnerabilities)` damage-type lists (`ActorTacticalSync`).
+type DamageAffinityLists = (Vec<String>, Vec<String>, Vec<String>);
+
+/// Adds the resistances of the class features in force that the client derives with the sheet
+/// (`derived.featureRules.resistances`, e.g. Rage: bludgeoning, piercing, slashing) to the
+/// sheet's own resistances, so typed damage on the token follows the toggle. Same trust model
+/// as `derived.armorClass`, bounded like a stat block: only the 13 SRD damage types
+/// (`statblock::DAMAGE_TYPES`, case-insensitive) count, each once. Without that list the
+/// affinities are unchanged, so a sheet saved after Rage ends drops the extra resistances.
+fn merge_feature_resistances(
+    affinities: Option<DamageAffinityLists>,
+    data: &Value,
+) -> Option<DamageAffinityLists> {
+    let Some(feature) = data
+        .pointer("/derived/featureRules/resistances")
+        .and_then(Value::as_array)
+    else {
+        return affinities;
+    };
+    let (mut resist, immune, vuln) = affinities.unwrap_or_default();
+    for damage_type in feature.iter().filter_map(Value::as_str) {
+        let damage_type = damage_type.trim().to_ascii_lowercase();
+        if crate::statblock::DAMAGE_TYPES.contains(&damage_type.as_str())
+            && !resist.iter().any(|r| r.eq_ignore_ascii_case(&damage_type))
+        {
+            resist.push(damage_type);
+        }
+    }
+    Some((resist, immune, vuln))
+}
+
 /// Extracts the token-relevant subset of a `Dnd5eActorData` sheet:
 /// `attributes.hp.{current,max,temp}`, the Armor Class (`sheet_armor_class`),
 /// `abilities.dex.score` (-> modifier), the walking speed (`sheet_speed_ft`),
 /// `conditions[].id`, `damageMitigations` (`RESISTANT` / `IMMUNE` / `VULNERABLE` per damage
-/// type, A68), the threat reach (`threat_reach_ft`), and darkvision (`darkvision_ft`).
+/// type, A68) plus active feature resistances (`merge_feature_resistances`), the threat reach
+/// (`threat_reach_ft`), darkvision (`darkvision_ft`), and save bonuses (`sheet_save_bonuses`).
 pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTacticalSync {
     let conditions = data.get("conditions").and_then(Value::as_array).map(|arr| {
         arr.iter()
@@ -1032,6 +1099,7 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
             }
             (resist, immune, vuln)
         });
+    let damage_affinities = merge_feature_resistances(damage_affinities, data);
     let dex_mod = i32_at(data, &["abilities", "dex", "score"])
         .map(|s| (s.clamp(*ABILITY_SCORES.start(), *ABILITY_SCORES.end()) - 10).div_euclid(2));
     ActorTacticalSync {

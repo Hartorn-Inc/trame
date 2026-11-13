@@ -635,11 +635,101 @@ fn sheet_save_bonuses_follow_the_sheet_shape() {
             json!({ "name": "Note" }),
             None,
         ),
+        (
+            "level_6_paladin_cha_16_gets_aura_of_protection_from_derived_saves",
+            json!({
+                "attributes": { "level": 6 },
+                "abilities": {
+                    "str": { "score": 10, "saveProficiency": false },
+                    "dex": { "score": 10, "saveProficiency": false },
+                    "con": { "score": 10, "saveProficiency": false },
+                    "cha": { "score": 16, "saveProficiency": true }
+                },
+                "derived": { "savingThrows": { "str": 3, "dex": 3, "con": 3, "cha": 9 } }
+            }),
+            Some([3, 3, 3]),
+        ),
+        (
+            "derived_saves_are_clamped_and_non_numbers_fall_back",
+            json!({
+                "abilities": { "str": { "score": 10 }, "dex": { "score": 14 }, "con": { "score": 10 } },
+                "derived": { "savingThrows": { "str": 99, "dex": "high", "con": -50 } }
+            }),
+            Some([30, 2, -10]),
+        ),
     ];
     for (id, sheet, expected) in cases {
         let bonuses = trame_server::campaigns::tactical_sync_from_sheet(None, &sheet).save_bonuses;
         let got = bonuses.map(|b| [b["str"], b["dex"], b["con"]]);
         assert_eq!(got, expected, "{id}");
+    }
+}
+
+#[test]
+fn active_feature_resistances_reach_the_token() {
+    // (case_id, sheet, damage type, raw damage, HP lost)
+    let rage = json!({ "featureRules": { "resistances": ["bludgeoning", "piercing", "slashing"] } });
+    let cases = [
+        (
+            "raging_barbarian_halves_slashing",
+            json!({ "derived": rage }),
+            "slashing",
+            11,
+            5,
+        ),
+        (
+            "rage_ended_takes_full_slashing",
+            json!({ "derived": { "featureRules": { "resistances": [] } } }),
+            "slashing",
+            11,
+            11,
+        ),
+        (
+            "rage_does_not_resist_fire",
+            json!({ "derived": rage }),
+            "fire",
+            11,
+            11,
+        ),
+        (
+            "rage_and_sheet_vulnerability_apply_in_order",
+            json!({ "damageMitigations": { "slashing": "VULNERABLE" }, "derived": rage }),
+            "slashing",
+            25,
+            24,
+        ),
+        (
+            "unknown_feature_damage_types_are_ignored",
+            json!({ "derived": { "featureRules": { "resistances": ["laser", "Slashing "] } } }),
+            "slashing",
+            11,
+            5,
+        ),
+    ];
+    for (id, sheet, damage_type, raw, lost) in cases {
+        let gm = actor(CampaignRole::Gm);
+        let mut barbarian =
+            TokenState::new_default(Uuid::new_v4(), "Barbarian", Point2D::new(0.0, 0.0));
+        barbarian.max_hp = 60;
+        barbarian.hp = 60;
+        trame_server::campaigns::tactical_sync_from_sheet(None, &sheet)
+            .apply_to_token(&mut barbarian, trame_engine::commands::TableMode::Exploration);
+        let token_id = barbarian.id;
+        let mut table = TableState::new(100.0, 5.0, Vec::new());
+        table.data.tokens.insert(token_id, barbarian);
+        table
+            .apply_command(
+                &gm,
+                TrameCommand::ApplyDamage {
+                    token_id,
+                    raw_damage: raw,
+                    affinity: DamageAffinity::Normal,
+                    is_critical: false,
+                    damage_type: Some(damage_type.to_string()),
+                },
+            )
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert_eq!(60 - table.data.tokens[&token_id].hp, lost, "{id}");
     }
 }
 
