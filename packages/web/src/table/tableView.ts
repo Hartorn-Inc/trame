@@ -234,7 +234,12 @@ export function spawnTopLeft(
  * distinguishable in target lists and the initiative tracker.
  */
 export function uniqueTokenName(base: string, state: ProjectedTableState | null): string {
-  const names = new Set(listTableTokens(state).map((tok) => tok.name));
+  return uniqueNameAmong(base, listTableTokens(state).map((tok) => tok.name));
+}
+
+/** `uniqueTokenName` over an explicit name list (for example a scene's staged tokens). */
+export function uniqueNameAmong(base: string, taken: Iterable<string>): string {
+  const names = new Set(taken);
   if (!names.has(base)) return base;
   let n = 2;
   while (names.has(`${base} ${n}`)) n++;

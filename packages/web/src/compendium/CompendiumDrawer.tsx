@@ -25,6 +25,10 @@
  *    - The spawn button renders only when the host passes `onSpawnMonster`
  *      (GM with a loaded table); the server rejects `SPAWN_TOKEN` from
  *      players regardless.
+ * 4. `Studio Staging`:
+ *    - With `onStageMonster` (map studio) a monster is staged on the scene
+ *      being prepared instead of spawned live; the studio stores only its
+ *      `srd:monster:<slug>` reference (`maps/monsterStaging.ts`).
  * ============================================================================
  */
 import { h, type VNode } from 'preact';
@@ -57,6 +61,12 @@ export interface CompendiumDrawerProps {
   onDragStart?: (entry: CompendiumEntry, event: DragEvent) => void;
   /** GM spawn of a monster entry on the live table; the button is hidden when absent. */
   onSpawnMonster?: (entry: CompendiumEntry) => void;
+  /**
+   * Map studio picker: stages a monster entry on the scene being prepared.
+   * When present each monster gets a "Stage on scene" button and the sheet
+   * "Add" button is hidden, since no sheet is open in the studio.
+   */
+  onStageMonster?: (entry: CompendiumEntry) => void;
 }
 
 /** Cards rendered at once; narrower searches reach the rest (banner invariant 1). */
@@ -243,7 +253,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
                 h('strong', { class: 'ds-entry-name' }, entry.name),
                 h('span', { class: 'ds-entry-type' }, ` [${entry.entityType}] `),
                 h('span', { class: 'ds-entry-tier' }, entry.tier),
-                h(
+                props.onStageMonster ? null : h(
                   'button',
                   {
                     type: 'button',
@@ -284,6 +294,19 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
                         onClick: () => props.onSpawnMonster?.(entry),
                       },
                       t('compendium.spawn'),
+                    )
+                  : null,
+                statBlock && props.onStageMonster
+                  ? h(
+                      'button',
+                      {
+                        type: 'button',
+                        class: 'ds-btn ds-btn-secondary ds-btn-sm',
+                        'data-testid': `btn-stage-${entry.slug}`,
+                        'aria-label': t('compendium.stageAria', { name: entry.name }),
+                        onClick: () => props.onStageMonster?.(entry),
+                      },
+                      t('compendium.stage'),
                     )
                   : null,
                 statBlockOpen

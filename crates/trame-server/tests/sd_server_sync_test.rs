@@ -283,6 +283,11 @@ fn goblin_combat() -> Combat {
     (10, 10, 15, 30.0, 60.0, 5.0, 1, vec![])
 }
 
+/// SRD Ogre: 68 HP, AC 11, 40 ft, darkvision 60 ft, 5 ft reach, Large.
+fn ogre_combat() -> Combat {
+    (68, 68, 11, 40.0, 60.0, 5.0, 2, vec![])
+}
+
 /// A homebrew Large ogre-like block with a 10 ft reach attack and fire resistance.
 fn homebrew_block() -> Value {
     json!({
@@ -902,17 +907,27 @@ fn scene_with(campaign_id: Uuid, staged: Value) -> Value {
 
 #[tokio::test]
 async fn staged_tokens_copy_validated_stat_blocks_and_activate_with_them() {
-    // (case_id, staged token fields, expected Ok(combat numbers) or Err(())
-    let cases: Vec<(&str, Value, Result<Combat, ()>)> = vec![
+    // (case_id, staged token fields, expected Ok((combat numbers, action names)) or Err(()))
+    let cases: Vec<(&str, Value, Result<(Combat, Vec<&str>), ()>)> = vec![
         (
             "srd_template_is_copied_on_save",
             json!({ "monster_template_id": "srd:monster:goblin" }),
-            Ok(goblin_combat()),
+            Ok((goblin_combat(), vec!["Scimitar", "Shortbow"])),
+        ),
+        (
+            "studio_picked_srd_ogre_activates_with_srd_hp_ac_and_actions",
+            json!({ "monster_template_id": "srd:monster:ogre" }),
+            Ok((ogre_combat(), vec!["Greatclub", "Javelin"])),
+        ),
+        (
+            "legacy_studio_key_ogre_maps_to_the_srd_ogre",
+            json!({ "monster_template_id": "Ogre" }),
+            Ok((ogre_combat(), vec!["Greatclub", "Javelin"])),
         ),
         (
             "homebrew_copy_is_kept",
             json!({ "stat_block": homebrew_block() }),
-            Ok(homebrew_combat()),
+            Ok((homebrew_combat(), vec!["Club", "Rock"])),
         ),
         (
             "out_of_bounds_homebrew_is_rejected",
@@ -946,7 +961,7 @@ async fn staged_tokens_copy_validated_stat_blocks_and_activate_with_them() {
             json!({ "scenes": [scene], "expected_version": 0 }),
         )
         .await;
-        let Ok(numbers) = expected else {
+        let Ok((numbers, actions)) = expected else {
             assert_eq!(status, StatusCode::BAD_REQUEST, "case {case}: {body}");
             assert_eq!(body["code"], json!("INVALID_STAT_BLOCK"), "case {case}");
             continue;
@@ -985,6 +1000,13 @@ async fn staged_tokens_copy_validated_stat_blocks_and_activate_with_them() {
         .unwrap();
         let activated = table(&room).await.data.tokens[&token_id].clone();
         assert_eq!(combat(&activated), numbers, "case {case}");
+        let action_names: Vec<&str> = activated
+            .stat_block
+            .as_ref()
+            .and_then(|b| b["actions"].as_array())
+            .map(|list| list.iter().filter_map(|a| a["name"].as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(action_names, actions, "case {case}: actions copied");
         assert_eq!(
             activated.actor_id, None,
             "case {case}: stays a SyntheticToken"

@@ -1,6 +1,8 @@
 import { useSignal } from '@preact/signals';
-import { useEffect } from 'preact/hooks';
-import type { CampaignMapScene, StagedToken, StudioLightSource, AudioEmitterConfig, UserRole, WallType } from './types.ts';
+import { useEffect, useRef } from 'preact/hooks';
+import type { CampaignMapScene, StudioLightSource, AudioEmitterConfig, UserRole, WallType } from './types.ts';
+import { CompendiumDrawer, type CompendiumEntry } from '../compendium/CompendiumDrawer.tsx';
+import { QUICK_PICK_MONSTERS, SRD_MONSTER_PREFIX, srdMonsterEntries, stageSrdMonster } from './monsterStaging.ts';
 import { createStarterDungeonScene, generateEntityUuid, mapBackendSceneToFrontend, toggleDoorState } from './domain.ts';
 import { SceneAtlas } from './SceneAtlas.tsx';
 import { DARK_CANVAS_PALETTE, SHARED_WALL_KINDS, type CanonicalWallKind } from '../canvas/CanvasThemePalette.ts';
@@ -36,6 +38,8 @@ export interface MapsStudioTabProps {
   initialScenes?: CampaignMapScene[];
   onActivateScene?: (scene: CampaignMapScene) => void;
   onSaveScene?: (scene: CampaignMapScene) => Promise<void>;
+  /** Monster picker list; defaults to the SRD monsters of the installed compendium. */
+  monsterEntries?: CompendiumEntry[];
 }
 
 export function MapsStudioTab({
@@ -44,7 +48,9 @@ export function MapsStudioTab({
   initialScenes = [],
   onActivateScene,
   onSaveScene,
+  monsterEntries,
 }: MapsStudioTabProps) {
+  const pickerEntries = srdMonsterEntries(monsterEntries);
   const normalizedInitialScenes = initialScenes.map((s) =>
     'walls' in s && Array.isArray((s as any).walls) ? (s as CampaignMapScene) : mapBackendSceneToFrontend(s),
   );
@@ -68,8 +74,15 @@ export function MapsStudioTab({
   let doorFeedbackSignal: { value: Record<string, string> };
   let wallDragSignal: { value: WallDrag | null };
   let studioZoomSignal: { value: number };
+  let monsterPickerOpenSignal: { value: boolean };
+  let stagingStatusSignal: { value: string };
+  /** Picker toggle, where focus returns when the picker closes. */
+  let pickerToggleRef: { current: HTMLButtonElement | null };
 
   try {
+    pickerToggleRef = useRef<HTMLButtonElement | null>(null);
+    monsterPickerOpenSignal = useSignal<boolean>(false);
+    stagingStatusSignal = useSignal<string>('');
     wallDragSignal = useSignal<WallDrag | null>(null);
     studioZoomSignal = useSignal<number>(1);
     scenesSignal = useSignal<CampaignMapScene[]>(normalizedInitialScenes);
@@ -90,6 +103,9 @@ export function MapsStudioTab({
     audioClipUrlSignal = useSignal<string>('ambience.ogg');
     doorFeedbackSignal = useSignal<Record<string, string>>({});
   } catch {
+    pickerToggleRef = { current: null };
+    monsterPickerOpenSignal = { value: false };
+    stagingStatusSignal = { value: '' };
     wallDragSignal = { value: null };
     studioZoomSignal = { value: 1 };
     scenesSignal = { value: normalizedInitialScenes };
@@ -179,26 +195,20 @@ export function MapsStudioTab({
     scenesSignal.value = scenesSignal.value.map((s) => (s.id === updatedScene.id ? updatedScene : s));
   };
 
-  const handleAddStagedMonster = (templateKey: StagedToken['templateKey']) => {
-    if (!selectedScene) return;
-    const spawn = selectedScene.spawnPoints?.[0] || selectedScene.spawnPoint || { x: 100, y: 100 };
-    const newToken: StagedToken = {
-      id: generateEntityUuid(),
-      name: String(templateKey),
-      templateKey,
-      x: spawn.x + 20,
-      y: spawn.y + 20,
-      elevationFt: selectedScene.defaultGroundElevationFt ?? 0,
-      visibilityChannel: 'GmHidden',
-      ownerUserId: null,
-      hpCurrent: 10,
-      hpMax: 10,
-    };
+  const handleStageMonster = (entry: CompendiumEntry | null) => {
+    if (!selectedScene || !entry) return;
+    const newToken = stageSrdMonster(selectedScene, entry);
     const updatedScene: CampaignMapScene = {
       ...selectedScene,
       stagedTokens: [...selectedScene.stagedTokens, newToken],
     };
     scenesSignal.value = scenesSignal.value.map((s) => (s.id === updatedScene.id ? updatedScene : s));
+    stagingStatusSignal.value = t('maps.monsterStaged', { name: newToken.name });
+  };
+
+  const closeMonsterPicker = () => {
+    monsterPickerOpenSignal.value = false;
+    pickerToggleRef.current?.focus();
   };
 
   const handleToggleRevealed = () => {
@@ -499,19 +509,43 @@ export function MapsStudioTab({
             </span>
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--atlas-space-xs)' }}>
-            {(['Goblin', 'Bandit', 'Guard', 'Skeleton', 'Wolf', 'Ogre', 'Boss'] as const).map((tmpl) => (
-              <button
-                key={tmpl}
-                type="button"
-                data-testid={`template-${tmpl}`}
-                disabled={!selectedScene}
-                onClick={() => handleAddStagedMonster(tmpl)}
-                style={{ minHeight: '40px', textAlign: 'left', padding: 'var(--atlas-space-xs)', opacity: !selectedScene ? 0.5 : 1, cursor: !selectedScene ? 'not-allowed' : 'pointer' }}
-              >
-                {t('maps.addHiddenTemplate', { template: t(`maps.template.${tmpl}`) })}
-              </button>
-            ))}
+            {QUICK_PICK_MONSTERS.map(({ key, slug }) => {
+              const entry = pickerEntries.find((e) => e.id === `${SRD_MONSTER_PREFIX}${slug}`) ?? null;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  data-testid={`template-${key}`}
+                  disabled={!selectedScene || !entry}
+                  onClick={() => handleStageMonster(entry)}
+                  style={{ minHeight: '40px', textAlign: 'left', padding: 'var(--atlas-space-xs)', opacity: !selectedScene || !entry ? 0.5 : 1, cursor: !selectedScene || !entry ? 'not-allowed' : 'pointer' }}
+                >
+                  {t('maps.addHiddenTemplate', { template: t(`maps.template.${key}`) })}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              ref={pickerToggleRef}
+              class="ds-btn ds-btn-secondary ds-btn-sm"
+              data-testid="open-monster-picker"
+              disabled={!selectedScene}
+              aria-expanded={monsterPickerOpenSignal.value}
+              onClick={() => { monsterPickerOpenSignal.value = !monsterPickerOpenSignal.value; }}
+            >
+              {t('maps.browseMonsters')}
+            </button>
           </div>
+          <p role="status" class="ds-meta" data-testid="maps-staging-status">{stagingStatusSignal.value}</p>
+          {selectedScene ? (
+            <CompendiumDrawer
+              isOpen={monsterPickerOpenSignal.value}
+              entries={pickerEntries}
+              systemId="dnd5e"
+              onClose={closeMonsterPicker}
+              onStageMonster={handleStageMonster}
+            />
+          ) : null}
         </aside>
 
         <main data-testid="canvas-editor" style={{ flex: 1, border: '1px solid var(--atlas-border)', position: 'relative', overflowY: 'auto' }}>
@@ -628,16 +662,19 @@ export function MapsStudioTab({
                       fillOpacity="0.2"
                     />
                   ))}
-                  {selectedScene.stagedTokens.map((token) => (
-                    <circle
-                      key={token.id}
-                      data-testid={`canvas-token-${token.id}`}
-                      cx={token.x}
-                      cy={token.y}
-                      r="15"
-                      fill="var(--atlas-focus)"
-                    />
-                  ))}
+                  {selectedScene.stagedTokens.map((token) => {
+                    const half = (Math.max(1, token.sizeCells ?? 1) * selectedScene.gridCellSizePx) / 2;
+                    return (
+                      <circle
+                        key={token.id}
+                        data-testid={`canvas-token-${token.id}`}
+                        cx={token.x + half}
+                        cy={token.y + half}
+                        r={Math.max(15, half * 0.8)}
+                        fill="var(--atlas-focus)"
+                      />
+                    );
+                  })}
                 </svg>
               </div>
 

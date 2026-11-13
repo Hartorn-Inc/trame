@@ -427,9 +427,21 @@ pub fn sanitize_scene_for_player(mut scene: CampaignMapScene) -> CampaignMapScen
     scene
 }
 
+/// The SRD reference of a studio template key saved before the SRD picker (`"Goblin"`,
+/// `"Ogre"`): the key itself, lowercased, when it is an SRD monster slug.
+fn legacy_srd_reference(key: &str) -> Option<String> {
+    if key.starts_with(crate::statblock::SRD_MONSTER_PREFIX) || Uuid::parse_str(key).is_ok() {
+        return None;
+    }
+    let slug = key.trim().to_ascii_lowercase();
+    crate::statblock::srd_stat_block(&slug)
+        .map(|_| format!("{}{slug}", crate::statblock::SRD_MONSTER_PREFIX))
+}
+
 /// Gives every staged token of `scenes` a validated stat block copy (D7): an existing
 /// `stat_block` is resolved and bounds-checked; otherwise `monster_template_id` (SRD
-/// reference or actor template UUID) is copied when it names one. Tokens with neither stay
+/// reference or actor template UUID) is copied when it names one. A legacy studio key that
+/// is an SRD slug (`"Ogre"`) is rewritten to its reference first. Tokens with neither stay
 /// plain. Errors name the offending token.
 pub async fn resolve_staged_stat_blocks(
     state: &AppState,
@@ -437,6 +449,15 @@ pub async fn resolve_staged_stat_blocks(
     scenes: &mut [CampaignMapScene],
 ) -> Result<(), String> {
     for token in scenes.iter_mut().flat_map(|s| s.staged_tokens.iter_mut()) {
+        if token.stat_block.is_none() {
+            if let Some(reference) = token
+                .monster_template_id
+                .as_deref()
+                .and_then(legacy_srd_reference)
+            {
+                token.monster_template_id = Some(reference);
+            }
+        }
         let source = match (&token.stat_block, token.monster_template_id.as_deref()) {
             (Some(block), _) => block.clone(),
             (None, Some(template))
@@ -445,7 +466,7 @@ pub async fn resolve_staged_stat_blocks(
             {
                 serde_json::Value::String(template.to_string())
             }
-            // Legacy free-form template keys stay plain tokens rather than failing the save.
+            // Free-form keys naming no SRD monster ("Boss") stay plain rather than failing the save.
             _ => continue,
         };
         let block = match source.as_str().and_then(|s| Uuid::parse_str(s).ok()) {
