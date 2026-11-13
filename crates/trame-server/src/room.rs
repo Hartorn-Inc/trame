@@ -75,8 +75,12 @@
 //!        controller receive it, and its timeline record and the `initiative`
 //!        order record are GM-only. Tokens whose player already rolled
 //!        initiative keep that roll; `ActorUpdated` sheets go only to the GM and
-//!        the persistent actor's owning `Player` (`actor_owner_user_id`), with
-//!        `statBlock` stripped for non-GM recipients.
+//!        to the persistent actor's owning `Player` (`actor_owner_user_id`) when
+//!        they control a linked token on the live table (so unspawned
+//!        `ActorsTab` edits preserve REST `expected_version` `409 VERSION_CONFLICT`,
+//!        while GM-owned NPC/Monster tokens assigned to players and Spectators
+//!        never receive `ActorUpdated` or `statBlock`, which is stripped for
+//!        non-GM recipients).
 //!   8. `Server-Only Initiative (SEC3)`:
 //!      - A player's initiative `RollDice` ignores the submitted expression: the
 //!        server rolls `1d20 + TokenState::initiative_modifier()` for their token,
@@ -947,10 +951,13 @@ impl TableRoomHandle {
         reply_rx.await.map_err(|_| RoomError::ActorClosed)?
     }
 
-    /// Broadcasts `ServerEnvelope::ActorUpdated` to authorized clients (`Gm` and the actor's
-    /// owning `Player`, with `statBlock` stripped for non-GMs) and synchronizes linked
-    /// `TokenState` tactical fields (`hp_current`, `hp_max`, `temp_hp`, `ac`, `speed_ft`, `conditions`)
-    /// without pushing onto the 50-entry tactical `undo_stack` (`ADR-0037`).
+    /// Broadcasts `ServerEnvelope::ActorUpdated` to `CampaignRole::Gm` and to the persistent
+    /// actor's owning `CampaignRole::Player` when they control a linked token on the live table
+    /// (with `statBlock` stripped for non-GMs, so unspawned `ActorsTab` edits preserve REST
+    /// `expected_version` `409 VERSION_CONFLICT` while GM-owned NPC/Monster tokens assigned to
+    /// players and Spectators never receive `ActorUpdated` or `statBlock`) and synchronizes
+    /// linked `TokenState` tactical fields (`hp_current`, `hp_max`, `temp_hp`, `ac`, `speed_ft`,
+    /// `conditions`) without pushing onto the 50-entry tactical `undo_stack` (`ADR-0037`).
     pub async fn notify_actor_updated(
         &self,
         actor_id: Uuid,
@@ -2363,9 +2370,11 @@ impl TableRoomActor {
     /// `token.id` happens to equal `actor_id`. When a sheet save brings a linked token to death
     /// (for example reaching Exhaustion level `6` or `3` death save failures), mirrors that new
     /// vitals state (`is_dead`) back onto the sheet via `forward_linked_vitals`. Then broadcasts
-    /// `ServerEnvelope::ActorUpdated` strictly to `CampaignRole::Gm` and the persistent actor's
-    /// owning `CampaignRole::Player` (`actor_owner_user_id`), stripping `data["statBlock"]` for
-    /// non-GM recipients (`ADR-0037`, `sync.rs` Invariant 6).
+    /// `ServerEnvelope::ActorUpdated` strictly to `CampaignRole::Gm` and to the persistent
+    /// actor's owning `CampaignRole::Player` (`actor_owner_user_id`) when they control a linked
+    /// token on the live table, stripping `data["statBlock"]` for non-GM recipients (`ADR-0037`,
+    /// `sync.rs` Invariant 6) while leaving unspawned `ActorsTab` edits to REST
+    /// `expected_version` `409 VERSION_CONFLICT` optimistic locking.
     fn apply_actor_tactical_sync(
         &mut self,
         actor_id: Uuid,
@@ -2376,9 +2385,13 @@ impl TableRoomActor {
     ) -> usize {
         let before = self.linked_vitals();
         let mut updated_count = 0usize;
+        let mut sheet_owners: Vec<Uuid> = Vec::new();
         let mode = self.state.data.mode;
         for token in self.state.data.tokens.values_mut() {
             if token.actor_id == Some(actor_id) {
+                if let Some(owner) = token.owner_user_id {
+                    sheet_owners.push(owner);
+                }
                 let prev_dead = token.is_dead;
                 sync.apply_to_token(token, mode);
                 if token.is_dead && !prev_dead {
@@ -2416,16 +2429,21 @@ impl TableRoomActor {
             self.forward_linked_vitals(&before);
         }
 
-        // Full sheets carry HP/AC/saves, so only the GM and the persistent actor's owning
-        // Player receive `ActorUpdated` (never Spectators, and never players who merely control
-        // a token linked to a GM-owned NPC/Monster actor; those token controllers already get
-        // redacted `TokenState` via `push_changed_projections`). Strip `statBlock` for non-GMs
-        // as defense-in-depth (`sync.rs` Invariant 6).
+        // Full sheets carry HP/AC/saves, so non-GMs receive `ActorUpdated` only at the
+        // intersection of persistent sheet ownership (`actor_owner_user_id`) and active linked
+        // token control on the live table (`sheet_owners`): unspawned `ActorsTab` edits never
+        // overwrite a player's `SessionState.actors` version before their REST `PUT` (preserving
+        // `409 VERSION_CONFLICT`), while Spectators and players controlling GM-owned NPC/Monster
+        // tokens never receive `ActorUpdated` (token controllers still get redacted `TokenState`
+        // via `push_changed_projections`). Strip `statBlock` for non-GMs as defense-in-depth
+        // (`sync.rs` Invariant 6).
         let has_gm = self.clients.values().any(|c| c.role == CampaignRole::Gm);
         let has_owner_player = actor_owner_user_id.is_some_and(|owner_id| {
-            self.clients
-                .values()
-                .any(|c| c.role == CampaignRole::Player && c.user_id == owner_id)
+            sheet_owners.contains(&owner_id)
+                && self
+                    .clients
+                    .values()
+                    .any(|c| c.role == CampaignRole::Player && c.user_id == owner_id)
         });
         let player_bytes = if has_owner_player {
             let mut redacted = data.clone();
@@ -2456,6 +2474,7 @@ impl TableRoomActor {
                 gm_bytes.as_ref()
             } else if client.role == CampaignRole::Player
                 && actor_owner_user_id == Some(client.user_id)
+                && sheet_owners.contains(&client.user_id)
             {
                 player_bytes.as_ref()
             } else {

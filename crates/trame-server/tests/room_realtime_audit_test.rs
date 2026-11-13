@@ -527,31 +527,48 @@ async fn actor_updated_enforces_owner_rbac_and_strips_stat_block_for_non_gms() {
     let sheet_owner = Uuid::new_v4();
     let token_controller = Uuid::new_v4();
     let bystander = Uuid::new_v4();
-    // (case_id, actor_owner_user_id, expected ActorUpdated has_stat_block for:
+    // (case_id, actor_owner_user_id, linked_token_owner (None = unspawned actor),
+    //  expected ActorUpdated has_stat_block for:
     //  [gm, sheet_owner, token_controller, bystander, spectator_with_owner_id])
     let cases = [
         (
-            "player_owned_actor_strips_stat_block_and_skips_non_owner_controller_and_spectator",
+            "linked_owner_player_gets_redacted_sheet",
+            Some(sheet_owner),
             Some(sheet_owner),
             [Some(true), Some(false), None, None, None],
         ),
         (
-            "gm_owned_monster_actor_never_sends_actor_updated_to_player_token_controller",
+            "linked_non_owner_controller_gets_no_sheet",
+            Some(sheet_owner),
+            Some(token_controller),
+            [Some(true), None, None, None, None],
+        ),
+        (
+            "gm_monster_actor_with_player_controller_gets_no_sheet",
+            None,
+            Some(token_controller),
+            [Some(true), None, None, None, None],
+        ),
+        (
+            "unspawned_actor_skips_player_push_preserving_optimistic_locking",
+            Some(sheet_owner),
             None,
             [Some(true), None, None, None, None],
         ),
     ];
 
-    for (case, actor_owner, want_actor_updated) in cases {
+    for (case, actor_owner, linked_token_owner, want_actor_updated) in cases {
         let campaign_id = Uuid::new_v4();
         let (linked_token_id, actor_id) = (Uuid::new_v4(), Uuid::new_v4());
         let mut state = TableState::new(100.0, 5.0, Vec::new());
-        let mut linked = token(linked_token_id, "Companion", Some(token_controller), 100.0);
-        linked.actor_id = Some(actor_id);
-        linked.max_hp = 20;
-        linked.hp = 20;
-        linked.stat_block = Some(serde_json::json!({ "name": "Dire Wolf" }));
-        state.data.tokens.insert(linked_token_id, linked);
+        if let Some(controller) = linked_token_owner {
+            let mut linked = token(linked_token_id, "Companion", Some(controller), 100.0);
+            linked.actor_id = Some(actor_id);
+            linked.max_hp = 20;
+            linked.hp = 20;
+            linked.stat_block = Some(serde_json::json!({ "name": "Dire Wolf" }));
+            state.data.tokens.insert(linked_token_id, linked);
+        }
 
         let room = TableRoomActor::spawn(campaign_id, wal_with(campaign_id, &state), 25).unwrap();
         let mut gm_rx = connect(&room, Uuid::new_v4(), CampaignRole::Gm).await.1;
@@ -571,21 +588,22 @@ async fn actor_updated_enforces_owner_rbac_and_strips_stat_block_for_non_gms() {
             drain(rx);
         }
 
-        room.notify_actor_updated(
-            actor_id,
-            actor_owner,
-            3,
-            serde_json::json!({
-                "hpCurrent": 9,
-                "statBlock": { "name": "Dire Wolf", "armorClass": { "value": 14 } }
-            }),
-            ActorTacticalSync {
-                hp_current: Some(9),
-                ..ActorTacticalSync::default()
-            },
-        )
-        .await
-        .unwrap();
+        let updated_tokens = room
+            .notify_actor_updated(
+                actor_id,
+                actor_owner,
+                3,
+                serde_json::json!({
+                    "hpCurrent": 9,
+                    "statBlock": { "name": "Dire Wolf", "armorClass": { "value": 14 } }
+                }),
+                ActorTacticalSync {
+                    hp_current: Some(9),
+                    ..ActorTacticalSync::default()
+                },
+            )
+            .await
+            .unwrap();
 
         let gm_frames = drain(&mut gm_rx);
         let owner_frames = drain(&mut owner_rx);
@@ -602,23 +620,41 @@ async fn actor_updated_enforces_owner_rbac_and_strips_stat_block_for_non_gms() {
         ];
         assert_eq!(got, want_actor_updated, "case {case}");
 
-        // Token controller still gets redacted `TokenState` via `push_changed_projections`.
-        assert_eq!(
-            snapshot_hp(&controller_frames, linked_token_id),
-            Some(9),
-            "case {case}: token controller receives updated TokenState"
-        );
-        let controller_stat_block = controller_frames.iter().rev().find_map(|f| match f {
-            ServerEnvelope::StateSnapshot { state, .. } => state
-                .tokens
-                .get(&linked_token_id)
-                .and_then(|t| t.stat_block.clone()),
-            _ => None,
-        });
-        assert_eq!(
-            controller_stat_block, None,
-            "case {case}: TokenState stat_block remains redacted for controller"
-        );
+        match linked_token_owner {
+            Some(controller) => {
+                assert_eq!(updated_tokens, 1, "case {case}: synced 1 linked token");
+                let active_controller_frames = if controller == sheet_owner {
+                    &owner_frames
+                } else {
+                    &controller_frames
+                };
+                // Active linked token controller still gets redacted `TokenState` via `push_changed_projections`.
+                assert_eq!(
+                    snapshot_hp(active_controller_frames, linked_token_id),
+                    Some(9),
+                    "case {case}: token controller receives updated TokenState"
+                );
+                let controller_stat_block =
+                    active_controller_frames.iter().rev().find_map(|f| match f {
+                        ServerEnvelope::StateSnapshot { state, .. } => state
+                            .tokens
+                            .get(&linked_token_id)
+                            .and_then(|t| t.stat_block.clone()),
+                        _ => None,
+                    });
+                assert_eq!(
+                    controller_stat_block, None,
+                    "case {case}: TokenState stat_block remains redacted for controller"
+                );
+            }
+            None => {
+                assert_eq!(updated_tokens, 0, "case {case}: no linked token on table");
+                assert!(
+                    owner_frames.is_empty(),
+                    "case {case}: unspawned actor must not overwrite player SessionState version"
+                );
+            }
+        }
     }
 }
 
