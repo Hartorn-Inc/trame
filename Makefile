@@ -9,8 +9,6 @@ ENV_FILE := $(REPO_DIR)/.env
 COMPOSE_ENV_FILE := $(shell if [ -f "$(ENV_FILE)" ]; then printf '%s' '--env-file "$(ENV_FILE)"'; fi)
 DC ?= docker compose
 DEV_COMPOSE := $(DC) --project-name $(DEV_PROJECT) --project-directory "$(REPO_DIR)" $(COMPOSE_ENV_FILE) -f "$(COMPOSE_FILE)"
-E2E_COMPOSE := E2E_UID=$$(id -u) E2E_GID=$$(id -g) $(DC) --project-name trame-e2e-$(PROJECT_HASH) --project-directory "$(REPO_DIR)" --env-file "$(REPO_DIR)/e2e/e2e.env" -f "$(REPO_DIR)/deploy/compose/docker-compose.prod.yml" -f "$(REPO_DIR)/e2e/docker-compose.e2e.yml"
-
 TERRAFORM_DIR := $(REPO_DIR)/deploy/terraform
 TERRAFORM_IMAGE := hashicorp/terraform:1.17.1@sha256:a5d5a5a892c98f60fcbfa81eac2a40fc19e7b3fa7719bccae10ff6111d22524a
 TFLINT_IMAGE := ghcr.io/terraform-linters/tflint:v0.65.0@sha256:2788f4d4fc663c0e953b011b01bf443fe5bfce7587ee916e588e6057b85d6359
@@ -108,27 +106,10 @@ clean: ## Stop containers and remove cached build/data volumes for this checkout
 e2e-image: ## Build the production Dockerfile image used by the browser E2E suite (trame-server:e2e)
 	docker build -t trame-server:e2e "$(REPO_DIR)"
 
-# The journey writes e2e/artifacts/crash-handoff.json after its damage + undo; the
-# harness then SIGKILLs trame-server, restarts it on the same database, and runs the
-# spec again (E2E_STAGE=after-restart) to check WAL recovery. Playwright shares the
-# server's network namespace, so the kill can only happen between the two runs.
-e2e: ## Run the GM + player Playwright journey (with videos), SIGKILL + restart the server, check recovery, then tear down
-	mkdir -p "$(REPO_DIR)/e2e/artifacts"
-	rm -f "$(REPO_DIR)/e2e/artifacts/crash-handoff.json"
-	$(E2E_COMPOSE) up -d --wait postgres trame-server && \
-	setup_url=$$($(E2E_COMPOSE) logs --no-color --no-log-prefix trame-server | sed -n 's/.*"event":"owner_bootstrap_url".*"setup_url":"\([^"]*\)".*/\1/p' | tail -n 1) && \
-	{ [ -n "$$setup_url" ] || { echo "e2e: no owner_bootstrap_url setup_url in the trame-server log" >&2; false; }; } && \
-	$(E2E_COMPOSE) run --rm -e E2E_SETUP_URL="$$setup_url" playwright; rc=$$?; \
-	if [ -f "$(REPO_DIR)/e2e/artifacts/crash-handoff.json" ]; then \
-		docker kill -s KILL "$$($(E2E_COMPOSE) ps -q trame-server)" >/dev/null && \
-		$(E2E_COMPOSE) up -d --wait trame-server && \
-		$(E2E_COMPOSE) run --rm -e E2E_STAGE=after-restart playwright || rc=1; \
-	else echo "e2e: no crash handoff from the journey; SIGKILL recovery stage not run" >&2; rc=1; fi; \
-	rm -f "$(REPO_DIR)/e2e/artifacts/crash-handoff.json"; \
-	$(E2E_COMPOSE) logs --no-color --no-log-prefix trame-server > "$(REPO_DIR)/e2e/artifacts/server.log" 2>&1; \
-	$(E2E_COMPOSE) logs --no-color --no-log-prefix postgres > "$(REPO_DIR)/e2e/artifacts/postgres.log" 2>&1; \
-	$(E2E_COMPOSE) --profile e2e down -v --remove-orphans; \
-	sh "$(REPO_DIR)/e2e/scripts/check-json-logs.sh" "$(REPO_DIR)/e2e/artifacts" || rc=1; exit $$rc
+# The stack is the production Compose file with Silo; while the browsers stay open the
+# journey asks e2e/scripts/run-e2e.sh to SIGKILL, restart, back up and restore the server.
+e2e: ## Run the GM + three players Playwright journey (videos) on the prod Compose stack with Silo, with mid-session SIGKILL, restart, backup + restore, then tear down
+	E2E_PROJECT=trame-e2e-$(PROJECT_HASH) sh "$(REPO_DIR)/e2e/scripts/run-e2e.sh"
 
 e2e-video: ## Combine e2e/artifacts/gm.webm and player.webm into a labelled side-by-side MP4
 	sh "$(REPO_DIR)/e2e/scripts/side-by-side.sh" "$(REPO_DIR)/e2e/artifacts"

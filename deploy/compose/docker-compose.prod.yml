@@ -43,8 +43,8 @@
 #                    them empty to keep assets in PostgreSQL.
 #   -f docker-compose.tunnel.yml   Cloudflare Tunnel instead of public ports.
 #
-# `make e2e` reuses this file (postgres + trame-server only) with
-# `e2e/docker-compose.e2e.yml`.
+# `make e2e` reuses this file (postgres, Silo, storage-init, trame-server and,
+# mid-journey, backup) with `e2e/docker-compose.e2e.yml`.
 # ============================================================================
 
 name: trame

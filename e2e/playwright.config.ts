@@ -6,18 +6,17 @@
  * PURPOSE:
  * -----
  * Runs `tests/` serially against a running TRAME server (`E2E_BASE_URL`,
- * default `http://localhost:8080`, the address seen from inside the server's
- * network namespace in `docker-compose.e2e.yml`) and writes the HTML report,
- * the JSON results, and both recordings under `E2E_ARTIFACTS_DIR`.
+ * default `http://localhost:8080`; in `docker-compose.e2e.yml` the
+ * `support/forward.ts` global setup pipes it to `E2E_UPSTREAM`) and writes
+ * the HTML report, the JSON results, and both recordings under
+ * `E2E_ARTIFACTS_DIR`.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
  * 1. `One Worker, No Retries`:
  *    - The journey shares one campaign across its phases; a retry would
- *      start a second campaign and duplicate the videos.
- *    - `E2E_STAGE=after-restart` (the post-SIGKILL run of `make e2e`) writes
- *      its HTML report and JSON results under `-after-restart` names so the
- *      journey's are kept.
+ *      start a second campaign and duplicate the videos. One worker also
+ *      means one Chromium process for all four browser contexts.
  * 2. `Video Owned By The Spec`:
  *    - The spec creates its own recorded contexts, so the fixture-level
  *      `video` option stays off.
@@ -33,21 +32,20 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const artifacts = process.env.E2E_ARTIFACTS_DIR ?? 'artifacts';
-/** `make e2e` runs a second stage after restarting the server; keep both reports. */
-const suffix = process.env.E2E_STAGE === 'after-restart' ? '-after-restart' : '';
 
 export default defineConfig({
   testDir: 'tests',
   outputDir: 'test-results',
+  globalSetup: './support/forward.ts',
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  timeout: 20 * 60_000,
+  timeout: 30 * 60_000,
   expect: { timeout: 10_000 },
   reporter: [
     ['list'],
-    ['html', { outputFolder: `${artifacts}/report${suffix}`, open: 'never' }],
-    ['json', { outputFile: `${artifacts}/results${suffix}.json` }],
+    ['html', { outputFolder: `${artifacts}/report`, open: 'never' }],
+    ['json', { outputFile: `${artifacts}/results.json` }],
   ],
   use: {
     ...devices['Desktop Chrome'],
