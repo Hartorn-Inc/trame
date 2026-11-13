@@ -243,8 +243,10 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
 
   const holes = new Graphics();
   const shroud = new Graphics();
+  /** Remembered cells: cut out of the opaque shroud above, dimmed here. */
+  const memory = new Graphics();
   const hide = new Graphics();
-  layers.fogOfWar.addChild(holes, shroud, hide);
+  layers.fogOfWar.addChild(holes, shroud, memory, hide);
 
   const pings = new Graphics();
   layers.uiControlHud.addChild(pings);
@@ -310,6 +312,7 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
     fog(scene) {
       holes.clear();
       shroud.clear();
+      memory.clear();
       hide.clear();
       const fog = scene.fog;
       layers.fogOfWar.visible = fog !== null;
@@ -321,7 +324,7 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
         holes.poly(polygon.flatMap((p) => [p.x, p.y]));
         hasHoles = true;
       }
-      for (const cell of fog.reveal) {
+      for (const cell of [...fog.reveal, ...fog.memory]) {
         holes.rect(cell.x, cell.y, cell.w, cell.h);
         hasHoles = true;
       }
@@ -329,6 +332,8 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
       holes.visible = hasHoles;
       if (hasHoles && shroud.mask !== holes) shroud.setMask({ mask: holes, inverse: true });
       if (!hasHoles && shroud.mask) shroud.mask = null;
+      for (const cell of fog.memory) memory.rect(cell.x, cell.y, cell.w, cell.h);
+      if (fog.memory.length > 0) memory.fill({ color: fog.color, alpha: fog.memoryAlpha });
       for (const cell of fog.hide) hide.rect(cell.x, cell.y, cell.w, cell.h);
       if (fog.hide.length > 0) hide.fill({ color: fog.color, alpha: fog.alpha });
     },

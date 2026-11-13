@@ -31,6 +31,12 @@
  *      normally with no darkvision.
  *    - Without the engine (still loading or failed) a viewer sees only its
  *      own footprint: fog fails closed instead of revealing the map.
+ * 2c. `Fog Memory Shows Terrain, Never Live Tokens`:
+ *    - A player's explored cells (`exploredCells`, `fogMemory.ts`) that are
+ *      out of sight become `fog.memory`: drawn dimmed instead of opaque.
+ *    - A non-controlled token is dropped from a player's scene unless part
+ *      of its footprint is in current sight (`isRectSeen`), so it can never
+ *      show through the dimmed memory.
  * 2b. `Wall Kinds Resolved By The Engine`:
  *    - Every wall reaches the raycaster with its `kind` (`engineWalls`);
  *      windows, open doors, terrain two-hit and one-way normals are decided
@@ -55,7 +61,8 @@
  * │      difficult terrain -> hatched cells.
  * ├── 3. `listTableTokens` -> rings (disposition or health tier), selection.
  * ├── 4. Ambient preset -> darkness tint; lights -> wall-clipped polygons.
- * ├── 5. Fog -> vision polygons of the viewers + GM reveal/hide cells.
+ * ├── 5. Fog -> vision polygons of the viewers + GM reveal/hide cells +
+ * │      remembered cells; players lose tokens they cannot see now.
  * └── 6. Live pointer pings (younger than `PING_DURATION_MS`).
  * ============================================================================
  */
@@ -78,6 +85,7 @@ import {
 } from "../../canvas/CanvasThemePalette.ts";
 import { wallGlyphs, type GlyphSegment } from "../../canvas/wallGlyphs.ts";
 import type { AoeTemplateDto, GridCell, Point2D, WallSegmentDto } from "../../engine/wasmBridge.ts";
+import { fogGrid } from "../fogMemory.ts";
 import { listTableTokens } from "../tableView.ts";
 
 /** Lifetime of a pointer ping on the board, in milliseconds. */
@@ -156,6 +164,8 @@ export interface TableSceneInput {
   nowMs: number;
   /** `null` while the engine is not ready. */
   geometry: SceneGeometry | null;
+  /** Player only: cells this player has explored on the map (`fogMemory.ts`); ignored for the GM. */
+  exploredCells?: ReadonlySet<number> | null;
 }
 
 /** Axis-aligned rectangle in canvas pixels (`px`). */
@@ -205,6 +215,8 @@ export interface SceneToken {
   /** Disposition ring, or health-tier ring for tokens the recipient does not control. */
   ring: SceneRing;
   healthTier: WireBloodiedState | null;
+  /** The recipient controls this token (it is in `tokens`, not `public_tokens`). */
+  controlled: boolean;
   /** Extra outer ring for the selection / the active turn. */
   highlight: SceneRing | null;
 }
@@ -250,6 +262,10 @@ export interface SceneFog {
   reveal: Rect[];
   /** GM `HIDE` cells (fog drawn over vision). */
   hide: Rect[];
+  /** Player only: remembered cells not in sight now, drawn dimmed instead of opaque. */
+  memory: Rect[];
+  /** Fog alpha over `memory` cells in `0..=1`. */
+  memoryAlpha: number;
 }
 
 export interface ScenePing {
@@ -412,6 +428,7 @@ function buildTokens(state: ProjectedTableState, input: TableSceneInput, cellPx:
       initials: token.name.trim().slice(0, 2) || "?",
       ring,
       healthTier: token.bloodied,
+      controlled: token.controlled,
       highlight,
     };
   });
@@ -446,8 +463,9 @@ function buildTerrain(state: ProjectedTableState, input: TableSceneInput, cellPx
   };
 }
 
-function buildFog(state: ProjectedTableState, input: TableSceneInput, cellPx: number): SceneFog | null {
+function buildFog(state: ProjectedTableState, input: TableSceneInput, metrics: BoardMetrics): SceneFog | null {
   if (input.isGm && !input.previewPlayerView) return null;
+  const { cellPx } = metrics;
   const viewers = Object.values(state.tokens).filter((raw) => !input.isGm || (raw.owner_user_id ?? null) !== null);
   const pxPerFt = cellPx / (state.feet_per_cell || 5);
   const ambient = ambientPreset(state.ambient_lighting);
@@ -464,13 +482,40 @@ function buildFog(state: ProjectedTableState, input: TableSceneInput, cellPx: nu
     return safely(() => input.geometry!.tokenVisionPolygon(walls, origin, eyeFt, senses, ambient, pxPerFt), footprint);
   });
   const overrides = state.fog_overrides ?? [];
-  return {
+  const fog: SceneFog = {
     color: input.palette.fogUnexploredHex,
     alpha: input.isGm ? input.palette.fogExploredDimAlpha : 1,
     vision,
     reveal: overrides.filter((o) => o.mode === "REVEAL").map((o) => cellRect(o.cell_x, o.cell_y, cellPx)),
     hide: overrides.filter((o) => o.mode === "HIDE").map((o) => cellRect(o.cell_x, o.cell_y, cellPx)),
+    memory: [],
+    memoryAlpha: input.palette.fogExploredDimAlpha,
   };
+  if (input.isGm || !input.exploredCells) return fog;
+  const { cols } = fogGrid(metrics.widthPx, metrics.heightPx, cellPx);
+  for (const key of input.exploredCells) {
+    const rect = cellRect(key % cols, Math.floor(key / cols), cellPx);
+    if (!isPointUnfogged(fog, { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 })) fog.memory.push(rect);
+  }
+  return fog;
+}
+
+/**
+ * The viewer currently sees part of `rect` (a token footprint): its centre or
+ * one of its corners, inset by a quarter cell, is unfogged. Memory cells do
+ * not count, so remembered areas never show live tokens (invariant 2c).
+ */
+function isRectSeen(fog: SceneFog | null, rect: Rect): boolean {
+  const ix = rect.w / 4;
+  const iy = rect.h / 4;
+  const points = [
+    { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 },
+    { x: rect.x + ix, y: rect.y + iy },
+    { x: rect.x + rect.w - ix, y: rect.y + iy },
+    { x: rect.x + ix, y: rect.y + rect.h - iy },
+    { x: rect.x + rect.w - ix, y: rect.y + rect.h - iy },
+  ];
+  return points.some((point) => isPointUnfogged(fog, point));
 }
 
 function insidePolygon(point: Point2D, polygon: Point2D[]): boolean {
@@ -526,6 +571,8 @@ export function buildTableScene(input: TableSceneInput): TableScene {
   const { palette, state } = input;
   const preset = ambientPreset(state?.ambient_lighting ?? "DAYLIGHT");
   const ambient = { tint: parseHexColor(CANVAS_AMBIENT_TINTS[preset]) ?? palette.fogUnexploredHex, alpha: AMBIENT_DARKNESS_ALPHA[preset] };
+  const fog = state ? buildFog(state, input, metrics) : null;
+  const tokens = state ? buildTokens(state, input, metrics.cellPx) : [];
   return {
     ...metrics,
     voidColor: palette.canvasVoidHex,
@@ -534,10 +581,10 @@ export function buildTableScene(input: TableSceneInput): TableScene {
     walls: state ? buildWalls(state, palette, input.isGm) : [],
     terrain: state ? buildTerrain(state, input, metrics.cellPx) : { cells: [], color: palette.textMutedHex, fillAlpha: TERRAIN_FILL_ALPHA, hatchAlpha: TERRAIN_HATCH_ALPHA },
     aoes: state ? buildAoes(state, input, metrics.cellPx) : [],
-    tokens: state ? buildTokens(state, input, metrics.cellPx) : [],
+    tokens: input.isGm ? tokens : tokens.filter((token) => token.controlled || isRectSeen(fog, token.rect)),
     ambient,
     lights: state && ambient.alpha > 0 ? buildLights(state, input, metrics.cellPx) : [],
-    fog: state ? buildFog(state, input, metrics.cellPx) : null,
+    fog,
     pings: buildPings(input),
     reducedMotion: input.reducedMotion,
   };

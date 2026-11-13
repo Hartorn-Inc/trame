@@ -72,6 +72,11 @@
  *      instead of selecting. While an area spell waits for placement, board
  *      and token clicks place it; the placed template is drawn as a preview
  *      until the resolution card closes (`actionResolution.ts`).
+ * 9. `Player Fog Memory`:
+ *    - A player's explored cells are loaded per user, campaign and scene
+ *      (`fogMemory.ts`), extended from each frame's vision polygons and
+ *      saved after the render that changed them. Token buttons follow the
+ *      scene: a player gets no button for a token out of sight.
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -116,7 +121,8 @@ import {
 } from './actionResolution.ts';
 import { configureDoorLock, moveToken, toggleDoor } from './commands.ts';
 import type { TableRenderer } from './scene/pixiTableRenderer.ts';
-import { buildTableScene, isPointUnfogged, type SceneGeometry, type TableScene } from './scene/tableScene.ts';
+import { exploreCells, fogGrid, fogMemoryKey, loadFogMemory, saveFogMemory, type FogStorage } from './fogMemory.ts';
+import { boardMetrics, buildTableScene, isPointUnfogged, type SceneGeometry, type TableScene } from './scene/tableScene.ts';
 import {
   BRUSH_SIZES,
   MAX_STROKE_CELLS,
@@ -193,6 +199,15 @@ function prefersReducedMotion(): boolean {
   return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
+/** `localStorage`, or `null` where reading it throws (sandboxed frames, disabled storage). */
+function fogStorage(): FogStorage {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
 function hexColor(color: number): string {
   return `#${color.toString(16).padStart(6, '0')}`;
 }
@@ -215,6 +230,15 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   const palette = getCanvasThemePalette(resolvedThemeSignal.value);
   const areaPreview = pendingAreaTemplate(table);
   const targetIds = actionTargetIdsSignal.value;
+  const metrics = boardMetrics(table);
+  const grid = fogGrid(metrics.widthPx, metrics.heightPx, metrics.cellPx);
+  const userId = client.state.user.value?.id ?? null;
+  const memoryKey = !isGm && table && userId ? fogMemoryKey(userId, campaignId, table.active_scene_id ?? table.background_asset_hash ?? 'table') : null;
+  const memoryRef = useRef<{ id: string | null; cells: ReadonlySet<number>; dirty: boolean }>({ id: null, cells: new Set(), dirty: false });
+  const memoryId = memoryKey && `${memoryKey}|${grid.cols}x${grid.rows}`;
+  if (memoryRef.current.id !== memoryId) {
+    memoryRef.current = { id: memoryId, cells: memoryKey ? loadFogMemory(fogStorage(), memoryKey, grid) : new Set(), dirty: false };
+  }
   const scene: TableScene = buildTableScene({
     state: areaPreview && table ? { ...table, persistent_aoes: { ...table.persistent_aoes, [areaPreview.id]: areaPreview } } : table,
     palette,
@@ -226,7 +250,14 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
     pings: client.state.pointerPings.value,
     nowMs: Date.now(),
     geometry: isEngineReady() ? WASM_GEOMETRY : null,
+    exploredCells: memoryRef.current.cells,
   });
+  if (memoryKey && scene.fog) {
+    const explored = exploreCells(memoryRef.current.cells, scene.fog.vision, grid);
+    if (explored !== memoryRef.current.cells) memoryRef.current = { ...memoryRef.current, cells: explored, dirty: true };
+  }
+  const shownTokenIds = new Set(scene.tokens.map((tok) => tok.id));
+  const boardTokens = isGm ? tokens : tokens.filter((tok) => shownTokenIds.has(tok.id));
   const { cellPx: cell, widthPx: width, heightPx: height } = scene;
   const mapHash = scene.mapHash;
   const doors = doorHandles(table, isGm).filter((door) => isGm || door.sides.some((point) => isPointUnfogged(scene.fog, point)));
@@ -327,6 +358,13 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
       live = false;
     };
   }, [renderer, mapUrl]);
+
+  useEffect(() => {
+    const memory = memoryRef.current;
+    if (!memory.dirty || !memoryKey) return;
+    memory.dirty = false;
+    saveFogMemory(fogStorage(), memoryKey, memory.cells, grid);
+  });
 
   useEffect(() => {
     if (!renderer) return;
@@ -715,7 +753,7 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
                 }}
               />
             ) : null}
-            {tokens.map((token) => (
+            {boardTokens.map((token) => (
               <button
                 key={token.id}
                 type="button"
