@@ -32,7 +32,7 @@ sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower = { version = "=0.5.3", features = ["util"] }
-tower-http = { version = "=0.7.1", features = ["fs"] }
+tower-http = { version = "=0.7.1", features = ["fs", "compression-gzip", "compression-br", "compression-zstd"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt", "json"] }
 uuid = { workspace = true, features = ["v5"] }

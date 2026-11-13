@@ -50,8 +50,10 @@
 //!      - The writer sends a WebSocket `Ping` every `SecurityPolicy::ws_ping_interval`
 //!        (20 s, like the client's heartbeat); a peer silent for `ws_ping_interval +
 //!        ws_pong_timeout` (30 s) is closed with `1001` so its room slot is freed.
-//!   5. `Hardening Headers`:
+//!   5. `Hardening Headers & Compression`:
 //!      - `security_headers_middleware` wraps the whole router (CSP, `nosniff`, frame denial).
+//!      - `compression::http_compression_layer` is the outermost layer: gzip, br or zstd
+//!        from `Accept-Encoding`, images, fonts and archives skipped.
 //!   6. `Deterministic Session Cleanup & Sub-5ms Healthz`:
 //!      - When a WebSocket disconnects, `disconnect_client(session_id)` and `send_task.abort()` execute
 //!        unconditionally so `RoomLeaseManager` tracks active connections accurately.
@@ -678,6 +680,7 @@ pub fn build_router_with_state(state: AppState) -> Router {
     router
         .layer(axum::middleware::from_fn(opaque_server_errors_middleware))
         .layer(axum::middleware::from_fn(security_headers_middleware))
+        .layer(crate::compression::http_compression_layer())
 }
 
 /// Resolves an authenticated user ID from a session cookie, Bearer session token, or Bearer PAT.
