@@ -105,6 +105,16 @@
 //!        sent, and cannot be batched. Resolution rolls never reach the dice
 //!        log; a Concentration roll of a GM-controlled token is `GmOnly`.
 //!      - `ApplyResolution` adjustments are bounded like `ApplyDamage`.
+//!  11. `Unchanged Projections Are Not Resent (RT12)`:
+//!      - The actor keeps, per session, the `ProjectionHash` (SHA-256 of the
+//!        MessagePack projection) of the last state frame it sent. After a
+//!        command commits, a recipient whose projection hash is unchanged and
+//!        whose filtered events are empty gets no `CommandAccepted` at all: a
+//!        GM-only change no longer ships every player a full state frame.
+//!      - Clients replace their table only from strictly newer `seq_id`s, so a
+//!        skipped `seq_id` is harmless; the next frame carries the full state.
+//!      - Every attach sends a full `StateSnapshot` and records its hash, so a
+//!        reconnect or resync always starts from a complete frame.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -118,7 +128,7 @@
 
 use crate::dice::{DiceRollOutcome, RollVisibility, SeededDiceRoller, project_roll_for_recipient};
 use crate::sync::{
-    ClientEnvelope, McpStagingProposal, QuarantinedWalSummary, ServerEnvelope,
+    ClientEnvelope, McpStagingProposal, ProjectedTableState, QuarantinedWalSummary, ServerEnvelope,
     encode_server_envelope, filter_events_for_recipient, project_state_for_recipient,
     visible_token_ids_for_recipient,
 };
@@ -158,6 +168,21 @@ pub const WS_CLOSE_CODE_MEMBERSHIP_REVOKED: u16 = 4403;
 /// Upper bound on `ApplyDamage.raw_damage` (HP). Far above any 5e damage roll while keeping
 /// engine multipliers (`Vulnerable` doubles damage) well inside `i32`.
 pub const MAX_RAW_DAMAGE: i32 = 10_000;
+
+/// SHA-256 digest (32 bytes) of a recipient's `ProjectedTableState` (see `projection_hash`).
+pub type ProjectionHash = [u8; 32];
+
+/// SHA-256 of the MessagePack encoding of `state`. Every map in the projection is a
+/// `BTreeMap`, so equal projections encode to equal bytes. A cryptographic digest keeps a
+/// player from crafting a collision that would freeze another recipient's view. `None` when
+/// the state cannot be encoded: the frame is then always sent.
+pub fn projection_hash(state: &ProjectedTableState) -> Option<ProjectionHash> {
+    use sha2::{Digest, Sha256};
+    let bytes = rmp_serde::to_vec_named(state).ok()?;
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&Sha256::digest(&bytes));
+    Some(hash)
+}
 
 fn is_gm_hidden(token: &trame_engine::commands::TokenState) -> bool {
     token.visibility_channel & trame_engine::geometry::CHANNEL_GM_HIDDEN != 0
@@ -846,6 +871,9 @@ pub struct TableRoomActor {
     last_snapshot_seq: u64,
     last_activity_ms: u64,
     clients: HashMap<Uuid, ConnectedClient>,
+    /// `ProjectionHash` of the last state frame sent to each session (invariant 11). Kept in
+    /// step with `clients`: an entry exists exactly while its session is connected.
+    sent_projection_hashes: HashMap<Uuid, ProjectionHash>,
     dice_roller: SeededDiceRoller,
     wal: Arc<dyn WalStorage>,
     rx: mpsc::Receiver<RoomActorMessage>,
@@ -918,6 +946,7 @@ impl TableRoomActor {
             last_snapshot_seq: seq_id,
             last_activity_ms: now_ms(),
             clients: HashMap::new(),
+            sent_projection_hashes: HashMap::new(),
             dice_roller: SeededDiceRoller::from_os_csprng(),
             wal,
             rx,
@@ -946,12 +975,16 @@ impl TableRoomActor {
                         client.user_id,
                         client.role,
                     );
+                    let hash = projection_hash(&projected);
                     let snapshot_env = ServerEnvelope::StateSnapshot {
                         seq_id: self.seq_id,
                         state: projected,
                     };
                     if let Ok(bytes) = encode_server_envelope(&snapshot_env) {
                         let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
+                        if let Some(hash) = hash {
+                            self.sent_projection_hashes.insert(client.session_id, hash);
+                        }
                     }
                     if client.role == CampaignRole::Gm && !self.quarantine_notice.is_empty() {
                         let notice = ServerEnvelope::WalEntriesQuarantined {
@@ -966,6 +999,7 @@ impl TableRoomActor {
                 }
                 RoomActorMessage::DisconnectClient { session_id } => {
                     self.clients.remove(&session_id);
+                    self.sent_projection_hashes.remove(&session_id);
                     self.last_activity_ms = now_ms();
                 }
                 RoomActorMessage::EvictUser { user_id, reply } => {
@@ -980,6 +1014,8 @@ impl TableRoomActor {
                         });
                         false
                     });
+                    self.sent_projection_hashes
+                        .retain(|session_id, _| self.clients.contains_key(session_id));
                     let _ = reply.send(before - self.clients.len());
                 }
                 RoomActorMessage::HandleEnvelope {
@@ -1561,8 +1597,11 @@ impl TableRoomActor {
     /// Post-commit fan-out shared by single commands and batches: per-recipient
     /// `CommandAccepted` (events filtered against `prior`, the table before the command),
     /// linked vitals persistence, and initiative timeline records.
+    ///
+    /// A recipient whose filtered events are empty and whose `ProjectionHash` equals the one
+    /// of the last state frame it was sent gets nothing (invariant 11, RT12).
     fn after_accepted(
-        &self,
+        &mut self,
         events: &[TrameEvent],
         prior: &TableState,
         prior_vitals: &LinkedVitalsMap,
@@ -1581,6 +1620,12 @@ impl TableRoomActor {
                 client.user_id,
                 client.role,
             );
+            let hash = projection_hash(&projected_state);
+            let unchanged = hash.is_some()
+                && self.sent_projection_hashes.get(&client.session_id) == hash.as_ref();
+            if unchanged && filtered_events.is_empty() {
+                continue;
+            }
             let out = ServerEnvelope::CommandAccepted {
                 seq_id: self.seq_id,
                 events: filtered_events,
@@ -1588,6 +1633,10 @@ impl TableRoomActor {
             };
             if let Ok(bytes) = encode_server_envelope(&out) {
                 let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
+                match hash {
+                    Some(hash) => self.sent_projection_hashes.insert(client.session_id, hash),
+                    None => self.sent_projection_hashes.remove(&client.session_id),
+                };
             }
         }
         self.forward_linked_vitals(prior_vitals);

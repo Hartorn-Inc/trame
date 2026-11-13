@@ -1967,14 +1967,26 @@ async fn a65_vitality_events_reach_only_the_controller() {
             )
             .await;
         let frames = Table::drain(&mut table.player.1);
-        let Some(ServerEnvelope::CommandAccepted { events, state, .. }) = frames.first() else {
-            panic!("case {case}: expected CommandAccepted");
-        };
-        let saw = events
-            .iter()
-            .any(|e| matches!(e, trame_engine::commands::TrameEvent::DamageApplied { .. }));
+        let accepted = frames.iter().find_map(|f| match f {
+            ServerEnvelope::CommandAccepted { events, state, .. } => Some((events, state)),
+            _ => None,
+        });
+        let saw = accepted.is_some_and(|(events, _)| {
+            events
+                .iter()
+                .any(|e| matches!(e, trame_engine::commands::TrameEvent::DamageApplied { .. }))
+        });
         assert_eq!(saw, visible, "case {case}");
         if !visible {
+            // The goblin was already bloodied, so the player's projection is
+            // unchanged and RT12 sends no frame at all.
+            assert!(accepted.is_none(), "case {case}: unexpected frame");
+            let (_, mut rejoined) = connect(&table.room, player_user, CampaignRole::Player).await;
+            let Some(ServerEnvelope::StateSnapshot { state, .. }) =
+                Table::drain(&mut rejoined).into_iter().next()
+            else {
+                panic!("case {case}: expected reconnect snapshot");
+            };
             let view = &state.public_tokens[&target];
             assert_eq!(view.bloodied, BloodiedState::Bloodied, "case {case}");
         }
@@ -2073,6 +2085,9 @@ async fn condition_events_follow_token_visibility_and_control() {
                 assert!(matches!(expected, Seen::Rejected), "case {case}: rejected");
                 continue;
             }
+            // RT12: a change the player cannot see leaves its projection
+            // unchanged, so no frame is sent.
+            None if matches!(expected, Seen::Nothing) => continue,
             other => panic!("case {case}: unexpected frame {other:?}"),
         };
         let conditions_event = events

@@ -141,9 +141,9 @@ async fn test_graceful_shutdown_room_hibernation() {
     .await
     .expect("command sent");
 
-    // Consume CommandAccepted frames
+    // Consume the GM's CommandAccepted frame. The player cannot see the
+    // unowned Paladin, so its projection is unchanged and RT12 sends nothing.
     let _ = gm_rx.recv().await;
-    let _ = player_rx.recv().await;
 
     // 5. Trigger SIGTERM simulation via TestHarness
     let hibernated = harness.simulate_sigterm().await;
@@ -304,8 +304,8 @@ async fn test_hibernate_broadcasts_ws_close_1001_and_flushes_state() {
     .await
     .expect("envelope sent");
 
+    // Client 2 cannot see the unowned token, so RT12 sends it no frame.
     let _ = client1_rx.recv().await;
-    let _ = client2_rx.recv().await;
 
     let final_seq = room.hibernate().await.expect("hibernate succeeds");
     assert_eq!(final_seq, 1);
