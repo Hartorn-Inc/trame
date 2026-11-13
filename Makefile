@@ -11,7 +11,7 @@ DC ?= docker compose
 DEV_COMPOSE := $(DC) --project-name $(DEV_PROJECT) --project-directory "$(REPO_DIR)" $(COMPOSE_ENV_FILE) -f "$(COMPOSE_FILE)"
 E2E_COMPOSE := E2E_UID=$$(id -u) E2E_GID=$$(id -g) $(DC) --project-name trame-e2e-$(PROJECT_HASH) --project-directory "$(REPO_DIR)" --env-file "$(REPO_DIR)/e2e/e2e.env" -f "$(REPO_DIR)/deploy/compose/docker-compose.prod.yml" -f "$(REPO_DIR)/e2e/docker-compose.e2e.yml"
 
-.PHONY: help up down logs ps build wasm test test-rust test-web test-game-systems srd-content lint lint-rust lint-web lint-design fmt check shell-rust shell-web db-psql clean e2e-image e2e e2e-video
+.PHONY: help up down logs ps build wasm test test-rust test-web test-game-systems srd-content lint lint-rust lint-web lint-design fmt check shell-rust shell-web db-psql clean e2e-image e2e e2e-video deploy-compose-smoke
 
 help: ## Display available Docker-based development commands
 	@awk 'BEGIN {FS = ":.*##"; printf "TRAME Docker Development Workflow\nUsage: make <target>\n\nTargets:\n"} /^[a-zA-Z][a-zA-Z0-9_-]*:.*##/ {printf "  %-20s %s\n", $$1, $$2}' "$(MAKEFILE_PATH)"
@@ -120,3 +120,7 @@ e2e: ## Run the GM + player Playwright journey (with videos), SIGKILL + restart 
 
 e2e-video: ## Combine e2e/artifacts/gm.webm and player.webm into a labelled side-by-side MP4
 	sh "$(REPO_DIR)/e2e/scripts/side-by-side.sh" "$(REPO_DIR)/e2e/artifacts"
+
+# Uses the trame-server:e2e image from `make e2e-image` (TRAME_IMAGE overrides it).
+deploy-compose-smoke: ## Smoke-test the production Compose stack through Caddy (HTTPS, WebSocket deflate, Silo CORS, backup + restore), then tear it down
+	SMOKE_PROJECT=trame-deploy-$(PROJECT_HASH) timeout 900 sh "$(REPO_DIR)/deploy/compose/smoke/run-smoke.sh"
