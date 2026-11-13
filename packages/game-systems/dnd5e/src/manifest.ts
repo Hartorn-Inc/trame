@@ -41,6 +41,10 @@
  *   5. `Complete Inputs`:
  *      - Adapters always supply every `derivedInputs` key because the
  *        evaluator fails closed on unknown variables.
+ *   6. `Derived Travels With Every Save`:
+ *      - `withRecomputedDerived` refreshes the stored `derived` snapshot on
+ *        each sheet write, since the server syncs the token's AC, speed,
+ *        saves and feature resistances from it.
  *
  * EXECUTION LIFECYCLE:
  * --------------------
@@ -407,6 +411,34 @@ export function computeDnd5eSheetDerived(
     ...extras,
     conditionEffects,
   };
+}
+
+/** `true` when `data` has the `Dnd5eActorData` fields the derivation reads (level, six ability scores, skills). */
+function isDerivableActorData(data: unknown): data is Dnd5eActorData {
+  const actor = data as Partial<Dnd5eActorData> | null;
+  return (
+    typeof actor?.attributes?.level === "number" &&
+    typeof actor.skills === "object" &&
+    ABILITY_IDS.every((ab) => typeof actor.abilities?.[ab]?.score === "number")
+  );
+}
+
+/**
+ * `data` with `derived` recomputed (`computeDnd5eSheetDerived`), for every
+ * write of a stored `Dnd5eActorData` sheet. The server reads `derived`
+ * (Armor Class, speed, saves, feature resistances) into the linked token, so
+ * a sheet saved without it would leave the token on stale numbers after an
+ * exhaustion change, a rest or a Rage toggle. Other shapes (partial or
+ * non-dnd5e sheets) are returned unchanged, as is `data` when the derivation
+ * throws: a stale `derived` is better than a lost save.
+ */
+export function withRecomputedDerived<T>(data: T): T {
+  if (!isDerivableActorData(data)) return data;
+  try {
+    return { ...data, derived: computeDnd5eSheetDerived(data) };
+  } catch {
+    return data;
+  }
 }
 
 /**

@@ -18,6 +18,7 @@ import { CAMPAIGN, GM_ID, GOBLIN, HERO, HERO_ACTOR, PLAYER_ID, fullToken, liveTa
 import { assertAbsent, assertPresent, assertSameNode } from "../helpers/domAssert.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
 import { actorDto, flush } from "../helpers/mockTransport.ts";
+import { createDefaultActorData } from "../../../game-systems/dnd5e/src/index.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -862,6 +863,26 @@ describe("TokenConditionsPanel: conditions, rulings and automated effects", () =
       const put = live.transport.calls.find((call) => call.method === "PUT")?.body as Record<string, any>;
       assert.equal(put.data.attributes.exhaustion, c.saved);
       assert.deepEqual(live.commands(), c.commands);
+      ui.unmount();
+    });
+  }
+
+  const derivedSteps = [
+    { id: "raising 1 to 2 saves a derived speed of 20 ft (30 - 10)", level: 1, button: "exhaustion-increase", speed: 20 },
+    { id: "lowering 2 to 1 saves a derived speed of 25 ft", level: 2, button: "exhaustion-decrease", speed: 25 },
+    { id: "raising 5 to 6 saves a derived speed of 0 ft", level: 5, button: "exhaustion-increase", speed: 0 },
+  ];
+  for (const c of derivedSteps) {
+    it(`exhaustion stepper: ${c.id}`, async () => {
+      const live = linkedHero(c.level, ["exhaustion"]);
+      const sheet = { ...createDefaultActorData(HERO_ACTOR, "Brakka"), derived: { speed: 999 } };
+      sheet.attributes.exhaustion = c.level;
+      live.client.state.actors.value = { [HERO_ACTOR]: { id: HERO_ACTOR, version: 1, data: sheet } as any };
+      const ui = mount(h(TokenConditionsPanel, { client: live.client, campaignId: CAMPAIGN }));
+      ui.click(c.button);
+      await flush(4);
+      const put = live.transport.calls.find((call) => call.method === "PUT")?.body as Record<string, any>;
+      assert.equal(put.data.derived.speed, c.speed);
       ui.unmount();
     });
   }

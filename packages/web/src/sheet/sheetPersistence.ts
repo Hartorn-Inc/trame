@@ -42,9 +42,19 @@
  *    - `CAST_SPELL` saves the spent slot first; the table resolution it may
  *      open (`table/actionResolution.ts`) never touches the sheet, so a
  *      cancelled resolution does not refund the slot, as at a real table.
+ * 6. `Derived Is Recomputed On Every Write`:
+ *    - `saveActorSheet` refreshes a D&D 5e sheet's `derived` snapshot
+ *      (`withRecomputedDerived`) before the PUT. The server reads the token's
+ *      speed, AC, saves and Rage resistances from it, so an exhaustion step,
+ *      a rest or a feature toggle saved without it left the token stale.
  * ============================================================================
  */
-import { CompendiumResolver, activeFeatureIdsAfterHpChange, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
+import {
+  CompendiumResolver,
+  activeFeatureIdsAfterHpChange,
+  withRecomputedDerived,
+  type Dnd5eActorData,
+} from "../../../game-systems/dnd5e/src/index.ts";
 import { ApiError, VERSION_CONFLICT, type ApiClient, type CampaignActor } from "../api/client.ts";
 import { describeActionError } from "../api/errorMessages.ts";
 import type { Uuid, WireRollVisibility } from "../api/wire.ts";
@@ -68,7 +78,7 @@ export interface SaveSheetOptions {
   expectedVersion?: number;
 }
 
-/** Saves a full sheet with `{ expected_version, data }` (see invariants 1 and 2). */
+/** Saves a full sheet with `{ expected_version, data }` and a fresh `derived` (see invariants 1, 2 and 6). */
 export async function saveActorSheet(
   client: ApiClient,
   campaignId: Uuid,
@@ -78,7 +88,7 @@ export async function saveActorSheet(
 ): Promise<SaveSheetOutcome> {
   const expectedVersion = options.expectedVersion ?? client.state.actors.value[actorId]?.version ?? 0;
   try {
-    const actor = await client.updateActor(campaignId, actorId, { expectedVersion, name: options.name, data });
+    const actor = await client.updateActor(campaignId, actorId, { expectedVersion, name: options.name, data: withRecomputedDerived(data) });
     return { status: "saved", actor };
   } catch (err) {
     if (err instanceof ApiError && err.code === VERSION_CONFLICT) {
