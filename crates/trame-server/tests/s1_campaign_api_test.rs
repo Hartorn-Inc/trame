@@ -3150,3 +3150,119 @@ async fn archive_export_then_import_round_trips() {
         "ids are remapped"
     );
 }
+
+// ---------------------------------------------------------------------------
+// R1 — resolve_scene_command is read-only during staging & preserves live HP
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resolve_scene_command_is_read_only_in_staging_and_preserves_live_hp_on_activate_scene() {
+    // Clear room vitals sinks before waking the room so the stored sheet remains at 24 HP while
+    // the live room's linked HeroToken takes damage: `ActivateScene` resolution must neither
+    // mutate live state during `mcp.stage_encounter` nor clobber in-room damage with stale
+    // storage reads during `mcp.execute_batch`.
+    let h = Harness::new();
+    let app = h.app();
+    h.state.lease_manager.set_sinks(Default::default());
+    let (campaign_id, _, gm) = h.campaign(&app).await;
+    let (_, created) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/campaigns/{campaign_id}/actors"),
+        Some(&gm),
+        json!({
+            "name": "Valeros",
+            "data": { "attributes": { "hp": { "current": 24, "max": 24, "temp": 0 } } }
+        }),
+    )
+    .await;
+    let actor_id = Uuid::parse_str(created["actor"]["id"].as_str().unwrap()).unwrap();
+
+    let scene = stored_scene(campaign_id, &[]);
+    h.state
+        .map_storage
+        .save_campaign_maps(campaign_id, vec![scene.clone()]);
+
+    let hero = token("Valeros", Some(Uuid::new_v4()), Some(actor_id), 50.0);
+    let spawn_res = mcp_tool(
+        &app,
+        &gm,
+        "trame.dispatch_command",
+        json!({ "campaign_id": campaign_id, "command": spawn_cmd(&hero) }),
+    )
+    .await;
+    assert!(spawn_res["error"].is_null(), "{spawn_res}");
+
+    let dmg_res = mcp_tool(
+        &app,
+        &gm,
+        "trame.dispatch_command",
+        json!({
+            "campaign_id": campaign_id,
+            "command": {
+                "cmd": "APPLY_DAMAGE",
+                "token_id": hero.id,
+                "raw_damage": 10,
+                "affinity": "NORMAL",
+                "is_critical": false
+            }
+        }),
+    )
+    .await;
+    assert!(dmg_res["error"].is_null(), "{dmg_res}");
+
+    let room = h.room(campaign_id).await;
+    assert_eq!(table(&room).await.data.tokens[&hero.id].hp, 14);
+
+    // 1. Dry-run `mcp.stage_encounter` with `ActivateScene` must NOT touch live room tokens.
+    let stage_res = mcp_tool(
+        &app,
+        &gm,
+        "mcp.stage_encounter",
+        json!({
+            "campaign_id": campaign_id,
+            "summary": "Stage next room",
+            "commands": [{ "cmd": "ACTIVATE_SCENE", "scene_id": scene.id }]
+        }),
+    )
+    .await;
+    assert!(stage_res["error"].is_null(), "{stage_res}");
+    let after_stage = table(&room).await;
+    assert_eq!(after_stage.data.mcp_staging_proposals.len(), 1);
+    assert_eq!(
+        after_stage.data.tokens[&hero.id].hp, 14,
+        "dry-run staging must leave live linked HeroToken HP untouched"
+    );
+
+    // 2. Atomic batch `ApplyDamage` (4) -> `ActivateScene` preserves live 10 HP across scene transition.
+    let batch_res = mcp_tool(
+        &app,
+        &gm,
+        "mcp.execute_batch",
+        json!({
+            "campaign_id": campaign_id,
+            "description": "Trap then transition",
+            "commands": [
+                {
+                    "cmd": "APPLY_DAMAGE",
+                    "token_id": hero.id,
+                    "raw_damage": 4,
+                    "affinity": "NORMAL",
+                    "is_critical": false
+                },
+                {
+                    "cmd": "ACTIVATE_SCENE",
+                    "scene_id": scene.id
+                }
+            ]
+        }),
+    )
+    .await;
+    assert!(batch_res["error"].is_null(), "{batch_res}");
+    let after_batch = table(&room).await;
+    assert_eq!(after_batch.data.active_scene_id, Some(scene.id));
+    assert_eq!(
+        after_batch.data.tokens[&hero.id].hp, 10,
+        "ActivateScene preserves in-room damage without stale DB resync race"
+    );
+}

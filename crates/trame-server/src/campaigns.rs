@@ -79,7 +79,8 @@
 //!     ├── 2. Conditional update `WHERE version = expected_version` (409 on mismatch).
 //!     ├── 3. Extract `ActorTacticalSync` from the sheet JSON.
 //!     └── 4. Wake the room -> `notify_actor_updated` (sync linked tokens, snapshot,
-//!            broadcast `ActorUpdated` to the GM and the linked tokens' controllers).
+//!            broadcast `ActorUpdated` to the GM and the actor's owning `Player` with
+//!            `statBlock` stripped for non-GM recipients).
 //! ============================================================================
 
 use crate::archive::ExportEntity;
@@ -1242,13 +1243,16 @@ fn feature_roll_advantages(data: &Value) -> Option<Vec<String>> {
 }
 
 /// Resolves the storage-backed parts of a `SpawnToken` before it reaches the room:
-/// - Actor-linked token: every synced field (HP, death saves, stability, `is_dead`, AC, speed,
-///   exhaustion, conditions, affinities, reach, darkvision) is overwritten from the stored
-///   sheet, so a client cannot spawn its token with better numbers than the sheet allows. An
-///   actor that cannot be loaded leaves the token unchanged.
 /// - `stat_block` holding an actor template UUID: replaced by a copy of that actor's
-///   `statBlock`; the room then validates and applies it (`statblock::normalize_command`).
+///   `statBlock`; synthetic tokens then have it validated and applied in the room
+///   (`statblock::normalize_command`), while actor-linked tokens seed from it first
+///   (`statblock::seed_token_from_stat_block`) before applying the stored sheet.
 ///   A template that is missing or has no stat block rejects the command.
+/// - Actor-linked token: every synced field (HP, death saves, stability, `is_dead`, AC, speed,
+///   exhaustion, conditions, affinities, reach, darkvision) is overlaid from the stored
+///   sheet, so a client cannot spawn its token with better numbers than the sheet allows and
+///   the room's `normalize_command` preserves sheet authority over any base `stat_block`. An
+///   actor that cannot be loaded leaves the token unchanged (or stat-block-seeded).
 ///
 /// Other commands pass through unchanged.
 pub async fn resolve_spawn(
@@ -1259,12 +1263,6 @@ pub async fn resolve_spawn(
     let TrameCommand::SpawnToken { mut token } = cmd else {
         return Ok(cmd);
     };
-    if let Some(actor_id) = token.actor_id
-        && let Ok(Some(actor)) = get_actor(state, campaign_id, actor_id).await
-    {
-        tactical_sync_from_sheet(None, &actor.payload)
-            .apply_to_token(&mut token, trame_engine::commands::TableMode::Exploration);
-    }
     if let Some(template_id) = token
         .stat_block
         .as_ref()
@@ -1273,11 +1271,11 @@ pub async fn resolve_spawn(
     {
         token.stat_block = Some(actor_template_stat_block(state, campaign_id, template_id).await?);
     }
-    if token.actor_id.is_some() && token.stat_block.is_some() {
-        crate::statblock::normalize_token(&mut token)?;
-        if let Some(actor_id) = token.actor_id
-            && let Ok(Some(actor)) = get_actor(state, campaign_id, actor_id).await
-        {
+    if let Some(actor_id) = token.actor_id {
+        if token.stat_block.is_some() {
+            crate::statblock::seed_token_from_stat_block(&mut token)?;
+        }
+        if let Ok(Some(actor)) = get_actor(state, campaign_id, actor_id).await {
             tactical_sync_from_sheet(None, &actor.payload)
                 .apply_to_token(&mut token, trame_engine::commands::TableMode::Exploration);
         }
@@ -1301,30 +1299,6 @@ pub async fn actor_template_stat_block(
         .ok_or_else(|| format!("not found: actor template {template_id} has no stat block"))
 }
 
-/// Re-synchronizes every actor-linked token currently in `campaign_id`'s active room from its
-/// stored `Actor` sheet (`tactical_sync_from_sheet`) and broadcasts `ActorUpdated`. Invoked
-/// when loading a scene (`maps::resolve_scene_command`) so kept `HeroToken`s pick up any
-/// stored sheet state (HP, death saves, `is_stable`, `is_dead`, exhaustion, conditions).
-pub async fn resync_linked_room_tokens(state: &AppState, campaign_id: Uuid) {
-    let Ok(actors) = list_actors(state, campaign_id).await else {
-        return;
-    };
-    let Some(room) = state.lease_manager.get_active_room(campaign_id).await else {
-        return;
-    };
-    for actor in actors {
-        let sync = tactical_sync_from_sheet(Some(&actor.name), &actor.payload);
-        let _ = room
-            .notify_actor_updated(
-                actor.id,
-                u64::try_from(actor.version).unwrap_or(0),
-                actor.payload,
-                sync,
-            )
-            .await;
-    }
-}
-
 /// Wakes the room and resyncs linked tokens + broadcasts `ActorUpdated` for `record`.
 async fn sync_actor_to_room(state: &AppState, record: &ActorRecord, sync: ActorTacticalSync) {
     let Ok(room) = state
@@ -1337,6 +1311,7 @@ async fn sync_actor_to_room(state: &AppState, record: &ActorRecord, sync: ActorT
     if let Err(err) = room
         .notify_actor_updated(
             record.id,
+            record.owner_user_id,
             u64::try_from(record.version).unwrap_or(0),
             record.payload.clone(),
             sync,
@@ -2316,6 +2291,7 @@ pub async fn persist_linked_vitals(
                     let _ = room
                         .notify_actor_updated(
                             record.id,
+                            record.owner_user_id,
                             u64::try_from(record.version).unwrap_or(0),
                             record.payload,
                             ActorTacticalSync::default(),

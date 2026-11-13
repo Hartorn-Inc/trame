@@ -457,9 +457,9 @@ pub const EFFECT_SPEED_ZERO: &str = "speed_zero";
 /// (`"<condition>.resistance_all_damage"`).
 pub const EFFECT_RESISTANCE_ALL_DAMAGE: &str = "resistance_all_damage";
 
-/// `true` when `token` is Incapacitated after the `ConditionOverride` rulings.
+/// `true` when `token` is dead or Incapacitated after the `ConditionOverride` rulings.
 fn is_incapacitated(token: &TokenState) -> bool {
-    token.condition_effects().incapacitated
+    token.is_dead || token.condition_effects().incapacitated
 }
 
 /// Condition effects the engine enforces itself, after the `ConditionOverride` rulings. The
@@ -2756,7 +2756,7 @@ impl TableState {
                 let new_elev = to_elevation_ft.unwrap_or(token.elevation_ft);
                 let in_combat = self.data.mode == TableMode::TurnByTurn;
                 if !is_gm_teleport {
-                    if token.condition_effects().speed_zero {
+                    if token.is_dead || token.condition_effects().speed_zero {
                         return Err(CommandError::SpeedZero);
                     }
                     self.check_wall_collision(&token, to_top_left, new_elev)?;

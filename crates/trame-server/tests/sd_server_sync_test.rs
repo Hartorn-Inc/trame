@@ -1101,3 +1101,89 @@ async fn staged_tokens_copy_validated_stat_blocks_and_activate_with_them() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// R3 — SpawnToken carrying both actor_id and stat_block preserves sheet authority
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn linked_actor_spawn_with_stat_block_preserves_sheet_authority() {
+    let h = Harness::new();
+    let app = h.app();
+    let (campaign_id, _, gm) = h.campaign(&app).await;
+    let template_id = h
+        .actor(
+            &app,
+            campaign_id,
+            &gm,
+            json!({ "statBlock": homebrew_block() }),
+        )
+        .await;
+    let linked_actor_id = h
+        .actor(
+            &app,
+            campaign_id,
+            &gm,
+            json!({
+                "attributes": {
+                    "hp": { "current": 5, "max": 20, "temp": 4 },
+                    "ac": 16,
+                    "speedFt": 30,
+                    "exhaustion": 2
+                }
+            }),
+        )
+        .await;
+    let room = h.room(campaign_id).await;
+
+    // (case_id, stat_block source, expected resistances from stat_block)
+    let cases = [
+        ("srd_ogre_with_sheet", json!("srd:monster:ogre"), vec![]),
+        (
+            "homebrew_block_with_sheet",
+            homebrew_block(),
+            vec!["fire".to_string()],
+        ),
+        (
+            "actor_template_with_sheet",
+            json!(template_id.to_string()),
+            vec!["fire".to_string()],
+        ),
+    ];
+    for (case, source, want_resist) in cases {
+        let mut t = lying_token(Some(source));
+        t.actor_id = Some(linked_actor_id);
+        let body = mcp_dispatch(&app, &gm, campaign_id, spawn_value(&t)).await;
+        assert!(body["error"].is_null(), "case {case}: {body}");
+        let spawned = table(&room).await.data.tokens[&t.id].clone();
+        assert_eq!(
+            (
+                spawned.hp,
+                spawned.max_hp,
+                spawned.temp_hp,
+                spawned.exhaustion,
+                spawned.ac,
+                spawned.speed_max_ft,
+                spawned.grid_w,
+                spawned.damage_resistances.clone(),
+            ),
+            (5, 20, 4, 2, 16, 20.0, 2, want_resist),
+            "case {case}: sheet vitals/exhaustion win while stat_block footprint/affinities survive"
+        );
+        assert!(
+            spawned.stat_block.as_ref().is_some_and(Value::is_object),
+            "case {case}: canonical stat_block retained on token"
+        );
+    }
+
+    let mut bad = lying_token(Some(with(homebrew_block(), "/hitPoints/average", json!(0))));
+    bad.actor_id = Some(linked_actor_id);
+    let rejected = mcp_dispatch(&app, &gm, campaign_id, spawn_value(&bad)).await;
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("hitPoints"),
+        "invalid stat_block still rejected on linked token: {rejected}"
+    );
+}

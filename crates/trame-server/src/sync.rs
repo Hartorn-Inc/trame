@@ -53,7 +53,8 @@
 //!        effective list. `DeathSaveRecorded` keeps its counters for the
 //!        controller only; others get the d20 and the Stable / dead flags.
 //!      - The GM's `stat_block` copy never leaves the server for a non-GM: it is
-//!        stripped from controlled tokens in snapshots and in `TokenSpawned`.
+//!        stripped from controlled tokens in snapshots and in `TokenSpawned`, and
+//!        `data["statBlock"]` is stripped from `ActorUpdated` for non-GM recipients.
 //!      - `TokenRemoved` reaches only players who could see the token before the
 //!        command (line of sight in the pre-command state), and a token moving
 //!        into view never reveals where it came from.
@@ -258,7 +259,7 @@ pub enum BloodiedState {
     Unhurt,
     /// Current HP at or below half of maximum HP, but above `0`.
     Bloodied,
-    /// Current HP at or below `0`.
+    /// Current HP at or below `0`, or the creature is dead (`is_dead == true`, e.g. Exhaustion 6).
     Down,
 }
 
@@ -305,7 +306,7 @@ pub struct PublicTokenView {
     /// Effective condition ids (`TokenState::effective_conditions`: GM rulings applied, the
     /// rulings themselves withheld).
     pub conditions: Vec<String>,
-    /// Coarse health tier derived from `hp` / `max_hp`.
+    /// Coarse health tier derived from `is_dead` and `hp` / `max_hp`.
     pub bloodied: BloodiedState,
 }
 
@@ -324,7 +325,11 @@ impl From<&TokenState> for PublicTokenView {
             height_ft: t.height_ft,
             invisible: t.invisible,
             conditions: t.effective_conditions(),
-            bloodied: BloodiedState::from_hp(t.hp, t.max_hp),
+            bloodied: if t.is_dead {
+                BloodiedState::Down
+            } else {
+                BloodiedState::from_hp(t.hp, t.max_hp)
+            },
         }
     }
 }

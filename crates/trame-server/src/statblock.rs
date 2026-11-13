@@ -26,10 +26,17 @@
 //!        `0..=100` ft, `<= 20` actions per list, damage types and condition
 //!        ids from the SRD lists. A violation rejects the whole command.
 //!   3. `Derived, Not Trusted`:
-//!      - `hp`, `max_hp`, `ac`, speed, senses, reach (longest melee attack,
-//!        else 5 ft), damage affinities, Dexterity modifier, initiative bonus
-//!        and footprint (from size) are overwritten from the stat block, so a
-//!        client value never survives. The token name stays (GMs number them).
+//!      - For `SyntheticToken`s (`actor_id == None`), `hp`, `max_hp`, `ac`,
+//!        speed, senses, reach (longest melee attack, else 5 ft), damage
+//!        affinities, Dexterity modifier, initiative bonus and footprint (from
+//!        size) are overwritten from the stat block, so a client value never
+//!        survives. The token name stays (GMs number them).
+//!      - For `LinkedActorToken`s (`actor_id.is_some()`) carrying a `stat_block`,
+//!        `campaigns::resolve_spawn` first seeds the base stat block via
+//!        `seed_token_from_stat_block` and overlays the authoritative actor
+//!        sheet (`tactical_sync_from_sheet`), while `normalize_token` in the
+//!        room validates and canonicalizes `token.stat_block` without
+//!        clobbering the sheet-synced fields.
 //!   4. `Every Path Normalizes`:
 //!      - `normalize_command` runs in the room for direct commands, batches,
 //!        staged MCP proposals and the staged tokens of `ActivateScene`, so
@@ -42,7 +49,8 @@
 //!     ├── 1. Collect the tokens a `SpawnToken` / `ActivateScene` introduces.
 //!     ├── 2. `resolve_stat_block`: SRD key -> pack copy, object -> as is.
 //!     ├── 3. `validate_stat_block`: size cap, then every bounded field.
-//!     └── 4. `apply_stat_block`: overwrite the token's combat numbers.
+//!     └── 4. `apply_stat_block` on synthetic tokens (`actor_id == None`);
+//!            preserve sheet-synced fields on linked tokens (`actor_id.is_some()`).
 //! ============================================================================
 
 use serde_json::Value;
@@ -338,14 +346,33 @@ pub fn apply_stat_block(token: &mut TokenState, block: Value) {
     token.stat_block = Some(block);
 }
 
-/// Resolves, validates and applies `token.stat_block` when present; tokens without one pass
-/// through unchanged.
-pub fn normalize_token(token: &mut TokenState) -> Result<(), String> {
+/// Resolves, validates and applies `token.stat_block` unconditionally (`apply_stat_block`),
+/// seeding base monster size, senses, affinities, reach, combat numbers and the canonical
+/// `stat_block` copy before an actor sheet overlay (`campaigns::resolve_spawn`). Tokens without
+/// `stat_block` pass through unchanged.
+pub fn seed_token_from_stat_block(token: &mut TokenState) -> Result<(), String> {
     let Some(source) = token.stat_block.take() else {
         return Ok(());
     };
     let block = resolve_stat_block(&source)?;
     apply_stat_block(token, block);
+    Ok(())
+}
+
+/// Resolves and validates `token.stat_block` when present; tokens without one pass through
+/// unchanged. Synthetic tokens (`actor_id == None`) derive all combat numbers via
+/// `apply_stat_block`, whereas actor-linked tokens (`actor_id.is_some()`) preserve their
+/// sheet-synchronized fields and only retain the validated canonical `stat_block`.
+pub fn normalize_token(token: &mut TokenState) -> Result<(), String> {
+    let Some(source) = token.stat_block.take() else {
+        return Ok(());
+    };
+    let block = resolve_stat_block(&source)?;
+    if token.actor_id.is_some() {
+        token.stat_block = Some(block);
+    } else {
+        apply_stat_block(token, block);
+    }
     Ok(())
 }
 

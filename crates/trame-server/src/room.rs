@@ -75,7 +75,8 @@
 //!        controller receive it, and its timeline record and the `initiative`
 //!        order record are GM-only. Tokens whose player already rolled
 //!        initiative keep that roll; `ActorUpdated` sheets go only to the GM and
-//!        the controllers of linked tokens.
+//!        the persistent actor's owning `Player` (`actor_owner_user_id`), with
+//!        `statBlock` stripped for non-GM recipients.
 //!   8. `Server-Only Initiative (SEC3)`:
 //!      - A player's initiative `RollDice` ignores the submitted expression: the
 //!        server rolls `1d20 + TokenState::initiative_modifier()` for their token,
@@ -612,7 +613,7 @@ impl ActorTacticalSync {
         if let Some(ref conditions) = self.conditions {
             token.conditions = sheet_condition_ids(conditions);
         }
-        if token.condition_effects().speed_zero {
+        if token.is_dead || token.condition_effects().speed_zero {
             token.speed_remaining_ft = 0.0;
         }
         if let Some((ref resist, ref immune, ref vuln)) = self.damage_affinities {
@@ -775,6 +776,8 @@ pub enum RoomActorMessage {
     NotifyActorUpdated {
         /// Persistent actor UUID.
         actor_id: Uuid,
+        /// Owning player of the persistent actor sheet (`None` for GM-owned NPC/Monster actors).
+        actor_owner_user_id: Option<Uuid>,
         /// New optimistic concurrency version.
         version: u64,
         /// Full serialized actor payload.
@@ -944,12 +947,14 @@ impl TableRoomHandle {
         reply_rx.await.map_err(|_| RoomError::ActorClosed)?
     }
 
-    /// Broadcasts `ServerEnvelope::ActorUpdated` to connected clients and synchronizes linked
+    /// Broadcasts `ServerEnvelope::ActorUpdated` to authorized clients (`Gm` and the actor's
+    /// owning `Player`, with `statBlock` stripped for non-GMs) and synchronizes linked
     /// `TokenState` tactical fields (`hp_current`, `hp_max`, `temp_hp`, `ac`, `speed_ft`, `conditions`)
     /// without pushing onto the 50-entry tactical `undo_stack` (`ADR-0037`).
     pub async fn notify_actor_updated(
         &self,
         actor_id: Uuid,
+        actor_owner_user_id: Option<Uuid>,
         version: u64,
         data: serde_json::Value,
         tactical_sync: ActorTacticalSync,
@@ -958,6 +963,7 @@ impl TableRoomHandle {
         self.tx
             .send(RoomActorMessage::NotifyActorUpdated {
                 actor_id,
+                actor_owner_user_id,
                 version,
                 data,
                 tactical_sync,
@@ -1265,14 +1271,20 @@ impl TableRoomActor {
                 }
                 RoomActorMessage::NotifyActorUpdated {
                     actor_id,
+                    actor_owner_user_id,
                     version,
                     data,
                     tactical_sync,
                     reply,
                 } => {
                     self.last_activity_ms = now_ms();
-                    let updated_tokens =
-                        self.apply_actor_tactical_sync(actor_id, version, data, tactical_sync);
+                    let updated_tokens = self.apply_actor_tactical_sync(
+                        actor_id,
+                        actor_owner_user_id,
+                        version,
+                        data,
+                        tactical_sync,
+                    );
                     // Tactical sync bypasses the WAL command stream, so persist it as a
                     // snapshot or a restart would resurrect the stale token fields. The
                     // sheet itself is already stored, so a failed snapshot is only logged.
@@ -2107,9 +2119,10 @@ impl TableRoomActor {
     }
 
     /// Server-side initiative for a player who asked to roll (SEC3): whatever expression they
-    /// sent is ignored and `1d20 + initiative bonus` is rolled for their owned token (living
-    /// tokens first, then lowest id). Rejected when they own no token, already rolled for the
-    /// coming encounter, or one of their tokens is already in the running encounter's order.
+    /// sent is ignored and `1d20 + initiative bonus` is rolled for their owned non-dead token
+    /// (living tokens with `hp > 0` first, then lowest id). Rejected when they own no non-dead
+    /// token, already rolled for the coming encounter, or one of their tokens is already in the
+    /// running encounter's order.
     fn roll_player_initiative(&mut self, user_id: Uuid) -> Result<InitiativeRoll, String> {
         let views = self.player_views();
         let owned: Vec<&trame_engine::commands::TokenState> = self
@@ -2126,7 +2139,11 @@ impl TableRoomActor {
         {
             return Err("initiative already rolled for this encounter".to_string());
         }
-        let Some(token) = owned.into_iter().min_by_key(|t| (t.hp <= 0, t.id)) else {
+        let Some(token) = owned
+            .into_iter()
+            .filter(|t| !t.is_dead)
+            .min_by_key(|t| (t.hp <= 0 || t.is_dead, t.id))
+        else {
             return Err("permission denied: no token to roll initiative for".to_string());
         };
         let visibility = initiative_roll_visibility(token, &views);
@@ -2143,7 +2160,8 @@ impl TableRoomActor {
 
     /// Combatants some player cannot see (`initiative_roll_visibility`) are rolled with
     /// `RollVisibility::GmOnly` so their names and results never reach other players through
-    /// the initiative feed or the timeline.
+    /// the initiative feed or the timeline. Dead tokens (`is_dead == true`, including
+    /// Exhaustion-6 corpses with `hp > 0`) are excluded.
     /// Tokens whose owner already had initiative rolled (`player_initiative_rolls`) reuse that
     /// total and are not re-rolled; the stored rolls are consumed.
     /// Returns the sorted order, each token's total (fed to `initiative_totals`), and the roll
@@ -2169,12 +2187,18 @@ impl TableRoomActor {
             .data
             .tokens
             .values()
-            .filter(|t| t.hp > 0)
+            .filter(|t| t.hp > 0 && !t.is_dead)
             .map(to_candidate)
             .collect();
 
         let candidates: Vec<Candidate> = if combatants.is_empty() {
-            self.state.data.tokens.values().map(to_candidate).collect()
+            self.state
+                .data
+                .tokens
+                .values()
+                .filter(|t| !t.is_dead)
+                .map(to_candidate)
+                .collect()
         } else {
             combatants
         };
@@ -2339,23 +2363,22 @@ impl TableRoomActor {
     /// `token.id` happens to equal `actor_id`. When a sheet save brings a linked token to death
     /// (for example reaching Exhaustion level `6` or `3` death save failures), mirrors that new
     /// vitals state (`is_dead`) back onto the sheet via `forward_linked_vitals`. Then broadcasts
-    /// `ServerEnvelope::ActorUpdated` to the GM and the linked tokens' controllers (`ADR-0037`).
+    /// `ServerEnvelope::ActorUpdated` strictly to `CampaignRole::Gm` and the persistent actor's
+    /// owning `CampaignRole::Player` (`actor_owner_user_id`), stripping `data["statBlock"]` for
+    /// non-GM recipients (`ADR-0037`, `sync.rs` Invariant 6).
     fn apply_actor_tactical_sync(
         &mut self,
         actor_id: Uuid,
+        actor_owner_user_id: Option<Uuid>,
         version: u64,
         data: serde_json::Value,
         sync: ActorTacticalSync,
     ) -> usize {
         let before = self.linked_vitals();
         let mut updated_count = 0usize;
-        let mut sheet_owners: Vec<Uuid> = Vec::new();
         let mode = self.state.data.mode;
         for token in self.state.data.tokens.values_mut() {
             if token.actor_id == Some(actor_id) {
-                if let Some(owner) = token.owner_user_id {
-                    sheet_owners.push(owner);
-                }
                 let prev_dead = token.is_dead;
                 sync.apply_to_token(token, mode);
                 if token.is_dead && !prev_dead {
@@ -2393,18 +2416,53 @@ impl TableRoomActor {
             self.forward_linked_vitals(&before);
         }
 
-        let out = ServerEnvelope::ActorUpdated {
-            actor_id,
-            version,
-            data,
+        // Full sheets carry HP/AC/saves, so only the GM and the persistent actor's owning
+        // Player receive `ActorUpdated` (never Spectators, and never players who merely control
+        // a token linked to a GM-owned NPC/Monster actor; those token controllers already get
+        // redacted `TokenState` via `push_changed_projections`). Strip `statBlock` for non-GMs
+        // as defense-in-depth (`sync.rs` Invariant 6).
+        let has_gm = self.clients.values().any(|c| c.role == CampaignRole::Gm);
+        let has_owner_player = actor_owner_user_id.is_some_and(|owner_id| {
+            self.clients
+                .values()
+                .any(|c| c.role == CampaignRole::Player && c.user_id == owner_id)
+        });
+        let player_bytes = if has_owner_player {
+            let mut redacted = data.clone();
+            if let Some(obj) = redacted.as_object_mut() {
+                obj.remove("statBlock");
+            }
+            encode_server_envelope(&ServerEnvelope::ActorUpdated {
+                actor_id,
+                version,
+                data: redacted,
+            })
+            .ok()
+        } else {
+            None
         };
-        // Full sheets carry HP/AC numbers, so only the GM and the linked tokens' controllers
-        // receive them (G5).
-        if let Ok(bytes) = encode_server_envelope(&out) {
-            for client in self.clients.values() {
-                if client.role == CampaignRole::Gm || sheet_owners.contains(&client.user_id) {
-                    let _ = client.tx.send(OutboundClientFrame::Binary(bytes.clone()));
-                }
+        let gm_bytes = if has_gm {
+            encode_server_envelope(&ServerEnvelope::ActorUpdated {
+                actor_id,
+                version,
+                data,
+            })
+            .ok()
+        } else {
+            None
+        };
+        for client in self.clients.values() {
+            let bytes = if client.role == CampaignRole::Gm {
+                gm_bytes.as_ref()
+            } else if client.role == CampaignRole::Player
+                && actor_owner_user_id == Some(client.user_id)
+            {
+                player_bytes.as_ref()
+            } else {
+                None
+            };
+            if let Some(bytes) = bytes {
+                let _ = client.tx.send(OutboundClientFrame::Binary(bytes.clone()));
             }
         }
 

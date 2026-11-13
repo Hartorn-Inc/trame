@@ -2322,3 +2322,118 @@ fn one_way_walls_block_one_direction_even_without_a_stored_normal() {
         );
     }
 }
+
+#[test]
+fn dead_token_with_positive_hp_blocks_non_teleport_moves_and_ends_concentration() {
+    struct MoveCase {
+        id: &'static str,
+        actor: CommandActor,
+        in_combat: bool,
+        gm_teleport: bool,
+        expect_ok: bool,
+    }
+
+    let cases = [
+        MoveCase {
+            id: "player_exploration_move_rejected",
+            actor: player(),
+            in_combat: false,
+            gm_teleport: false,
+            expect_ok: false,
+        },
+        MoveCase {
+            id: "player_turn_by_turn_move_rejected",
+            actor: player(),
+            in_combat: true,
+            gm_teleport: false,
+            expect_ok: false,
+        },
+        MoveCase {
+            id: "gm_normal_move_rejected",
+            actor: gm(),
+            in_combat: false,
+            gm_teleport: false,
+            expect_ok: false,
+        },
+        MoveCase {
+            id: "player_forged_gm_teleport_rejected",
+            actor: player(),
+            in_combat: false,
+            gm_teleport: true,
+            expect_ok: false,
+        },
+        MoveCase {
+            id: "gm_teleport_repositions_corpse",
+            actor: gm(),
+            in_combat: false,
+            gm_teleport: true,
+            expect_ok: true,
+        },
+    ];
+
+    for c in cases {
+        let mut corpse = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+        corpse.hp = 12;
+        corpse.max_hp = 20;
+        corpse.is_dead = true;
+        corpse.exhaustion = 6;
+        let mut state = table(vec![corpse]);
+        if c.in_combat {
+            start_combat(&mut state, vec![HERO_ID]);
+        }
+        let res = state.apply_command(
+            &c.actor,
+            TrameCommand::MoveToken {
+                token_id: HERO_ID,
+                to_top_left: Point2D::new(100.0, 0.0),
+                to_elevation_ft: None,
+                gm_teleport: c.gm_teleport,
+            },
+        );
+        if c.expect_ok {
+            assert!(res.is_ok(), "case {}: {res:?}", c.id);
+            assert_eq!(
+                state.data.tokens[&HERO_ID].top_left,
+                Point2D::new(100.0, 0.0),
+                "case {}",
+                c.id
+            );
+        } else {
+            assert_eq!(res, Err(CommandError::SpeedZero), "case {}", c.id);
+        }
+    }
+
+    // `is_incapacitated` also treats `is_dead` with `hp > 0` as incapacitated, so
+    // `end_incapacitated_concentration` clears concentration and removes any linked AoE.
+    let aoe_id = Uuid::from_u128(0xAA);
+    let mut caster = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+    caster.hp = 12;
+    caster.max_hp = 20;
+    caster.is_dead = true;
+    caster.concentrating = true;
+    caster.concentrating_on_aoe_id = Some(aoe_id);
+    let mut state = table(vec![caster]);
+    state.data.persistent_aoes.insert(
+        aoe_id,
+        trame_engine::aoe::AoeTemplate {
+            id: aoe_id,
+            origin: Point2D::new(200.0, 200.0),
+            origin_elevation_ft: 0.0,
+            shape: trame_engine::aoe::AoeShape::Sphere { radius_ft: 10.0 },
+            stops_at_walls: false,
+            discretization: trame_engine::aoe::GridDiscretizationMode::CenterPoint,
+            concentration_caster_id: Some(HERO_ID),
+        },
+    );
+    let broken = state.end_incapacitated_concentration();
+    assert_eq!(
+        broken,
+        vec![TrameEvent::ConcentrationBroken {
+            caster_token_id: HERO_ID,
+            removed_aoe_id: Some(aoe_id),
+        }],
+        "dead_with_positive_hp_breaks_concentration"
+    );
+    assert!(!state.data.tokens[&HERO_ID].concentrating);
+    assert!(!state.data.persistent_aoes.contains_key(&aoe_id));
+}

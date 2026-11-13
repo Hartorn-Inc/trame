@@ -357,6 +357,7 @@ async fn sheet_hp_save_pushes_the_token_to_everyone_whose_view_changed() {
 
     room.notify_actor_updated(
         actor_id,
+        Some(player),
         2,
         serde_json::json!({}),
         ActorTacticalSync {
@@ -506,4 +507,247 @@ async fn concentration_roll_reaches_gm_and_controller_only() {
     for (case, frames, want) in cases {
         assert_eq!(saw(&frames), want, "case {case}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// R2 — ActorUpdated strict RBAC & statBlock stripping
+// ---------------------------------------------------------------------------
+
+/// `Some(true)` if `ActorUpdated` carried `statBlock`, `Some(false)` if `ActorUpdated` arrived
+/// with `statBlock` stripped, `None` if no `ActorUpdated` was sent.
+fn actor_updated_has_stat_block(frames: &[ServerEnvelope]) -> Option<bool> {
+    frames.iter().find_map(|f| match f {
+        ServerEnvelope::ActorUpdated { data, .. } => Some(data.get("statBlock").is_some()),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn actor_updated_enforces_owner_rbac_and_strips_stat_block_for_non_gms() {
+    let sheet_owner = Uuid::new_v4();
+    let token_controller = Uuid::new_v4();
+    let bystander = Uuid::new_v4();
+    // (case_id, actor_owner_user_id, expected ActorUpdated has_stat_block for:
+    //  [gm, sheet_owner, token_controller, bystander, spectator_with_owner_id])
+    let cases = [
+        (
+            "player_owned_actor_strips_stat_block_and_skips_non_owner_controller_and_spectator",
+            Some(sheet_owner),
+            [Some(true), Some(false), None, None, None],
+        ),
+        (
+            "gm_owned_monster_actor_never_sends_actor_updated_to_player_token_controller",
+            None,
+            [Some(true), None, None, None, None],
+        ),
+    ];
+
+    for (case, actor_owner, want_actor_updated) in cases {
+        let campaign_id = Uuid::new_v4();
+        let (linked_token_id, actor_id) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut state = TableState::new(100.0, 5.0, Vec::new());
+        let mut linked = token(linked_token_id, "Companion", Some(token_controller), 100.0);
+        linked.actor_id = Some(actor_id);
+        linked.max_hp = 20;
+        linked.hp = 20;
+        linked.stat_block = Some(serde_json::json!({ "name": "Dire Wolf" }));
+        state.data.tokens.insert(linked_token_id, linked);
+
+        let room = TableRoomActor::spawn(campaign_id, wal_with(campaign_id, &state), 25).unwrap();
+        let mut gm_rx = connect(&room, Uuid::new_v4(), CampaignRole::Gm).await.1;
+        let mut owner_rx = connect(&room, sheet_owner, CampaignRole::Player).await.1;
+        let mut controller_rx = connect(&room, token_controller, CampaignRole::Player)
+            .await
+            .1;
+        let mut bystander_rx = connect(&room, bystander, CampaignRole::Player).await.1;
+        let mut spectator_rx = connect(&room, sheet_owner, CampaignRole::Spectator).await.1;
+        for rx in [
+            &mut gm_rx,
+            &mut owner_rx,
+            &mut controller_rx,
+            &mut bystander_rx,
+            &mut spectator_rx,
+        ] {
+            drain(rx);
+        }
+
+        room.notify_actor_updated(
+            actor_id,
+            actor_owner,
+            3,
+            serde_json::json!({
+                "hpCurrent": 9,
+                "statBlock": { "name": "Dire Wolf", "armorClass": { "value": 14 } }
+            }),
+            ActorTacticalSync {
+                hp_current: Some(9),
+                ..ActorTacticalSync::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let gm_frames = drain(&mut gm_rx);
+        let owner_frames = drain(&mut owner_rx);
+        let controller_frames = drain(&mut controller_rx);
+        let bystander_frames = drain(&mut bystander_rx);
+        let spectator_frames = drain(&mut spectator_rx);
+
+        let got = [
+            actor_updated_has_stat_block(&gm_frames),
+            actor_updated_has_stat_block(&owner_frames),
+            actor_updated_has_stat_block(&controller_frames),
+            actor_updated_has_stat_block(&bystander_frames),
+            actor_updated_has_stat_block(&spectator_frames),
+        ];
+        assert_eq!(got, want_actor_updated, "case {case}");
+
+        // Token controller still gets redacted `TokenState` via `push_changed_projections`.
+        assert_eq!(
+            snapshot_hp(&controller_frames, linked_token_id),
+            Some(9),
+            "case {case}: token controller receives updated TokenState"
+        );
+        let controller_stat_block = controller_frames.iter().rev().find_map(|f| match f {
+            ServerEnvelope::StateSnapshot { state, .. } => state
+                .tokens
+                .get(&linked_token_id)
+                .and_then(|t| t.stat_block.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            controller_stat_block, None,
+            "case {case}: TokenState stat_block remains redacted for controller"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// R4 — Exhaustion-6 death with hp > 0 across PublicTokenView & initiative
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn exhaustion_six_dead_token_with_positive_hp_projects_down_and_skips_initiative() {
+    use trame_server::sync::{BloodiedState, PublicTokenView};
+
+    // 1. `PublicTokenView` maps `is_dead == true` to `BloodiedState::Down` even when `hp > 0`.
+    let view_cases = [
+        (
+            "alive_above_half_is_unhurt",
+            12,
+            20,
+            false,
+            BloodiedState::Unhurt,
+        ),
+        (
+            "alive_at_half_is_bloodied",
+            10,
+            20,
+            false,
+            BloodiedState::Bloodied,
+        ),
+        ("zero_hp_is_down", 0, 20, false, BloodiedState::Down),
+        (
+            "dead_with_positive_hp_is_down",
+            12,
+            20,
+            true,
+            BloodiedState::Down,
+        ),
+    ];
+    for (case, hp, max_hp, is_dead, want) in view_cases {
+        let mut t = token(Uuid::new_v4(), "Target", None, 100.0);
+        t.hp = hp;
+        t.max_hp = max_hp;
+        t.is_dead = is_dead;
+        assert_eq!(PublicTokenView::from(&t).bloodied, want, "case {case}");
+    }
+
+    // 2. Dead tokens with `hp > 0` are excluded from `roll_player_initiative` and
+    //    `roll_table_initiative` (`StartTurnByTurn`).
+    let campaign_id = Uuid::new_v4();
+    let dead_only_player = Uuid::new_v4();
+    let mixed_player = Uuid::new_v4();
+    let corpse_only_id = Uuid::from_u128(0x01);
+    let mixed_corpse_id = Uuid::from_u128(0x02);
+    let mixed_alive_id = Uuid::from_u128(0x03);
+    let goblin_id = Uuid::from_u128(0x04);
+
+    let mut state = TableState::new(100.0, 5.0, Vec::new());
+    let mut corpse_only = token(corpse_only_id, "Fallen", Some(dead_only_player), 100.0);
+    corpse_only.hp = 12;
+    corpse_only.is_dead = true;
+    state.data.tokens.insert(corpse_only_id, corpse_only);
+
+    // Lower UUID than `mixed_alive_id` so `min_by_key` would pick `mixed_corpse_id` if `is_dead`
+    // were treated as living.
+    let mut mixed_corpse = token(mixed_corpse_id, "Exhausted", Some(mixed_player), 200.0);
+    mixed_corpse.hp = 12;
+    mixed_corpse.is_dead = true;
+    state.data.tokens.insert(mixed_corpse_id, mixed_corpse);
+
+    let mut mixed_alive = token(mixed_alive_id, "Companion", Some(mixed_player), 300.0);
+    mixed_alive.hp = 15;
+    state.data.tokens.insert(mixed_alive_id, mixed_alive);
+
+    let mut goblin = token(goblin_id, "Goblin", None, 400.0);
+    goblin.hp = 10;
+    state.data.tokens.insert(goblin_id, goblin);
+
+    let room = TableRoomActor::spawn(campaign_id, wal_with(campaign_id, &state), 25).unwrap();
+    let mut gm_rx = connect(&room, Uuid::new_v4(), CampaignRole::Gm).await.1;
+    let (dead_sess, mut dead_rx) = connect(&room, dead_only_player, CampaignRole::Player).await;
+    let (mixed_sess, mut mixed_rx) = connect(&room, mixed_player, CampaignRole::Player).await;
+    drain(&mut gm_rx);
+    drain(&mut dead_rx);
+    drain(&mut mixed_rx);
+
+    let init_env = ClientEnvelope::RollDice {
+        expression: "1d20".to_string(),
+        visibility: RollVisibility::Public,
+        reason: "Initiative".to_string(),
+        correlation_id: None,
+    };
+
+    room.send_envelope(dead_sess, init_env.clone())
+        .await
+        .unwrap();
+    let dead_reply = drain(&mut dead_rx);
+    assert!(
+        dead_reply
+            .iter()
+            .any(|f| matches!(f, ServerEnvelope::CommandRejected { .. })),
+        "player with only a dead token cannot roll initiative: {dead_reply:?}"
+    );
+    drain(&mut gm_rx);
+
+    room.send_envelope(mixed_sess, init_env).await.unwrap();
+    let mixed_reply = drain(&mut mixed_rx);
+    assert!(
+        mixed_reply.iter().any(
+            |f| matches!(f, ServerEnvelope::DiceRolled(r) if r.reason == "Initiative: Companion")
+        ),
+        "player with dead + living tokens rolls for the living token: {mixed_reply:?}"
+    );
+    drain(&mut gm_rx);
+
+    room.dispatch_direct_command(
+        gm(),
+        TrameCommand::StartTurnByTurn {
+            initiative_order: Vec::new(),
+            initiative_totals: std::collections::BTreeMap::new(),
+        },
+    )
+    .await
+    .unwrap();
+    let (_, after) = room.get_table_snapshot().await.unwrap();
+    let mut ordered = after.data.initiative_order.clone();
+    ordered.sort();
+    assert_eq!(
+        ordered,
+        vec![mixed_alive_id, goblin_id],
+        "dead tokens with hp > 0 are excluded from initiative_order"
+    );
+    assert!(!after.data.initiative_totals.contains_key(&corpse_only_id));
+    assert!(!after.data.initiative_totals.contains_key(&mixed_corpse_id));
 }

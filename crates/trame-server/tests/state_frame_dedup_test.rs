@@ -242,6 +242,7 @@ async fn out_of_band_change_then_commands_keep_hashes_in_step() {
         .room
         .notify_actor_updated(
             linked.hero_actor,
+            Some(linked.player),
             2,
             serde_json::json!({}),
             ActorTacticalSync {
