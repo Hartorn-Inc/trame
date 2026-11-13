@@ -122,7 +122,7 @@ variable "assets_bucket_name" {
 
 variable "s3_access_key_id" {
   type        = string
-  description = "Access Key ID of the R2 API token used by `trame-server` (Object Read & Write on the assets bucket only). It is not secret: every presigned URL carries it. The matching secret goes to Secret Manager. Null is only accepted until the buckets exist (bootstrap step 1); the service refuses to deploy without it."
+  description = "Access Key ID of the R2 API token used by `trame-server` (Object Read & Write on the assets bucket only). It is not secret: every presigned URL carries it. The matching secret goes to Secret Manager. Null is only accepted until the buckets exist (bootstrap step 4; set in step 5); the service refuses to deploy without it."
   default     = null
 }
 
@@ -134,7 +134,7 @@ variable "backups_bucket_name" {
 
 variable "backup_s3_access_key_id" {
   type        = string
-  description = "Access Key ID of the R2 API token used by the backup job (Object Read & Write on the backups bucket only). Null is only accepted until the buckets exist; the backup job refuses to deploy without it."
+  description = "Access Key ID of the R2 API token used by the backup job (Object Read & Write on the backups bucket only). Null is only accepted until the buckets exist (bootstrap step 4; set in step 5); the backup job refuses to deploy without it."
   default     = null
 }
 
@@ -216,17 +216,23 @@ variable "budget_alert_email" {
 
 variable "github_repository" {
   type        = string
-  description = "`owner/name` of the GitHub repository whose `deploy.yml` workflow may deploy. The Workload Identity provider refuses tokens from any other repository."
-  default     = "Hartorn-Inc/trame"
+  nullable    = false
+  description = "Required `OWNER/REPO` of YOUR GitHub repository or fork whose `.github/workflows/deploy.yml` may deploy. No default is set so fork operators never accidentally grant deploy access to upstream."
 
   validation {
     condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
-    error_message = "github_repository must look like owner/name."
+    error_message = "github_repository must be a non-empty OWNER/REPO string (for example OWNER/trame)."
   }
 }
 
 variable "github_deploy_ref" {
   type        = string
+  nullable    = false
   description = "Git ref (`ref` claim of the GitHub OIDC token) allowed to deploy. `workflow_run` jobs run on the default branch, so this is `refs/heads/main`."
   default     = "refs/heads/main"
+
+  validation {
+    condition     = can(regex("^refs/heads/[A-Za-z0-9_./-]+$", var.github_deploy_ref))
+    error_message = "github_deploy_ref must look like refs/heads/<branch>."
+  }
 }

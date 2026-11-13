@@ -47,7 +47,7 @@ After a lost VM, start from a new host: follow the guide's [First start](./compo
 
 For a mistake made in the last few hours, Neon's instant restore (Neon console, Restore) is faster than a dump: the free plan keeps 6 hours of history.
 
-Otherwise, restore a dump into Neon. The restore drops and recreates the database and refuses while another session uses it. Run the commands from `deploy/terraform`:
+Otherwise, restore a dump into Neon. `trame-backup` connects through Secret Manager's `DATABASE_URL` (`postgresql://...neon.tech/neondb?sslmode=verify-full`, verified against the image's system CA bundle via `PGSSLROOTCERT`). The restore drops and recreates the database and refuses while another session uses it. Run the commands from `deploy/terraform`:
 
 ```sh
 # 1. List the dumps (they appear in the job's logs).

@@ -35,7 +35,7 @@
 
 locals {
   # Environment variable => secret id, per consumer.
-  #   DATABASE_URL                 Neon DIRECT (non-pooler) URL, ...?sslmode=require
+  #   DATABASE_URL                 Neon DIRECT (non-pooler) URL, ...?sslmode=verify-full
   #   MASTER_ENCRYPTION_KEY        64 hex chars (AES-256-GCM key for TOTP secrets)
   #   TRAME_JWT_SECRET             >= 32 chars (HMAC key of signed asset URLs)
   #   TRAME_INVITE_JWT_SECRET      >= 32 chars (reserved HMAC key, still validated)

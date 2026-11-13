@@ -12,14 +12,20 @@
 #
 # INVARIANTS & SAFETY BOUNDARIES:
 # -------------------------------
-#   1. `One Repository, One Branch`:
-#      - The provider's attribute condition rejects every token whose
-#        `repository` is not `var.github_repository` or whose `ref` is not
-#        `var.github_deploy_ref`. Tokens from forks, other branches, tags and
-#        pull requests never get credentials.
-#      - The workflow additionally requires a successful CI run of a `push`
-#        in this repository: `workflow_run` jobs always carry the default
-#        branch ref, whatever triggered CI.
+#   1. `Five-Claim OIDC Trust Boundary`:
+#      - The provider's `attribute_condition` rejects every GitHub OIDC token
+#        unless all five claims match simultaneously:
+#          * `assertion.repository == var.github_repository`
+#          * `assertion.ref == var.github_deploy_ref` (`refs/heads/main`)
+#          * `assertion.workflow_ref == "${var.github_repository}/.github/workflows/deploy.yml@${var.github_deploy_ref}"`
+#          * `assertion.environment == "production"`
+#          * `assertion.event_name == "workflow_run"`
+#      - Tokens from forks, pull requests, tags, other branches, other
+#        workflows in the same repository (even on `main` with `id-token:
+#        write`), jobs outside the `production` environment, or `workflow_dispatch`
+#        / `push` runs are rejected at STS token exchange before IAM evaluation.
+#      - `.github/workflows/deploy.yml` additionally requires a successful `CI`
+#        `workflow_run` triggered by a `push` in the same repository.
 #   2. `Deployer Scoped To Its Targets`:
 #      - `roles/run.admin` on the `trame-server` service and the
 #        `trame-backup` job only, `roles/artifactregistry.writer` on the
@@ -50,14 +56,23 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
   workload_identity_pool_provider_id = "github-actions"
   display_name                       = "GitHub Actions OIDC"
-  description                        = "Accepts only ${var.github_repository} on ${var.github_deploy_ref}."
+  description                        = "Accepts only deploy.yml workflow_run in environment production of ${var.github_repository} on ${var.github_deploy_ref}."
 
   attribute_mapping = {
-    "google.subject"       = "assertion.sub"
-    "attribute.repository" = "assertion.repository"
-    "attribute.ref"        = "assertion.ref"
+    "google.subject"         = "assertion.sub"
+    "attribute.repository"   = "assertion.repository"
+    "attribute.ref"          = "assertion.ref"
+    "attribute.workflow_ref" = "assertion.workflow_ref"
+    "attribute.environment"  = "assertion.environment"
+    "attribute.event_name"   = "assertion.event_name"
   }
-  attribute_condition = "assertion.repository == '${var.github_repository}' && assertion.ref == '${var.github_deploy_ref}'"
+  attribute_condition = join(" && ", [
+    "assertion.repository == '${var.github_repository}'",
+    "assertion.ref == '${var.github_deploy_ref}'",
+    "assertion.workflow_ref == '${var.github_repository}/.github/workflows/deploy.yml@${var.github_deploy_ref}'",
+    "assertion.environment == 'production'",
+    "assertion.event_name == 'workflow_run'",
+  ])
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
