@@ -11,7 +11,7 @@ import { DeathSaveAnnouncement } from "../../src/table/DeathSaveAnnouncement.tsx
 import { ReactionBanner } from "../../src/table/ReactionBanner.tsx";
 import { TableCanvas } from "../../src/table/TableCanvas.tsx";
 import { MAX_STROKE_CELLS } from "../../src/table/tableTools.ts";
-import { deathSavePhase, listTableTokens } from "../../src/table/tableView.ts";
+import { deathSavePhase, doorDistanceFt, doorHandles, listTableTokens } from "../../src/table/tableView.ts";
 import { TokenConditionsPanel } from "../../src/table/TokenConditionsPanel.tsx";
 import { TokenVitalsPanel } from "../../src/table/TokenVitalsPanel.tsx";
 import { CAMPAIGN, GM_ID, GOBLIN, HERO, HERO_ACTOR, PLAYER_ID, fullToken, liveTable, mount, publicToken, tableState } from "../helpers/liveTable.ts";
@@ -104,11 +104,21 @@ describe("TableCanvas: door handles", () => {
     });
   }
 
-  it("a locked handle says why it does not open", () => {
+  it("a locked handle says why it does not open and re-announces on repeat clicks", () => {
     const live = liveTable(PLAYER_ID, playerView({ walls: [door(false, true)] }));
     const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+    const status = ui.byTestId("table-door-status");
+    assertPresent(status, "table-door-status");
+    assert.equal(status.getAttribute("aria-live"), "polite");
     ui.click(`door-${DOOR}`);
-    assert.equal(ui.byTestId("table-door-status").textContent, "This door is locked. Only the Game Master can unlock it.");
+    const first = status.textContent;
+    assert.equal(first, "This door is locked. Only the Game Master can unlock it.");
+    ui.click(`door-${DOOR}`);
+    const second = status.textContent;
+    assert.equal(second, "This door is locked. Only the Game Master can unlock it.\u200B");
+    assert.notEqual(second, first, "second click mutates live-region text so screen readers re-announce");
+    ui.click(`door-${DOOR}`);
+    assert.equal(status.textContent, first, "third click toggles back so consecutive clicks always re-announce");
     assert.deepEqual(live.commands(), []);
     ui.unmount();
   });
@@ -131,11 +141,13 @@ describe("TableCanvas: door handles", () => {
   }
 
   const locks = [
-    { id: "GM locks an unlocked door", locked: false, label: "Lock door", expected: true },
-    { id: "GM unlocks a locked door", locked: true, label: "Unlock door", expected: false },
-  ];
+    { id: "GM locks an unlocked door", locked: false, select: null, label: "Lock door, column 7, row 2", expected: true },
+    { id: "GM unlocks a locked door", locked: true, select: null, label: "Unlock door, column 7, row 2", expected: false },
+    { id: "GM lock with selected token includes distance", locked: false, select: HERO, label: "Lock door, column 7, row 2, 15 ft away", expected: true },
+  ] as const;
   for (const c of locks) {
     it(c.id, () => {
+      selectedTokenIdSignal.value = c.select;
       const live = liveTable(GM_ID, gmView({ walls: [door(false, c.locked)] }));
       const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
       assert.equal(ui.byTestId(`door-lock-${DOOR}`).getAttribute("aria-pressed"), null);
@@ -154,15 +166,19 @@ describe("TableCanvas: door handles", () => {
   });
 
   const doorNames = [
-    { id: "a closed door is named by the action that opens it", locale: "en", open: false, locked: false, label: "Open door" },
-    { id: "an open door is named by the action that closes it", locale: "en", open: true, locked: false, label: "Close door" },
-    { id: "a locked door names the lock in words", locale: "en", open: false, locked: true, label: "Open door (locked)" },
-    { id: "the French name is the French action", locale: "fr", open: false, locked: true, label: "Ouvrir la porte (verrouillée)" },
+    { id: "a closed door names action, cell and distance", locale: "en", open: false, locked: false, hasToken: true, label: "Open door, column 7, row 2, 15 ft away" },
+    { id: "an open door names action, cell and distance", locale: "en", open: true, locked: false, hasToken: true, label: "Close door, column 7, row 2, 15 ft away" },
+    { id: "a locked door names the lock, cell and distance", locale: "en", open: false, locked: true, hasToken: true, label: "Open door (locked), column 7, row 2, 15 ft away" },
+    { id: "without a controlled token the door omits distance", locale: "en", open: false, locked: false, hasToken: false, label: "Open door, column 7, row 2" },
+    { id: "the French name includes cell and distance", locale: "fr", open: false, locked: true, hasToken: true, label: "Ouvrir la porte (verrouillée), colonne 7, ligne 2, à 15 ft" },
   ] as const;
   for (const c of doorNames) {
     it(`door label: ${c.id}`, () => {
       localeSignal.value = c.locale;
-      const live = liveTable(PLAYER_ID, playerView({ walls: [door(c.open, c.locked)] }));
+      const state = c.hasToken
+        ? playerView({ walls: [door(c.open, c.locked)] })
+        : tableState({ tokens: {}, fog_overrides: [{ cell_x: 6, cell_y: 1, mode: "REVEAL" }], walls: [door(c.open, c.locked)] });
+      const live = liveTable(PLAYER_ID, state);
       const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
       const label = ui.byTestId(`door-${DOOR}`).getAttribute("aria-label");
       const pressed = ui.byTestId(`door-${DOOR}`).getAttribute("aria-pressed");
@@ -170,6 +186,21 @@ describe("TableCanvas: door handles", () => {
       localeSignal.value = "en";
       assert.equal(label, c.label);
       assert.equal(pressed, null, "no aria-pressed state competes with the action name");
+    });
+  }
+
+  const distanceCases = [
+    { id: "adjacent-token-zero-ft", topLeft: { x: 250, y: 50 }, elevationFt: 0, wall: {}, expected: 0 },
+    { id: "one-cell-gap-five-ft", topLeft: { x: 200, y: 50 }, elevationFt: 0, wall: {}, expected: 5 },
+    { id: "three-cells-gap-fifteen-ft", topLeft: { x: 100, y: 50 }, elevationFt: 0, wall: {}, expected: 15 },
+    { id: "elevation-gap-dominates", topLeft: { x: 250, y: 50 }, elevationFt: 20, wall: { bottom_elevation_ft: 0, top_elevation_ft: 10 }, expected: 10 },
+  ] as const;
+  for (const c of distanceCases) {
+    it(`doorDistanceFt [${c.id}]`, () => {
+      const state = playerView({ walls: [{ ...door(false, false), ...c.wall }] }, { top_left: c.topLeft, elevation_ft: c.elevationFt });
+      const [handle] = doorHandles(state, false);
+      const [tok] = listTableTokens(state);
+      assert.equal(doorDistanceFt(handle, tok, 50, 5), c.expected);
     });
   }
 });
@@ -427,22 +458,30 @@ describe("TableCanvas: GM map brushes", () => {
       expected: [{ cmd: "SET_FOG_OVERRIDES", mode: "REVEAL", cells: [{ col: 1, row: 1 }, { col: 2, row: 1 }, { col: 3, row: 1 }] }],
     },
   ] as const;
-  for (const c of strokes) {
-    it(c.id, () => {
-      const live = liveTable(GM_ID, gmView());
-      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
-      ui.click(`table-tool-${c.tool}`);
-      pinBoard(ui);
-      const board = ui.byTestId("table-board");
-      const at = ([x, y]: readonly number[]) => ({ clientX: 10 + x, clientY: 20 + y, pointerType: "mouse" });
-      board.dispatchEvent({ type: "pointerdown", ...at(c.path[0]) });
-      for (const point of c.path.slice(1)) board.dispatchEvent({ type: "pointermove", ...at(point) });
-      board.dispatchEvent({ type: "pointerup" });
-      ui.click("table-board", at(c.path[0]));
-      assert.deepEqual(live.commands(), c.expected, "the trailing click paints nothing more and moves nothing");
-      assertAbsent(ui.byTestId("table-stroke-capped"), "short strokes show no cap notice");
-      ui.unmount();
-    });
+  for (const pointerType of ["mouse", "touch"] as const) {
+    for (const c of strokes) {
+      it(`${pointerType}: ${c.id}`, () => {
+        const live = liveTable(GM_ID, gmView());
+        const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+        const board = ui.byTestId("table-board");
+        const scroller = ui.byTestId("table-scroller");
+        assert.equal(board.style.touchAction ?? "", "", "select mode leaves browser panning enabled");
+        ui.click(`table-tool-${c.tool}`);
+        assert.equal(board.style.touchAction, "none", "active brush disables touch panning on the board");
+        assert.equal(scroller.style.touchAction, "none", "active brush disables touch panning on the scroller");
+        pinBoard(ui);
+        const at = ([x, y]: readonly number[]) => ({ clientX: 10 + x, clientY: 20 + y, pointerType, pointerId: 1 });
+        board.dispatchEvent({ type: "pointerdown", ...at(c.path[0]) });
+        for (const point of c.path.slice(1)) board.dispatchEvent({ type: "pointermove", ...at(point) });
+        board.dispatchEvent({ type: "pointerup", pointerType, pointerId: 1 });
+        ui.click("table-board", at(c.path[0]));
+        assert.deepEqual(live.commands(), c.expected, "the trailing click paints nothing more and moves nothing");
+        assertAbsent(ui.byTestId("table-stroke-capped"), "short strokes show no cap notice");
+        ui.click("table-tool-select");
+        assert.equal(board.style.touchAction ?? "", "", "returning to select restores touch panning");
+        ui.unmount();
+      });
+    }
   }
 
   const keyboard = [
@@ -524,6 +563,7 @@ describe("TableCanvas: zoom, pan and pings", () => {
     const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
     ui.click("table-zoom-in");
     assert.equal(ui.byTestId("table-zoom-reset").textContent, "125%");
+    assert.equal(ui.byTestId("table-zoom-reset").getAttribute("aria-label"), "125% — Reset zoom to 100%");
     assert.equal(ui.byTestId("table-board").style.transform, "scale(1.25)");
     const canvas = ui.byTestId("table-render");
     assertSameNode(canvas.parentNode, ui.byTestId("table-board").parentNode, "the canvas sits beside the CSS-scaled board, not inside it");
@@ -533,8 +573,32 @@ describe("TableCanvas: zoom, pan and pings", () => {
     assert.deepEqual(live.commands().at(-1)?.to_top_left, { x: 400, y: 200 });
     ui.click("table-zoom-reset");
     assert.equal(ui.byTestId("table-zoom-reset").textContent, "100%");
+    assert.equal(ui.byTestId("table-zoom-reset").getAttribute("aria-label"), "100% — Reset zoom to 100%");
     ui.unmount();
   });
+
+  const zoomResetLabels = [
+    { id: "en-default-100", locale: "en", clicks: 0, text: "100%", aria: "100% — Reset zoom to 100%" },
+    { id: "en-zoomed-125", locale: "en", clicks: 1, text: "125%", aria: "125% — Reset zoom to 100%" },
+    { id: "fr-default-100", locale: "fr", clicks: 0, text: "100 %", aria: "100 % — Réinitialiser le zoom à 100 %" },
+    { id: "fr-zoomed-125", locale: "fr", clicks: 1, text: "125 %", aria: "125 % — Réinitialiser le zoom à 100 %" },
+  ] as const;
+  for (const c of zoomResetLabels) {
+    it(`zoom reset label-in-name [${c.id}]`, () => {
+      localeSignal.value = c.locale;
+      const live = liveTable(GM_ID, gmView());
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+      for (let i = 0; i < c.clicks; i++) ui.click("table-zoom-in");
+      const reset = ui.byTestId("table-zoom-reset");
+      const text = reset.textContent;
+      const aria = reset.getAttribute("aria-label");
+      ui.unmount();
+      localeSignal.value = "en";
+      assert.equal(text, c.text);
+      assert.equal(aria, c.aria);
+      assert.ok(aria.includes(text), "aria-label contains the exact visible label string (WCAG 2.5.3)");
+    });
+  }
 
   it("the zoom anchor scroll is applied once the board has its zoomed size", () => {
     const live = liveTable(GM_ID, gmView());
@@ -738,9 +802,119 @@ describe("TableCanvas: remaining speed and move cost preview", () => {
     const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
     const label = ui.byTestId(`token-${HERO}`).getAttribute("aria-label");
     localeSignal.value = "en";
-    assert.match(label, /12,5 ft de mouvement restant$/);
+    assert.equal(label, "Brakka, 12 points de vie sur 13, colonne 3, ligne 2, 12,5 ft de mouvement restant");
     ui.unmount();
   });
+
+  const tokenLabels = [
+    {
+      id: "en-controlled-exploration",
+      locale: "en",
+      inCombat: false,
+      select: null,
+      tokenId: HERO,
+      expected: "Brakka, 12 of 13 hit points, column 3, row 2",
+    },
+    {
+      id: "en-controlled-combat-selected",
+      locale: "en",
+      inCombat: true,
+      select: HERO,
+      tokenId: HERO,
+      expected: "Brakka, 12 of 13 hit points, column 3, row 2, 25 ft of movement left",
+    },
+    {
+      id: "en-public-unhurt-starts-with-name",
+      locale: "en",
+      inCombat: false,
+      select: null,
+      tokenId: GOBLIN,
+      expected: "Goblin, Unhurt, column 5, row 7",
+    },
+    {
+      id: "fr-public-unhurt-starts-with-name",
+      locale: "fr",
+      inCombat: false,
+      select: null,
+      tokenId: GOBLIN,
+      expected: "Goblin, Indemne, colonne 5, ligne 7",
+    },
+  ] as const;
+  for (const c of tokenLabels) {
+    it(`token accessible name & no aria-haspopup [${c.id}]`, () => {
+      localeSignal.value = c.locale;
+      selectedTokenIdSignal.value = c.select;
+      const state = c.inCombat ? combat({ speed_remaining_ft: 25 }) : playerView();
+      const live = liveTable(PLAYER_ID, state);
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+      const btn = ui.byTestId(`token-${c.tokenId}`);
+      const label = btn.getAttribute("aria-label");
+      const hasPopup = btn.getAttribute("aria-haspopup");
+      ui.unmount();
+      localeSignal.value = "en";
+      assert.equal(label, c.expected);
+      assert.equal(hasPopup, null, "token button selects rather than opening a dialog");
+    });
+  }
+
+  const moveAnnouncements = [
+    {
+      id: "en-exploration-unlimited",
+      locale: "en",
+      initial: playerView(),
+      accepted: playerView({}, { top_left: { x: 150, y: 50 }, speed_remaining_ft: 25 }),
+      expected: "Moved to column 4, row 2",
+    },
+    {
+      id: "en-combat-with-remaining-speed",
+      locale: "en",
+      initial: combat({ speed_remaining_ft: 25 }),
+      accepted: combat({ top_left: { x: 150, y: 50 }, speed_remaining_ft: 20 }),
+      expected: "Moved to column 4, row 2, 20 ft left",
+    },
+    {
+      id: "fr-exploration-unlimited",
+      locale: "fr",
+      initial: playerView(),
+      accepted: playerView({}, { top_left: { x: 150, y: 100 } }),
+      expected: "Déplacé en colonne 4, ligne 3",
+    },
+    {
+      id: "fr-combat-with-remaining-speed",
+      locale: "fr",
+      initial: combat({ speed_remaining_ft: 25 }),
+      accepted: combat({ top_left: { x: 150, y: 50 }, speed_remaining_ft: 20 }),
+      expected: "Déplacé en colonne 4, ligne 2, 20 ft restant",
+    },
+    {
+      id: "unchanged-controlled-position-stays-silent",
+      locale: "en",
+      initial: playerView(),
+      accepted: playerView({ public_tokens: { [GOBLIN]: publicToken(GOBLIN, "Goblin", { top_left: { x: 250, y: 300 } }) } }, { hp: 9 }),
+      expected: "",
+    },
+  ] as const;
+  for (const c of moveAnnouncements) {
+    it(`post-move polite live region [${c.id}]`, () => {
+      localeSignal.value = c.locale;
+      const live = liveTable(PLAYER_ID, c.initial);
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+      const region = ui.byTestId("table-move-status");
+      assertPresent(region, "table-move-status is always mounted");
+      assert.equal(region.getAttribute("aria-live"), "polite");
+      assert.equal(region.textContent, "", "silent on initial mount");
+      live.client.applyServerEnvelope({
+        type: "CommandAccepted",
+        seqId: 5,
+        events: [{ event: "TOKEN_MOVED", token_id: HERO }],
+        state: c.accepted,
+      } as any);
+      const text = region.textContent;
+      ui.unmount();
+      localeSignal.value = "en";
+      assert.equal(text, c.expected);
+    });
+  }
 });
 
 describe("Selected token panels: no local state carries over between tokens", () => {
