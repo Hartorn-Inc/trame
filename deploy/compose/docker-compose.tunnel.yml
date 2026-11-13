@@ -1,0 +1,72 @@
+# ============================================================================
+# CLOUDFLARE TUNNEL OVERRIDE (docker-compose.tunnel.yml)
+# ============================================================================
+#
+# PURPOSE:
+# --------
+# Runs TRAME on a machine that cannot (or should not) accept inbound
+# connections, such as a home server behind NAT: `cloudflared` dials out to
+# Cloudflare, which terminates TLS for the public hostname. No host port is
+# published at all.
+#   docker compose -f docker-compose.prod.yml -f docker-compose.tunnel.yml up -d
+# In the Cloudflare Zero Trust dashboard, give the tunnel one public hostname
+# (`TRAME_DOMAIN`) whose service is `http://caddy:80`.
+#
+# INVARIANTS & SAFETY BOUNDARIES:
+# -------------------------------
+#   1. `Zero Published Ports`:
+#      - `caddy.ports` is reset to an empty list; only outbound connections
+#        from `cloudflared` reach the internet.
+#   2. `Two Proxy Hops`:
+#      - Request path: browser -> Cloudflare edge -> cloudflared -> Caddy ->
+#        trame-server. Cloudflare appends the browser address to
+#        `X-Forwarded-For` and Caddy (trusting private addresses, see
+#        `caddy/Caddyfile.tunnel`) appends the cloudflared address, so
+#        `TRAME_TRUSTED_PROXY_HOPS=2` picks the browser.
+#   3. `WebSockets`:
+#      - Cloudflare proxies WebSockets (including `Sec-WebSocket-Protocol:
+#        trame.v1+deflate`) and closes sockets idle for 100 s; the server's
+#        20 s ping heartbeat stays well below that.
+# ============================================================================
+
+services:
+  caddy:
+    ports: !reset []
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.tunnel", "--adapter", "caddyfile"]
+
+  trame-server:
+    environment:
+      TRAME_TRUSTED_PROXY_HOPS: "2"
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      # Connector token of a dashboard-managed tunnel (Zero Trust > Networks > Tunnels).
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN}
+      # Metrics/readiness endpoint, loopback only; read by `cloudflared tunnel ready`.
+      TUNNEL_METRICS: 127.0.0.1:20241
+    depends_on:
+      caddy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - edge
+    deploy:
+      resources:
+        limits:
+          memory: 128M

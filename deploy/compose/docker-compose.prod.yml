@@ -1,15 +1,120 @@
+# ============================================================================
+# TRAME PRODUCTION COMPOSE STACK (docker-compose.prod.yml)
+# ============================================================================
+#
+# PURPOSE:
+# --------
+# The "strictly 0 EUR" hosting target (ADR-0041, D5/D18/D21): one small VM
+# (Oracle Cloud Always Free) or a home machine runs TRAME behind Caddy with
+# automatic HTTPS, nightly database backups and optional S3 asset storage.
+# Operator guide: `deploy/compose/README.md`; every variable: `.env.example`.
+#
+# INVARIANTS & SAFETY BOUNDARIES:
+# -------------------------------
+#   1. `Single Published Edge`:
+#      - Only `caddy` publishes host ports (80/443, plus 443/udp for HTTP/3).
+#        `docker-compose.tunnel.yml` removes even those (Cloudflare Tunnel).
+#      - PostgreSQL sits on the `internal` network (`internal: true`, no
+#        route out); Caddy is not on it and cannot reach the database.
+#   2. `Trusted Proxy Hops`:
+#      - `TRAME_TRUSTED_PROXY_HOPS=1`: Caddy is the only proxy and overwrites
+#        `X-Forwarded-For` with the socket peer. The tunnel override sets 2.
+#   3. `Fail-Closed Secrets`:
+#      - Required secrets use `:?`, so Compose refuses to start without them,
+#        mirroring the server's own refusal outside `TRAME_ENV=dev`.
+#   4. `Small-VM Memory Budget`:
+#      - Hard limits: trame-server 1G (512M reserved), postgres 512M,
+#        silo 512M, backup 256M, caddy 128M, storage-init 128M
+#        (cloudflared 128M in the tunnel override): about 2.6G worst case.
+#   5. `Hardened Containers`:
+#      - Read-only root filesystems with tmpfs scratch space,
+#        `no-new-privileges`, and every Linux capability dropped except those
+#        an entrypoint needs (Caddy: bind 80/443; PostgreSQL: its root
+#        entrypoint chowns the data directory, then drops to `postgres`).
+#   6. `Bounded Logs`:
+#      - json-file logs rotate at 3 x 10 MB per container, so a small disk
+#        never fills with logs.
+#
+# PROFILES & VARIANTS:
+# --------------------
+#   (default)        caddy, trame-server, postgres, backup.
+#   --profile silo   + silo (S3-compatible store) and storage-init (bucket +
+#                    CORS). Without it, set `S3_*` to Cloudflare R2, or leave
+#                    them empty to keep assets in PostgreSQL.
+#   -f docker-compose.tunnel.yml   Cloudflare Tunnel instead of public ports.
+#
+# `make e2e` reuses this file (postgres + trame-server only) with
+# `e2e/docker-compose.e2e.yml`.
+# ============================================================================
+
+name: trame
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-ops-build: &ops-build
+  context: ./ops
+
 services:
+  caddy:
+    image: caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    logging: *logging
+    restart: unless-stopped
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    # `[ADDRESS:]PORT` on the host; the smoke test binds 127.0.0.1 on high ports.
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+      - "${CADDY_HTTPS_PORT:-443}:443/udp"
+    environment:
+      # Public DNS name; Caddy obtains its certificate (`localhost` uses Caddy's internal CA).
+      TRAME_DOMAIN: ${TRAME_DOMAIN:?set TRAME_DOMAIN}
+      # Path prefix routed to Silo for presigned downloads (see caddy/trame-routes.caddy).
+      S3_BUCKET: ${S3_BUCKET:-trame-assets}
+    volumes:
+      - ./caddy:/etc/caddy:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    tmpfs:
+      - /tmp
+    depends_on:
+      trame-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - edge
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
   trame-server:
     image: ${TRAME_IMAGE:-trame-server:latest}
+    logging: *logging
     restart: unless-stopped
     stop_grace_period: 15s
-    ports:
-      - "${TRAME_PORT:-8080}:8080"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp
     depends_on:
       postgres:
         condition: service_healthy
-    # Required secrets use `:?` so Compose refuses to start when they are unset,
-    # mirroring the server's fail-closed startup outside `TRAME_ENV=dev`.
+      storage-init:
+        condition: service_completed_successfully
+        required: false
     environment:
       # Any value other than `dev` requires every secret below.
       TRAME_ENV: production
@@ -18,36 +123,179 @@ services:
       MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?set a 64-hex-char MASTER_ENCRYPTION_KEY}
       # HMAC-SHA256 key signing presigned asset download URLs (>= 32 chars).
       TRAME_JWT_SECRET: ${TRAME_JWT_SECRET:?set TRAME_JWT_SECRET (>= 32 chars)}
-      # HMAC-SHA256 key for campaign invite (magic link) tokens (>= 32 chars).
+      # HMAC-SHA256 key reserved for invite tokens (>= 32 chars); still validated at startup.
       TRAME_INVITE_JWT_SECRET: ${TRAME_INVITE_JWT_SECRET:?set TRAME_INVITE_JWT_SECRET (>= 32 chars)}
       # Public browser origin, e.g. https://trame.example.com (CORS / Origin checks, links).
       TRAME_PUBLIC_ORIGIN: ${TRAME_PUBLIC_ORIGIN:?set TRAME_PUBLIC_ORIGIN}
       # Adds the `Secure` attribute to session cookies; only disable for plain-HTTP testing.
       TRAME_COOKIE_SECURE: ${TRAME_COOKIE_SECURE:-true}
+      # Caddy is the single proxy in front of the server (invariant 2).
+      TRAME_TRUSTED_PROXY_HOPS: "1"
+      # Optional: only this email may claim the instance with the logged setup URL.
+      TRAME_BOOTSTRAP_OWNER_EMAIL: ${TRAME_BOOTSTRAP_OWNER_EMAIL:-}
+      # Object store for assets; all empty keeps assets in PostgreSQL.
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
       # Built SPA directory inside the image (set by the Dockerfile; override only for custom builds).
       TRAME_STATIC_DIR: /app/static
       TRAME_PORT: "8080"
       RUST_LOG: ${RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD", "/app/trame-server", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+    networks:
+      - edge
+      - internal
     deploy:
       resources:
+        reservations:
+          memory: 512M
         limits:
-          memory: 256M
+          memory: 1G
 
   postgres:
-    image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+    image: postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+    logging: *logging
     restart: unless-stopped
-    stop_grace_period: 15s
+    stop_grace_period: 30s
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-trame}
       POSTGRES_USER: ${POSTGRES_USER:-trame}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
       - postgres_prod_data:/var/lib/postgresql
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trame} -d ${POSTGRES_DB:-trame}"]
       interval: 5s
       timeout: 3s
       retries: 5
+      start_period: 30s
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  silo:
+    # Silo: maintained MinIO fork (same MINIO_* variables and `server` command).
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z@sha256:7bb2aff6b89efe1cb1303c10fc21d579447434ed06649ac9ec05a5e2dbf30ad7
+    profiles: ["silo"]
+    logging: *logging
+    restart: unless-stopped
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    command: ["server", "/data"]
+    environment:
+      # The server's S3 credentials are Silo's root credentials (private to this stack).
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-}
+      MINIO_BROWSER: "off"
+    volumes:
+      - silo_data:/data
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # `edge` serves presigned downloads through Caddy; `internal` serves trame-server and jobs.
+    networks:
+      - edge
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  storage-init:
+    # One-shot: creates the bucket and its CORS rule (ops/apply-bucket-cors.sh).
+    # R2: `docker compose run --rm --no-deps storage-init` once, with an admin token.
+    image: trame-ops:local
+    build: *ops-build
+    profiles: ["silo"]
+    logging: *logging
+    restart: "no"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    command: ["apply-bucket-cors.sh"]
+    environment:
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      TRAME_PUBLIC_ORIGIN: ${TRAME_PUBLIC_ORIGIN:?set TRAME_PUBLIC_ORIGIN}
+    tmpfs:
+      - /tmp
+    depends_on:
+      silo:
+        condition: service_healthy
+    networks:
+      - internal
+      - egress
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  backup:
+    # Nightly pg_dump + 14-day retention + optional bucket copy (ops/backup.sh);
+    # `docker compose exec backup restore.sh <dump>` restores (ops/restore.sh).
+    image: trame-ops:local
+    build: *ops-build
+    logging: *logging
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-trame}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-trame}
+      BACKUP_TIME: ${BACKUP_TIME:-03:00}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-trame/postgres}
+      BACKUP_S3_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:-}
+      BACKUP_S3_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:-}
+    volumes:
+      - backups:/backups
+    tmpfs:
+      - /tmp
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Unhealthy after a failed run until the next successful one (ops/backup.sh).
+      test: ["CMD", "sh", "-c", "test ! -e /tmp/backup-failed"]
+      interval: 60s
+      timeout: 5s
+      retries: 1
+    networks:
+      - internal
+      - egress
     deploy:
       resources:
         limits:
@@ -55,3 +303,16 @@ services:
 
 volumes:
   postgres_prod_data:
+  silo_data:
+  caddy_data:
+  caddy_config:
+  backups:
+
+networks:
+  # Reverse-proxy targets and outbound traffic (ACME, R2, Cloudflare).
+  edge:
+  # Database and object store only; no route to the outside world.
+  internal:
+    internal: true
+  # Outbound-only network for the backup and storage jobs (R2 uploads).
+  egress:
