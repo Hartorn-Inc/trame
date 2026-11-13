@@ -16,9 +16,15 @@
 #        `docker-compose.tunnel.yml` removes even those (Cloudflare Tunnel).
 #      - PostgreSQL sits on the `internal` network (`internal: true`, no
 #        route out); Caddy is not on it and cannot reach the database.
-#   2. `Trusted Proxy Hops`:
+#   2. `Trusted Proxy Hops & IPv4-Only Direct Edge`:
 #      - `TRAME_TRUSTED_PROXY_HOPS=1`: Caddy is the only proxy and overwrites
 #        `X-Forwarded-For` with the socket peer. The tunnel override sets 2.
+#      - Direct Caddy deployments use Docker's default IPv4 bridge (`enable_ipv6`
+#        is intentionally omitted so IPv4-only Docker hosts and smoke tests work
+#        out of the box) and therefore require DNS `A` records only (no `AAAA`):
+#        publishing `AAAA` routes inbound IPv6 through `docker-proxy` as the
+#        bridge gateway IPv4 address, collapsing all IPv6 visitors into one
+#        rate-limit bucket. Use `docker-compose.tunnel.yml` if IPv6 is desired.
 #   3. `Fail-Closed Secrets`:
 #      - Required secrets use `:?`, so Compose refuses to start without them,
 #        mirroring the server's own refusal outside `TRAME_ENV=dev`.
@@ -73,7 +79,7 @@ services:
       - "${CADDY_HTTPS_PORT:-443}:443"
       - "${CADDY_HTTPS_PORT:-443}:443/udp"
     environment:
-      # Public DNS name; Caddy obtains its certificate (`localhost` uses Caddy's internal CA).
+      # Public DNS name (IPv4 A record only for direct Caddy; `localhost` uses Caddy's internal CA).
       TRAME_DOMAIN: ${TRAME_DOMAIN:?set TRAME_DOMAIN}
       # Path prefix routed to Silo for presigned downloads (see caddy/trame-routes.caddy).
       S3_BUCKET: ${S3_BUCKET:-trame-assets}

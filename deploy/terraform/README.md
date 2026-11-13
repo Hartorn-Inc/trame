@@ -27,9 +27,9 @@ This directory deploys TRAME on Google Cloud Run in Paris (`europe-west9`), with
 
 ## One-time bootstrap
 
-1. **Neon.** Create a project in AWS Europe Central 1 (Frankfurt) with the newest PostgreSQL version offered. In the compute settings, cap autoscaling at 0.25 or 0.5 CU: the free plan has 100 CU-hours a month. Copy the **direct** connection string (connection pooling turned off, host without `-pooler`), for example `postgresql://neondb_owner:...@ep-xxx.eu-central-1.aws.neon.tech/neondb?sslmode=require`. The pooled endpoint does not work: `trame-server` sets `statement_timeout` at connect time, which PgBouncer rejects.
+1. **Neon.** Create a project in AWS Europe Central 1 (Frankfurt) with the newest PostgreSQL version offered. In the compute settings, cap autoscaling at 0.25 or 0.5 CU: the free plan has 100 CU-hours a month. Copy the **direct** connection string (connection pooling turned off, host without `-pooler`) and change `sslmode=require` to **`sslmode=verify-full`**, for example `postgresql://neondb_owner:...@ep-xxx.eu-central-1.aws.neon.tech/neondb?sslmode=verify-full`. (`sslmode=require` encrypts traffic without verifying Neon's certificate or hostname; both `trame-server` via `webpki-roots` and `trame-ops` via `PGSSLROOTCERT` verify the full chain under `verify-full`.) The pooled endpoint does not work: `trame-server` sets `statement_timeout` at connect time, which PgBouncer rejects.
 2. **Cloudflare token for Terraform.** Create an API token with the permission *Account > Workers R2 Storage > Edit*, then `export CLOUDFLARE_API_TOKEN=...`.
-3. **Settings.** In this directory: `cp terraform.tfvars.example terraform.tfvars` and fill it in. Choose the image tag now (for example `git rev-parse --short HEAD`) and leave the two `*_access_key_id` lines commented.
+3. **Settings.** In this directory: `cp terraform.tfvars.example terraform.tfvars` and fill in the **Required** values in Section 1 (`github_repository`, `project_id`, `billing_account_id`, `server_image_tag`, `ops_image_tag`, `cloudflare_account_id`, `budget_alert_email`; Section 2 settings are optional overrides). Set `github_repository = "OWNER/trame"` to **your own GitHub repository or fork** (there is no default: setting another owner's repository would grant their `deploy.yml` workflow deploy access to your Google Cloud project). Choose the first image tag now (for example `git rev-parse --short HEAD`) and leave the two `*_access_key_id` lines commented until step 5.
 4. **APIs, repository, secrets and buckets.**
    ```sh
    gcloud services enable serviceusage.googleapis.com cloudresourcemanager.googleapis.com
@@ -62,7 +62,7 @@ This directory deploys TRAME on Google Cloud Run in Paris (`europe-west9`), with
    docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
      -t "$REPO/trame-ops:$TAG" --push ../compose/ops
    ```
-   The server image compiles Rust and WebAssembly and needs several GB of RAM.
+   The server image compiles Rust, WebAssembly and the web client (`>= 4 GB` of RAM plus swap, ~5–15 minutes on a cold cache).
 
 ## First start
 
@@ -106,12 +106,19 @@ Then run a backup once to check the job and the R2 token: `eval "$(terraform out
 
 `.github/workflows/deploy.yml` runs after each CI run on `main`. It deploys only when CI succeeded for a push to this repository, and it builds the exact commit CI tested:
 
-1. Build `trame-server` (root `Dockerfile`) and `trame-ops` (`deploy/compose/ops`) with the bootstrap step 7 recipe, tagged with the full commit SHA.
-2. Sign in to Google Cloud as `trame-deployer` through Workload Identity Federation. No key exists: the provider only accepts GitHub tokens of `github_repository` on `github_deploy_ref` (`Hartorn-Inc/trame`, `refs/heads/main`).
-3. Push both images to Artifact Registry.
-4. Run the backup job and wait for it. The new server migrates the database when it starts, so this dump is the rollback point.
-5. `gcloud run jobs update --image` for `trame-backup`, then `gcloud run services update --image` for `trame-server`. The second command returns once the new revision passed its startup probe and receives the traffic.
-6. Check `/healthz` on the service URL, retrying for up to 3 minutes.
+1. Check that `origin/main` has not moved past the commit CI tested (if a newer commit already landed on `main`, the stale run exits cleanly without building or rolling back).
+2. Build `trame-server` (root `Dockerfile`) and `trame-ops` (`deploy/compose/ops`) with the bootstrap step 7 recipe, tagged with the full commit SHA.
+3. Sign in to Google Cloud as `trame-deployer` through Workload Identity Federation. No key exists: the OIDC provider (`github_deploy.tf`) requires **all five claims** simultaneously:
+   - `assertion.repository == var.github_repository` (your `OWNER/trame` repository — never defaulted)
+   - `assertion.ref == "refs/heads/main"` (`var.github_deploy_ref`)
+   - `assertion.workflow_ref == "<github_repository>/.github/workflows/deploy.yml@refs/heads/main"`
+   - `assertion.environment == "production"`
+   - `assertion.event_name == "workflow_run"`
+   Any token from a fork, another branch or tag, another workflow file on `main` (even one granted `id-token: write`), a job outside the `production` environment, or a manual/push trigger is rejected at STS token exchange.
+4. Push both images to Artifact Registry.
+5. Run the backup job and wait for it. The new server migrates the database when it starts, so this dump is the rollback point.
+6. `gcloud run jobs update --image` for `trame-backup`, then `gcloud run services update --image` for `trame-server`. The second command returns once the new revision passed its startup probe and receives the traffic.
+7. Check `/healthz` on the service URL, retrying for up to 3 minutes.
 
 Deploys never run in parallel, and a new one waits for the running one instead of cancelling it.
 
@@ -120,10 +127,11 @@ Deploys never run in parallel, and a new one waits for the running one instead o
 One-time setup, after [First start](#first-start):
 
 ```sh
-# 1. Create the `production` environment. Then add yourself as a required
-#    reviewer (repository Settings > Environments > production): every green
-#    push to main deploys, and the approval keeps deploys out of game nights.
-gh api --method PUT repos/Hartorn-Inc/trame/environments/production
+# 1. Create the `production` environment on YOUR repository (`github_repository`).
+#    Then add yourself as a required reviewer (repository Settings > Environments >
+#    production): every green push to main deploys, and the approval keeps deploys
+#    out of game nights.
+gh api --method PUT repos/OWNER/trame/environments/production
 # 2. Set its variables: GCP_PROJECT_ID, GCP_REGION, GCP_WIF_PROVIDER (provider name),
 #    GCP_DEPLOYER_SA (deployer email), GCP_IMAGE_REPOSITORY, CLOUD_RUN_SERVICE and
 #    CLOUD_RUN_BACKUP_JOB. None of them is secret.
@@ -131,7 +139,7 @@ terraform output -raw github_variables_command    # review, then:
 eval "$(terraform output -raw github_variables_command)"
 ```
 
-The two values the identity federation needs are also outputs on their own: `terraform output -raw workload_identity_provider` and `terraform output -raw deployer_service_account_email`. A single variable can be set by hand, for example `gh variable set GCP_WIF_PROVIDER --env production --repo Hartorn-Inc/trame --body "$(terraform output -raw workload_identity_provider)"`.
+The two values the identity federation needs are also outputs on their own: `terraform output -raw workload_identity_provider` and `terraform output -raw deployer_service_account_email`. A single variable can be set by hand, for example `gh variable set GCP_WIF_PROVIDER --env production --repo OWNER/trame --body "$(terraform output -raw workload_identity_provider)"`.
 
 The deployer can push to the `trame` repository, update and run `trame-server` and `trame-backup`, and act as their two runtime service accounts. It has no project-wide role.
 

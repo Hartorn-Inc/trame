@@ -1,45 +1,68 @@
 # TRAME near-free target (Cloud Run + Neon + R2). Copy to `terraform.tfvars`
-# (git-ignored) and fill in. No secret goes here: secret values are added with
-# `gcloud secrets versions add` (README, "One-time bootstrap").
+# (git-ignored), fill in the REQUIRED values below, and leave optional lines
+# commented unless you want to override their defaults. No secret goes here:
+# secret values are added with `gcloud secrets versions add` (README, "One-time bootstrap").
+
+# =============================================================================
+# 1. REQUIRED SETTINGS
+# =============================================================================
+
+# --- GitHub Actions deployment --------------------------------------------------
+# Set this to YOUR GitHub repository or fork (`OWNER/REPO`). There is no default:
+# pointing this at another owner's repository would let their `deploy.yml` deploy
+# to your Google Cloud project through Workload Identity Federation.
+github_repository = "OWNER/trame"
 
 # --- Google Cloud ---------------------------------------------------------------
 project_id         = "my-trame-project"
 billing_account_id = "012345-6789AB-CDEF01"
-# region           = "europe-west9"
-# scheduler_region = "europe-west1"
 
 # First image tags pushed to `terraform output -raw image_repository` (bootstrap step 7).
 # Later releases are deployed by .github/workflows/deploy.yml; Terraform ignores changes here.
 server_image_tag = "2c7acb2"
 ops_image_tag    = "2c7acb2"
 
-# --- trame-server ---------------------------------------------------------------
-# Default: https://trame-server-<project number>.europe-west9.run.app
-# public_origin       = "https://table.example.com"
-# Only you can claim the instance with the logged setup URL.
-bootstrap_owner_email = "owner@example.com"
-# 1 = Cloud Run front end only. Add one per extra proxy you put in front.
-# trusted_proxy_hops = 1
-
-# After a rotation, pin the new version (README, "Secret rotation"):
-# secret_versions = { TRAME_JWT_SECRET = "2" }
-
 # --- Cloudflare R2 --------------------------------------------------------------
 cloudflare_account_id = "0123456789abcdef0123456789abcdef"
-# assets_bucket_name  = "trame-assets"
-# backups_bucket_name = "trame-backups"
 # Access Key IDs of two R2 API tokens (Object Read & Write), one per bucket.
-# Created after bootstrap step 1 (the buckets must exist to scope the tokens).
+# Leave commented during bootstrap step 4; create the tokens in step 5 (the buckets
+# from step 4 must exist first so you can scope each token to its bucket), then
+# uncomment and set both before `First start` (`terraform apply`).
 # s3_access_key_id        = "r2-assets-token-access-key-id"
 # backup_s3_access_key_id = "r2-backups-token-access-key-id"
 
-# --- Backups --------------------------------------------------------------------
+# --- Budget and spending cap ----------------------------------------------------
+budget_alert_email = "owner@example.com"
+
+# =============================================================================
+# 2. OPTIONAL SETTINGS (recommended or custom overrides; defaults work as-is)
+# =============================================================================
+
+# Strongly recommended (default "" allows anyone who gets the logged setup URL first):
+# restrict the initial 1-hour Owner setup URL to your email address.
+bootstrap_owner_email = "owner@example.com"
+
+# --- Google Cloud & GitHub overrides --------------------------------------------
+# region            = "europe-west9"
+# scheduler_region  = "europe-west1"
+# github_deploy_ref = "refs/heads/main"
+
+# --- trame-server overrides -----------------------------------------------------
+# Default: https://trame-server-<project number>.europe-west9.run.app
+# public_origin      = "https://table.example.com"
+# 1 = Cloud Run front end only. Add one per extra proxy you put in front.
+# trusted_proxy_hops = 1
+# After a rotation, pin the new version (README, "Secret rotation"):
+# secret_versions    = { TRAME_JWT_SECRET = "2" }
+
+# --- R2 & backup overrides ------------------------------------------------------
+# assets_bucket_name    = "trame-assets"
+# backups_bucket_name   = "trame-backups"
 # backup_schedule       = "0 3 * * *"
 # backup_time_zone      = "Etc/UTC"
 # backup_retention_days = 14
 
-# --- Budget and spending cap ----------------------------------------------------
-budget_alert_email = "owner@example.com"
+# --- Budget overrides -----------------------------------------------------------
 # Amounts are in the billing account currency:
 #   gcloud billing accounts describe <billing_account_id> --format='value(currencyCode)'
 # budget_currency        = "EUR"
@@ -47,8 +70,3 @@ budget_alert_email = "owner@example.com"
 # budget_warning_amounts = [1, 5]
 # Email and billing unlinked (the whole project stops) at 10 EUR. README, "Spending cap".
 # budget_amount          = 10
-
-# --- GitHub Actions deployment --------------------------------------------------
-# Only this repository on this ref can deploy (Workload Identity Federation).
-# github_repository = "Hartorn-Inc/trame"
-# github_deploy_ref = "refs/heads/main"

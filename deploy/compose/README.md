@@ -17,23 +17,34 @@ Every container has a read-only root filesystem, `no-new-privileges` and dropped
 ## Before you start
 
 - A Linux host with Docker Engine and the Compose plugin 2.24 or newer.
-- About 3 GB of RAM in the worst case. On Oracle Cloud, use the Ampere A1 Always Free shape (up to 2 OCPU and 12 GB).
-- A DNS `A`/`AAAA` record for your domain pointing at the host.
+- **Runtime vs build RAM**:
+  - **Running the stack** uses up to ~3 GB of RAM in the worst case (`2.6 GB` sum of container limits). On Oracle Cloud, use the Ampere A1 Always Free shape (up to 4 OCPU and 24 GB; 2 OCPU / 12 GB is plenty).
+  - **Building from source** (`docker build -t trame-server:latest .`) compiles the Rust workspace, the WebAssembly engine, and the TypeScript/Vite SPA: expect **5–15 minutes** on a cold cache and **at least 4 GB of RAM plus 2–4 GB of swap**. Do **not** run `docker build` on a 1 GB VM (it will fail with an out-of-memory kill); instead, build the image in GitHub Actions CI or on your workstation (`docker buildx build --platform linux/<arch>`), push it to a registry (such as `ghcr.io/OWNER/trame-server:<tag>`) or copy it over SSH (`docker save ... | ssh ... docker load`), and set `TRAME_IMAGE` in `.env` to pull it.
+- **DNS `A` record only (IPv4 — do not add an `AAAA` record)** pointing at the host for direct Caddy deployments. Docker's default IPv4 bridge routes inbound IPv6 connections through `docker-proxy` using the bridge gateway's IPv4 address, which collapses every IPv6 player into a single rate-limit bucket. If you want IPv6 support (or have no public IPv4 address), use the **Cloudflare Tunnel** variant below, which terminates IPv6 at Cloudflare's edge and forwards each visitor's real address.
 - Inbound TCP 80 and 443, and UDP 443 (HTTP/3), open in the cloud firewall (Oracle: the subnet security list) and on the host (Oracle's Ubuntu images ship `iptables` rules that drop them).
 - Oracle risks: Always Free instances that stay nearly idle for 7 days can be reclaimed, and A1 capacity is sometimes unavailable in a region. Keep the backup copy off the VM.
 
 ## First start
 
-1. Build the production image from the repository root (there is no published image yet):
+1. Build the production image from the repository root (needs **>= 4 GB RAM + swap** and ~5–15 minutes on a cold cache; on smaller VMs, build in CI or on another machine and set `TRAME_IMAGE` in `.env` instead):
    ```sh
    docker build -t trame-server:latest .
    ```
-2. Create the settings file and fill in every empty value. `.env` holds secrets and is git-ignored.
+2. Create `deploy/compose/.env` and fill in the **Required** settings in Section 1 (`.env` holds secrets and is git-ignored):
    ```sh
    cd deploy/compose
    cp .env.example .env
-   openssl rand -hex 32   # one value per secret
+   openssl rand -hex 32   # run once per secret below
    ```
+   - **Required (Section 1 of `.env.example`)**:
+     - `TRAME_DOMAIN`: your DNS `A`-record hostname (for example `table.example.com`).
+     - `MASTER_ENCRYPTION_KEY`: 64-hex-character key (`openssl rand -hex 32`) encrypting TOTP secrets.
+     - `TRAME_JWT_SECRET`: signing key (`>= 32` characters) for presigned asset download URLs.
+     - `TRAME_INVITE_JWT_SECRET`: separate signing key (`>= 32` characters) still required by `trame-server` startup validation.
+     - `POSTGRES_PASSWORD`: password for the bundled PostgreSQL database.
+     - `S3_ACCESS_KEY_ID` (`>= 3` characters, for example `trame-s3`) and `S3_SECRET_ACCESS_KEY` (`>= 8` characters, for example `openssl rand -hex 32`) when keeping the default bundled `silo` profile.
+   - **Optional (Section 2 of `.env.example` — safe to leave empty on first start)**:
+     - `TRAME_BOOTSTRAP_OWNER_EMAIL` (restricts who may claim the initial setup URL), `BACKUP_S3_*` (off-machine backup bucket), `CLOUDFLARE_TUNNEL_TOKEN` (tunnel variant only), `DATABASE_URL` (external PostgreSQL), and schedule/port overrides.
 3. Start the stack and wait until it is healthy:
    ```sh
    docker compose up -d --wait
@@ -74,7 +85,7 @@ The battlemap is drawn on a WebGL canvas, so the browser loads it with `crossOri
 
 ## Proxy, compression and WebSockets
 
-- `TRAME_TRUSTED_PROXY_HOPS` is set by the Compose files, not by `.env`. It is `1` behind Caddy, and `2` with the tunnel (Cloudflare, then Caddy). Rate limits are keyed on the real browser address.
+- `TRAME_TRUSTED_PROXY_HOPS` is set by the Compose files, not by `.env`. It is `1` behind Caddy, and `2` with the tunnel (Cloudflare, then Caddy). Rate limits are keyed on the real browser address. Keep DNS **IPv4-only (`A` record, no `AAAA`)** when publishing Caddy directly on the host: without an IPv6 Docker network, `docker-proxy` rewrites inbound IPv6 peers to the bridge gateway address so all IPv6 visitors would share one rate-limit bucket. Cloudflare Tunnel terminates IPv6 at Cloudflare's edge and forwards each visitor's real IPv6 address in `X-Forwarded-For`.
 - Caddy does not compress responses. `trame-server` already uses gzip, br or zstd and skips images, and WebSocket frames are compressed by the `trame.v1+deflate` subprotocol, which Caddy passes through.
 - WebSockets have no proxy timeout. The server pings every 20 seconds, which keeps Cloudflare's 100-second idle limit from closing them. A `caddy reload` keeps open sockets for up to 5 minutes.
 
