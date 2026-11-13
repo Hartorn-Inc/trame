@@ -16,10 +16,11 @@ import {
 import { firstFreeCell } from "../../src/table/tableView.ts";
 import { ActorsTab } from "../../src/workspace/ActorsTab.tsx";
 import { CampaignWorkspace, nextTabIndex, WORKSPACE_TABS, type WorkspaceTabId } from "../../src/workspace/CampaignWorkspace.tsx";
-import { CAMPAIGN, GM_ID, HERO, HERO_ACTOR, OTHER_PLAYER_ID, PLAYER_ID, fullToken, liveTable, mount, tableState } from "../helpers/liveTable.ts";
+import type { ProjectedTableState } from "../../src/api/wire.ts";
+import { CAMPAIGN, GM_ID, GOBLIN, HERO, HERO_ACTOR, OTHER_PLAYER_ID, PLAYER_ID, fullToken, liveTable, mount, tableState } from "../helpers/liveTable.ts";
 import { actorDto, flush } from "../helpers/mockTransport.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
-import { assertAbsent } from "../helpers/domAssert.ts";
+import { assertAbsent, assertSameNode } from "../helpers/domAssert.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -266,6 +267,84 @@ describe("MapsWorkspaceTab: import, background, activation", () => {
     assert.deepEqual(table.commands().filter((c) => c.cmd === "ACTIVATE_SCENE"), [{ cmd: "ACTIVATE_SCENE", scene_id: SCENE_ID }]);
     ui.unmount();
   });
+
+  const liveCases: Array<{ id: string; state: Partial<ProjectedTableState>; confirm: boolean; lines: string[] }> = [
+    { id: "empty-table-activates-without-asking", state: {}, confirm: false, lines: [] },
+    {
+      id: "only-player-characters-activates-without-asking",
+      state: { tokens: { [HERO]: fullToken(HERO, "Hero", { owner_user_id: PLAYER_ID }) } },
+      confirm: false,
+      lines: [],
+    },
+    {
+      id: "spawned-monster-asks-and-names-the-removal",
+      state: { tokens: { [HERO]: fullToken(HERO, "Hero", { owner_user_id: PLAYER_ID }), [GOBLIN]: fullToken(GOBLIN, "Goblin") } },
+      confirm: true,
+      lines: ["1 monster or NPC on the table is removed.", "1 player character moves to the scene's spawn point."],
+    },
+    {
+      id: "combat-with-pending-roll-and-live-terrain-asks-and-lists-everything",
+      state: {
+        mode: "TURN_BY_TURN",
+        round: 3,
+        pending_resolutions: { r1: {} as never },
+        difficult_terrain: [{ col: 1, row: 1 }, { col: 2, row: 1 }],
+      },
+      confirm: true,
+      lines: [
+        "Combat ends (round 3) and the initiative order is cleared.",
+        "1 roll waiting for Apply is discarded.",
+        "Difficult terrain on the table (2 cells) is replaced by the 0 cells saved with this scene.",
+      ],
+    },
+  ];
+  for (const tc of liveCases) {
+    it(`[activate-over-live-play-${tc.id}]`, async () => {
+      const table = liveTable(GM_ID, tableState(tc.state), mapRoutes());
+      const ui = mount(h(MapsWorkspaceTab, { campaignId: CAMPAIGN, client: table.client, isGm: true }));
+      await flush();
+      ui.click("activate-scene-btn");
+      await flush();
+      const dialog = ui.byTestId("activate-confirm");
+      assert.equal(Boolean(dialog), tc.confirm, "dialog shown only over live play");
+      const activations = () => table.commands().filter((c) => c.cmd === "ACTIVATE_SCENE").length;
+      if (tc.confirm) {
+        const items = ui.byTestId("activate-confirm-losses").querySelectorAll("li").map((li: any) => li.textContent);
+        assert.deepEqual(items, tc.lines);
+        assert.equal(activations(), 0, "nothing sent before confirming");
+        ui.click("activate-confirm-accept");
+        await flush();
+        assertAbsent(ui.byTestId("activate-confirm"), "dialog closed");
+      }
+      assert.equal(activations(), 1);
+      ui.unmount();
+    });
+  }
+
+  const dismissals: Array<{ id: string; dismiss: (ui: ReturnType<typeof mount>) => void }> = [
+    { id: "cancel-button", dismiss: (ui) => ui.click("activate-confirm-cancel") },
+    { id: "escape-key", dismiss: () => (globalThis as any).document.dispatchEvent({ type: "keydown", key: "Escape" }) },
+  ];
+  for (const tc of dismissals) {
+    it(`[activate-confirm-dismissed-by-${tc.id}] sends nothing and returns focus to Activate`, async () => {
+      const state = tableState({ tokens: { [GOBLIN]: fullToken(GOBLIN, "Goblin") } });
+      const table = liveTable(GM_ID, state, mapRoutes());
+      const ui = mount(h(MapsWorkspaceTab, { campaignId: CAMPAIGN, client: table.client, isGm: true }));
+      await flush();
+      const activate = ui.byTestId("activate-scene-btn");
+      activate.focus();
+      ui.click("activate-scene-btn");
+      await flush();
+      assertSameNode((globalThis as any).document.activeElement, ui.byTestId("activate-confirm-cancel"), "Cancel focused first");
+      tc.dismiss(ui);
+      await flush();
+      assertAbsent(ui.byTestId("activate-confirm"), "dialog closed");
+      assertSameNode((globalThis as any).document.activeElement, activate, "focus back on Activate");
+      assert.equal(table.transport.calls.some((c) => c.method === "PUT"), false, "no save");
+      assert.equal(table.commands().some((c) => c.cmd === "ACTIVATE_SCENE"), false, "no activation");
+      ui.unmount();
+    });
+  }
 
   it("player gets the atlas and no upload controls", async () => {
     const table = liveTable(PLAYER_ID, null, mapRoutes());
