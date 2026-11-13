@@ -35,6 +35,9 @@
  *    - Every wall reaches the raycaster with its `kind` (`engineWalls`);
  *      windows, open doors, terrain two-hit and one-way normals are decided
  *      in Rust, never pre-filtered here, so client and server agree.
+ *    - The GM additionally gets a one-way arrow (the way sight passes) and
+ *      terrain two-hit ticks on those walls (`wallGlyphs`), so the kinds
+ *      read without colour. Players see the styled stroke only.
  * 3. `Theme Palette Only`:
  *    - Every colour comes from `CanvasThemePaletteSpec` (or from the data
  *      itself: light `color_hex`, the ping sender's colour); health tiers pair
@@ -73,6 +76,7 @@ import {
   type TokenRingStrokeStyle,
   type WallEndpointMarker,
 } from "../../canvas/CanvasThemePalette.ts";
+import { wallGlyphs, type GlyphSegment } from "../../canvas/wallGlyphs.ts";
 import type { AoeTemplateDto, GridCell, Point2D, WallSegmentDto } from "../../engine/wasmBridge.ts";
 import { listTableTokens } from "../tableView.ts";
 
@@ -179,6 +183,8 @@ export interface SceneWall {
   marker: WallEndpointMarker;
   /** Open doors are drawn at half alpha. */
   alpha: number;
+  /** GM only: one-way arrow / terrain ticks (`wallGlyphs`); empty for players and other kinds. */
+  glyphs: GlyphSegment[];
 }
 
 export interface SceneRing {
@@ -335,11 +341,12 @@ function dispositionRing(kind: "ally" | "hostile" | "selected" | "activeTurn", p
   return { color: style.ringColorHex, style: style.ringStrokeStyle, dash: style.dashPatternPx };
 }
 
-function buildWalls(state: ProjectedTableState, palette: CanvasThemePaletteSpec): SceneWall[] {
+function buildWalls(state: ProjectedTableState, palette: CanvasThemePaletteSpec, isGm: boolean): SceneWall[] {
   return (state.walls ?? []).map((wall) => {
     const kind = WALL_KIND_STYLE[wall.kind?.kind] ?? "Normal";
     const style = palette.wallKinds[kind];
     const open = (wall.kind.kind === "DOOR" || wall.kind.kind === "SECRET_DOOR") && wall.kind.is_open;
+    const normal = wall.kind.kind === "ONE_WAY" ? { x: wall.kind.normal_x, y: wall.kind.normal_y } : null;
     return {
       id: wall.id,
       a: wall.a,
@@ -350,6 +357,7 @@ function buildWalls(state: ProjectedTableState, palette: CanvasThemePaletteSpec)
       dash: style.dashPatternPx,
       marker: style.endpointMarker,
       alpha: open ? 0.5 : 1,
+      glyphs: isGm ? wallGlyphs(kind, wall.a, wall.b, normal) : [],
     };
   });
 }
@@ -523,7 +531,7 @@ export function buildTableScene(input: TableSceneInput): TableScene {
     voidColor: palette.canvasVoidHex,
     mapHash: state?.background_asset_hash ?? null,
     grid: { color: palette.gridLineHex, alpha: palette.gridLineAlpha },
-    walls: state ? buildWalls(state, palette) : [],
+    walls: state ? buildWalls(state, palette, input.isGm) : [],
     terrain: state ? buildTerrain(state, input, metrics.cellPx) : { cells: [], color: palette.textMutedHex, fillAlpha: TERRAIN_FILL_ALPHA, hatchAlpha: TERRAIN_HATCH_ALPHA },
     aoes: state ? buildAoes(state, input, metrics.cellPx) : [],
     tokens: state ? buildTokens(state, input, metrics.cellPx) : [],

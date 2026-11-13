@@ -6,7 +6,8 @@ import { SceneAtlas } from './SceneAtlas.tsx';
 import { DARK_CANVAS_PALETTE, SHARED_WALL_KINDS, type CanonicalWallKind } from '../canvas/CanvasThemePalette.ts';
 import type { Point2D } from '../engine/wasmBridge.ts';
 import { t, type MessageKey } from '../i18n/index.ts';
-import { scenePoint, snapToGridCorner, wallFromDrag } from './wallDrawing.ts';
+import { flipOneWay, scenePoint, snapToGridCorner, wallFromDrag } from './wallDrawing.ts';
+import { glyphPath, wallGlyphs } from '../canvas/wallGlyphs.ts';
 
 /** Studio canvas zoom bounds and step (the SVG is resized inside a scrolling viewport). */
 const STUDIO_MIN_ZOOM = 1;
@@ -258,6 +259,15 @@ export function MapsStudioTab({
     const updatedScene: CampaignMapScene = {
       ...selectedScene,
       walls: selectedScene.walls.filter((w) => w.id !== wallId),
+    };
+    scenesSignal.value = scenesSignal.value.map((s) => (s.id === updatedScene.id ? updatedScene : s));
+  };
+
+  const handleFlipWall = (wallId: string) => {
+    if (!selectedScene) return;
+    const updatedScene: CampaignMapScene = {
+      ...selectedScene,
+      walls: selectedScene.walls.map((w) => (w.id === wallId ? flipOneWay(w) : w)),
     };
     scenesSignal.value = scenesSignal.value.map((s) => (s.id === updatedScene.id ? updatedScene : s));
   };
@@ -544,6 +554,7 @@ export function MapsStudioTab({
                   +
                 </button>
                 <span class="ds-hint">{t('maps.drawWallHint')}</span>
+                <span class="ds-hint" data-testid="studio-wall-glyph-hint">{t('maps.wallGlyphHint')}</span>
               </div>
               <div
                 data-testid="canvas-viewport"
@@ -587,18 +598,23 @@ export function MapsStudioTab({
                     const wallStyle = SHARED_WALL_KINDS[wall.wallType as CanonicalWallKind];
                     const strokeDasharray = wallStyle?.dashPatternPx ? wallStyle.dashPatternPx.join(' ') : undefined;
                     const strokeWidth = wallStyle?.strokeWidthPx ?? (wall.wallType === 'Door' ? 3.5 : 3);
+                    const glyphs = wallGlyphs(wall.wallType as CanonicalWallKind, wall.a, wall.b, wall.oneWayNormal ?? null);
                     return (
-                      <line
-                        key={wall.id}
-                        data-testid={`canvas-wall-${wall.id}`}
-                        x1={wall.a.x}
-                        y1={wall.a.y}
-                        x2={wall.b.x}
-                        y2={wall.b.y}
-                        stroke="var(--atlas-action)"
-                        strokeWidth={strokeWidth}
-                        strokeDasharray={strokeDasharray}
-                      />
+                      <g key={wall.id}>
+                        <line
+                          data-testid={`canvas-wall-${wall.id}`}
+                          x1={wall.a.x}
+                          y1={wall.a.y}
+                          x2={wall.b.x}
+                          y2={wall.b.y}
+                          stroke="var(--atlas-action)"
+                          strokeWidth={strokeWidth}
+                          strokeDasharray={strokeDasharray}
+                        />
+                        {glyphs.length > 0 ? (
+                          <path data-testid={`canvas-wall-glyph-${wall.id}`} d={glyphPath(glyphs)} stroke="var(--atlas-action)" strokeWidth={2} fill="none" />
+                        ) : null}
+                      </g>
                     );
                   })}
                   {selectedScene.lights.map((light) => (
@@ -796,8 +812,19 @@ export function MapsStudioTab({
                     selectedScene.walls.map((w) => (
                       <div key={w.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--atlas-font-size-xs)', padding: '2px 4px', background: 'var(--atlas-surface-raised)', borderRadius: 'var(--atlas-radius-sm)' }}>
                         <span class="atlas-tabular-nums">
-                          <strong>{w.wallType}</strong> ({w.id}): [{w.bottomElevationFt}ft .. {w.topElevationFt}ft] ({w.a.x},{w.a.y}) &rarr; ({w.b.x},{w.b.y})
+                          <strong>{t(WALL_TYPE_LABEL_KEYS[w.wallType] ?? 'maps.wallType.normal')}</strong> ({w.id}): [{w.bottomElevationFt}ft .. {w.topElevationFt}ft] ({w.a.x},{w.a.y}) &rarr; ({w.b.x},{w.b.y})
                         </span>
+                        {w.wallType === 'OneWay' ? (
+                          <button
+                            type="button"
+                            aria-label={t('maps.flipOneWay', { id: w.id })}
+                            data-testid={`flip-wall-${w.id}`}
+                            onClick={() => handleFlipWall(w.id)}
+                            style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
+                          >
+                            {t('maps.flip')}
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           aria-label={t('maps.deleteWall', { id: w.id })}

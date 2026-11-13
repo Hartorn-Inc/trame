@@ -284,6 +284,9 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
         strokePath(walls, [wall.a, wall.b], false, wall.dash, { width: wall.widthPx, color: wall.color, alpha: wall.alpha });
         drawWallMarker(walls, wall.a, wall);
         drawWallMarker(walls, wall.b, wall);
+        if (wall.glyphs.length === 0) continue;
+        for (const [p, q] of wall.glyphs) walls.moveTo(p.x, p.y).lineTo(q.x, q.y);
+        walls.stroke({ width: 2, color: wall.color, alpha: wall.alpha });
       }
     },
     aoes(scene) {

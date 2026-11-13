@@ -20,6 +20,8 @@ export interface StudioWallSegment {
   blocksSound: boolean;
   bottomElevationFt: number;
   topElevationFt: number;
+  /** `OneWay` only: unit normal sight cannot travel along (`wallGlyphs.oneWayNormal`); absent means the drawn direction's default. */
+  oneWayNormal?: Point2D;
   doorState?: {
     isOpen: boolean;
     isLocked: boolean;

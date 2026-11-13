@@ -1,4 +1,5 @@
 import { DARK_CANVAS_PALETTE } from '../canvas/CanvasThemePalette.ts';
+import { oneWayNormal } from '../canvas/wallGlyphs.ts';
 import type {
   ActiveTableRoomState,
   AudioEmitterConfig,
@@ -398,6 +399,7 @@ export function mapBackendSceneToFrontend(raw: Record<string, any>): CampaignMap
     const b = w.p2 || w.b || { x: 0, y: 0 };
     const isOpen = w.door_state === 'Open' || w.doorState?.isOpen || false;
     const isLocked = w.door_state === 'Locked' || w.doorState?.isLocked || false;
+    const storedNormal = w.kind?.kind === 'ONE_WAY' && (w.kind.normal_x || w.kind.normal_y) ? { x: Number(w.kind.normal_x), y: Number(w.kind.normal_y) } : undefined;
     return {
       id: String(w.id),
       a: { x: Number(a.x), y: Number(a.y) },
@@ -409,6 +411,7 @@ export function mapBackendSceneToFrontend(raw: Record<string, any>): CampaignMap
       blocksSound: Boolean(w.blocks_sound ?? w.blocksSound ?? true),
       bottomElevationFt: Number(w.bottom_elevation_ft ?? w.bottomElevationFt ?? 0),
       topElevationFt: Number(w.top_elevation_ft ?? w.topElevationFt ?? 10),
+      oneWayNormal: storedNormal ?? w.oneWayNormal,
       doorState: (w.wall_type === 'Door' || w.wallType === 'Door') ? { isOpen, isLocked } : undefined,
       secretDoorState: (w.wall_type === 'SecretDoor' || w.wallType === 'SecretDoor') ? { isOpen } : undefined,
     };
@@ -513,6 +516,12 @@ function normalizeEntityUuid(id: string | undefined): string {
   return id && UUID_FORMAT_REGEX.test(id) ? id : generateEntityUuid();
 }
 
+/** Engine `WallKind::OneWay` of a studio one-way wall, with its explicit normal. */
+function oneWayKind(w: StudioWallSegment): { kind: 'ONE_WAY'; normal_x: number; normal_y: number } {
+  const n = oneWayNormal(w.a, w.b, w.oneWayNormal ?? null);
+  return { kind: 'ONE_WAY', normal_x: n.x, normal_y: n.y };
+}
+
 export function mapFrontendSceneToBackend(scene: CampaignMapScene): Record<string, any> {
   const wall_segments = scene.walls.map((w) => {
     let door_state: 'Open' | 'Closed' | 'Locked' | null = null;
@@ -540,6 +549,8 @@ export function mapFrontendSceneToBackend(scene: CampaignMapScene): Record<strin
       blocks_movement: w.blocksMovement,
       blocks_sound: w.blocksSound,
       blocks_vision: w.blocksVision,
+      // The engine reads `kind` before `wall_type`; `wall_type` alone gives a one-way wall no normal.
+      ...(w.wallType === 'OneWay' ? { kind: oneWayKind(w) } : {}),
     };
   });
 
