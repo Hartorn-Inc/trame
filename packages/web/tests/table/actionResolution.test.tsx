@@ -640,6 +640,94 @@ describe("ActionResolutionCard: a player's area against monsters", () => {
     assertAbsent(ui.byTestId("action-apply"), "action-apply");
     ui.unmount();
   });
+
+  const areaHealVsDamageCases: Array<{
+    id: string;
+    classId: string;
+    level: number;
+    spellId: string;
+    mode: "area" | "attack";
+    affectedTokenIds: string[];
+    expectedResolve: null | { kind: string; damageDice: string; damageType: string };
+  }> = [
+    {
+      id: "mass-cure-wounds-area-heal-skips-zero-damage-resolve-action",
+      classId: "cleric",
+      level: 9,
+      spellId: "srd:spell:mass_cure_wounds",
+      mode: "area",
+      affectedTokenIds: [HERO, GOBLIN],
+      expectedResolve: null,
+    },
+    {
+      id: "mass-cure-wounds-empty-area-skips-resolve-action",
+      classId: "cleric",
+      level: 9,
+      spellId: "srd:spell:mass_cure_wounds",
+      mode: "area",
+      affectedTokenIds: [],
+      expectedResolve: null,
+    },
+    {
+      id: "fireball-area-save-still-dispatches-resolve-action",
+      classId: "wizard",
+      level: 5,
+      spellId: "srd:spell:fireball",
+      mode: "area",
+      affectedTokenIds: [GOBLIN],
+      expectedResolve: { kind: "SAVE", damageDice: "8d6", damageType: "fire" },
+    },
+    {
+      id: "sacred-flame-save-cantrip-still-dispatches-resolve-action",
+      classId: "cleric",
+      level: 1,
+      spellId: "srd:spell:sacred_flame",
+      mode: "attack",
+      affectedTokenIds: [GOBLIN],
+      expectedResolve: { kind: "SAVE", damageDice: "1d8", damageType: "radiant" },
+    },
+  ];
+
+  for (const tc of areaHealVsDamageCases) {
+    it(`[${tc.id}]`, async () => {
+      const { live, ui, view } = casterTable(casterKnowing(tc.classId, tc.level, tc.spellId));
+      if (tc.mode === "area") {
+        startAction({ kind: "area", actorId: HERO_ACTOR, spellId: tc.spellId });
+        ui.input("action-area-token", GOBLIN, "change");
+        ui.click("action-area-project");
+        const projected = live.commands().find((cmd) => cmd.cmd === "PROJECT_AOE");
+        assertPresent(projected, "PROJECT_AOE dispatched");
+        live.client.applyServerEnvelope({
+          type: "CommandAccepted",
+          seqId: seq++,
+          state: view(),
+          events: [{ event: "AOE_PROJECTED", template: projected!.template, affected_cells: [], affected_token_ids: tc.affectedTokenIds, persisted: false }],
+        } as any);
+        await flush(6);
+      } else {
+        startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: tc.spellId });
+        ui.input(`action-target-${GOBLIN}`, "on", "change");
+        ui.click("action-roll");
+        await flush(4);
+      }
+
+      const resolves = live.commands().filter((cmd) => cmd.cmd === "RESOLVE_ACTION");
+      if (tc.expectedResolve === null) {
+        assert.equal(resolves.length, 0);
+        if (tc.affectedTokenIds.length > 0) {
+          assert.equal(pendingActionSignal.value, null);
+        } else {
+          assert.equal(ui.byTestId("action-status").textContent, "No token is in the area.");
+        }
+      } else {
+        assert.equal(resolves.length, 1);
+        assert.equal(resolves[0].request.check.kind, tc.expectedResolve.kind);
+        assert.equal(resolves[0].request.damage_dice, tc.expectedResolve.damageDice);
+        assert.equal(resolves[0].request.damage_type, tc.expectedResolve.damageType);
+      }
+      ui.unmount();
+    });
+  }
 });
 
 describe("PendingResolutionsPanel: the GM's list", () => {

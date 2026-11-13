@@ -228,6 +228,8 @@ export interface ResolvableAction {
   halfDamageOnSave: boolean;
   /** Damage dice (`""` when the action deals no damage); flat terms are moved to the modifier. */
   damageDice: string;
+  /** Healing dice (`"5d8"` on Mass Cure Wounds) when the spell restores Hit Points. */
+  healDice?: string;
   /** Flat damage added once. */
   damageModifier: number;
   damageType: DamageType | null;
@@ -300,6 +302,7 @@ export function resolvableFromAttack(attack: DerivedAttack, featureCriticalRange
     ...(attack.damageTypeOptions?.length ? { damageTypeOptions: [...attack.damageTypeOptions] } : {}),
     ...(attack.instances ? { instances: { ...attack.instances } } : {}),
     ...(attack.delivery === 'rider' ? { rider: true } : {}),
+    ...(typeof data?.healDice === 'string' && data.healDice.trim() ? { healDice: data.healDice.trim() } : {}),
   };
 }
 
@@ -355,7 +358,24 @@ function sheetResolvable(pending: Exclude<PendingAction, { kind: 'monster' }>, d
     concentration: data.concentration === true,
     ...(dealsDamage && extra.length ? { extraDamage: extraPartsOf(extra) } : {}),
     ...(dealsDamage && typeOptions.length ? { damageTypeOptions: typeOptions } : {}),
+    ...(typeof data.healDice === 'string' && data.healDice.trim() ? { healDice: data.healDice.trim() } : {}),
   };
+}
+
+/**
+ * Returns `true` when `action` is a pure area heal (`healDice` present with no
+ * attack roll, saving throw, or damage dice, e.g. `Mass Cure Wounds`), so the
+ * board projects `PROJECT_AOE` without sending a 0-damage `RESOLVE_ACTION`.
+ */
+export function isPureAreaHeal(action: ResolvableAction): boolean {
+  return (
+    action.area !== null &&
+    Boolean(action.healDice) &&
+    action.attackBonus === null &&
+    action.save === null &&
+    !action.damageDice &&
+    !action.extraDamage?.length
+  );
 }
 
 /** Splits `"1d10 + 8"` / `"2d6+1d8-1"` into dice terms (`"1d10"`) and the summed flat modifier (`8`). */

@@ -50,7 +50,8 @@
  * `ActionResolutionCard` (keyed by the pending template id)
  * ├── attack / monster: targets -> Roll -> `RESOLVE_ACTION`.
  * ├── area (spell, or monster action with an area):
- * │     place -> Project (`PROJECT_AOE`) -> `AOE_PROJECTED` -> `RESOLVE_ACTION`.
+ * │     place -> Project (`PROJECT_AOE`) -> `AOE_PROJECTED` -> `RESOLVE_ACTION`
+ * │     (pure area heals such as Mass Cure Wounds stop after `AOE_PROJECTED`).
  * │     Refused roll -> Roll again (same engine targets) or Move area
  * │     (place and project again; the new `AOE_PROJECTED` gives the targets).
  * ├── `ACTION_RESOLVED` (projection) -> `ResolutionReview`.
@@ -73,6 +74,7 @@ import {
   cancelAction,
   commitAction,
   isAreaAction,
+  isPureAreaHeal,
   newUuid,
   pendingActionSignal,
   pendingAreaTemplate,
@@ -239,6 +241,15 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
     const excluded = action.area && CASTER_EXCLUDED_SHAPES.has(action.area.shape) ? attacker.tokenId : null;
     const targets = tokens.filter((tok) => ids.includes(tok.id) && tok.id !== excluded);
     setAreaTargetIds(targets.map((tok) => tok.id));
+    if (isPureAreaHeal(action)) {
+      if (targets.length === 0) {
+        setSent(true);
+        setNoneAffected(true);
+      } else {
+        cancelAction();
+      }
+      return;
+    }
     resolveFor(targets);
   }, [events, projected]);
 

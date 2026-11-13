@@ -1231,6 +1231,53 @@ describe("TokenConditionsPanel: conditions, rulings and automated effects", () =
     });
   }
 
+  const deathCases = [
+    { id: "exhaustion-0-to-1-stays-alive", start: 0, startDead: false, button: "exhaustion-increase", expectedLevel: 1, expectedDead: false },
+    { id: "exhaustion-1-to-2-stays-alive", start: 1, startDead: false, button: "exhaustion-increase", expectedLevel: 2, expectedDead: false },
+    { id: "exhaustion-2-to-3-stays-alive", start: 2, startDead: false, button: "exhaustion-increase", expectedLevel: 3, expectedDead: false },
+    { id: "exhaustion-3-to-4-stays-alive", start: 3, startDead: false, button: "exhaustion-increase", expectedLevel: 4, expectedDead: false },
+    { id: "exhaustion-4-to-5-stays-alive", start: 4, startDead: false, button: "exhaustion-increase", expectedLevel: 5, expectedDead: false },
+    { id: "exhaustion-5-to-6-marks-actor-dead", start: 5, startDead: false, button: "exhaustion-increase", expectedLevel: 6, expectedDead: true },
+    { id: "exhaustion-6-to-5-does-not-revive-dead-actor", start: 6, startDead: true, button: "exhaustion-decrease", expectedLevel: 5, expectedDead: true },
+  ] as const;
+  for (const tc of deathCases) {
+    it(`[${tc.id}] routes exhaustion stepper through applyExhaustion`, async () => {
+      const live = linkedHero(tc.start, tc.start > 0 ? ["exhaustion"] : []);
+      const sheet = createDefaultActorData(HERO_ACTOR, "Brakka");
+      sheet.attributes.exhaustion = tc.start;
+      sheet.isDead = tc.startDead;
+      live.client.state.actors.value = { [HERO_ACTOR]: { id: HERO_ACTOR, version: 1, data: sheet } as any };
+      const ui = mount(h(TokenConditionsPanel, { client: live.client, campaignId: CAMPAIGN }));
+      ui.click(tc.button);
+      await flush(4);
+      const put = live.transport.calls.find((call) => call.method === "PUT")?.body as Record<string, any>;
+      assert.equal(put.data.attributes.exhaustion, tc.expectedLevel);
+      assert.equal(put.data.isDead, tc.expectedDead);
+      assert.equal(put.data.name, "Brakka");
+      ui.unmount();
+    });
+  }
+
+  it("[flat-sheet-5-to-6-sets-deathSaves-isDead] routes flat Dnd5eActorSheet 5 -> 6 through applyExhaustion without losing fields", async () => {
+    const live = linkedHero(5, ["exhaustion"]);
+    const flatSheet = {
+      id: HERO_ACTOR,
+      name: "Brakka",
+      level: 5,
+      exhaustionLevel: 5,
+      deathSaves: { successes: 1, failures: 2, isStable: false, isDead: false },
+    };
+    live.client.state.actors.value = { [HERO_ACTOR]: { id: HERO_ACTOR, version: 1, data: flatSheet } as any };
+    const ui = mount(h(TokenConditionsPanel, { client: live.client, campaignId: CAMPAIGN }));
+    ui.click("exhaustion-increase");
+    await flush(4);
+    const put = live.transport.calls.find((call) => call.method === "PUT")?.body as Record<string, any>;
+    assert.equal(put.data.exhaustionLevel, 6);
+    assert.deepEqual(put.data.deathSaves, { successes: 1, failures: 2, isStable: false, isDead: true });
+    assert.equal(put.data.name, "Brakka");
+    ui.unmount();
+  });
+
   const bounds = [
     { id: "level 0 cannot go lower", level: 0, decrease: true, increase: false },
     { id: "level 6 cannot go higher", level: 6, decrease: false, increase: true },
