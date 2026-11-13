@@ -9,8 +9,8 @@
 //!     the room can hibernate;
 //!   - the per-session command rate limit throttles a flood but not play;
 //!   - hidden roll privacy counts offline campaign players (`set_player_roster`);
-//!   - a sheet sync pushes a `StateSnapshot` to every recipient whose
-//!     projection changed;
+//!   - a sheet sync or an MCP staging pushes a `StateSnapshot` to every
+//!     recipient whose projection changed;
 //!   - the Concentration `DiceRolled` reaches the GM and the controller only.
 //!
 //! INVARIANTS & SAFETY BOUNDARIES:
@@ -378,6 +378,64 @@ async fn sheet_hp_save_pushes_the_token_to_everyone_whose_view_changed() {
     ];
     for (case, frames, want) in cases {
         assert_eq!(snapshot_hp(&frames, hero), want, "case {case}");
+    }
+}
+
+/// `true` when the last `StateSnapshot` in `frames` carries the staged proposal `id`, `false`
+/// when it does not, `None` when no snapshot was pushed.
+fn snapshot_has_proposal(frames: &[ServerEnvelope], id: Uuid) -> Option<bool> {
+    frames.iter().rev().find_map(|f| match f {
+        ServerEnvelope::StateSnapshot { state, .. } => {
+            Some(state.mcp_staging_proposals.contains_key(&id))
+        }
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn mcp_staging_pushes_the_proposal_to_the_gm_only() {
+    let campaign_id = Uuid::new_v4();
+    let hero = Uuid::new_v4();
+    let mut state = TableState::new(100.0, 5.0, Vec::new());
+    let player = Uuid::new_v4();
+    state
+        .data
+        .tokens
+        .insert(hero, token(hero, "Hero", Some(player), 100.0));
+    let room = TableRoomActor::spawn(campaign_id, wal_with(campaign_id, &state), 25).unwrap();
+    let mut gm_rx = connect(&room, Uuid::new_v4(), CampaignRole::Gm).await.1;
+    let mut player_rx = connect(&room, player, CampaignRole::Player).await.1;
+    drain(&mut gm_rx);
+    drain(&mut player_rx);
+
+    let proposal_id = Uuid::new_v4();
+    room.stage_mcp_proposal(trame_engine::commands::McpStagingProposal {
+        proposal_id,
+        summary: "Move the hero".to_string(),
+        commands: vec![teleport(hero, 300.0)],
+    })
+    .await
+    .unwrap();
+
+    // (case_id, frames, pushed snapshot carries the proposal)
+    let cases = [
+        (
+            "gm_projection_gains_the_proposal",
+            drain(&mut gm_rx),
+            Some(true),
+        ),
+        (
+            "player_projection_unchanged_gets_no_snapshot",
+            drain(&mut player_rx),
+            None,
+        ),
+    ];
+    for (case, frames, want) in cases {
+        assert_eq!(
+            snapshot_has_proposal(&frames, proposal_id),
+            want,
+            "case {case}"
+        );
     }
 }
 
