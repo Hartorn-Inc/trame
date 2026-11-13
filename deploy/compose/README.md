@@ -37,14 +37,16 @@ Every container has a read-only root filesystem, `no-new-privileges` and dropped
    openssl rand -hex 32   # run once per secret below
    ```
    - **Required (Section 1 of `.env.example`)**:
-     - `TRAME_DOMAIN`: your DNS `A`-record hostname (for example `table.example.com`).
+     - `COMPOSE_FILE`: pre-set to `docker-compose.prod.yml` so `docker compose` commands run from `deploy/compose` target the production stack without `-f`.
+     - `TRAME_DOMAIN`: your DNS `A`-record hostname (for example `table.example.com`, or `localhost` for local evaluation where Caddy automatically provisions a local TLS certificate from its internal CA).
+     - `TRAME_PUBLIC_ORIGIN`: browser origin (`https://${TRAME_DOMAIN}` on default port `443`). Whenever `CADDY_HTTPS_PORT` is changed from `443`, `TRAME_PUBLIC_ORIGIN` **must** include `:<port>` (for example `TRAME_PUBLIC_ORIGIN=https://localhost:8443` or `https://${TRAME_DOMAIN}:${CADDY_HTTPS_PORT}`), and `S3_PUBLIC_ENDPOINT` (default `${TRAME_PUBLIC_ORIGIN}` for bundled Silo) must carry that same port (see **Variants** below).
      - `MASTER_ENCRYPTION_KEY`: 64-hex-character key (`openssl rand -hex 32`) encrypting TOTP secrets.
      - `TRAME_JWT_SECRET`: signing key (`>= 32` characters) for presigned asset download URLs.
      - `TRAME_INVITE_JWT_SECRET`: separate signing key (`>= 32` characters) still required by `trame-server` startup validation.
      - `POSTGRES_PASSWORD`: password for the bundled PostgreSQL database.
      - `S3_ACCESS_KEY_ID` (`>= 3` characters, for example `trame-s3`) and `S3_SECRET_ACCESS_KEY` (`>= 8` characters, for example `openssl rand -hex 32`) when keeping the default bundled `silo` profile.
    - **Optional (Section 2 of `.env.example` — safe to leave empty on first start)**:
-     - `TRAME_BOOTSTRAP_OWNER_EMAIL` (restricts who may claim the initial setup URL), `BACKUP_S3_*` (off-machine backup bucket), `CLOUDFLARE_TUNNEL_TOKEN` (tunnel variant only), `DATABASE_URL` (external PostgreSQL), and schedule/port overrides.
+     - `TRAME_BOOTSTRAP_OWNER_EMAIL` (restricts who may claim the initial setup URL), `BACKUP_S3_*` (off-machine backup bucket), `CLOUDFLARE_TUNNEL_TOKEN` (tunnel variant only), `DATABASE_URL` (external PostgreSQL), and schedule/image overrides (`CADDY_HTTP_PORT` and `CADDY_HTTPS_PORT` default to `80` and `443` in Section 1).
 3. Start the stack and wait until it is healthy:
    ```sh
    docker compose up -d --wait
@@ -70,7 +72,8 @@ Every container has a read-only root filesystem, `no-new-privileges` and dropped
 - **Bundled Silo (default)**: keep `COMPOSE_PROFILES=silo`. Map images are downloaded by the browser through Caddy on your own domain (`https://<domain>/<S3_BUCKET>/...`, presigned for 5 minutes). `storage-init` creates the bucket and its CORS rule at every start.
 - **Cloudflare R2**: remove `silo` from `COMPOSE_PROFILES` and set the `S3_*` values shown in `.env.example`. Then set the bucket CORS rule (see below).
 - **Assets in PostgreSQL**: leave every `S3_*` value empty and remove the `silo` profile. Fine for small tables; assets then live in the database and are part of the backups.
-- **Cloudflare Tunnel** (no open ports): create a tunnel in Cloudflare Zero Trust, add the public hostname `TRAME_DOMAIN` with service `http://caddy:80`, set `CLOUDFLARE_TUNNEL_TOKEN`, and uncomment `COMPOSE_FILE=docker-compose.prod.yml:docker-compose.tunnel.yml` in `.env`. Caddy then serves plain HTTP inside the stack, and Cloudflare handles TLS.
+- **Cloudflare Tunnel** (no open ports): create a tunnel in Cloudflare Zero Trust, add the public hostname `TRAME_DOMAIN` with service `http://caddy:80`, set `CLOUDFLARE_TUNNEL_TOKEN`, and replace `COMPOSE_FILE` in `.env` with `COMPOSE_FILE=docker-compose.prod.yml:docker-compose.tunnel.yml`. Caddy then serves plain HTTP inside the stack, and Cloudflare handles TLS.
+- **Custom HTTPS port or local evaluation (`CADDY_HTTPS_PORT`)**: when changing `CADDY_HTTPS_PORT` from `443` (for example `8443` for local evaluation or custom port forwarding), `TRAME_PUBLIC_ORIGIN` **must** include `:<port>` (for example `TRAME_PUBLIC_ORIGIN=https://localhost:8443` or `https://${TRAME_DOMAIN}:${CADDY_HTTPS_PORT}`), and `S3_PUBLIC_ENDPOINT` (which defaults to `${TRAME_PUBLIC_ORIGIN}` for bundled Silo) must likewise carry that port so WebSocket `Origin` validation, Silo CORS (`Access-Control-Allow-Origin`), and presigned asset redirects match the browser's origin. For `TRAME_DOMAIN=localhost`, Caddy automatically provisions a local TLS certificate from its internal CA.
 
 ## Bucket CORS
 
