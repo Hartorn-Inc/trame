@@ -271,6 +271,20 @@ describe("buildTableScene: darkvision greyscale belongs to the viewing token", (
     });
   }
 
+  const monsterFirstCases = [
+    { id: "an unowned monster listed first never becomes the player's viewer", heroDv: 60, viewer: HERO },
+    { id: "an unowned monster listed first never lends its darkvision", heroDv: 0, viewer: null },
+  ] as const;
+  for (const c of monsterFirstCases) {
+    it(c.id, () => {
+      const monster = fullToken(GOBLIN, "Goblin", { owner_user_id: null, top_left: { x: 600, y: 100 }, senses: senses(60) });
+      const tokens: ProjectedTableState["tokens"] = { [GOBLIN]: monster, [HERO]: { ...hero, senses: senses(c.heroDv) } };
+      assert.equal(Object.keys(tokens)[0], GOBLIN);
+      const state = tableState({ ambient_lighting: "PITCH_DARKNESS", tokens });
+      assert.equal(buildTableScene(input(state)).darkvision?.tokenId ?? null, c.viewer);
+    });
+  }
+
   it("Devil's Sight sees magical and nonmagical darkness normally, so no greyscale", () => {
     const state = tableState({ ambient_lighting: "PITCH_DARKNESS", tokens: { [HERO]: { ...hero, senses: senses(60, true) } } });
     assert.equal(buildTableScene(input(state)).darkvision, null);

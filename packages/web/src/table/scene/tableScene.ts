@@ -504,13 +504,14 @@ function tokenEye(raw: ProjectedTableState["tokens"][string], cellPx: number): {
 /**
  * Token whose eyes the darkvision rendering uses (invariant 2d): for a
  * player the selected token when they control it, else their first
- * controlled token; for the GM the selected token, only while previewing
- * the player view. `null` when there is none.
+ * controlled token (one with an owner: an unowned monster never lends its
+ * darkvision); for the GM the selected token, only while previewing the
+ * player view. `null` when there is none.
  */
 export function viewingTokenId(state: ProjectedTableState, input: Pick<TableSceneInput, "isGm" | "previewPlayerView" | "selectedTokenId">): Uuid | null {
   const selected = input.selectedTokenId && state.tokens[input.selectedTokenId] ? input.selectedTokenId : null;
   if (input.isGm) return input.previewPlayerView ? selected : null;
-  return selected ?? Object.keys(state.tokens)[0] ?? null;
+  return selected ?? Object.values(state.tokens).find((raw) => (raw.owner_user_id ?? null) !== null)?.id ?? null;
 }
 
 function buildDarkvision(state: ProjectedTableState, input: TableSceneInput, cellPx: number, lights: SceneLight[]): SceneDarkvision | null {
