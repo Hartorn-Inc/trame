@@ -50,7 +50,7 @@ describe("wallGlyphs: the one-way arrow points the way the engine lets sight pas
       const tail = { x: mid.x - pass.x * 100, y: mid.y - pass.y * 100 };
       const head = { x: mid.x + pass.x * 100, y: mid.y + pass.y * 100 };
       const walls = [blocker(c.a, c.b, { kind: "ONE_WAY", normal_x: c.normal.x, normal_y: c.normal.y })];
-      const sees = (from: Point2D, to: Point2D) => isPointUnfogged({ color: 0, alpha: 1, vision: [computeVisibilityPolygon(walls, from, 5, 400)], reveal: [], hide: [] }, to);
+      const sees = (from: Point2D, to: Point2D) => isPointUnfogged({ color: 0, alpha: 1, vision: [computeVisibilityPolygon(walls, from, 5, 400)], reveal: [], hide: [], memory: [], memoryAlpha: 0 }, to);
       assert.equal(sees(tail, head), true, "from behind the arrow, sight crosses the wall");
       assert.equal(sees(head, tail), false, "from the arrow's side, the wall blocks");
     });

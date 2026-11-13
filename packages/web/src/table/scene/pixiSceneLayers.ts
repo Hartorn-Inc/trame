@@ -344,15 +344,15 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
       darkvisionLit = false;
       if (dv) {
         const flat = dv.polygon.flatMap((p) => [p.x, p.y]);
-        dvMask.poly(flat).fill(0xffffff);
-        dvThin.poly(flat).fill(0xffffff);
+        dvMask.poly(flat).fill();
+        dvThin.poly(flat).fill();
         dvThin.alpha = dv.thinDarkness;
         for (const area of dv.lit) {
           if (area.length < 3) continue;
           litMask.poly(area.flatMap((p) => [p.x, p.y]));
           darkvisionLit = true;
         }
-        if (darkvisionLit) litMask.fill(0xffffff);
+        if (darkvisionLit) litMask.fill();
       }
       showDarkvisionMaps();
     },
