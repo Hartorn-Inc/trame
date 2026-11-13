@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { h, options, render } from "preact";
+import { getSpellsByLevel } from "../../../game-systems/dnd5e/src/index.ts";
 import { ApiClient, type CampaignActor } from "../../src/api/client.ts";
 import { createSessionState } from "../../src/api/session.ts";
 import { CharacterBuilderModal } from "../../src/builder/CharacterBuilderModal.tsx";
-import { localeSignal } from "../../src/i18n/index.ts";
+import { localeSignal, type LocaleCode } from "../../src/i18n/index.ts";
 import { assertAbsent, assertPresent } from "../helpers/domAssert.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
 import { actorDto, createMockTransport, flush, type RouteReply } from "../helpers/mockTransport.ts";
@@ -45,7 +46,7 @@ async function mount(reply: RouteReply) {
     el.dispatchEvent(new (globalThis as any).Event(type));
     await flush();
   };
-  return { transport, state, byTestId, fire, created, closedCount: () => closed, unmount: () => render(null, container) };
+  return { container, transport, state, byTestId, fire, created, closedCount: () => closed, unmount: () => render(null, container) };
 }
 
 async function walkToReview(ui: Awaited<ReturnType<typeof mount>>) {
@@ -219,4 +220,192 @@ describe("CharacterBuilderModal: creation through the actor route", () => {
       ui.unmount();
     });
   }
+});
+
+describe("CharacterBuilderModal: Origin feat choices on background step (G1)", () => {
+  const clericCantrips = getSpellsByLevel(0, "cleric").map((s) => s.id);
+  const [clericSpell1] = getSpellsByLevel(1, "cleric").map((s) => s.id);
+
+  const originFeatCases: Array<{
+    id: string;
+    backgroundId: string;
+    setupPicks: (ui: Awaited<ReturnType<typeof mount>>) => Promise<void>;
+    verifyCreated: (data: Record<string, any>) => void;
+  }> = [
+    {
+      id: "[G1-modal-acolyte-magic-initiate] Acolyte gates on Magic Initiate choices and submits Cleric featSpells",
+      backgroundId: "acolyte",
+      setupPicks: async (ui) => {
+        const listRadio = ui.byTestId("builder-feat-spell_list-cleric");
+        assertPresent(listRadio, "Cleric spell list radio is rendered");
+        assert.equal(listRadio.checked, true, "Fixed Cleric spell list is pre-selected");
+        await ui.fire("builder-feat-spellcasting_ability-wis", "change");
+        await ui.fire(`builder-feat-cantrips-${clericCantrips[0]}`, "change");
+        await ui.fire(`builder-feat-cantrips-${clericCantrips[1]}`, "change");
+        assert.equal(ui.byTestId("builder-feat-cantrips-count").textContent, "2 of 2 chosen");
+        if (clericCantrips[2]) {
+          assert.equal(ui.byTestId(`builder-feat-cantrips-${clericCantrips[2]}`).disabled, true, "unpicked cantrips disable at cap");
+        }
+        await ui.fire(`builder-feat-level_1_spell-${clericSpell1}`, "change");
+      },
+      verifyCreated: (data) => {
+        assert.equal(data.featChoices?.length, 1);
+        assert.equal(data.featChoices[0].featId, "srd:feat:magic_initiate");
+        assert.deepEqual(data.featChoices[0].selections.spellcasting_ability, ["wis"]);
+        assert.equal(data.derived.spells.featSpells[0].ability, "wis");
+        assert.equal(data.derived.spells.featSpells[0].spells.length, 3);
+      },
+    },
+    {
+      id: "[G1-modal-caravan-guide-skilled] Caravan Guide gates on 3 Skilled picks and submits skill and tool proficiencies",
+      backgroundId: "caravan_guide",
+      setupPicks: async (ui) => {
+        assertAbsent(ui.byTestId("builder-feat-proficiencies-survival"), "background skill is excluded from Skilled");
+        await ui.fire("builder-feat-proficiencies-stealth", "change");
+        await ui.fire("builder-feat-proficiencies-arcana", "change");
+        await ui.fire("builder-feat-proficiencies-tool:Thieves' Tools", "change");
+        assert.equal(ui.byTestId("builder-feat-proficiencies-count").textContent, "3 of 3 chosen");
+      },
+      verifyCreated: (data) => {
+        assert.equal(data.featChoices?.length, 1);
+        assert.equal(data.featChoices[0].featId, "srd:feat:skilled");
+        assert.equal(data.skills.stealth.proficiencyRank, 1);
+        assert.equal(data.skills.arcana.proficiencyRank, 1);
+        assert.ok(data.proficiencies.tools.includes("Thieves' Tools"));
+      },
+    },
+  ];
+
+  for (const c of originFeatCases) {
+    it(c.id, async () => {
+      localeSignal.value = "en";
+      const ui = await mount({ status: 201, body: { actor: actorDto({ name: "OriginHero" }) } });
+      await ui.fire("builder-species-dwarf", "change");
+      await ui.fire("builder-next", "click");
+      await ui.fire("builder-class-fighter", "change");
+      await ui.fire("builder-next", "click");
+      await ui.fire(`builder-background-${c.backgroundId}`, "change");
+      await ui.fire("builder-next", "click");
+      assert.ok(ui.byTestId("builder-step-background"), "incomplete Origin feat choices block advancing");
+      assert.match(ui.byTestId("builder-errors").textContent, /Complete your origin feat choices/);
+      await c.setupPicks(ui);
+      await ui.fire("builder-next", "click");
+      assert.ok(ui.byTestId("builder-step-abilityScores"), "valid Origin feat choices advance to abilityScores");
+      await ui.fire("builder-method-standardArray", "change");
+      await ui.fire("builder-next", "click");
+      await ui.fire("builder-skills-acrobatics", "change");
+      await ui.fire("builder-skills-perception", "change");
+      await ui.fire(`builder-class-fighting_style-${FIGHTING_STYLE}`, "change");
+      await ui.fire("builder-next", "click");
+      await ui.fire("builder-class-equipment-A", "change");
+      await ui.fire("builder-equipment-package", "change");
+      await ui.fire("builder-next", "click");
+      await ui.fire("builder-next", "click");
+      await ui.fire("builder-name", "input", "OriginHero");
+      await ui.fire("builder-create", "click");
+      const post = ui.transport.calls.find((call) => call.method === "POST");
+      assert.ok(post);
+      c.verifyCreated((post.body as Record<string, any>).data);
+      ui.unmount();
+    });
+  }
+});
+
+describe("CharacterBuilderModal: Point-Buy label semantics and tabular numerals (F6)", () => {
+  function assertZeroOrphanedLabels(container: any) {
+    const labels = container.querySelectorAll("label");
+    for (const label of labels) {
+      const targetId = label.getAttribute("for");
+      if (targetId !== null) {
+        const target = container.querySelector(`#${targetId}`);
+        assertPresent(target, `<label for="${targetId}"> must resolve to a control with id="${targetId}"`);
+        assert.equal(target.hasAttribute("aria-label"), false, `control #${targetId} must not override its <label> with aria-label`);
+      }
+    }
+  }
+
+  const localeCases: Array<{
+    id: string;
+    locale: LocaleCode;
+    strLabel: string;
+    decStrAria: string;
+    incStrAria: string;
+  }> = [
+    {
+      id: "[F6-pointbuy-en-labels-and-groups] English Point-Buy exposes role=group + aria-labelledby + localized button names with zero orphaned labels",
+      locale: "en",
+      strLabel: "Strength (STR)",
+      decStrAria: "Decrease Strength (STR)",
+      incStrAria: "Increase Strength (STR)",
+    },
+    {
+      id: "[F6-pointbuy-fr-labels-and-groups] French Point-Buy exposes role=group + aria-labelledby + localized button names with zero orphaned labels",
+      locale: "fr",
+      strLabel: "Force (FOR)",
+      decStrAria: "Diminuer Force (FOR)",
+      incStrAria: "Augmenter Force (FOR)",
+    },
+  ];
+
+  for (const c of localeCases) {
+    it(c.id, async () => {
+      localeSignal.value = c.locale;
+      const ui = await mount({ status: 201, body: { actor: actorDto() } });
+      await ui.fire("builder-species-dwarf", "change");
+      await ui.fire("builder-next", "click");
+      await ui.fire("builder-class-fighter", "change");
+      await ui.fire("builder-next", "click");
+      await ui.fire("builder-background-soldier", "change");
+      await ui.fire("builder-next", "click");
+      assert.ok(ui.byTestId("builder-step-abilityScores"));
+
+      assertZeroOrphanedLabels(ui.container);
+      const stepper = ui.byTestId("builder-stepper-str");
+      assertPresent(stepper, "Point-Buy stepper group");
+      assert.equal(stepper.getAttribute("role"), "group");
+      const labelId = stepper.getAttribute("aria-labelledby");
+      assert.equal(labelId, "builder-ability-label-str");
+      const labelSpan = ui.container.querySelector(`#${labelId}`);
+      assertPresent(labelSpan, "ability label element referenced by aria-labelledby");
+      assert.equal(labelSpan.textContent, c.strLabel);
+      assert.equal(ui.byTestId("builder-dec-str").getAttribute("aria-label"), c.decStrAria);
+      assert.equal(ui.byTestId("builder-inc-str").getAttribute("aria-label"), c.incStrAria);
+
+      assert.equal(ui.byTestId("builder-point-buy-remaining").classList.contains("atlas-tabular-nums"), true);
+      assert.equal(ui.byTestId("builder-base-str").classList.contains("atlas-tabular-nums"), true);
+      assert.equal(ui.byTestId("builder-final-str").classList.contains("atlas-tabular-nums"), true);
+      assert.equal(ui.byTestId("builder-mod-str").classList.contains("atlas-tabular-nums"), true);
+
+      await ui.fire("builder-inc-str", "click");
+      assert.equal(ui.byTestId("builder-base-str").textContent, "9");
+      assert.equal(ui.byTestId("builder-mod-str").textContent, "(+0)");
+
+      ui.unmount();
+      localeSignal.value = "en";
+    });
+  }
+
+  it("[F6-standard-array-labels-and-tabular-nums] Standard Array associates <label for> with <select id> and keeps .atlas-tabular-nums", async () => {
+    localeSignal.value = "en";
+    const ui = await mount({ status: 201, body: { actor: actorDto() } });
+    await ui.fire("builder-species-dwarf", "change");
+    await ui.fire("builder-next", "click");
+    await ui.fire("builder-class-fighter", "change");
+    await ui.fire("builder-next", "click");
+    await ui.fire("builder-background-soldier", "change");
+    await ui.fire("builder-next", "click");
+    await ui.fire("builder-method-standardArray", "change");
+
+    assertZeroOrphanedLabels(ui.container);
+    const select = ui.byTestId("builder-score-str");
+    assertPresent(select, "Standard Array select");
+    assert.equal(select.id, "builder-score-str");
+    assert.equal(select.classList.contains("atlas-tabular-nums"), true);
+    const label = ui.container.querySelector('label[for="builder-score-str"]');
+    assertPresent(label, "label associated with builder-score-str");
+    assert.equal(ui.byTestId("builder-final-str").classList.contains("atlas-tabular-nums"), true);
+    assert.equal(ui.byTestId("builder-mod-str").classList.contains("atlas-tabular-nums"), true);
+    assert.equal(ui.byTestId("builder-mod-str").textContent, "(+3)");
+    ui.unmount();
+  });
 });

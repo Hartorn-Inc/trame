@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { computeDnd5eSheetDerived } from "../../../game-systems/dnd5e/src/index.ts";
+import { computeDnd5eSheetDerived, getSpellsByLevel } from "../../../game-systems/dnd5e/src/index.ts";
 import {
   BuilderDraftStore,
   CharacterBuilderWizard,
@@ -26,6 +26,14 @@ const COMPLETE: Partial<CharacterDraft> = {
   equipmentIds: ["Spear", "Shortbow"],
   classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:archery"], equipment: ["A"] },
 };
+
+/** Fills every Origin feat choice with its first `count` options. */
+function pickFirstOriginFeatOptions(wizard: CharacterBuilderWizard): void {
+  for (const choice of wizard.getOriginFeatChoices()) {
+    if (wizard.getFeatSelection(choice.id).length === choice.count) continue;
+    for (const option of choice.options.slice(0, choice.count)) wizard.toggleFeatOption(choice.id, option.id);
+  }
+}
 
 /** Fills every class choice with its first `count` options. */
 function pickFirstClassOptions(wizard: CharacterBuilderWizard): void {
@@ -57,6 +65,50 @@ describe("CharacterBuilderWizard: 2024 step order and gating", () => {
       draft: { ...COMPLETE, backgroundChoice: { mode: "plus2_plus1", plus2: "cha", plus1: "str" } },
       step: "background",
       error: "builder.error.backgroundChoice",
+    },
+    {
+      id: "[G1-sage-missing-magic-initiate] Sage background without Magic Initiate picks blocks the background step",
+      draft: { ...COMPLETE, backgroundId: "sage", backgroundChoice: { mode: "plus1_each" }, featSelections: {} },
+      step: "background",
+      error: "builder.error.originFeat",
+    },
+    {
+      id: "[G1-acolyte-wrong-spell-list] Acolyte Magic Initiate rejects a spell outside the Cleric list",
+      draft: {
+        ...COMPLETE,
+        backgroundId: "acolyte",
+        backgroundChoice: { mode: "plus1_each" },
+        featSelections: {
+          spell_list: ["cleric"],
+          spellcasting_ability: ["wis"],
+          cantrips: ["srd:spell:fire_bolt", "srd:spell:mage_hand"],
+          level_1_spell: ["srd:spell:magic_missile"],
+        },
+      },
+      step: "background",
+      error: "builder.error.originFeat",
+    },
+    {
+      id: "[G1-caravan-guide-missing-skilled] Caravan Guide background without 3 Skilled picks blocks the background step",
+      draft: {
+        ...COMPLETE,
+        backgroundId: "caravan_guide",
+        backgroundChoice: { mode: "plus1_each" },
+        featSelections: { proficiencies: ["stealth", "arcana"] },
+      },
+      step: "background",
+      error: "builder.error.originFeat",
+    },
+    {
+      id: "[G1-caravan-guide-duplicate-bg-skill] Caravan Guide Skilled rejects a skill already granted by the background",
+      draft: {
+        ...COMPLETE,
+        backgroundId: "caravan_guide",
+        backgroundChoice: { mode: "plus1_each" },
+        featSelections: { proficiencies: ["survival", "stealth", "arcana"] },
+      },
+      step: "background",
+      error: "builder.error.originFeat",
     },
     {
       id: "duplicated standard array values are rejected",
@@ -129,10 +181,16 @@ describe("CharacterBuilderWizard: 2024 step order and gating", () => {
     assert.equal(wizard.currentStep, "species");
   });
 
-  it("changing the background resets the split to +1/+1/+1 and the class skills", () => {
-    const wizard = wizardWith(COMPLETE);
+  it("changing the background resets the split to +1/+1/+1, feat picks, and class skills", () => {
+    const wizard = wizardWith({
+      ...COMPLETE,
+      backgroundId: "caravan_guide",
+      backgroundChoice: { mode: "plus1_each" },
+      featSelections: { proficiencies: ["stealth", "arcana", "history"] },
+    });
     wizard.setBackground("sage");
     assert.deepEqual(wizard.getDraft()?.backgroundChoice, { mode: "plus1_each" });
+    assert.deepEqual(wizard.getDraft()?.featSelections, {});
     assert.deepEqual(wizard.getDraft()?.classSelections, { fighting_style: ["srd:feat:archery"], equipment: ["A"] });
   });
 
@@ -206,6 +264,7 @@ describe("CharacterBuilderWizard: finalized level-1 actor", () => {
   for (const c of cases) {
     it(c.id, () => {
       const wizard = wizardWith(c.draft);
+      pickFirstOriginFeatOptions(wizard);
       if (Object.keys(c.draft.classSelections ?? {}).length === 0) pickFirstClassOptions(wizard);
       while (wizard.nextStep());
       const actor = wizard.confirm();
@@ -261,6 +320,165 @@ describe("CharacterBuilderWizard: finalized level-1 actor", () => {
     assert.equal(picks.cantrips.length, 3);
     assert.equal(picks.spells.length, 6);
     assert.equal(actor.spellSlots?.level1?.max, 2);
+  });
+});
+
+describe("CharacterBuilderWizard: Origin feat choices (G1)", () => {
+  const descriptorCases: Array<{
+    id: string;
+    backgroundId: string;
+    classId: string;
+    expectedChoiceIds: string[];
+    autoSpellList?: string[];
+    excludedOptions?: string[];
+  }> = [
+    {
+      id: "[G1-choices-acolyte] Acolyte offers Cleric Magic Initiate choices with Cleric pre-seeded",
+      backgroundId: "acolyte",
+      classId: "fighter",
+      expectedChoiceIds: ["spell_list", "spellcasting_ability", "cantrips", "level_1_spell"],
+      autoSpellList: ["cleric"],
+    },
+    {
+      id: "[G1-choices-sage] Sage offers Wizard Magic Initiate choices with Wizard pre-seeded",
+      backgroundId: "sage",
+      classId: "fighter",
+      expectedChoiceIds: ["spell_list", "spellcasting_ability", "cantrips", "level_1_spell"],
+      autoSpellList: ["wizard"],
+    },
+    {
+      id: "[G1-choices-caravan-guide] Caravan Guide Rogue offers Skilled excluding background skills/tools and Rogue Thieves' Tools",
+      backgroundId: "caravan_guide",
+      classId: "rogue",
+      expectedChoiceIds: ["proficiencies"],
+      excludedOptions: ["animal_handling", "survival", "tool:Cartographer's Tools", "tool:Thieves' Tools"],
+    },
+    {
+      id: "[G1-choices-soldier-none] Soldier (Savage Attacker) requires no Origin feat sub-choices",
+      backgroundId: "soldier",
+      classId: "fighter",
+      expectedChoiceIds: [],
+    },
+    {
+      id: "[G1-choices-criminal-none] Criminal (Alert) requires no Origin feat sub-choices",
+      backgroundId: "criminal",
+      classId: "rogue",
+      expectedChoiceIds: [],
+    },
+  ];
+
+  for (const c of descriptorCases) {
+    it(c.id, () => {
+      const wizard = wizardWith({ ...COMPLETE, classId: c.classId, backgroundId: c.backgroundId, backgroundChoice: { mode: "plus1_each" } });
+      const choices = wizard.getOriginFeatChoices();
+      assert.deepEqual(choices.map((ch) => ch.id), c.expectedChoiceIds);
+      if (c.autoSpellList) {
+        assert.deepEqual(wizard.getFeatSelection("spell_list"), c.autoSpellList);
+      }
+      if (c.excludedOptions) {
+        const offered = new Set(choices[0].options.map((o) => o.id));
+        for (const excluded of c.excludedOptions) {
+          assert.equal(offered.has(excluded), false, `${excluded} should not be offered`);
+        }
+      }
+    });
+  }
+
+  const clericCantrips = getSpellsByLevel(0, "cleric").map((s) => s.id);
+  const [clericSpell1] = getSpellsByLevel(1, "cleric").map((s) => s.id);
+  const wizardCantrips = getSpellsByLevel(0, "wizard").map((s) => s.id);
+  const fireBolt = wizardCantrips.includes("srd:spell:fire_bolt") ? "srd:spell:fire_bolt" : wizardCantrips[0];
+  const secondWizardCantrip = wizardCantrips.find((id) => id !== fireBolt)!;
+  const [wizardSpell1] = getSpellsByLevel(1, "wizard").map((s) => s.id);
+
+  const applyCases: Array<{
+    id: string;
+    backgroundId: string;
+    featSelections: Record<string, string[]>;
+    expectedFeatId: string;
+    expectedSpellAbility?: string;
+    expectedSpellIds?: string[];
+    expectedSkills?: string[];
+    expectedTools?: string[];
+  }> = [
+    {
+      id: "[G1-apply-acolyte-cleric] Acolyte Fighter applies Cleric Magic Initiate spells and WIS spellcasting",
+      backgroundId: "acolyte",
+      featSelections: {
+        spellcasting_ability: ["wis"],
+        cantrips: [clericCantrips[0], clericCantrips[1]],
+        level_1_spell: [clericSpell1],
+      },
+      expectedFeatId: "srd:feat:magic_initiate",
+      expectedSpellAbility: "wis",
+      expectedSpellIds: [clericCantrips[0], clericCantrips[1], clericSpell1],
+    },
+    {
+      id: "[G1-apply-sage-wizard] Sage Fighter applies Wizard Magic Initiate spells and INT spellcasting",
+      backgroundId: "sage",
+      featSelections: {
+        spellcasting_ability: ["int"],
+        cantrips: [fireBolt, secondWizardCantrip],
+        level_1_spell: [wizardSpell1],
+      },
+      expectedFeatId: "srd:feat:magic_initiate",
+      expectedSpellAbility: "int",
+      expectedSpellIds: [fireBolt, secondWizardCantrip, wizardSpell1],
+    },
+    {
+      id: "[G1-apply-caravan-guide-skilled] Caravan Guide Fighter applies 2 Skilled skills and 1 Skilled tool",
+      backgroundId: "caravan_guide",
+      featSelections: {
+        proficiencies: ["stealth", "arcana", "tool:Thieves' Tools"],
+      },
+      expectedFeatId: "srd:feat:skilled",
+      expectedSkills: ["stealth", "arcana", "animal_handling", "survival"],
+      expectedTools: ["Cartographer's Tools", "Thieves' Tools"],
+    },
+  ];
+
+  for (const c of applyCases) {
+    it(c.id, () => {
+      const wizard = wizardWith({
+        ...COMPLETE,
+        backgroundId: c.backgroundId,
+        backgroundChoice: { mode: "plus1_each" },
+        featSelections: c.featSelections,
+        classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:archery"], equipment: ["A"] },
+      });
+      while (wizard.nextStep());
+      assert.equal(wizard.currentStep, "review");
+      const actor = wizard.confirm();
+      assert.ok(actor);
+      assert.equal(actor.featChoices?.length, 1);
+      assert.equal(actor.featChoices?.[0].featId, c.expectedFeatId);
+      if (c.expectedSpellAbility && c.expectedSpellIds) {
+        const featSpellEntry = computeDnd5eSheetDerived(actor).spells?.featSpells[0];
+        assert.ok(featSpellEntry, "derived.spells.featSpells must include Magic Initiate");
+        assert.equal(featSpellEntry.ability, c.expectedSpellAbility);
+        assert.deepEqual(featSpellEntry.spells.map((s) => s.id), c.expectedSpellIds);
+      }
+      for (const skill of c.expectedSkills ?? []) {
+        assert.equal(actor.skills[skill as keyof typeof actor.skills].proficiencyRank, 1);
+      }
+      for (const tool of c.expectedTools ?? []) {
+        assert.ok(actor.proficiencies?.tools.includes(tool), `expected tool ${tool}`);
+      }
+    });
+  }
+
+  it("[G1-skilled-excludes-from-class-skills] picking a skill in Skilled removes it from class skill options and prunes duplicate class picks", () => {
+    const wizard = wizardWith({
+      ...COMPLETE,
+      backgroundId: "caravan_guide",
+      backgroundChoice: { mode: "plus1_each" },
+      featSelections: { proficiencies: ["stealth", "arcana"] },
+      classSelections: { skills: ["acrobatics", "perception"], fighting_style: ["srd:feat:archery"], equipment: ["A"] },
+    });
+    wizard.toggleFeatOption("proficiencies", "acrobatics");
+    assert.deepEqual(wizard.getDraft()?.classSelections.skills, ["perception"]);
+    const classSkillOptions = wizard.getClassChoices().find((ch) => ch.id === "skills")?.options.map((o) => o.id) ?? [];
+    assert.equal(classSkillOptions.includes("acrobatics"), false);
   });
 });
 

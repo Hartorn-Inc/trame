@@ -662,7 +662,7 @@ test('GM and three players play one campaign session end to end, across a SIGKIL
    */
   const fillClassChoices = async (page: Page) => {
     const modal = page.getByTestId('character-builder-modal');
-    const groups = await modal.locator('input[type="radio"][name^="class-"]').evaluateAll((els) => [...new Set(els.map((el) => (el as HTMLInputElement).name))]);
+    const groups = await modal.locator('input[type="radio"][name^="class-"], input[type="radio"][name^="feat-"]').evaluateAll((els) => [...new Set(els.map((el) => (el as HTMLInputElement).name))]);
     for (const group of groups) await modal.locator(`input[type="radio"][name="${group}"]`).first().check();
     const free = modal.locator('input[type="checkbox"]:not(:checked):not(:disabled)');
     for (let i = 0; i < 30 && (await free.count()) > 0; i++) await free.first().check();
@@ -693,6 +693,7 @@ test('GM and three players play one campaign session end to end, across a SIGKIL
     await expect(page.getByTestId('builder-step-background')).toBeVisible();
     await page.locator('input[name="background"]').first().check();
     await page.getByTestId('builder-split-plus1_each').check();
+    await fillClassChoices(page);
     await page.getByTestId('builder-next').click();
     await expect(page.getByTestId('builder-step-abilityScores')).toBeVisible();
     await page.getByTestId('builder-method-standardArray').check();
