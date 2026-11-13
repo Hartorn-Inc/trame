@@ -597,4 +597,22 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: WebSocket upgrade, socket writer task, and browser frame decoding (`DecompressionStream`).
 - **_Avoid_**: permessage-deflate (the standard extension TRAME does not use), WsCompression, GzipFrame.
 
+### S3Store
+
+- **Definition**: `AssetStore` backend that keeps asset bytes in an S3-compatible bucket (Cloudflare R2, Silo) under the existing content-addressed keys and their metadata in PostgreSQL `campaign_assets` with `payload` NULL. Selected when `S3_*` is configured; PostgreSQL storage is the fallback otherwise (ADR-0041).
+- **Allowed Context**: Asset uploads and reads, server configuration, hosting docs.
+- **_Avoid_**: BlobBucket, CdnStore, R2Store.
+
+### SignedDirectDownload
+
+- **Definition**: The `307` redirect `GET /assets/download/{key}` answers for an `S3Store` asset once the HMAC-signed URL (minted after the campaign membership check) verifies: a SigV4 presigned `GET` valid 5 minutes, signed for `S3_PUBLIC_ENDPOINT`. Rows not yet migrated are still streamed by the server.
+- **Allowed Context**: Asset downloads, CSP `img-src`, bucket CORS, egress budgeting.
+- **_Avoid_**: PublicAssetUrl, CdnLink, ProxyDownload.
+
+### BlobMigration
+
+- **Definition**: Background startup task (`migrate_inline_assets`) that copies each inline PostgreSQL asset payload to the `S3Store` bucket, reads it back, compares SHA-256 digests, and clears the inline payload only when it still hashes to the copied digest. Idempotent: failed rows stay inline and are retried on the next boot.
+- **Allowed Context**: Switching an existing instance from PostgreSQL to object storage.
+- **_Avoid_**: AssetSync, BlobExport, S3Backfill.
+
 

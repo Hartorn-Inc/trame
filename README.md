@@ -34,7 +34,7 @@ make srd-content # Regenerate the dnd5e SRD 5.2.1 packs from the pinned Open5e s
 make down        # Stop the local development stack
 ```
 
-The dev stack sets `TRAME_ENV=dev`, so the server boots with public development keys for any missing secret. Silo (`pgsty/silo`, an S3-compatible MinIO fork, in the `minio` service) is started for future S3-compatible asset storage, but the server does not read `S3_*` yet; the server currently stores assets in PostgreSQL (or in memory without a database).
+The dev stack sets `TRAME_ENV=dev`, so the server boots with public development keys for any missing secret. Silo (`pgsty/silo`, an S3-compatible MinIO fork, in the `minio` service) is started for S3-compatible asset storage. The dev server does not set `S3_*`, so it stores assets in PostgreSQL (or in memory without a database); `make test-rust TEST_DATABASE_URL=... TEST_S3_ENDPOINT=http://minio:9000` runs the S3 integration tests against it.
 
 ### PostgreSQL integration tests
 
@@ -65,4 +65,10 @@ make test-rust TEST_DATABASE_URL=postgresql://trame:trame_dev_password@postgres:
 | `TRAME_PORT` | No | Listen port (fallback `PORT`, default `8080`). |
 | `TRAME_INSTANCE_ID` | No | Instance UUID override. Without it the server uses the id persisted in `instance_settings` on first boot; an override that differs from the persisted id is used and logged as a warning. |
 | `TRAME_BOOTSTRAP_OWNER_EMAIL` | No | Locks the owner bootstrap to this email. While no Owner exists, each boot logs a one-hour, single-use setup URL as one line with `event="owner_bootstrap_url"` and `setup_url`; public registration is open only with `TRAME_ENV=dev`. |
+| `S3_ENDPOINT` | Only with S3 | S3-compatible endpoint the server reads and writes, as `http(s)://host[:port]` (for example `https://<account>.r2.cloudflarestorage.com`). Setting any `S3_*` variable stores assets in this bucket instead of PostgreSQL; outside dev, a partial set (`S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` are all required) refuses to start. At startup, existing PostgreSQL blobs are copied to the bucket in the background, hash-verified, then cleared from PostgreSQL; the copy is idempotent and resumes on the next boot. |
+| `S3_BUCKET` | Only with S3 | Bucket name (path-style addressing). The bucket must exist and allow cross-origin `GET` from any origin (CORS), because map images are drawn on a WebGL canvas. |
+| `S3_ACCESS_KEY_ID` | Only with S3 | Access key id; appears in signed download URLs. |
+| `S3_SECRET_ACCESS_KEY` | Only with S3 | Secret access key; never leaves the server. |
+| `S3_REGION` | No | SigV4 signing region (default `auto`, as Cloudflare R2 expects; `us-east-1` for MinIO/Silo). |
+| `S3_PUBLIC_ENDPOINT` | No | Endpoint signed into browser download redirects when browsers reach the bucket through a different host than the server (default: `S3_ENDPOINT`). Its origin is added to the SPA CSP `img-src`. Asset downloads stay behind the server's membership checks, then redirect (`307`) to a presigned `GET` valid 5 minutes. |
 | `RUST_LOG` | No | `tracing` log filter (for example `info,trame_server=debug`); defaults to `info`. |

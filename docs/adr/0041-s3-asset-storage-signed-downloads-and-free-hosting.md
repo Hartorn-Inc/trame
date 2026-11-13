@@ -36,6 +36,14 @@ Spike run 2026-11-07. **`trame.v1+deflate` shipped; standard `permessage-deflate
 - **Cost.** Measured on GM snapshot frames (debug build, so an upper bound): a 40-wall, 8-token scene goes from 14.8 KB to 2.4 KB (16 %), and a 600-wall, 40-token scene from 154 KB to 19.7 KB (13 %) in about 4 ms. Each frame allocates the compressor state (about 300 KB) and frees it right after. No state persists between frames, so idle sockets cost nothing.
 - **BREACH.** Frames carry no credential; the session cookie travels only in the upgrade request. The residual risk is a player who also watches the GM's encrypted traffic and compares frame sizes while changing text that appears next to GM-only text. That attack exposes table secrets, not credentials. It is accepted and listed for the security reviewer.
 
+### `S3Store` implementation outcome
+Implemented 2026-11-07.
+- **Configuration.** `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` select `S3Store`; `S3_REGION` (default `auto`) and `S3_PUBLIC_ENDPOINT` (default `S3_ENDPOINT`) are optional. Outside dev, setting only some of them refuses to start, so a typo cannot silently keep assets in PostgreSQL.
+- **Layout.** Object keys are the existing content addresses. `campaign_assets` keeps one row per asset with `payload` NULL (migration `0007`), so the storage quota, archive export and membership checks still read PostgreSQL.
+- **Signing.** Requests use AWS SigV4 query presigning (`UNSIGNED-PAYLOAD`, path-style) over `hyper` and `rustls`, about 200 lines checked against the AWS test vector, instead of the AWS SDK and its dependency tree.
+- **Downloads.** `/assets/download/{key}` verifies the HMAC signature first, then answers `307` to a presigned `GET` valid 5 minutes. The public endpoint's origin is added to the SPA CSP `img-src`. The battlemap image is loaded with `crossOrigin = "anonymous"` so the WebGL texture is not tainted, which requires a bucket CORS rule allowing `GET` from any origin.
+- **Migration.** At each boot, a background task copies inline blobs to the bucket, reads them back, compares SHA-256 digests, and clears the inline payload only if it still matches. It is idempotent; failed rows stay inline, keep being served by the server, and are retried on the next boot.
+
 ## Consequences
 ### Positive
 - Hosting costs 0 EUR on the strictly-free target and a few cents a month on Cloud Run, with egress kept low by compression and direct object-store downloads.
