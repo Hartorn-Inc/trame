@@ -101,9 +101,9 @@ Deploys never run in parallel, and a new one waits for the running one instead o
 One-time setup, after [First start](#first-start):
 
 ```sh
-# 1. Create the `production` environment. Optionally add required reviewers or a
-#    wait timer in the repository settings to gate deploys (for example to keep
-#    them out of game nights).
+# 1. Create the `production` environment. Then add yourself as a required
+#    reviewer (repository Settings > Environments > production): every green
+#    push to main deploys, and the approval keeps deploys out of game nights.
 gh api --method PUT repos/Hartorn-Inc/trame/environments/production
 # 2. Set its variables: GCP_PROJECT_ID, GCP_REGION, GCP_WIF_PROVIDER (provider name),
 #    GCP_DEPLOYER_SA (deployer email), GCP_IMAGE_REPOSITORY, CLOUD_RUN_SERVICE and
@@ -148,30 +148,13 @@ What each rotation does:
 
 ## Backups and restore
 
+The full procedure, including the Neon restore commands, restore drills and asset bucket protection, is in the [backup and restore runbook](../backup-and-restore.md). In short:
+
 - `trame-backup` runs every night at 03:00 UTC (`backup_schedule`). It dumps Neon with `pg_dump`, checks the archive, uploads `trame-<database>-<UTC time>.dump` to `trame-backups/trame/postgres/`, and deletes dumps older than 14 days. An R2 lifecycle rule deletes them too, in case pruning fails.
 - It runs the same image and scripts as the Compose `backup` service ([`deploy/compose/ops`](../compose/ops)), reading `DATABASE_URL` instead of the `PG*` variables.
 - Check recent runs: `gcloud run jobs executions list --job=trame-backup --region=europe-west9 --limit=5`. A failed run is retried once, then shows as failed.
 - Neon keeps 6 hours of history on the free plan. For a mistake made in the last few hours, Neon's instant restore (console, Restore) is faster than a dump.
-- **Assets are not in the dumps.** The assets bucket only gets new, content-addressed keys and has no expiry rule. Copy it elsewhere yourself if you need a second copy.
-
-Restore a dump into Neon. The restore drops and recreates the database, and refuses while another session uses it:
-
-```sh
-# 1. List the dumps (they appear in the job's logs).
-eval "$(terraform output -raw restore_list_command)"
-gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="trame-backup"' \
-  --freshness=10m --format='value(textPayload)'
-# 2. Stop the server. Open WebSockets finish first, so do this when nobody is playing.
-gcloud run services update trame-server --region=europe-west9 --scaling=0
-# 3. Restore.
-gcloud run jobs execute trame-backup --region=europe-west9 --wait \
-  --args=restore.sh,trame-neondb-20261107T030000Z.dump
-# 4. Start the server again, then check that Terraform sees no difference.
-gcloud run services update trame-server --region=europe-west9 --scaling=auto
-terraform plan
-```
-
-If step 3 reports other sessions, a player is still connected: wait (at most an hour) and run it again. The Neon role must own the database (the default `neondb_owner` owns `neondb`).
+- **Assets are not in the dumps.** The `trame-assets` bucket has no expiry rule and no second copy. Protect it separately.
 
 ## Remote state (optional)
 
@@ -246,7 +229,7 @@ To change the amounts, set `budget_amount` and `budget_warning_amounts` (each wa
 - **Neon quotas.** When a project runs out of CU-hours or transfer, Neon suspends it until next month: `/healthz` fails and TRAME is down. Watch usage in the Neon console.
 - **Custom domains.** Cloud Run domain mapping is not offered in `europe-west9`, and a global load balancer costs far more than this target's budget, so this setup uses the `run.app` URL. If you put another proxy in front, set `public_origin` and add one to `trusted_proxy_hops`.
 - **Client IP.** Cloud Run's front end appends the address it received the connection from to `X-Forwarded-For`, after anything the client sent. The container itself only sees an internal peer address. `TRAME_TRUSTED_PROXY_HOPS = 1` therefore keys rate limits on the rightmost entry, which a client cannot forge. Cloud Run's documentation does not describe the header; this behavior comes from public reports and has not been checked on a live deployment of this configuration.
-- **Every green push to `main` deploys.** A merge during a game night restarts the server and drops the sockets. Add required reviewers to the `production` environment if merges and deploys should be decided separately.
+- **Every green push to `main` deploys.** A merge during a game night restarts the server and drops the sockets. Add required reviewers to the `production` environment (recommended) so each deploy waits for an approval.
 - **First function deploy.** In a project that never used Eventarc or Cloud Build, the first apply can fail on `google_cloudfunctions2_function.budget_cap` while Google creates their service agents; run `terraform apply` again after a few minutes. In projects created before 8 April 2021, also grant `roles/iam.serviceAccountTokenCreator` on the project to the Pub/Sub service agent (`service-<project number>@gcp-sa-pubsub.iam.gserviceaccount.com`), or Eventarc cannot deliver the budget messages.
 - **Not tested against real accounts.** `make lint-terraform` checks formatting, schema validity and lint rules, and `make test-budget-cap` tests the cap function's decision. Nothing here, including the spending cap and the deploy workflow, has been applied to a real project or run against Google Cloud; review the first `terraform plan` carefully, and watch the first deploy. If `gcloud` reports a missing permission there, the deployer's per-resource roles were not enough for that call: grant the named role on the resource, or `roles/run.developer` on the project.
 

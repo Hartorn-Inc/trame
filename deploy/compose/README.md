@@ -81,21 +81,12 @@ Database migrations run automatically when the server starts. To roll back, chec
 
 ## Backups and restore
 
-- `backup` writes `trame-<db>-<UTC time>.dump` (`pg_dump` custom format) to the `backups` volume every day at `BACKUP_TIME` (UTC). It keeps them for `BACKUP_RETENTION_DAYS` (14) days.
-- With `BACKUP_S3_*` set, each dump is also copied to that bucket, and dumps older than the retention period are deleted from it. Use an R2 bucket separate from the assets: a copy on the same VM does not survive losing the VM.
-- A failed run marks the `backup` container unhealthy (`docker compose ps`) until the next successful run. Run one now with `docker compose exec backup backup.sh now`.
-- Copy a dump off the machine yourself: `docker compose cp backup:/backups/<file> .`
+The full procedure, including restore drills and asset bucket protection, is in the [backup and restore runbook](../backup-and-restore.md). In short:
 
-Restore a dump into a fresh database. The script refuses while the server is connected, and downloads the dump from the bucket when it is not on disk:
-
-```sh
-docker compose exec backup restore.sh list
-docker compose stop trame-server
-docker compose exec backup restore.sh trame-trame-20261107T030000Z.dump
-docker compose up -d --wait trame-server
-```
-
-**Assets are not in the dumps.** When assets live in Silo or R2, the database only holds their metadata. Give the asset bucket its own protection: a scheduled copy to a second bucket (for example `mc mirror`), or the provider's retention features, and back up the `silo_data` volume when you use Silo. Asset keys are content-addressed and never overwritten, so a plain copy is enough. Never add expiration rules to the asset bucket.
+- `backup` writes `trame-<db>-<UTC time>.dump` (`pg_dump` custom format) to the `backups` volume every day at `BACKUP_TIME` (UTC) and keeps `BACKUP_RETENTION_DAYS` (14) days. With `BACKUP_S3_*` set, each dump is also copied to that bucket. Use an R2 bucket separate from the assets: a copy on the same VM does not survive losing the VM.
+- A failed run marks the `backup` container unhealthy (`docker compose ps`). Run one now with `docker compose exec backup backup.sh now`.
+- Restore: `docker compose stop trame-server`, `docker compose exec backup restore.sh <dump file>`, `docker compose up -d --wait trame-server`.
+- **Assets are not in the dumps** when they live in Silo or R2. Protect the asset bucket separately.
 
 ## Smoke test
 

@@ -125,7 +125,7 @@ services:
       TRAME_JWT_SECRET: ${TRAME_JWT_SECRET:?set TRAME_JWT_SECRET (>= 32 chars)}
       # HMAC-SHA256 key reserved for invite tokens (>= 32 chars); still validated at startup.
       TRAME_INVITE_JWT_SECRET: ${TRAME_INVITE_JWT_SECRET:?set TRAME_INVITE_JWT_SECRET (>= 32 chars)}
-      # Public browser origin, e.g. https://trame.example.com (CORS / Origin checks, links).
+      # Public browser origin, e.g. https://trame.example.com (WebSocket Origin check, invite and setup links).
       TRAME_PUBLIC_ORIGIN: ${TRAME_PUBLIC_ORIGIN:?set TRAME_PUBLIC_ORIGIN}
       # Adds the `Secure` attribute to session cookies; only disable for plain-HTTP testing.
       TRAME_COOKIE_SECURE: ${TRAME_COOKIE_SECURE:-true}
