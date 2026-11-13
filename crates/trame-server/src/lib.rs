@@ -57,6 +57,7 @@ pub mod campaigns;
 pub mod compression;
 pub mod config;
 pub mod dice;
+pub mod healthcheck;
 pub mod http;
 pub mod importers;
 pub mod instance;

@@ -28,9 +28,15 @@
 //!      `TRAME_ENV=dev` a missing or weak secret prints the offending variable
 //!      names and exits with status 1.
 //!
+//! 5. `Healthcheck Mode`:
+//!    - `trame-server healthcheck` probes `GET /healthz` on loopback and exits
+//!      `0`/`1` without reading secrets, so the distroless image can back a
+//!      Compose `healthcheck` (`crate::healthcheck`).
+//!
 //! EXECUTION LIFECYCLE:
 //! --------------------
 //!   `main()`
+//!     ├── -1. `healthcheck` argument: probe `/healthz`, exit 0 (healthy) or 1.
 //!     ├── 0. Resolve `ServerConfig` (exit 1 on `ConfigError`, e.g. no `DATABASE_URL` outside dev).
 //!     ├── 1. Resolve port; open PostgreSQL (or the dev in-memory store).
 //!     ├── 2. `prepare_instance`: persisted instance id + owner setup URL log line when no `Owner`.
@@ -49,6 +55,7 @@ use trame_server::assets::store::{AssetStore, InMemoryAssetStore};
 use trame_server::auth::magic_link::now_epoch_seconds;
 use trame_server::auth::session::{FullAuthStore, InMemorySessionStore};
 use trame_server::config::{LogFormat, RuntimeEnv, ServerConfig, TRAME_ENV_VAR};
+use trame_server::healthcheck::{HEALTHCHECK_ARG, HEALTHCHECK_TIMEOUT, probe_healthz};
 use trame_server::http::{
     InMemoryMembershipValidator, build_in_memory_router_with_store,
     build_router_with_postgres_and_asset_store,
@@ -173,8 +180,21 @@ async fn wait_for_signal() {
     }
 }
 
+/// Listen port: `TRAME_PORT`, then `PORT`, defaulting to `8080`.
+fn listen_port() -> u16 {
+    std::env::var("TRAME_PORT")
+        .or_else(|_| std::env::var("PORT"))
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080)
+}
+
 #[tokio::main]
 async fn main() {
+    if std::env::args().nth(1).as_deref() == Some(HEALTHCHECK_ARG) {
+        let healthy = probe_healthz(listen_port(), HEALTHCHECK_TIMEOUT);
+        std::process::exit(if healthy { 0 } else { 1 });
+    }
     init_tracing();
     let config = match ServerConfig::from_env() {
         Ok(config) => config,
@@ -187,11 +207,7 @@ async fn main() {
         tracing::warn!("TRAME_ENV=dev: missing secrets use public development defaults");
     }
 
-    let port: u16 = std::env::var("TRAME_PORT")
-        .or_else(|_| std::env::var("PORT"))
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8080);
+    let port = listen_port();
 
     let (app, lease_manager) = if let Some(db_url) = config.database_url.clone() {
         let store = Arc::new(
