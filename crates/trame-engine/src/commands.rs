@@ -321,6 +321,15 @@ pub struct SceneActivation {
     /// heroes beyond the list keep their current position.
     #[serde(default)]
     pub hero_spawn_points: Vec<Point2D>,
+    /// Difficult-terrain cells saved with the scene, replacing the table's set. Cells off the
+    /// scene's grid are dropped.
+    #[serde(default)]
+    pub difficult_terrain: Vec<GridCell>,
+    /// GM fog rulings (`Reveal` / `Hide`) saved with the scene, replacing the table's rulings.
+    /// Cells off the scene's grid and `Clear` entries are dropped; the last ruling on a cell
+    /// wins.
+    #[serde(default)]
+    pub fog_overrides: Vec<FogOverrideCell>,
 }
 
 /// Action-economy resource restored by `TrameCommand::RefundAction`.
@@ -463,6 +472,17 @@ pub struct ConditionEffects {
     pub speed_zero: bool,
     /// Resistance to every damage type (`typed_damage_input`).
     pub resists_all_damage: bool,
+}
+
+/// `(columns, rows)` of the grid covering a `width_px` x `height_px` map with `cell_px` cells
+/// (partial cells count). `SetDifficultTerrain` rejects and `ActivateScene` drops cells
+/// outside `0..columns` x `0..rows`.
+fn map_grid_dims(width_px: u32, height_px: u32, cell_px: f64) -> (i32, i32) {
+    let cell_px = cell_px.max(1e-9);
+    (
+        (f64::from(width_px) / cell_px).ceil() as i32,
+        (f64::from(height_px) / cell_px).ceil() as i32,
+    )
 }
 
 /// Conditions in force after the rulings: `conditions` (lowercased, compendium prefix
@@ -1066,8 +1086,8 @@ pub enum TrameCommand {
     },
     /// Activates a persisted map scene (GM only): replaces walls, lights, map, and grid; keeps
     /// `HeroToken`s (moved onto spawn points); removes every other token; spawns the scene's
-    /// `StagedToken`s; clears AoEs, fog overrides, difficult terrain, reaction prompts; and
-    /// returns to `Exploration`.
+    /// `StagedToken`s; replaces fog overrides and difficult terrain with the scene's saved
+    /// ones; clears AoEs and reaction prompts; and returns to `Exploration`.
     ActivateScene {
         /// Unique identifier of the persisted scene.
         scene_id: Uuid,
@@ -3300,8 +3320,23 @@ impl TableState {
                 self.data.map_height_px = scene.height_px;
                 self.data.walls = scene.walls;
                 self.data.lights = scene.lights;
-                self.data.fog_overrides.clear();
-                self.data.difficult_terrain.clear();
+                let (cols, rows) =
+                    map_grid_dims(scene.width_px, scene.height_px, scene.pixels_per_grid);
+                let on_map =
+                    |col: i32, row: i32| (0..cols).contains(&col) && (0..rows).contains(&row);
+                self.data.difficult_terrain = scene
+                    .difficult_terrain
+                    .into_iter()
+                    .filter(|c| on_map(c.col, c.row))
+                    .collect();
+                let mut fog: BTreeMap<(i32, i32), FogOverrideCell> = BTreeMap::new();
+                for ruling in scene.fog_overrides {
+                    if ruling.mode != FogOverrideMode::Clear && on_map(ruling.cell_x, ruling.cell_y)
+                    {
+                        fog.insert((ruling.cell_x, ruling.cell_y), ruling);
+                    }
+                }
+                self.data.fog_overrides = fog.into_values().collect();
                 self.data.persistent_aoes.clear();
                 self.data.active_reaction_prompts.clear();
                 self.data.pending_resolutions.clear();
@@ -3463,9 +3498,11 @@ impl TableState {
                         "difficult terrain cells must not be empty".to_string(),
                     ));
                 }
-                let cell_px = self.cell_size_px.max(1e-9);
-                let cols = (f64::from(self.data.map_width_px) / cell_px).ceil() as i32;
-                let rows = (f64::from(self.data.map_height_px) / cell_px).ceil() as i32;
+                let (cols, rows) = map_grid_dims(
+                    self.data.map_width_px,
+                    self.data.map_height_px,
+                    self.cell_size_px,
+                );
                 if let Some(off_map) = cells
                     .iter()
                     .find(|c| !(0..cols).contains(&c.col) || !(0..rows).contains(&c.row))

@@ -785,6 +785,26 @@ describe("MapsStudioTab & Player SceneAtlas Integration Suite", () => {
       assert.equal(remappedFrontend.walls[0].b.x, 100);
     });
 
+    for (const c of [
+      {
+        id: "saved table rulings survive a studio save",
+        raw: {
+          difficult_terrain: [{ col: 2, row: 3 }],
+          fog_overrides: [{ cell_x: 7, cell_y: 1, mode: "HIDE" }],
+        },
+        terrain: [{ col: 2, row: 3 }],
+        fog: [{ cell_x: 7, cell_y: 1, mode: "HIDE" }],
+      },
+      { id: "a scene without rulings maps to empty lists", raw: {}, terrain: [], fog: [] },
+    ]) {
+      it(`WHEN a scene round-trips through the studio mapping, THEN ${c.id}`, () => {
+        const scene = mapBackendSceneToFrontend({ id: "s-1", name: "Crypt", wall_segments: [], ...c.raw });
+        const dto = mapFrontendSceneToBackend(scene);
+        assert.deepEqual(dto.difficult_terrain, c.terrain);
+        assert.deepEqual(dto.fog_overrides, c.fog);
+      });
+    }
+
     it("WHEN raw backend scenes from GET are provided, domain normalization protects against missing walls length runtime error", () => {
       const rawBackendScene = {
         id: "raw-backend-1",

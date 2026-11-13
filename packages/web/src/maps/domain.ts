@@ -493,6 +493,8 @@ export function mapBackendSceneToFrontend(raw: Record<string, any>): CampaignMap
     audioEmitters,
     stagedTokens,
     exploredFogTexture: raw.explored_fog_texture || raw.exploredFogTexture,
+    difficultTerrain: raw.difficult_terrain ?? raw.difficultTerrain ?? [],
+    fogOverrides: raw.fog_overrides ?? raw.fogOverrides ?? [],
     name: String(raw.name || raw.title || 'Untitled Scene'),
     campaign_id: String(raw.campaign_id || raw.campaignId || ''),
     revealed_to_players: Boolean(raw.revealed_to_players ?? raw.revealedToPlayers ?? false),
@@ -617,5 +619,7 @@ export function mapFrontendSceneToBackend(scene: CampaignMapScene): Record<strin
     spatial_audio_emitters,
     staged_tokens,
     explored_fog_texture: scene.exploredFogTexture ?? null,
+    difficult_terrain: scene.difficultTerrain ?? [],
+    fog_overrides: scene.fogOverrides ?? [],
   };
 }

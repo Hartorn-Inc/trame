@@ -1,4 +1,5 @@
-import type { Point2D } from '../engine/wasmBridge.ts';
+import type { WireFogOverrideCell } from '../api/wire.ts';
+import type { GridCell, Point2D } from '../engine/wasmBridge.ts';
 
 export type WallType =
   | 'Normal'
@@ -123,6 +124,10 @@ export interface CampaignMapScene {
   audioEmitters: AudioEmitterConfig[];
   stagedTokens: StagedToken[];
   exploredFogTexture?: number[];
+  /** Difficult-terrain cells saved with the scene; `ActivateScene` loads them onto the table. */
+  difficultTerrain?: GridCell[];
+  /** GM fog rulings saved with the scene (GM responses only); loaded like `difficultTerrain`. */
+  fogOverrides?: WireFogOverrideCell[];
   name?: string;
   campaign_id?: string;
   revealed_to_players?: boolean;

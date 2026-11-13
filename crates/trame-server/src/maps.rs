@@ -46,6 +46,13 @@
 //!        bounds-checked; `400 INVALID_STAT_BLOCK` otherwise). Activation hands the copy
 //!        to the room, which derives the token's HP, AC, speed, senses, reach and damage
 //!        affinities from it. Player responses never carry stat blocks.
+//!   8. `Prep and Play Agree on Terrain and Fog`:
+//!      - A scene stores its difficult-terrain cells and GM fog rulings.
+//!        `ActivateScene` loads them onto the table instead of clearing the table's
+//!        (the engine drops off-grid cells and `Clear` rulings), and the GM saves the
+//!        live table's set back with `POST .../maps/{scene_id}/table-rulings`, which
+//!        only accepts the table's active scene. Players receive the terrain but
+//!        never the prepared fog rulings.
 //! ============================================================================
 
 use crate::archive::ExportEntity;
@@ -58,8 +65,10 @@ use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use trame_engine::aoe::GridCell;
 use trame_engine::commands::{
-    CampaignRole, LightSource as EngineLightSource, SceneActivation, TokenState, TrameCommand,
+    CampaignRole, FogOverrideCell, LightSource as EngineLightSource, SceneActivation, TokenState,
+    TrameCommand,
 };
 use trame_engine::geometry::{CHANNEL_GM_HIDDEN, Point2D as EnginePoint, WallKind, WallSegment};
 use uuid::Uuid;
@@ -197,6 +206,16 @@ pub struct CampaignMapScene {
     pub staged_tokens: Vec<StagedToken>,
     #[serde(default, alias = "exploredFogTexture")]
     pub explored_fog_texture: Option<Vec<u8>>,
+    /// Difficult-terrain grid cells (`{ col, row }`) prepared for the scene; `ActivateScene`
+    /// loads them onto the table (off-grid cells dropped) and `POST .../table-rulings` saves
+    /// the live table's set back. Public map knowledge: players receive them.
+    #[serde(default, alias = "difficultTerrain")]
+    pub difficult_terrain: Vec<GridCell>,
+    /// GM fog rulings (`{ cell_x, cell_y, mode }`, `REVEAL` / `HIDE`) prepared for the scene,
+    /// loaded and saved like `difficult_terrain`. Stripped from player responses so prepared
+    /// rulings of unrevealed areas do not leak before activation.
+    #[serde(default, alias = "fogOverrides")]
+    pub fog_overrides: Vec<FogOverrideCell>,
 }
 
 /// Map-editor `wall_type` label for an engine `WallKind`.
@@ -404,6 +423,7 @@ pub fn sanitize_scene_for_player(mut scene: CampaignMapScene) -> CampaignMapScen
         token.stat_block = None;
     }
     scene.spatial_audio_emitters.retain(|e| !e.gm_only);
+    scene.fog_overrides.clear();
     scene
 }
 
@@ -537,6 +557,8 @@ pub fn scene_activation(scene: &CampaignMapScene) -> SceneActivation {
             .iter()
             .map(|p| EnginePoint::new(f64::from(p.x), f64::from(p.y)))
             .collect(),
+        difficult_terrain: scene.difficult_terrain.clone(),
+        fog_overrides: scene.fog_overrides.clone(),
     }
 }
 
@@ -696,5 +718,75 @@ pub async fn put_campaign_maps_handler(
     match save_campaign_scenes(&state, campaign_id, scenes.clone(), expected_version).await {
         Ok(version) => Json(CampaignMapsResponse { scenes, version }).into_response(),
         Err(err) => scene_save_error(err, expected_version),
+    }
+}
+
+fn error_response(status: StatusCode, code: &str, error: String) -> Response {
+    (
+        status,
+        Json(ErrorResponse {
+            code: Some(code.to_string()),
+            error,
+        }),
+    )
+        .into_response()
+}
+
+/// `POST /api/v1/campaigns/{campaign_id}/maps/{scene_id}/table-rulings` (GM only): copies the
+/// live table's difficult terrain and fog rulings into the stored scene `scene_id`, so the
+/// next `ActivateScene` loads what was painted during play (invariant 8). Answers the
+/// updated scene set like `PUT .../maps`.
+/// - `401` unauthenticated, `403` not the campaign GM.
+/// - `409 SCENE_NOT_ACTIVE` when `scene_id` is not the table's active scene (the table's
+///   rulings belong to another scene); `404 SCENE_NOT_FOUND` when it is not stored.
+/// - The write bumps the scene-set version read in the same request; a concurrent studio
+///   save answers `409 VERSION_CONFLICT` and the GM retries.
+pub async fn save_table_rulings_handler(
+    State(state): State<AppState>,
+    Path((campaign_id, scene_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Response {
+    let Ok(user_id) = crate::http::resolve_authenticated_user(&state, &headers).await else {
+        return unauthorized();
+    };
+    if crate::http::resolve_campaign_role(&state, campaign_id, user_id).await
+        != Some(CampaignRole::Gm)
+    {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "FORBIDDEN",
+            "only a campaign GM may save table rulings to a scene".to_string(),
+        );
+    }
+    let table = match state.lease_manager.get_or_wake_room(campaign_id).await {
+        Ok(room) => match room.get_table_snapshot().await {
+            Ok((_, table)) => table,
+            Err(err) => return storage_error(err.to_string()),
+        },
+        Err(err) => return storage_error(err.to_string()),
+    };
+    if table.data.active_scene_id != Some(scene_id) {
+        return error_response(
+            StatusCode::CONFLICT,
+            "SCENE_NOT_ACTIVE",
+            format!("scene {scene_id} is not the scene active on the table"),
+        );
+    }
+    let (mut scenes, version) = match load_campaign_scene_set(&state, campaign_id).await {
+        Ok(set) => set,
+        Err(err) => return storage_error(err),
+    };
+    let Some(scene) = scenes.iter_mut().find(|s| s.id == scene_id) else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "SCENE_NOT_FOUND",
+            format!("scene {scene_id} does not exist in this campaign"),
+        );
+    };
+    scene.difficult_terrain = table.data.difficult_terrain.iter().copied().collect();
+    scene.fog_overrides = table.data.fog_overrides.clone();
+    match save_campaign_scenes(&state, campaign_id, scenes.clone(), version).await {
+        Ok(version) => Json(CampaignMapsResponse { scenes, version }).into_response(),
+        Err(err) => scene_save_error(err, version),
     }
 }

@@ -1318,6 +1318,129 @@ async fn a17_activate_unknown_scene_is_rejected() {
     );
 }
 
+#[tokio::test]
+async fn scene_terrain_and_fog_rulings_survive_save_and_reactivation() {
+    use trame_engine::aoe::GridCell;
+    use trame_engine::commands::{FogOverrideCell, FogOverrideMode};
+    let h = Harness::new();
+    let app = h.app();
+    let (campaign_id, gm_id, gm) = h.campaign(&app).await;
+    let (player_id, player) = h.account().await;
+    h.join(campaign_id, player_id, "PLAYER").await;
+    let room = h.room(campaign_id).await;
+    let scene = stored_scene(campaign_id, &[]);
+    let other = stored_scene(campaign_id, &[]);
+    h.state
+        .map_storage
+        .save_campaign_maps(campaign_id, vec![scene.clone(), other.clone()]);
+    async fn activate(app: &Router, gm: &str, campaign_id: Uuid, scene_id: Uuid) {
+        let body = mcp_tool(
+            app,
+            gm,
+            "trame.dispatch_command",
+            json!({ "campaign_id": campaign_id, "command": { "cmd": "ACTIVATE_SCENE", "scene_id": scene_id } }),
+        )
+        .await;
+        assert!(body["error"].is_null(), "{body}");
+    }
+
+    activate(&app, &gm, campaign_id, scene.id).await;
+    let painted = vec![GridCell { col: 2, row: 3 }, GridCell { col: 4, row: 5 }];
+    let ruled = vec![FogOverrideCell {
+        cell_x: 7,
+        cell_y: 1,
+        mode: FogOverrideMode::Hide,
+    }];
+    room.dispatch_direct_command(
+        gm_actor(gm_id),
+        TrameCommand::SetDifficultTerrain {
+            cells: painted.clone(),
+            difficult: true,
+        },
+    )
+    .await
+    .unwrap();
+    room.dispatch_direct_command(
+        gm_actor(gm_id),
+        TrameCommand::SetFogOverrides {
+            mode: FogOverrideMode::Hide,
+            cells: vec![GridCell { col: 7, row: 1 }],
+        },
+    )
+    .await
+    .unwrap();
+
+    // (case_id, caller cookie, scene, expected status, expected code)
+    let cases = [
+        (
+            "player_cannot_save_rulings",
+            player.as_str(),
+            scene.id,
+            StatusCode::FORBIDDEN,
+            "FORBIDDEN",
+        ),
+        (
+            "inactive_scene_is_refused",
+            gm.as_str(),
+            other.id,
+            StatusCode::CONFLICT,
+            "SCENE_NOT_ACTIVE",
+        ),
+        (
+            "gm_saves_the_active_scene",
+            gm.as_str(),
+            scene.id,
+            StatusCode::OK,
+            "",
+        ),
+    ];
+    for (case, cookie, scene_id, status, code) in cases {
+        let (got, body) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/campaigns/{campaign_id}/maps/{scene_id}/table-rulings"),
+            Some(cookie),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(got, status, "case {case}: {body}");
+        if !code.is_empty() {
+            assert_eq!(body["code"], code, "case {case}");
+        }
+    }
+    let stored = h.state.map_storage.get_campaign_maps(campaign_id);
+    assert_eq!(
+        (&stored[0].difficult_terrain, &stored[0].fog_overrides),
+        (&painted, &ruled),
+        "saved_into_the_active_scene"
+    );
+    assert!(
+        stored[1].difficult_terrain.is_empty() && stored[1].fog_overrides.is_empty(),
+        "other_scene_untouched"
+    );
+
+    activate(&app, &gm, campaign_id, other.id).await;
+    let away = table(&room).await;
+    assert!(
+        away.data.difficult_terrain.is_empty() && away.data.fog_overrides.is_empty(),
+        "other_scene_loads_its_own_empty_rulings"
+    );
+    activate(&app, &gm, campaign_id, scene.id).await;
+    let back = table(&room).await;
+    assert_eq!(
+        (
+            back.data
+                .difficult_terrain
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            back.data.fog_overrides.clone()
+        ),
+        (painted, ruled),
+        "reactivation_restores_terrain_and_fog"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // A16 — linked token damage persists to the actor sheet
 // ---------------------------------------------------------------------------

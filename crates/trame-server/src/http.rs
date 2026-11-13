@@ -687,6 +687,10 @@ pub fn build_router_with_state(state: AppState) -> Router {
             "/api/v1/campaigns/{campaign_id}/maps",
             get(get_campaign_maps_handler).put(put_campaign_maps_handler),
         )
+        .route(
+            "/api/v1/campaigns/{campaign_id}/maps/{scene_id}/table-rulings",
+            post(crate::maps::save_table_rulings_handler),
+        )
         .route("/api/v1/mcp", post(crate::mcp::mcp_jsonrpc_handler))
         .merge(crate::campaigns::campaign_routes())
         .merge(crate::access::campaign_access_routes())

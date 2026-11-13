@@ -845,8 +845,10 @@ fn sheet_save_bonuses(data: &Value) -> Option<BTreeMap<String, i32>> {
                 .and_then(Value::as_f64)
                 .filter(|b| b.is_finite())
             {
-                let bonus = (bonus.round() as i32)
-                    .clamp(*SHEET_SAVE_BONUS_RANGE.start(), *SHEET_SAVE_BONUS_RANGE.end());
+                let bonus = (bonus.round() as i32).clamp(
+                    *SHEET_SAVE_BONUS_RANGE.start(),
+                    *SHEET_SAVE_BONUS_RANGE.end(),
+                );
                 bonuses
                     .get_or_insert_with(BTreeMap::new)
                     .insert(ab.to_string(), bonus);
@@ -1956,6 +1958,8 @@ pub fn scene_from_import(
         spatial_audio_emitters: Vec::new(),
         staged_tokens: Vec::new(),
         explored_fog_texture: None,
+        difficult_terrain: Vec::new(),
+        fog_overrides: Vec::new(),
     }
 }
 
