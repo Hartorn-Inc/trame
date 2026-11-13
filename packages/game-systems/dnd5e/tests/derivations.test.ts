@@ -342,6 +342,39 @@ describe("Spells without an attack roll or a save never borrow the spell attack 
   }
 });
 
+describe("Fighting Style feats", () => {
+  function fighterWith(features: string[], scores: Partial<Record<AbilityId, number>>, items: ActorItem[]): Dnd5eActorData {
+    const actor = actorWith("fighter", scores, items);
+    actor.features = features;
+    return actor;
+  }
+
+  const acCases: [string, string[], ActorItem[], number][] = [
+    ["defense_in_chain_mail_derives_ac_17", ["srd:feat:defense"], [equipped("chain_mail")], 17],
+    ["chain_mail_without_defense_stays_16", [], [equipped("chain_mail")], 16],
+    ["defense_with_chain_mail_and_shield_derives_ac_19", ["srd:feat:defense"], [equipped("chain_mail"), equipped("shield")], 19],
+    ["defense_without_armor_adds_nothing", ["srd:feat:defense"], [], 12],
+    ["defense_with_a_shield_alone_adds_nothing", ["srd:feat:defense"], [equipped("shield")], 14],
+  ];
+  for (const [id, features, items, expected] of acCases) {
+    it(id, () => {
+      assert.equal(computeDnd5eSheetDerived(fighterWith(features, { dex: 14 }, items)).armorClass, expected);
+    });
+  }
+
+  const attackCases: [string, string, number][] = [
+    ["archery_adds_2_to_a_longbow_attack", "longbow", 2],
+    ["archery_leaves_a_longsword_attack_unchanged", "longsword", 0],
+    ["archery_leaves_a_thrown_dagger_unchanged", "dagger", 0],
+  ];
+  for (const [id, weapon, bonus] of attackCases) {
+    it(id, () => {
+      const bonusOf = (features: string[]) =>
+        computeDnd5eSheetDerived(fighterWith(features, { str: 14, dex: 14 }, [equipped(weapon)])).attacks?.[0].attackBonus ?? NaN;
+      assert.equal(bonusOf(["srd:feat:archery"]) - bonusOf([]), bonus);
+    });
+  }
+});
 
 describe("UA4: features with level", () => {
   it("class_subclass_species_background_and_feat_features", () => {

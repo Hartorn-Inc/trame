@@ -212,7 +212,7 @@ describe("CharacterBuilderModal: creation through the actor route", () => {
       assert.equal(body.data.backgroundId, "srd:background:soldier");
       assert.equal(body.data.skills.perception.proficiencyRank, 1);
       assert.ok(body.data.features.includes(FIGHTING_STYLE), "the Fighting Style feat is recorded");
-      assert.equal(body.data.derived.armorClass, 16, "Fighter option A equips Chain Mail");
+      assert.equal(body.data.derived.armorClass, 17, "Fighter option A equips Chain Mail (16) and Defense adds 1");
       assert.equal(ui.created.length, o.createdCount);
       assert.equal(ui.closedCount(), o.closed);
       assert.equal(Boolean(ui.byTestId("builder-step-review")), o.stillOpen);

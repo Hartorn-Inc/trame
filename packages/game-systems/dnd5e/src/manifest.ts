@@ -45,6 +45,9 @@
  *      - `withRecomputedDerived` refreshes the stored `derived` snapshot on
  *        each sheet write, since the server syncs the token's AC, speed,
  *        saves and feature resistances from it.
+ *   7. `Feat Effects Ride The DAG`:
+ *      - Defense is an `ADD` effect on `ac` whose formula is `armor_worn`, so
+ *        it follows the evaluated armor inputs for both representations.
  *
  * EXECUTION LIFECYCLE:
  * --------------------
@@ -52,8 +55,9 @@
  *     ├── 1. Map the actor to the `derivedInputs` record (`level`, scores, flags).
  *     │      Equipped armor and shields override the armor inputs (`derivations.ts`).
  *     ├── 2. `evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, effects)` (WASM),
- *     │      `effects` = `ClassFeature` effects (`classFeatures.ts`) then the
- *     │      caller's `activeEffects`, all in the 5-phase order.
+ *     │      `effects` = `ClassFeature` effects (`classFeatures.ts`), feat
+ *     │      effects (Defense), then the caller's `activeEffects`, all in the
+ *     │      5-phase order.
  *     │      `ConditionOverride` rulings (options) can suspend exhaustion first.
  *     ├── 3. Project the evaluated attributes onto `Dnd5eDerivedStats`.
  *     └── 4. Add `attacks`, `spells`, `features`, `resourcePools` and
@@ -198,6 +202,27 @@ const ALERT_FEAT_IDS = new Set(["alert", "srd:feat:alert"]);
 
 function hasAlert(features: readonly string[] | undefined): number {
   return (features ?? []).some((f) => ALERT_FEAT_IDS.has(f)) ? 1 : 0;
+}
+
+/** Feat identifiers of the Defense Fighting Style (SRD 5.2.1). */
+const DEFENSE_FEAT_IDS = new Set(["defense", "srd:feat:defense"]);
+
+/**
+ * Feat effects in force (banner invariant 7): Defense adds `1` to `ac` while
+ * `armor_worn` (Light, Medium or Heavy armor; a Shield alone is not armor).
+ */
+function featEffects(features: readonly string[] | undefined): unknown[] {
+  if (!(features ?? []).some((f) => DEFENSE_FEAT_IDS.has(f))) return [];
+  return [
+    {
+      id: "00000000-0000-4000-9000-000000000001",
+      source_name: "Feat:defense",
+      enabled: true,
+      duration_rounds_remaining: null,
+      concentration_caster_id: null,
+      modifiers: [{ target: "ac", phase: "ADD", value: 1, formula: "armor_worn" }],
+    },
+  ];
 }
 
 const ABILITY_IDS: readonly AbilityId[] = ["str", "dex", "con", "int", "wis", "cha"];
@@ -353,7 +378,11 @@ export function computeDnd5eSheetDerived(
     overrides: options.conditionOverrides,
   });
   if (!conditionEffects.exhaustionApplies) inputs.exhaustion = 0;
-  const effects = "attributes" in actor ? [...classFeatureEffects(actor), ...(activeEffects ?? [])] : activeEffects;
+  const effects = [
+    ...("attributes" in actor ? classFeatureEffects(actor) : []),
+    ...featEffects(actor.features),
+    ...(activeEffects ?? []),
+  ];
   const v = evaluateDerivedDag(inputs, DND5E_DERIVED_FORMULAS, effects);
 
   let extras: Pick<Dnd5eDerivedStats, "attacks" | "spells" | "features" | "resourcePools" | "featureRules">;

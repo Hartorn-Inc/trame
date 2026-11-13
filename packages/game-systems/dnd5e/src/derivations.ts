@@ -40,6 +40,13 @@
  *        spells (Spike Growth, Teleport) are not listed (`spellResolution.ts`).
  *      - Beams, darts and rays are listed once with their `instances` count;
  *        their dice are one instance's dice.
+ *   6. `Fighting Styles Where The Numbers Allow`:
+ *      - Archery adds `+2` to Ranged weapon attacks (thrown melee weapons
+ *        stay melee weapons). Defense is a DAG effect (`manifest.ts`).
+ *      - Great Weapon Fighting (a damage die of 1 or 2 counts as 3) and
+ *        Two-Weapon Fighting (the extra Light attack adds its modifier) stay
+ *        described: the damage roll has no minimum-face term and the sheet
+ *        lists no separate extra attack.
  *
  * EXECUTION LIFECYCLE:
  * --------------------
@@ -64,7 +71,7 @@ import {
 } from "./classFeatures.ts";
 import { getActorClassId, getActorProficiencies, getCantripsKnown, getPreparedSpellCount } from "./classRules.ts";
 import { CompendiumResolver, type CompendiumEntry } from "./compendium.ts";
-import { getBackgroundRules, getSpeciesRules, srdFeatKey } from "./origins.ts";
+import { getBackgroundRules, getSpeciesRules, srdFeatKey, type SrdFeatId } from "./origins.ts";
 import { getCasterTypeForClass, getClassProgression, reconcileSlots } from "./progression.ts";
 import { cantripTier, spellDamageParts, spellDamageResolution, spellInstanceCount, spellInstances } from "./spellResolution.ts";
 import type {
@@ -202,6 +209,14 @@ function withMartialArtsDie(dice: string, martialArtsDie: number): string {
   return match && Number(match[1]) < martialArtsDie ? `1d${martialArtsDie}` : dice;
 }
 
+/** Archery Fighting Style: bonus to attack rolls with Ranged weapons (SRD 5.2.1). */
+const ARCHERY_ATTACK_BONUS = 2;
+
+/** Whether `actor.features` holds the SRD feat `key` (bare or `srd:feat:` prefixed). */
+function hasFeat(actor: Dnd5eActorData, key: SrdFeatId): boolean {
+  return (actor.features ?? []).some((featureId) => srdFeatKey(featureId) === key);
+}
+
 function weaponAttack(
   item: ActorItem,
   entry: CompendiumEntry,
@@ -219,13 +234,14 @@ function weaponAttack(
   const proficient = isWeaponProficient(getActorProficiencies(actor).weapons, entry);
   const rangeFt = parseRangeFt(data.range);
   const featureAttackBonus = rules.weaponAttackBonusAbility ? Math.max(1, v[`${rules.weaponAttackBonusAbility}_mod`]) : 0;
+  const archeryBonus = ranged && hasFeat(actor, "archery") ? ARCHERY_ATTACK_BONUS : 0;
   const rageBonus = !ranged && ability === "str" ? rules.strMeleeDamageBonus : 0;
   return {
     id: item.id,
     name: item.name,
     source: "weapon",
     delivery: ranged ? "ranged" : "melee",
-    attackBonus: v[`${ability}_mod`] + (proficient ? v.prof_bonus : 0) - v.exhaustion_penalty + featureAttackBonus,
+    attackBonus: v[`${ability}_mod`] + (proficient ? v.prof_bonus : 0) - v.exhaustion_penalty + featureAttackBonus + archeryBonus,
     damageDice: withMartialArtsDie(String(data.damage), martialArtsDie),
     damageModifier: v[`${ability}_mod`] + rageBonus,
     ...(rules.criticalRange < 20 ? { criticalRange: rules.criticalRange } : {}),
@@ -391,7 +407,8 @@ export function deriveSpellcasting(
  * better of both for Finesse), then each damaging class or feat spell
  * (attack roll, saving throw, automatic hit or rider; banner invariant 5). Weapon attacks carry the `ClassFeature`
  * rules in force: Rage Damage on Strength melee damage, the Sacred Weapon
- * attack bonus and a Champion critical range below `20`. While Martial Arts
+ * attack bonus, the Archery bonus on Ranged weapons and a Champion critical
+ * range below `20`. While Martial Arts
  * is in force (no armor, no Shield), Monk weapons use DEX when it is higher
  * and the larger of their die and the Martial Arts die, and an Unarmed
  * Strike attack is listed after the weapons.
