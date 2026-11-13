@@ -100,7 +100,7 @@ use crate::timeline::AppendEventInput;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post, put};
@@ -1778,6 +1778,10 @@ async fn ensure_asset_quota(
 /// and unexpired (`403` otherwise). The signature is the credential: no cookie required.
 /// When the asset lives in the object store, the answer is a `307` to a short-lived signed
 /// object-store URL instead, so the bytes never pass through the server.
+///
+/// Both answers carry `Cache-Control: private, no-store`: the URL embeds a signature (and
+/// the redirect a second one), so no shared cache may keep the bytes or the redirect past
+/// the signature's expiry, and a GM-hidden map must not outlive its reveal window in one.
 pub async fn download_asset_handler(
     State(state): State<AppState>,
     Path(key): Path<String>,
@@ -1789,8 +1793,11 @@ pub async fn download_asset_handler(
     {
         return forbidden("invalid or expired asset signature");
     }
+    let private = (CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
     match state.asset_store.direct_download_url(&key).await {
-        Ok(Some(url)) => return axum::response::Redirect::temporary(&url).into_response(),
+        Ok(Some(url)) => {
+            return ([private], axum::response::Redirect::temporary(&url)).into_response();
+        }
         Ok(None) => {}
         Err(err) => return storage_error(err),
     }
@@ -1798,6 +1805,7 @@ pub async fn download_asset_handler(
         Ok(Some(bytes)) => {
             let mut headers = HeaderMap::new();
             headers.insert(CONTENT_TYPE, HeaderValue::from_static("image/webp"));
+            headers.insert(private.0, private.1);
             (StatusCode::OK, headers, bytes).into_response()
         }
         Ok(None) => not_found("asset not found"),

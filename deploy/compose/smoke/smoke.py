@@ -18,10 +18,13 @@ INVARIANTS & SAFETY BOUNDARIES:
   2. `Edge Contracts Checked`:
      - `/healthz` answers through Caddy; HTML is gzip-encoded exactly once
        (no second compression pass at the edge).
+     - `Strict-Transport-Security: max-age=31536000` (no `preload`) reaches
+       the browser through Caddy, since `TRAME_PUBLIC_ORIGIN` is `https://`.
      - The WebSocket upgrade selects `trame.v1+deflate` and the first binary
        frame (the state snapshot) is a zlib stream.
      - An uploaded map image downloads through `/assets/download` -> `307`
-       -> presigned Silo URL on the public origin, as `image/webp` with
+       -> presigned Silo URL on the public origin (the `307` carries
+       `Cache-Control: private, no-store`), as `image/webp` with
        `Access-Control-Allow-Origin` for the public origin only.
   3. `Restore Proof`:
      - `verify` reuses the session cookie saved by `seed`: it only works if
@@ -98,6 +101,10 @@ def path_of(url):
 def check_health():
     resp, body = request("GET", "/healthz")
     check("healthz through caddy", resp.status == 200 and b'"ok"' in body, f"{resp.status} {body[:200]!r}")
+    for path in ("/healthz", "/"):
+        resp, _ = request("GET", path)
+        hsts = resp.getheader("Strict-Transport-Security")
+        check(f"HSTS one year without preload through caddy ({path})", hsts == "max-age=31536000", hsts)
 
 
 def check_signed_download(cookie, asset_url):
@@ -109,6 +116,8 @@ def check_signed_download(cookie, asset_url):
         f"{resp.status} location={location!r}",
     ):
         return
+    cache = resp.getheader("Cache-Control")
+    check("signed download redirect is private, no-store", cache == "private, no-store", cache)
     resp, body = request("GET", path_of(location))
     check(
         "presigned object served as webp through caddy",

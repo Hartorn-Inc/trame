@@ -1280,6 +1280,41 @@ async fn a73_every_response_carries_hardening_headers() {
     }
 }
 
+#[tokio::test]
+async fn hsts_follows_the_public_origin_scheme() {
+    // (case_id, TRAME_PUBLIC_ORIGIN, expected Strict-Transport-Security)
+    let cases = [
+        (
+            "https_origin_sends_one_year_hsts_without_preload",
+            Some("https://table.example.org"),
+            Some("max-age=31536000"),
+        ),
+        (
+            "http_origin_sends_no_hsts",
+            Some("http://localhost:8080"),
+            None,
+        ),
+        ("no_public_origin_sends_no_hsts", None, None),
+    ];
+    for (case, origin, want) in cases {
+        let h = Harness::with(
+            SecurityPolicy {
+                public_origin: origin.map(str::to_string),
+                ..SecurityPolicy::default()
+            },
+            STRONG_SECRET,
+        );
+        let app = h.app();
+        for uri in ["/healthz", "/api/v1/auth/me", "/definitely/not/a/route"] {
+            let (_, headers, _) = send(&app, request("GET", uri, None, Body::empty())).await;
+            let got = headers
+                .get("strict-transport-security")
+                .map(|v| v.to_str().unwrap());
+            assert_eq!(got, want, "case {case}: {uri}");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // A70 / A63 — WebSocket hardening over a real socket
 // ---------------------------------------------------------------------------

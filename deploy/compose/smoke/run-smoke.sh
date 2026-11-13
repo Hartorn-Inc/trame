@@ -28,7 +28,8 @@
 # --------------------
 #   1. `docker compose config` (base, tunnel override) + `caddy validate` (both Caddyfiles).
 #   2. `up --build --wait` with `--profile silo`.
-#   3. `smoke.py seed` (owner setup URL from the logs, Caddy root CA copied out).
+#   3. `smoke.py seed` (owner setup URL from the logs, Caddy root CA copied out;
+#      asserts HSTS and the private download headers through Caddy).
 #   4. `backup.sh now`; dump present locally and in the bucket.
 #   5. Stop the server, delete the database volume and the local dump.
 #   6. `restore.sh <dump>` (downloads from the bucket), start the server.

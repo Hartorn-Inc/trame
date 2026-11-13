@@ -60,6 +60,10 @@
 //!      - Every response gets `X-Content-Type-Options: nosniff`,
 //!        `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and a
 //!        `Content-Security-Policy` unless a handler already set them.
+//!      - When `TRAME_PUBLIC_ORIGIN` is `https://...`, every response also gets
+//!        `Strict-Transport-Security: max-age=31536000` (no `preload`, no
+//!        `includeSubDomains`). Plain-HTTP origins (local dev, LAN) get none,
+//!        since HSTS on an HTTP origin would lock browsers out of it.
 //!   5. `Two Content Security Policies`:
 //!      - Non-HTML responses (JSON API, bundle files, asset downloads) get
 //!        `API_CSP` = `default-src 'none'; frame-ancestors 'none'; base-uri
@@ -689,7 +693,13 @@ pub fn spa_csp(host: Option<&str>, asset_origin: Option<&str>) -> String {
     )
 }
 
-/// Adds CSP, `nosniff`, `X-Frame-Options`, and `Referrer-Policy` headers to every response.
+/// `Strict-Transport-Security` sent on every response of an HTTPS deployment: one year,
+/// no `includeSubDomains` and no `preload`, so a self-hoster's other subdomains and the
+/// browser preload list are never committed on their behalf.
+pub const HSTS_VALUE: &str = "max-age=31536000";
+
+/// Adds CSP, `nosniff`, `X-Frame-Options`, and `Referrer-Policy` headers to every response,
+/// plus `Strict-Transport-Security` (`HSTS_VALUE`) when `TRAME_PUBLIC_ORIGIN` is `https://`.
 /// HTML documents get `spa_csp`; everything else gets `API_CSP`.
 pub async fn security_headers_middleware(
     State(policy): State<Arc<SecurityPolicy>>,
@@ -716,6 +726,16 @@ pub async fn security_headers_middleware(
             HeaderValue::from_static(API_CSP)
         };
         headers.insert(csp_name, csp);
+    }
+    if policy
+        .public_origin
+        .as_deref()
+        .is_some_and(|o| o.starts_with("https://"))
+    {
+        headers.insert(
+            HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static(HSTS_VALUE),
+        );
     }
     let defaults: [(&str, &str); 3] = [
         ("x-content-type-options", "nosniff"),
