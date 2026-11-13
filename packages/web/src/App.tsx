@@ -56,7 +56,7 @@ import { InviteRedemptionScreen } from './auth/InviteRedemptionScreen.tsx';
 import { OwnerSetupScreen } from './auth/OwnerSetupScreen.tsx';
 import { PasswordResetScreen } from './auth/PasswordResetScreen.tsx';
 import { CommandFeedbackToasts, ConnectionBanner, WalQuarantineBanner } from './components/RoomConnectionFeedback.tsx';
-import { LocaleToggle, UnitsToggle } from './components/ShellToggles.tsx';
+import { LocaleToggle, ThemeToggle, UnitsToggle } from './components/ShellToggles.tsx';
 import { mobileCompanionOverrideSignal, t } from './i18n/index.ts';
 import { CampaignLobby } from './lobby/CampaignLobby.tsx';
 import { InstanceAdminPanel } from './lobby/InstanceAdminPanel.tsx';
@@ -141,6 +141,7 @@ function ShellHeader({ client, inCampaign, onOpenAccount, onOpenAdmin }: ShellHe
             {t('shell.backToLobby')}
           </button>
         )}
+        <ThemeToggle />
         <LocaleToggle />
         {inCampaign && (
           <>

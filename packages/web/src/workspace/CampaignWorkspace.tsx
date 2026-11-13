@@ -34,6 +34,12 @@
  *      at the board viewport centre (`spawnTopLeft`). The status line says
  *      "spawned" only once the token is in the projection (`CommandAccepted`)
  *      and reports a `SPAWN_TOKEN` rejection instead.
+ * 7. `Tab Switch Dismisses Live-Table HUD Drawers`:
+ *    - Switching top-level workspace tabs (via mouse click or keyboard
+ *      arrow/Home/End navigation) closes any open live-table HUD drawer
+ *      (`closeSheetDrawer()` and `closeCompendiumDrawer()`), while leaving
+ *      standalone `CompendiumDrawer` mounts on the Compendium tab and in
+ *      the Maps Studio monster picker unaffected.
  * ============================================================================
  */
 import { useEffect, useMemo, useState } from 'preact/hooks';
@@ -46,7 +52,7 @@ import {
   monsterStatBlockOf,
   type CompendiumEntry,
 } from '../compendium/CompendiumDrawer.tsx';
-import { HudDrawers } from '../hud/HudDrawers.tsx';
+import { closeCompendiumDrawer, closeSheetDrawer, HudDrawers } from '../hud/HudDrawers.tsx';
 import { t, type MessageKey } from '../i18n/index.ts';
 import { srdStatusSignal } from '../srdLoading.ts';
 import { MapsWorkspaceTab } from '../maps/MapsWorkspaceTab.tsx';
@@ -140,12 +146,20 @@ export function CampaignWorkspace({ campaignId, userRole, client = apiClient, ac
   };
   const onSpawnMonster = isGm && table !== null ? spawnMonster : undefined;
 
+  const selectTab = (next: WorkspaceTabId) => {
+    if (next !== tab) {
+      closeSheetDrawer();
+      closeCompendiumDrawer();
+    }
+    setTab(next);
+  };
+
   const onTabKeyDown = (e: KeyboardEvent) => {
     const next = nextTabIndex(WORKSPACE_TABS.indexOf(tab), e.key, WORKSPACE_TABS.length);
     if (next === null) return;
     e.preventDefault();
     const id = WORKSPACE_TABS[next];
-    setTab(id);
+    selectTab(id);
     (typeof document !== 'undefined' ? document.getElementById?.(`workspace-tab-${id}`) : null)?.focus();
   };
 
@@ -163,7 +177,7 @@ export function CampaignWorkspace({ campaignId, userRole, client = apiClient, ac
             aria-controls={`workspace-panel-${id}`}
             tabIndex={tab === id ? 0 : -1}
             data-testid={`workspace-tab-${id}`}
-            onClick={() => setTab(id)}
+            onClick={() => selectTab(id)}
           >
             {t(TAB_LABEL[id])}
           </button>
@@ -181,7 +195,7 @@ export function CampaignWorkspace({ campaignId, userRole, client = apiClient, ac
         {tab === 'documents' && <CampaignDocumentsTab campaignId={campaignId} client={client} isGm={isGm} />}
         {tab === 'compendium' && (
           <div class="ds-stack">
-            <CompendiumDrawer isOpen entries={compendium} systemId="dnd5e" onClose={() => setTab('table')} onSpawnMonster={onSpawnMonster} />
+            <CompendiumDrawer isOpen entries={compendium} systemId="dnd5e" onClose={() => selectTab('table')} onSpawnMonster={onSpawnMonster} />
             <section class="ds-panel" aria-labelledby="srd-attribution-title" data-testid="srd-attribution">
               <h2 id="srd-attribution-title" class="ds-panel-title">{t('compendium.attributionTitle')}</h2>
               <p class="ds-meta" lang="en">{SRD_521_ATTRIBUTION}</p>

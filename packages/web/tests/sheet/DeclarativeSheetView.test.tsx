@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { h } from "preact";
+import { untracked } from "@preact/signals";
 import {
   applyClassChoices,
   createDefaultActorData,
@@ -10,7 +11,13 @@ import {
 import { ApiClient, VERSION_CONFLICT } from "../../src/api/client.ts";
 import { createSessionState } from "../../src/api/session.ts";
 import { CompendiumDrawer } from "../../src/compendium/CompendiumDrawer.tsx";
-import { HudDrawers, isCompendiumDrawerOpenSignal, isSheetDrawerOpenSignal } from "../../src/hud/HudDrawers.tsx";
+import {
+  HudDrawers,
+  isCompendiumDrawerOpenSignal,
+  isSheetDrawerOpenSignal,
+  openCompendiumDrawer,
+  openSheetDrawer,
+} from "../../src/hud/HudDrawers.tsx";
 import { localeSignal } from "../../src/i18n/index.ts";
 import { ActorSheetPanel } from "../../src/sheet/ActorSheetPanel.tsx";
 import { DeclarativeSheetView, nextSheetTabIndex } from "../../src/sheet/DeclarativeSheetView.tsx";
@@ -457,12 +464,11 @@ describe("F2: ActorSheetPanel and HudDrawers surface 409 conflicts (with server 
 
     isSheetDrawerOpenSignal.value = false;
     isCompendiumDrawerOpenSignal.value = false;
-    const vnode = HudDrawers({ campaignId: CAMPAIGN_ID, client, actorId: ACTOR_ID });
+    const vnode = untracked(() => HudDrawers({ campaignId: CAMPAIGN_ID, client, actorId: ACTOR_ID }));
     const compendiumVNode = vnode.props.children.find((child: any) => child?.type === CompendiumDrawer);
     assert.ok(compendiumVNode?.props?.dispatchCommand, "HudDrawers wires dispatchCommand to CompendiumDrawer");
 
     const ui = mount(h(HudDrawers, { campaignId: CAMPAIGN_ID, client, actorId: ACTOR_ID }));
-    // Trigger an UPDATE_ACTOR_SHEET through HudDrawers' wired dispatcher via re-rendered CompendiumDrawer prop:
     compendiumVNode.props.dispatchCommand({ cmd: "UPDATE_ACTOR_SHEET", path: "notes", value: "Updated note" });
     await flush(6);
 
@@ -470,5 +476,179 @@ describe("F2: ActorSheetPanel and HudDrawers surface 409 conflicts (with server 
     assert.equal(state.actors.value[ACTOR_ID]?.version, 4);
     ui.unmount();
   });
+});
+
+describe("F3 & F9: HudDrawers single-drawer mutual exclusion & CompendiumDrawer Escape/focus", () => {
+  const CAMPAIGN_ID = "22222222-2222-4222-8222-222222222222";
+  const ACTOR_ID = "33333333-3333-4333-8333-333333333333";
+
+  const exclusionCases: Array<{
+    id: string;
+    openFirst: () => void;
+    openSecond: () => void;
+    expectedSheetOpen: boolean;
+    expectedCompendiumOpen: boolean;
+    presentTestId: string;
+    absentTestId: string;
+  }> = [
+    {
+      id: "F3: openSheetDrawer() closes an already-open Compendium drawer",
+      openFirst: () => openCompendiumDrawer(),
+      openSecond: () => openSheetDrawer(),
+      expectedSheetOpen: true,
+      expectedCompendiumOpen: false,
+      presentTestId: "hud-sheet-drawer",
+      absentTestId: "compendium-drawer",
+    },
+    {
+      id: "F3: openCompendiumDrawer() closes an already-open Sheet drawer",
+      openFirst: () => openSheetDrawer(),
+      openSecond: () => openCompendiumDrawer(),
+      expectedSheetOpen: false,
+      expectedCompendiumOpen: true,
+      presentTestId: "compendium-drawer",
+      absentTestId: "hud-sheet-drawer",
+    },
+    {
+      id: "F3: direct isSheetDrawerOpenSignal.value = true closes Compendium drawer",
+      openFirst: () => {
+        isCompendiumDrawerOpenSignal.value = true;
+      },
+      openSecond: () => {
+        isSheetDrawerOpenSignal.value = true;
+      },
+      expectedSheetOpen: true,
+      expectedCompendiumOpen: false,
+      presentTestId: "hud-sheet-drawer",
+      absentTestId: "compendium-drawer",
+    },
+    {
+      id: "F3: direct isCompendiumDrawerOpenSignal.value = true closes Sheet drawer",
+      openFirst: () => {
+        isSheetDrawerOpenSignal.value = true;
+      },
+      openSecond: () => {
+        isCompendiumDrawerOpenSignal.value = true;
+      },
+      expectedSheetOpen: false,
+      expectedCompendiumOpen: true,
+      presentTestId: "compendium-drawer",
+      absentTestId: "hud-sheet-drawer",
+    },
+  ];
+
+  for (const scenario of exclusionCases) {
+    it(scenario.id, () => {
+      isSheetDrawerOpenSignal.value = false;
+      isCompendiumDrawerOpenSignal.value = false;
+      const state = createSessionState();
+      state.actors.value = {
+        [ACTOR_ID]: { id: ACTOR_ID, campaignId: CAMPAIGN_ID, version: 1, data: createDefaultActorData() } as any,
+      };
+      const client = new ApiClient({ transport: createMockTransport({}), state });
+      const ui = mount(h(HudDrawers, { campaignId: CAMPAIGN_ID, client, actorId: ACTOR_ID }));
+
+      scenario.openFirst();
+      scenario.openSecond();
+
+      assert.equal(isSheetDrawerOpenSignal.value, scenario.expectedSheetOpen);
+      assert.equal(isCompendiumDrawerOpenSignal.value, scenario.expectedCompendiumOpen);
+      assertPresent(ui.byTestId(scenario.presentTestId), scenario.presentTestId);
+      assertAbsent(ui.byTestId(scenario.absentTestId), scenario.absentTestId);
+
+      isSheetDrawerOpenSignal.value = false;
+      isCompendiumDrawerOpenSignal.value = false;
+      ui.unmount();
+    });
+  }
+
+  const closeCases: Array<{
+    id: string;
+    triggerClose: (ui: ReturnType<typeof mount>) => void;
+  }> = [
+    {
+      id: "F9: Escape keydown inside CompendiumDrawer closes it and restores focus to trigger",
+      triggerClose: (ui) => {
+        const searchInput = ui.byTestId("compendium-search-input");
+        assertPresent(searchInput, "compendium-search-input");
+        searchInput.dispatchEvent(Object.assign(new Event("keydown", { bubbles: true }), { key: "Escape" }));
+      },
+    },
+    {
+      id: "F9: document-level Escape keydown closes CompendiumDrawer and restores focus to trigger",
+      triggerClose: () => {
+        document.dispatchEvent(Object.assign(new Event("keydown", { bubbles: true }), { key: "Escape" }));
+      },
+    },
+    {
+      id: "F9: clicking Close button closes CompendiumDrawer and restores focus to trigger",
+      triggerClose: (ui) => {
+        ui.click("btn-close-compendium");
+      },
+    },
+  ];
+
+  for (const scenario of closeCases) {
+    it(scenario.id, async () => {
+      isSheetDrawerOpenSignal.value = false;
+      isCompendiumDrawerOpenSignal.value = false;
+      const state = createSessionState();
+      const client = new ApiClient({ transport: createMockTransport({}), state });
+
+      const ui = mount(
+        h(
+          "div",
+          null,
+          h(
+            "button",
+            {
+              type: "button",
+              "data-testid": "trigger-open-compendium",
+              onClick: () => openCompendiumDrawer(),
+            },
+            "Open Compendium",
+          ),
+          h(HudDrawers, { campaignId: CAMPAIGN_ID, client, actorId: null }),
+        ),
+      );
+
+      const trigger = ui.byTestId("trigger-open-compendium");
+      assertPresent(trigger, "trigger-open-compendium");
+      trigger.focus();
+      assert.equal(
+        (document.activeElement as HTMLElement | null)?.getAttribute("data-testid"),
+        "trigger-open-compendium",
+      );
+
+      ui.click("trigger-open-compendium");
+      await flush(2);
+      assert.equal(isCompendiumDrawerOpenSignal.value, true);
+
+      const drawer = ui.byTestId("compendium-drawer");
+      assertPresent(drawer, "compendium-drawer");
+      assert.equal(drawer.getAttribute("role"), "region");
+      assert.equal(drawer.getAttribute("aria-label"), "Compendium Drawer");
+      const searchInput = ui.byTestId("compendium-search-input");
+      assertPresent(searchInput, "compendium-search-input");
+      assert.equal(
+        (document.activeElement as HTMLElement | null)?.getAttribute("data-testid"),
+        "compendium-search-input",
+        "focus moves into search input on open",
+      );
+
+      scenario.triggerClose(ui);
+      await flush(2);
+
+      assert.equal(isCompendiumDrawerOpenSignal.value, false);
+      assertAbsent(ui.byTestId("compendium-drawer"), "compendium-drawer closed");
+      assert.equal(
+        (document.activeElement as HTMLElement | null)?.getAttribute("data-testid"),
+        "trigger-open-compendium",
+        "focus returns to trigger on close",
+      );
+
+      ui.unmount();
+    });
+  }
 });
 

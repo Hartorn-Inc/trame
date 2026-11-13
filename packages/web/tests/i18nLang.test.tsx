@@ -17,7 +17,8 @@ Object.defineProperty(globalThis, "localStorage", {
 const startupLang = (doc.documentElement as any).lang;
 
 const { localeSignal, unitSystemSignal } = await import("../src/i18n/index.ts");
-const { LocaleToggle, UnitsToggle } = await import("../src/components/ShellToggles.tsx");
+const { LocaleToggle, ThemeToggle, UnitsToggle } = await import("../src/components/ShellToggles.tsx");
+const { THEME_STORAGE_KEY, setThemeMode, themeModeSignal } = await import("../src/signals/themeSignal.ts");
 
 describe("document.documentElement.lang follows localeSignal", () => {
   it("is set from the stored locale at startup, before any component renders", () => {
@@ -46,6 +47,7 @@ describe("shell toggles are localized and labelled for assistive tech", () => {
     doc.body.removeChild(host);
     localeSignal.value = "en";
     unitSystemSignal.value = "imperial_ft";
+    setThemeMode("dark");
   });
 
   function mount(component: any) {
@@ -82,6 +84,88 @@ describe("shell toggles are localized and labelled for assistive tech", () => {
       const button = mount(LocaleToggle);
       assert.equal(button.textContent, c.text);
       assert.equal(button.getAttribute("lang"), c.lang);
+    });
+  }
+
+  const themeCases = [
+    {
+      id: "F5 English: dark cycles to light with WCAG 2.5.3 label-in-name",
+      locale: "en" as const,
+      initial: "dark" as const,
+      expectedNext: "light" as const,
+      initialText: "Dark",
+      initialAria: "Dark, switch theme to Light",
+      nextText: "Light",
+      nextAria: "Light, switch theme to System",
+    },
+    {
+      id: "F5 English: light cycles to system",
+      locale: "en" as const,
+      initial: "light" as const,
+      expectedNext: "system" as const,
+      initialText: "Light",
+      initialAria: "Light, switch theme to System",
+      nextText: "System",
+      nextAria: "System, switch theme to Dark",
+    },
+    {
+      id: "F5 English: system cycles back to dark",
+      locale: "en" as const,
+      initial: "system" as const,
+      expectedNext: "dark" as const,
+      initialText: "System",
+      initialAria: "System, switch theme to Dark",
+      nextText: "Dark",
+      nextAria: "Dark, switch theme to Light",
+    },
+    {
+      id: "F5 French: dark cycles to light with localized French accessible label",
+      locale: "fr" as const,
+      initial: "dark" as const,
+      expectedNext: "light" as const,
+      initialText: "Sombre",
+      initialAria: "Sombre, passer au thème Clair",
+      nextText: "Clair",
+      nextAria: "Clair, passer au thème Système",
+    },
+    {
+      id: "F5 French: light cycles to system with localized French accessible label",
+      locale: "fr" as const,
+      initial: "light" as const,
+      expectedNext: "system" as const,
+      initialText: "Clair",
+      initialAria: "Clair, passer au thème Système",
+      nextText: "Système",
+      nextAria: "Système, passer au thème Sombre",
+    },
+    {
+      id: "F5 French: system cycles back to dark with localized French accessible label",
+      locale: "fr" as const,
+      initial: "system" as const,
+      expectedNext: "dark" as const,
+      initialText: "Système",
+      initialAria: "Système, passer au thème Sombre",
+      nextText: "Sombre",
+      nextAria: "Sombre, passer au thème Clair",
+    },
+  ];
+
+  for (const c of themeCases) {
+    it(c.id, () => {
+      localeSignal.value = c.locale;
+      setThemeMode(c.initial);
+      const button = mount(ThemeToggle);
+      assert.equal(button.getAttribute("data-testid"), "header-theme-toggle");
+      assert.equal(button.textContent, c.initialText);
+      assert.equal(button.getAttribute("aria-label"), c.initialAria);
+      assert.ok(button.getAttribute("aria-label").startsWith(button.textContent), "aria-label must start with visible label");
+
+      button.dispatchEvent(new Event("click", { bubbles: true }));
+      assert.equal(themeModeSignal.value, c.expectedNext);
+      assert.equal(doc.documentElement.getAttribute("data-theme"), c.expectedNext);
+      assert.equal(stored.get(THEME_STORAGE_KEY), c.expectedNext);
+      assert.equal(button.textContent, c.nextText);
+      assert.equal(button.getAttribute("aria-label"), c.nextAria);
     });
   }
 });

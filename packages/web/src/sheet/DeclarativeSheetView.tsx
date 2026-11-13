@@ -336,13 +336,19 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
     }
 
     if (node.kind === 'section' || node.kind === 'column' || node.kind === 'row') {
+      const layoutClass =
+        node.kind === 'section'
+          ? 'ds-layout-section'
+          : node.kind === 'column'
+            ? 'ds-layout-column'
+            : 'ds-layout-row';
       const children = (node.children || []).map((child) => renderNode(child)).filter(Boolean);
       return h(
         'div',
         {
           key: node.id,
           id: node.id,
-          class: `ds-layout-${node.kind} ${node.cssClass ?? ''}`,
+          class: `${layoutClass} ${node.cssClass ?? ''}`.trim(),
         },
         node.title ? h('h3', { class: 'ds-section-title' }, translateLayoutText(node.title)) : null,
         children,

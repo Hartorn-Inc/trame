@@ -40,7 +40,7 @@
  */
 import { useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, type ApiClient } from "../api/client.ts";
-import { LocaleToggle } from "../components/ShellToggles.tsx";
+import { LocaleToggle, ThemeToggle } from "../components/ShellToggles.tsx";
 import { useFocusOnMount } from "../components/a11y/useFocusOnMount.ts";
 import { t, type MessageKey } from "../i18n/index.ts";
 import { AccountField, apiErrorKey } from "./accountForm.tsx";
@@ -128,7 +128,10 @@ export function PasswordResetScreen({ client, token, onDone }: PasswordResetScre
           <h1 id="reset-title" ref={titleRef} tabIndex={-1} class="ds-brand-title" style={{ margin: 0 }}>
             {t("reset.title")}
           </h1>
-          <LocaleToggle />
+          <div class="ds-cluster">
+            <ThemeToggle />
+            <LocaleToggle />
+          </div>
         </div>
 
         {phase === "checking" && <p data-testid="reset-checking">{t("reset.checking")}</p>}

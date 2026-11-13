@@ -41,7 +41,7 @@
  */
 import { useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, type ApiClient } from "../api/client.ts";
-import { LocaleToggle } from "../components/ShellToggles.tsx";
+import { LocaleToggle, ThemeToggle } from "../components/ShellToggles.tsx";
 import { useFocusOnMount } from "../components/a11y/useFocusOnMount.ts";
 import { t, type MessageKey } from "../i18n/index.ts";
 import { AccountField, apiErrorKey } from "./accountForm.tsx";
@@ -144,7 +144,10 @@ export function OwnerSetupScreen({ client, token, onDone }: OwnerSetupScreenProp
           <h1 id="setup-title" ref={titleRef} tabIndex={-1} class="ds-brand-title" style={{ margin: 0 }}>
             {t("setup.title")}
           </h1>
-          <LocaleToggle />
+          <div class="ds-cluster">
+            <ThemeToggle />
+            <LocaleToggle />
+          </div>
         </div>
 
         {phase === "checking" && (

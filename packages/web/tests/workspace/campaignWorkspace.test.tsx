@@ -3,7 +3,12 @@ import { beforeEach, describe, it } from "node:test";
 import { h } from "preact";
 import { SRD_521_ATTRIBUTION } from "../../../game-systems/dnd5e/src/index.ts";
 import { selectedActorIdSignal, selectedTokenIdSignal } from "../../src/api/session.ts";
-import { isSheetDrawerOpenSignal } from "../../src/hud/HudDrawers.tsx";
+import {
+  isCompendiumDrawerOpenSignal,
+  isSheetDrawerOpenSignal,
+  openCompendiumDrawer,
+  openSheetDrawer,
+} from "../../src/hud/HudDrawers.tsx";
 import { localeSignal } from "../../src/i18n/index.ts";
 import { MapsWorkspaceTab, sceneNameFromFile, upsertScene } from "../../src/maps/MapsWorkspaceTab.tsx";
 import type { CampaignMapScene } from "../../src/maps/types.ts";
@@ -47,6 +52,7 @@ beforeEach(() => {
   selectedActorIdSignal.value = null;
   selectedTokenIdSignal.value = null;
   isSheetDrawerOpenSignal.value = false;
+  isCompendiumDrawerOpenSignal.value = false;
   activeCompanionTabSignal.value = "sheet";
 });
 
@@ -97,6 +103,101 @@ describe("CampaignWorkspace: five tabs", () => {
   for (const c of keys) {
     it(`nextTabIndex: ${c.id}`, () => assert.equal(nextTabIndex(c.index, c.key, WORKSPACE_TABS.length), c.expected));
   }
+
+  const drawerDismissCases: Array<{
+    id: string;
+    openDrawer: () => void;
+    switchAction: (ui: ReturnType<typeof mount>) => void;
+    expectedTab: WorkspaceTabId;
+    expectedCompendiumDomCount: number;
+  }> = [
+    {
+      id: "Q2: clicking Maps tab closes an open HUD sheet drawer",
+      openDrawer: () => openSheetDrawer(),
+      switchAction: (ui) => ui.click("workspace-tab-maps"),
+      expectedTab: "maps",
+      expectedCompendiumDomCount: 0,
+    },
+    {
+      id: "Q2: clicking Actors tab closes an open HUD compendium drawer",
+      openDrawer: () => openCompendiumDrawer(),
+      switchAction: (ui) => ui.click("workspace-tab-actors"),
+      expectedTab: "actors",
+      expectedCompendiumDomCount: 0,
+    },
+    {
+      id: "Q2: ArrowRight keydown on tablist closes an open HUD sheet drawer",
+      openDrawer: () => openSheetDrawer(),
+      switchAction: (ui) => ui.key("workspace-tab-table", "ArrowRight"),
+      expectedTab: "maps",
+      expectedCompendiumDomCount: 0,
+    },
+    {
+      id: "Q2: ArrowLeft keydown on tablist closes an open HUD compendium drawer while preserving standalone Compendium tab",
+      openDrawer: () => openCompendiumDrawer(),
+      switchAction: (ui) => ui.key("workspace-tab-table", "ArrowLeft"),
+      expectedTab: "compendium",
+      expectedCompendiumDomCount: 1,
+    },
+    {
+      id: "Q2: clicking Compendium tab closes HUD sheet drawer while mounting standalone CompendiumDrawer",
+      openDrawer: () => openSheetDrawer(),
+      switchAction: (ui) => ui.click("workspace-tab-compendium"),
+      expectedTab: "compendium",
+      expectedCompendiumDomCount: 1,
+    },
+  ];
+
+  for (const scenario of drawerDismissCases) {
+    it(scenario.id, () => {
+      const { client } = liveTable(GM_ID, tableState());
+      client.state.actors.value = {
+        [HERO_ACTOR]: { version: 4, data: heroSheet, name: "Brakka", ownerUserId: PLAYER_ID },
+      };
+      selectedActorIdSignal.value = HERO_ACTOR;
+      const ui = mount(h(CampaignWorkspace, { campaignId: CAMPAIGN, userRole: "GM", client }));
+
+      scenario.openDrawer();
+      assert.equal(
+        isSheetDrawerOpenSignal.value || isCompendiumDrawerOpenSignal.value,
+        true,
+        "HUD drawer opened prior to tab switch",
+      );
+
+      scenario.switchAction(ui);
+
+      assert.equal(ui.byTestId(`workspace-tab-${scenario.expectedTab}`).getAttribute("aria-selected"), "true");
+      assert.equal(isSheetDrawerOpenSignal.value, false, "HUD sheet drawer closed on tab switch");
+      assert.equal(isCompendiumDrawerOpenSignal.value, false, "HUD compendium drawer closed on tab switch");
+      assertAbsent(ui.byTestId("hud-sheet-drawer"), "hud-sheet-drawer unmounted");
+      assert.equal(
+        ui.container.querySelectorAll('[data-testid="compendium-drawer"]').length,
+        scenario.expectedCompendiumDomCount,
+      );
+      ui.unmount();
+    });
+  }
+
+  it("Q2: switching to Maps tab dismisses HUD drawer without affecting MapsStudioTab standalone monster picker", async () => {
+    const { client } = liveTable(GM_ID, tableState(), {
+      [`GET ${MAPS_URL}`]: { status: 200, body: { scenes: [backendScene], version: 3 } },
+    });
+    const ui = mount(h(CampaignWorkspace, { campaignId: CAMPAIGN, userRole: "GM", client }));
+
+    openCompendiumDrawer();
+    assert.equal(isCompendiumDrawerOpenSignal.value, true);
+
+    ui.click("workspace-tab-maps");
+    await flush();
+
+    assert.equal(isCompendiumDrawerOpenSignal.value, false, "HUD compendium drawer dismissed");
+    assertAbsent(ui.byTestId("compendium-drawer"), "no drawer before opening studio picker");
+
+    ui.click("open-monster-picker");
+    assert.ok(ui.byTestId("compendium-drawer"), "MapsStudioTab standalone monster picker opens");
+    assert.equal(isCompendiumDrawerOpenSignal.value, false, "HUD signal remains closed");
+    ui.unmount();
+  });
 });
 
 describe("ActorsTab: create, open, place, portrait", () => {

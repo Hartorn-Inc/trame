@@ -25,7 +25,7 @@
  * ============================================================================
  */
 import type { ApiClient } from '../api/client.ts';
-import { isCompendiumDrawerOpenSignal } from '../hud/HudDrawers.tsx';
+import { openCompendiumDrawer } from '../hud/HudDrawers.tsx';
 import { t } from '../i18n/index.ts';
 import { ActionResolutionCard } from './ActionResolutionCard.tsx';
 import { CombatTrackerBar } from './CombatTrackerBar.tsx';
@@ -77,9 +77,7 @@ export function TableTab({ campaignId, client, isGm }: TableTabProps) {
           type="button"
           class="ds-btn ds-btn-secondary"
           data-testid="open-compendium"
-          onClick={() => {
-            isCompendiumDrawerOpenSignal.value = true;
-          }}
+          onClick={openCompendiumDrawer}
         >
           {t('table.openCompendium')}
         </button>

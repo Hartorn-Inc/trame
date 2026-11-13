@@ -57,7 +57,7 @@ import {
   type InvitePreview,
   type InviteStatus,
 } from "../api/client.ts";
-import { LocaleToggle } from "../components/ShellToggles.tsx";
+import { LocaleToggle, ThemeToggle } from "../components/ShellToggles.tsx";
 import { useFocusOnMount } from "../components/a11y/useFocusOnMount.ts";
 import { formatEpochSeconds, t, type MessageKey } from "../i18n/index.ts";
 import { AccountField, apiErrorKey } from "./accountForm.tsx";
@@ -322,7 +322,10 @@ export function InviteRedemptionScreen({ client, token, onDone }: InviteRedempti
           <h1 id="invite-title" ref={titleRef} tabIndex={-1} class="ds-brand-title" style={{ margin: 0 }}>
             {t("invite.title")}
           </h1>
-          <LocaleToggle />
+          <div class="ds-cluster">
+            <ThemeToggle />
+            <LocaleToggle />
+          </div>
         </div>
 
         {link.kind === "loading" && <p data-testid="invite-loading">{t("invite.loading")}</p>}

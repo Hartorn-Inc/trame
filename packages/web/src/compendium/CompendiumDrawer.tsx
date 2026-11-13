@@ -29,12 +29,16 @@
  *    - With `onStageMonster` (map studio) a monster is staged on the scene
  *      being prepared instead of spawned live; the studio stores only its
  *      `srd:monster:<slug>` reference (`maps/monsterStaging.ts`).
+ * 5. `Accessible Escape & Focus Lifecycle`:
+ *    - Opening the drawer moves keyboard focus into the search input while
+ *      recording the previously focused trigger element; closing via `Escape`
+ *      or the close button restores focus to that trigger when still mounted.
  * ============================================================================
  */
 import { h, type VNode } from 'preact';
 import type { WirePoint2D, WireTrameCommand } from '../api/wire.ts';
 import type { MonsterStatBlock } from '../../../game-systems/dnd5e/src/index.ts';
-import { useSafeState } from '../sheet/safeHooks.ts';
+import { useSafeEffect, useSafeRef, useSafeState } from '../sheet/safeHooks.ts';
 import type { CommandDispatcher } from '../sheet/types.ts';
 import { spawnToken } from '../table/commands.ts';
 import { CompendiumDragDropManager } from './CompendiumDragDropManager.ts';
@@ -119,11 +123,65 @@ const CATEGORY_LABEL_KEYS: Record<(typeof CATEGORIES)[number], MessageKey> = {
 };
 
 export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | null {
-  if (!props.isOpen) return null;
-
   const [query, setQuery] = useSafeState('');
   const [category, setCategory] = useSafeState<string>('all');
   const [openStatBlockId, setOpenStatBlockId] = useSafeState<string | null>(null);
+  const drawerRef = useSafeRef<HTMLElement | null>(null);
+  const searchInputRef = useSafeRef<HTMLInputElement | null>(null);
+  const previousFocusRef = useSafeRef<HTMLElement | null>(null);
+  const wasOpenRef = useSafeRef<boolean>(false);
+  const onCloseRef = useSafeRef(props.onClose);
+  onCloseRef.current = props.onClose;
+
+  const restorePreviousFocus = () => {
+    const previous = previousFocusRef.current;
+    previousFocusRef.current = null;
+    if (
+      previous &&
+      typeof previous.focus === 'function' &&
+      (typeof document === 'undefined' || !document.body || document.body.contains(previous))
+    ) {
+      previous.focus();
+    }
+  };
+
+  useSafeEffect(() => {
+    if (props.isOpen && !wasOpenRef.current) {
+      wasOpenRef.current = true;
+      if (typeof document !== 'undefined') {
+        const active = document.activeElement as HTMLElement | null;
+        if (active && typeof active.focus === 'function' && !drawerRef.current?.contains(active)) {
+          previousFocusRef.current = active;
+        }
+      }
+      const focusTarget = searchInputRef.current ?? drawerRef.current;
+      focusTarget?.focus?.();
+    } else if (!props.isOpen && wasOpenRef.current) {
+      wasOpenRef.current = false;
+      restorePreviousFocus();
+    }
+
+    if (!props.isOpen || typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
+      return;
+    }
+
+    const handleDocumentKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (document.body?.querySelector?.('.ds-modal-backdrop')) return;
+      e.preventDefault?.();
+      e.stopPropagation?.();
+      onCloseRef.current();
+      restorePreviousFocus();
+    };
+
+    document.addEventListener('keydown', handleDocumentKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleDocumentKeyDown);
+    };
+  }, [props.isOpen]);
+
+  if (!props.isOpen) return null;
+
   const entries = props.entries ?? [];
   const dragManager = new CompendiumDragDropManager({
     systemId: props.systemId ?? 'dnd5e',
@@ -167,18 +225,29 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
     props.onDragStart?.(entry, e);
   };
 
+  const closeDrawer = () => {
+    props.onClose();
+    restorePreviousFocus();
+  };
+
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
+      if (typeof e.preventDefault === 'function') {
+        e.preventDefault();
+      }
       if (typeof e.stopPropagation === 'function') {
         e.stopPropagation();
       }
-      props.onClose();
+      closeDrawer();
     }
   };
 
   return h(
     'aside',
     {
+      ref: drawerRef,
+      role: 'region',
+      tabIndex: -1,
       class: 'ds-compendium-drawer',
       'data-testid': 'compendium-drawer',
       'aria-label': t('compendium.drawer'),
@@ -188,14 +257,25 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
       'header',
       { class: 'ds-drawer-header' },
       h('h3', null, t('compendium.title')),
-      h('button', { type: 'button', class: 'ds-btn-close', 'data-testid': 'btn-close-compendium', 'aria-label': t('compendium.close'), onClick: props.onClose }, t('action.close')),
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'ds-btn ds-btn-sm ds-btn-close',
+          'data-testid': 'btn-close-compendium',
+          'aria-label': t('compendium.close'),
+          onClick: closeDrawer,
+        },
+        t('action.close'),
+      ),
     ),
     h(
       'div',
       { class: 'ds-compendium-search-bar' },
       h('input', {
+        ref: searchInputRef,
         type: 'text',
-        class: 'ds-input-search',
+        class: 'ds-input ds-input-search',
         'data-testid': 'compendium-search-input',
         'aria-label': t('compendium.searchLabel'),
         placeholder: t('compendium.searchPlaceholder'),

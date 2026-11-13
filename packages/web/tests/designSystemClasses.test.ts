@@ -31,8 +31,23 @@ describe("ds-* classes used by components resolve to tokens.css rules", () => {
   const files = [
     "src/components/modals/LevelUpModal.tsx",
     "src/components/modals/RestModal.tsx",
+    "src/components/character-sheet/CharacterSheetHeader.tsx",
+    "src/compendium/CompendiumDrawer.tsx",
+    "src/compendium/MonsterStatBlockView.tsx",
+    "src/sheet/ActorSheetPanel.tsx",
+    "src/sheet/DeclarativeSheetView.tsx",
+    "src/sheet/widgets/ArmorInitiativeSpeedWidget.tsx",
+    "src/sheet/widgets/AttackActionTableWidget.tsx",
+    "src/sheet/widgets/ConditionBadgeStripWidget.tsx",
+    "src/sheet/widgets/FeatureTraitListWidget.tsx",
+    "src/sheet/widgets/HitDiceAndDeathSavesWidget.tsx",
+    "src/sheet/widgets/InventoryContainerTreeWidget.tsx",
+    "src/sheet/widgets/NotesMarkdownPaneWidget.tsx",
+    "src/sheet/widgets/ResourceBarWidget.tsx",
     "src/sheet/widgets/SavingThrowListWidget.tsx",
     "src/sheet/widgets/SkillCheckListWidget.tsx",
+    "src/sheet/widgets/SpellbookAccordionWidget.tsx",
+    "src/sheet/widgets/StatBlock6Widget.tsx",
     "src/auth/AuthScreen.tsx",
     "src/lobby/CampaignLobby.tsx",
     "src/lobby/CampaignInviteDialog.tsx",
@@ -81,6 +96,11 @@ describe("ds-* modal and hit-target primitives are wired to ATLAS tokens", () =>
     { id: "button reset draws a visible focus ring", selector: ".ds-btn-reset:focus-visible", expects: ["var(--atlas-focus)"] },
     { id: "icon button keeps the desktop hit target both ways", selector: ".ds-icon-btn", expects: ["min-width: var(--atlas-hit-desktop)", "min-height: var(--atlas-hit-desktop)"] },
     { id: "inputs draw their border with the control token", selector: ".ds-input", expects: ["var(--atlas-border-control)"] },
+    { id: "compendium drawer uses ATLAS surface and structural border tokens", selector: ".ds-compendium-drawer", expects: ["var(--atlas-surface)", "var(--atlas-border)"] },
+    { id: "compendium search input uses raised surface and control border tokens", selector: ".ds-input-search", expects: ["var(--atlas-surface-raised)", "var(--atlas-border-control)", "min-height: var(--atlas-hit-desktop)"] },
+    { id: "compendium category filter tab buttons use control border and desktop hit target", selector: ".ds-tab-btn", expects: ["var(--atlas-border-control)", "min-height: var(--atlas-hit-desktop)"] },
+    { id: "compendium entry list strips browser list chrome", selector: ".ds-compendium-entry-list", expects: ["list-style: none", "display: flex"] },
+    { id: "compendium entry card uses structural hairline divider", selector: ".ds-compendium-entry-card", expects: ["border-bottom: 1px solid var(--atlas-border)"] },
   ];
 
   for (const c of cases) {
@@ -92,7 +112,7 @@ describe("ds-* modal and hit-target primitives are wired to ATLAS tokens", () =>
     });
   }
 
-  const touchCases = [".ds-btn", ".ds-icon-btn", ".ds-tab", ".ds-choice", ".ds-save-roll", ".ds-skill-roll"];
+  const touchCases = [".ds-btn", ".ds-input-search", ".ds-icon-btn", ".ds-tab", ".ds-tab-btn", ".ds-btn-add-entry", ".ds-choice", ".ds-save-roll", ".ds-skill-roll"];
 
   for (const selector of touchCases) {
     it(`${selector} grows to the touch hit target on narrow viewports`, () => {

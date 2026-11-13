@@ -32,7 +32,7 @@ import { describeActionError } from '../api/errorMessages.ts';
 import { selectedActorIdSignal, type ActorRecord } from '../api/session.ts';
 import type { Uuid, WireTrameCommand } from '../api/wire.ts';
 import { CharacterBuilderModal } from '../builder/CharacterBuilderModal.tsx';
-import { isSheetDrawerOpenSignal } from '../hud/HudDrawers.tsx';
+import { openSheetDrawer } from '../hud/HudDrawers.tsx';
 import { t } from '../i18n/index.ts';
 import { saveActorSheet } from '../sheet/sheetPersistence.ts';
 import { spawnToken } from '../table/commands.ts';
@@ -79,7 +79,7 @@ export function ActorsTab({ campaignId, client, isGm }: ActorsTabProps) {
 
   const openSheet = (actorId: Uuid) => {
     selectedActorIdSignal.value = actorId;
-    isSheetDrawerOpenSignal.value = true;
+    openSheetDrawer();
   };
 
   const place = (actorId: Uuid, record: ActorRecord) => {

@@ -26,10 +26,14 @@
  * 3. `Escape Closes`:
  *    - Escape inside the sheet drawer closes it without bubbling to the
  *      canvas shortcuts.
+ * 4. `Single-Drawer Mutual Exclusion`:
+ *    - Opening the sheet drawer closes the compendium drawer, and opening the
+ *      compendium drawer closes the sheet drawer, preserving unobstructed
+ *      table canvas visibility per ATLAS v1.1.
  * ============================================================================
  */
 import { h, type VNode } from 'preact';
-import { signal } from '@preact/signals';
+import { signal, untracked } from '@preact/signals';
 import { apiClient, type ApiClient } from '../api/client.ts';
 import { selectedActorIdSignal } from '../api/session.ts';
 import { ActorSheetPanel } from '../sheet/ActorSheetPanel.tsx';
@@ -44,6 +48,51 @@ export { coreStatsLockedSignal } from '../sheet/ActorSheetPanel.tsx';
 export const isSheetDrawerOpenSignal = signal<boolean>(false);
 /** `true` while the compendium drawer is open. */
 export const isCompendiumDrawerOpenSignal = signal<boolean>(false);
+
+let wasSheetDrawerOpen = false;
+let wasCompendiumDrawerOpen = false;
+
+isSheetDrawerOpenSignal.subscribe((open) => {
+  const transitionedOpen = open && !wasSheetDrawerOpen;
+  wasSheetDrawerOpen = open;
+  if (transitionedOpen && isCompendiumDrawerOpenSignal.peek()) {
+    untracked(() => {
+      isCompendiumDrawerOpenSignal.value = false;
+    });
+  }
+});
+
+isCompendiumDrawerOpenSignal.subscribe((open) => {
+  const transitionedOpen = open && !wasCompendiumDrawerOpen;
+  wasCompendiumDrawerOpen = open;
+  if (transitionedOpen && isSheetDrawerOpenSignal.peek()) {
+    untracked(() => {
+      isSheetDrawerOpenSignal.value = false;
+    });
+  }
+});
+
+/** Opens the actor sheet drawer and closes the compendium drawer. */
+export function openSheetDrawer(): void {
+  isCompendiumDrawerOpenSignal.value = false;
+  isSheetDrawerOpenSignal.value = true;
+}
+
+/** Closes the actor sheet drawer. */
+export function closeSheetDrawer(): void {
+  isSheetDrawerOpenSignal.value = false;
+}
+
+/** Opens the compendium drawer and closes the actor sheet drawer. */
+export function openCompendiumDrawer(): void {
+  isSheetDrawerOpenSignal.value = false;
+  isCompendiumDrawerOpenSignal.value = true;
+}
+
+/** Closes the compendium drawer. */
+export function closeCompendiumDrawer(): void {
+  isCompendiumDrawerOpenSignal.value = false;
+}
 
 export interface HudDrawersProps {
   campaignId: string;
@@ -66,15 +115,13 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
   const actorId = props.actorId === undefined ? selectedActorIdSignal.value : props.actorId;
   const [alertState, setAlertState] = useSafeState<{ actorId: string; message: string } | null>(null);
   const activeAlert = actorId && alertState?.actorId === actorId ? alertState.message : null;
-
-  const closeSheet = () => {
-    isSheetDrawerOpenSignal.value = false;
-  };
+  const isCompendiumOpen = isCompendiumDrawerOpenSignal.value;
+  const isSheetOpen = isSheetDrawerOpenSignal.value && !isCompendiumOpen;
 
   const handleSheetKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
       e.stopPropagation?.();
-      closeSheet();
+      closeSheetDrawer();
     }
   };
 
@@ -122,7 +169,7 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
           ),
         )
       : null,
-    isSheetDrawerOpenSignal.value
+    isSheetOpen
       ? h(
           'aside',
           {
@@ -142,7 +189,7 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
                 class: 'ds-btn ds-btn-sm ds-btn-close',
                 'data-testid': 'btn-close-sheet-drawer',
                 'aria-label': t('hud.closeSheetDrawer'),
-                onClick: closeSheet,
+                onClick: closeSheetDrawer,
               },
               t('action.close'),
             ),
@@ -154,15 +201,13 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
             context: 'hud_drawer',
             gmCoreLocked: props.gm_core_locked,
             isTableCanvasMounted: props.isTableCanvasMounted,
-            onClose: closeSheet,
+            onClose: closeSheetDrawer,
           }),
         )
       : null,
     h(CompendiumDrawer, {
-      isOpen: isCompendiumDrawerOpenSignal.value,
-      onClose: () => {
-        isCompendiumDrawerOpenSignal.value = false;
-      },
+      isOpen: isCompendiumOpen,
+      onClose: closeCompendiumDrawer,
       entries: props.compendiumEntries,
       systemId: props.systemId,
       dispatchCommand,
