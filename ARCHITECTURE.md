@@ -100,21 +100,22 @@ graph TB
 
 ## EPURE Governance for `Hartorn-Inc/trame`
 
-The repository is configured with `/setup-repo`. Its reviewer roster lives in `.cursor/agents/*.md` and covers the Rust + WASM + PixiJS + MCP architecture:
+The repository is configured with `/setup-repo`. Its canonical 14-agent roster lives in `.cursor/agents/*.md` (`model: inherit`, see [`AGENTS.md`](./AGENTS.md)) alongside user-level plumbing and escalation agents (`stack-operator`, `test-runner`, `senior-architect`):
 
-### Domain & Stack Specialists
-1. **`domain-backend-reviewer`**: domain logic, mathematical formulas, state transitions, and backend API (`TrameCommand` handling, `TableRoomActor`, WAL/write-behind guarantees).
-2. **`game-systems-reviewer`**: `GameSystemPack` schema compliance and D&D 5e rule accuracy (SRD 5.2.1, CC-BY-4.0), sheet widgets and effect stacking.
-3. **`realtime-reviewer`**: WebSocket transport, room lifecycle, `Idle-Lease`, and per-recipient state projection.
-4. **`mcp-sync-reviewer`**: MCP tool parity with `TrameCommand`, `McpStagingProposal`, and note synchronization.
-5. **`infra-reviewer`**: CI/CD workflows, build scripts, package dependencies, Docker images, and runtime configuration.
+### Lane Builders (3)
+1. **`rust-builder`**: Rust spatial/rules engine (`crates/trame-engine`, WASM parity), Axum server (`crates/trame-server`), and SQL migrations; verified via `make lint-rust`, `make test-rust`, and `make wasm`.
+2. **`web-builder`**: Preact + PixiJS v8 web client (`packages/web`), SRD 5.2.1 `GameSystemPack` and pack generator (`packages/game-systems/dnd5e`, `scripts/open5e*.ts`), and Playwright E2E journeys (`e2e/`); verified via `make lint-web`, `make lint-design`, `make test-game-systems`, and `make test-web`.
+3. **`infra-builder`**: Docker/Compose stacks, Caddy, Silo, Cloud Run Terraform (`deploy/`), `Makefile`, CI workflows (`.github/workflows/`), and operational scripts; verified via `make lint-terraform`, `make test-budget-cap`, and `make deploy-compose-smoke`.
 
-### Cross-Cutting Reviewers
-6. **`architecture-reviewer`**: module boundaries, ADR compliance, 100% UI $\leftrightarrow$ MCP parity, no client/server duplication, and use of `GLOSSARY.md` terms.
-7. **`security-reviewer`**: zero-trust filtering per token (vision anti-cheat, `VisibilityChannel` hidden channels), server-side purge of `:::dm` blocks, CSPRNG dice, presigned URLs, and secret hygiene.
-8. **`spec-parity-reviewer`**: 1-to-1 parity between the approved spec or ticket and the diff.
-9. **`standards-reviewer`**: idiomatic Rust (`cargo clippy -- -D warnings`), strict TypeScript, parametrized tests.
-10. **`frontend-reviewer`**: Preact component architecture, `PreactSignalState` boundaries, ATLAS v1.1 tokens, and the PixiJS v8 `SceneGraph`.
-11. **`accessibility-reviewer`**: WCAG 2.2 AA, keyboard navigation, dual-theme contrast, and non-color tactical redundancy.
-12. **`design-reviewer`**: `DESIGN.md` (ATLAS v1.1) tokens, `CanvasThemePalette` boundaries, responsive layout, and interaction states.
-13. **`user-advocate`**: experience of the 4 personas (*GM*, *Player*, *Spectator*, *Instance Operator*) in Exploration and Turn-by-Turn modes.
+### Read-Only Reviewers (11)
+4. **`architecture-reviewer`**: crate and package boundaries, deep-module interfaces, ADR compliance, 100% UI $\leftrightarrow$ MCP parity, and ubiquitous `GLOSSARY.md` vocabulary.
+5. **`domain-backend-reviewer`**: spatial engine geometry, `TrameCommand` state transitions, WebSocket transport, `TableRoomActor` `Idle-Lease` and WAL/quarantine persistence, MCP tool parity and `McpStagingProposal` RBAC, CRDT/note synchronization, and SQLx/S3 storage (consolidating spatial, WAL, MCP, and real-time review).
+6. **`game-systems-reviewer`**: `GameSystemPack` schema compliance, SRD 5.2.1 rules accuracy (CC-BY-4.0), deterministic 5-phase `ActiveEffect` evaluation, L1–20 progression, and `SrdPack` determinism.
+7. **`frontend-reviewer`**: Preact component architecture, `PreactSignalState` boundaries, `WidgetRegistry` discipline, PixiJS v8 `SceneGraph`, and `MobileCompanionView`.
+8. **`design-reviewer`**: `DESIGN.md` (ATLAS v1.1) design tokens, `CanvasThemePalette` boundaries, responsive layout integrity, and interaction states.
+9. **`accessibility-reviewer`**: WCAG 2.2 AA dual-theme contrast, keyboard navigation, ARIA semantics, non-color tactical redundancy, and `en`/`fr` UI parity.
+10. **`security-reviewer`**: Argon2id/CSPRNG authentication, per-recipient RBAC and fog-of-war stripping (`VisibilityChannel`, `:::dm` and unrevealed `:::handout` purge), UVTT upload guards, presigned asset URLs, and CI/ops secret hygiene.
+11. **`infra-reviewer`**: CI/CD workflows, Docker/Compose definitions, Terraform modules, `Makefile` targets, and runtime configuration.
+12. **`spec-parity-reviewer`**: strict 1-to-1 acceptance parity between the approved specification or GitHub Issue and the diff and tests.
+13. **`standards-reviewer`**: English-only language policy, architectural module banners, idiomatic Rust (`cargo clippy -- -D warnings`), strict TypeScript, and parametrized tests.
+14. **`user-advocate`**: persona UX gate (`design-gate` and `implementation-review`) for the Game Master, Player, Spectator, and Instance Operator across Exploration and Turn-by-Turn modes.

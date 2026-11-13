@@ -191,7 +191,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### DeathSavingThrow
 
-- **Definition**: Untyped d20 saving throw rolled by an unconscious actor at 0 HP at the start of their turn, tracking successes (`>= 10`) and failures (`< 10`, 2 failures on natural 1, regain 1 HP on natural 20). Three successes make the actor Stable (counters reset, no further rolls until damaged); three failures kill it. The server rolls the d20 for players (`RecordDeathSave`).
+- **Definition**: Untyped d20 saving throw rolled by an unconscious actor at 0 HP at the start of their turn against DC `10`. `Exhaustion` subtracts `2 × level` from raw d20 faces `2` to `19` (success at `>= 10`, failure at `< 10`), while an unmodified natural `1` (`2` failures) and natural `20` (`1` HP regained) remain invariant. Three successes make the actor Stable (counters reset, no further rolls until damaged); three failures kill it. The server rolls the d20 for players (`RecordDeathSave`).
 - **Allowed Context**: `DeathSavingThrow`, `death saving throw`.
 - **_Avoid_**: `death save`, `dying roll`.
 
@@ -230,6 +230,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Interactive control panel allowing the Game Master to modify token resources, refund actions, teleport tokens, change table modes, and cycle ambient presets.
 - **Allowed Context**: Game Master view HUD.
 - **_Avoid_**: AdminBar, CheatMenu, MasterPanel.
+
+### HudDrawers
+
+- **Definition**: Slide-over live-table drawer container hosting `ActorSheetPanel` and `CompendiumDrawer` with strict single-drawer mutual exclusion and automatic dismissal on `CampaignWorkspace` tab switches so at least 75% of the tactical canvas stays unobstructed.
+- **Allowed Context**: Live `Table` tab overlays, character sheet inspection, compendium drag-and-drop browsing, and `CampaignWorkspace` navigation.
+- **_Avoid_**: `DualDrawerOverlay`, `FloatingSheetModal`, `PersistentSidebars`.
 
 ### InstantDeath
 
@@ -368,6 +374,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Non-cumulative temporary hit points acting as a priority absorption buffer before damage is subtracted from current hit points.
 - **Allowed Context**: `TempHP`, `temporary hit points`.
 - **_Avoid_**: `HP shield`, `bonus HP`.
+
+### ThemeModeSignal
+
+- **Definition**: Reactive Preact signal (`themeModeSignal`, paired with `resolvedThemeSignal`) governing the active ATLAS v1.1 interface palette preference (`'dark' | 'light' | 'system'`) synchronized across DOM attributes, `CanvasThemePalette`, and `localStorage`.
+- **Allowed Context**: Reactive theme switching, ATLAS v1.1 palette resolution, and `CanvasThemePalette` synchronization.
+- **_Avoid_**: `DarkModeFlag`, `ThemeContext`, `ColorSchemeStore`.
 
 ### ThreatReach
 
@@ -515,7 +527,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### LinkedActorToken
 
-- **Definition**: Table token bound to a persistent `Actor` (`actor_id` set), whose hit points, temporary hit points, conditions, and death saves stay synchronized in both directions with that `Actor`.
+- **Definition**: Table token bound to a persistent `Actor` (`actor_id` set), whose hit points, temporary hit points, conditions, `DeathSaveCounters`, `isStable`, and `isDead` are bidirectionally synchronized with the persistent `Actor` (ADR-0037).
 - **Allowed Context**: Player character and named NPC tokens, `ApplyDamage` / `HealActor` persistence, and `ActorUpdated` token resynchronization.
 - **_Avoid_**: BoundToken, SheetToken.
 
