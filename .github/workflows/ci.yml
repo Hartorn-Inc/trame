@@ -69,6 +69,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }} # tflint --init downloads its pinned ruleset from GitHub releases
         run: make lint-terraform
+      - name: Budget cap function tests (make test-budget-cap)
+        run: make test-budget-cap
       # Not a service container: services cannot pass Silo its `server /data` command.
       - name: Start Silo for the S3 integration tests
         run: |

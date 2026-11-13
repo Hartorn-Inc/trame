@@ -17,7 +17,11 @@
 #   cloud_run.tf          The `trame-server` service and its public invoker.
 #   backup.tf             Nightly `pg_dump` Cloud Run job + Cloud Scheduler.
 #   r2.tf                 R2 asset and backup buckets, CORS, lifecycle.
-#   budget.tf             1 EUR budget alert to an email channel.
+#   budget.tf             Monthly budget (warn 1 / 5 EUR, cap 10 EUR), email
+#                         channel and the `budget-alerts` Pub/Sub topic.
+#   budget_cap.tf         Cloud Run function that unlinks billing at the cap.
+#   github_deploy.tf      Workload Identity Federation + deployer identity for
+#                         `.github/workflows/deploy.yml`.
 #   outputs.tf            URLs, image paths, operator commands.
 #
 # INVARIANTS & SAFETY BOUNDARIES:
@@ -52,16 +56,27 @@ locals {
 
 # `serviceusage` and `cloudresourcemanager` must be enabled by hand once (README,
 # "One-time bootstrap"): Terraform needs them to enable everything below.
+# `sts` and `iamcredentials` turn a GitHub OIDC token into deployer credentials;
+# `cloudbuild`, `cloudfunctions`, `eventarc`, `pubsub`, `storage` and
+# `cloudbilling` build, trigger and run the budget-cap function.
 resource "google_project_service" "enabled" {
   for_each = toset([
     "artifactregistry.googleapis.com",
     "billingbudgets.googleapis.com",
+    "cloudbilling.googleapis.com",
+    "cloudbuild.googleapis.com",
+    "cloudfunctions.googleapis.com",
     "cloudscheduler.googleapis.com",
+    "eventarc.googleapis.com",
     "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
+    "pubsub.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
+    "storage.googleapis.com",
+    "sts.googleapis.com",
   ])
 
   project            = var.project_id

@@ -45,3 +45,26 @@ output "restore_list_command" {
   description = "Lists the dumps in the backups bucket (read the execution logs for the list)."
   value       = "gcloud run jobs execute ${google_cloud_run_v2_job.backup.name} --project=${var.project_id} --region=${var.region} --args=restore.sh,list --wait"
 }
+
+output "workload_identity_provider" {
+  description = "Full resource name of the GitHub OIDC provider (`projects/<number>/locations/global/workloadIdentityPools/trame-github/providers/github-actions`), the `workload_identity_provider` input of google-github-actions/auth."
+  value       = google_iam_workload_identity_pool_provider.github.name
+}
+
+output "deployer_service_account_email" {
+  description = "Email of the `trame-deployer` service account that deploy.yml impersonates."
+  value       = google_service_account.deployer.email
+}
+
+output "github_variables_command" {
+  description = "Sets the variables deploy.yml reads on the GitHub `production` environment (needs `gh auth login` with admin rights on the repository). None of them is secret."
+  value = join("\n", [for name, value in {
+    GCP_PROJECT_ID       = var.project_id
+    GCP_REGION           = var.region
+    GCP_WIF_PROVIDER     = google_iam_workload_identity_pool_provider.github.name
+    GCP_DEPLOYER_SA      = google_service_account.deployer.email
+    GCP_IMAGE_REPOSITORY = local.image_repository
+    CLOUD_RUN_SERVICE    = google_cloud_run_v2_service.trame.name
+    CLOUD_RUN_BACKUP_JOB = google_cloud_run_v2_job.backup.name
+  } : "gh variable set ${name} --env production --repo ${var.github_repository} --body '${value}'"])
+}

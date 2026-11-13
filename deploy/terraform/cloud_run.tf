@@ -39,6 +39,13 @@
 #      - `/healthz` answers 200 only when PostgreSQL replies within 2 s. The
 #        startup probe allows 120 s for a cold Neon and migrations; the
 #        liveness probe restarts the container after 90 s of failures.
+#   6. `Image Owned By The Deploy Workflow`:
+#      - `var.server_image_tag` only sets the first image. Afterwards
+#        `deploy.yml` (or an operator) runs `gcloud run services update
+#        --image`, which also writes the client fields and a template
+#        annotation; Terraform ignores those so it neither rolls back the
+#        image nor shows a diff after each deploy. A later Terraform update
+#        (for example a secret rotation) resends the deployed image.
 # ============================================================================
 
 resource "google_service_account" "server" {
@@ -152,6 +159,13 @@ resource "google_cloud_run_v2_service" "trame" {
   }
 
   lifecycle {
+    ignore_changes = [
+      client,
+      client_version,
+      template[0].annotations,
+      template[0].containers[0].image,
+    ]
+
     precondition {
       condition     = try(length(var.s3_access_key_id) > 0, false)
       error_message = "Set s3_access_key_id (R2 token of the assets bucket) before deploying the service: without it the server refuses to start."

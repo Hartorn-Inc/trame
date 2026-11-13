@@ -25,6 +25,11 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "5.28.1"
     }
+    # Zips `budget-cap/` for the hard-cap Cloud Run function (`budget_cap.tf`).
+    archive = {
+      source  = "hashicorp/archive"
+      version = "2.8.1"
+    }
   }
 }
 

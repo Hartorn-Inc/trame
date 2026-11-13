@@ -12,11 +12,13 @@ DEV_COMPOSE := $(DC) --project-name $(DEV_PROJECT) --project-directory "$(REPO_D
 TERRAFORM_DIR := $(REPO_DIR)/deploy/terraform
 TERRAFORM_IMAGE := hashicorp/terraform:1.17.1@sha256:a5d5a5a892c98f60fcbfa81eac2a40fc19e7b3fa7719bccae10ff6111d22524a
 TFLINT_IMAGE := ghcr.io/terraform-linters/tflint:v0.65.0@sha256:2788f4d4fc663c0e953b011b01bf443fe5bfce7587ee916e588e6057b85d6359
+# Same Node major as the function runtime (`nodejs24` in deploy/terraform/budget_cap.tf).
+BUDGET_CAP_NODE_IMAGE := node:24.22.2-alpine@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8
 # Sources mounted read-only; provider and plugin downloads go to a per-checkout cache volume.
 TERRAFORM_RUN := docker run --rm --memory 2g -v "$(TERRAFORM_DIR)":/src:ro -v trame-terraform-$(PROJECT_HASH):/cache -w /src \
 	-e TF_DATA_DIR=/cache/data -e TFLINT_PLUGIN_DIR=/cache/tflint -e GITHUB_TOKEN
 
-.PHONY: help up down logs ps build wasm test test-rust test-web test-game-systems srd-content lint lint-rust lint-web lint-design lint-terraform fmt check shell-rust shell-web db-psql clean e2e-image e2e e2e-video deploy-compose-smoke
+.PHONY: help up down logs ps build wasm test test-rust test-web test-game-systems test-budget-cap srd-content lint lint-rust lint-web lint-design lint-terraform fmt check shell-rust shell-web db-psql clean e2e-image e2e e2e-video deploy-compose-smoke
 
 help: ## Display available Docker-based development commands
 	@awk 'BEGIN {FS = ":.*##"; printf "TRAME Docker Development Workflow\nUsage: make <target>\n\nTargets:\n"} /^[a-zA-Z][a-zA-Z0-9_-]*:.*##/ {printf "  %-20s %s\n", $$1, $$2}' "$(MAKEFILE_PATH)"
@@ -40,7 +42,7 @@ build: wasm ## Build Rust workspace and Web frontend inside Docker
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev cargo build --workspace
 	$(DEV_COMPOSE) run --rm --no-deps web-dev npm run build
 
-test: test-rust wasm test-game-systems test-web ## Run all tests in order (Rust, WASM build, game systems, Web incl. WASM parity) inside Docker
+test: test-rust wasm test-game-systems test-web test-budget-cap ## Run all tests in order (Rust, WASM build, game systems, Web incl. WASM parity, budget cap) inside Docker
 
 # Empty by default so PostgreSQL integration tests skip under `--no-deps`; after `make up`,
 # pass TEST_DATABASE_URL=postgresql://trame:trame_dev_password@postgres:5432/trame to run them.
@@ -64,6 +66,10 @@ test-web: wasm test-game-systems ## Run Web frontend (incl. WASM parity) and gam
 
 test-game-systems: wasm ## Run packages/game-systems/dnd5e tests inside the Node Docker container
 	$(DEV_COMPOSE) run --rm --no-deps web-dev node --test "../game-systems/dnd5e/tests/**/*.test.ts"
+
+# The decision logic has no npm dependency, so the tests run offline on the read-only sources.
+test-budget-cap: ## Run the budget hard-cap Cloud Run function tests (deploy/terraform/budget-cap) in a pinned Node container
+	docker run --rm --memory 512m --network none -v "$(TERRAFORM_DIR)/budget-cap":/src:ro -w /src $(BUDGET_CAP_NODE_IMAGE) node --test
 
 srd-content: ## Regenerate the dnd5e SRD 5.2.1 packs from the pinned Open5e snapshot (ARGS="--check" verifies them)
 	$(DEV_COMPOSE) run --rm --no-deps web-dev node ../game-systems/dnd5e/scripts/generate-srd-content.ts $(ARGS)

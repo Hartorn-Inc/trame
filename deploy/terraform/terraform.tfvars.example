@@ -8,7 +8,8 @@ billing_account_id = "012345-6789AB-CDEF01"
 # region           = "europe-west9"
 # scheduler_region = "europe-west1"
 
-# Image tags pushed to `terraform output -raw image_repository` (one new tag per release).
+# First image tags pushed to `terraform output -raw image_repository` (bootstrap step 7).
+# Later releases are deployed by .github/workflows/deploy.yml; Terraform ignores changes here.
 server_image_tag = "2c7acb2"
 ops_image_tag    = "2c7acb2"
 
@@ -37,7 +38,17 @@ cloudflare_account_id = "0123456789abcdef0123456789abcdef"
 # backup_time_zone      = "Etc/UTC"
 # backup_retention_days = 14
 
-# --- Budget ---------------------------------------------------------------------
+# --- Budget and spending cap ----------------------------------------------------
 budget_alert_email = "owner@example.com"
-# budget_amount    = 1
-# budget_currency  = "EUR"
+# Amounts are in the billing account currency:
+#   gcloud billing accounts describe <billing_account_id> --format='value(currencyCode)'
+# budget_currency        = "EUR"
+# Emails at 1 and 5 EUR of actual monthly spend.
+# budget_warning_amounts = [1, 5]
+# Email and billing unlinked (the whole project stops) at 10 EUR. README, "Spending cap".
+# budget_amount          = 10
+
+# --- GitHub Actions deployment --------------------------------------------------
+# Only this repository on this ref can deploy (Workload Identity Federation).
+# github_repository = "Hartorn-Inc/trame"
+# github_deploy_ref = "refs/heads/main"

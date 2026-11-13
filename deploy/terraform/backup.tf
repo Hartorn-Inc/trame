@@ -25,6 +25,10 @@
 #   4. `Least Privilege`:
 #      - The job identity reads 2 secrets; the scheduler identity may only
 #        run this job (`roles/run.invoker` on the job, not the project).
+#   5. `Image Owned By The Deploy Workflow`:
+#      - `var.ops_image_tag` only sets the first image; `deploy.yml` then runs
+#        `gcloud run jobs update --image`. Terraform ignores the image and the
+#        fields gcloud writes, as for the service (`cloud_run.tf`).
 #
 # EXECUTION LIFECYCLE:
 # --------------------
@@ -114,6 +118,13 @@ resource "google_cloud_run_v2_job" "backup" {
   }
 
   lifecycle {
+    ignore_changes = [
+      client,
+      client_version,
+      template[0].annotations,
+      template[0].template[0].containers[0].image,
+    ]
+
     precondition {
       condition     = try(length(var.backup_s3_access_key_id) > 0, false)
       error_message = "Set backup_s3_access_key_id (R2 token of the backups bucket) before deploying the backup job."

@@ -35,12 +35,12 @@ variable "service_name" {
 
 variable "server_image_tag" {
   type        = string
-  description = "Tag of `trame-server` in the Artifact Registry repository (for example a git commit SHA). Use a new tag per release: reusing one does not roll out a new revision."
+  description = "Tag of `trame-server` in the Artifact Registry repository (for example a git commit SHA) used when the service is first created. Later images are rolled out by `deploy.yml` or `gcloud run services update --image`; Terraform ignores changes to this value."
 }
 
 variable "ops_image_tag" {
   type        = string
-  description = "Tag of `trame-ops` (built from `deploy/compose/ops`) used by the backup job."
+  description = "Tag of `trame-ops` (built from `deploy/compose/ops`) used when the backup job is first created. Later images are rolled out by `deploy.yml` or `gcloud run jobs update --image`; Terraform ignores changes to this value."
 }
 
 variable "artifact_keep_versions" {
@@ -181,12 +181,23 @@ variable "billing_account_id" {
 
 variable "budget_amount" {
   type        = number
-  description = "Monthly budget in whole units of `budget_currency`. Alerts fire at 50 % and 100 % of actual spend and at 100 % of forecast spend; nothing is capped."
-  default     = 1
+  description = "Monthly hard cap in whole units of `budget_currency` (default 10 EUR). When this month's actual spend reaches it, an email goes out and the budget-cap function unlinks the project from billing, which stops every service in the project (README, \"Spending cap\")."
+  default     = 10
 
   validation {
     condition     = var.budget_amount >= 1 && floor(var.budget_amount) == var.budget_amount
     error_message = "budget_amount must be a whole number of at least 1."
+  }
+}
+
+variable "budget_warning_amounts" {
+  type        = list(number)
+  description = "Actual monthly spend, in `budget_currency`, at which an email warns before the cap (default 1 and 5 EUR). Each one becomes a budget threshold of `amount / budget_amount`."
+  default     = [1, 5]
+
+  validation {
+    condition     = alltrue([for amount in var.budget_warning_amounts : amount > 0 && amount < var.budget_amount])
+    error_message = "Each budget_warning_amounts entry must be above 0 and below budget_amount."
   }
 }
 
@@ -199,4 +210,23 @@ variable "budget_currency" {
 variable "budget_alert_email" {
   type        = string
   description = "Email address notified by the budget alerts (Cloud Monitoring email channel)."
+}
+
+# --- GitHub Actions deployment --------------------------------------------------
+
+variable "github_repository" {
+  type        = string
+  description = "`owner/name` of the GitHub repository whose `deploy.yml` workflow may deploy. The Workload Identity provider refuses tokens from any other repository."
+  default     = "Hartorn-Inc/trame"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
+    error_message = "github_repository must look like owner/name."
+  }
+}
+
+variable "github_deploy_ref" {
+  type        = string
+  description = "Git ref (`ref` claim of the GitHub OIDC token) allowed to deploy. `workflow_run` jobs run on the default branch, so this is `refs/heads/main`."
+  default     = "refs/heads/main"
 }

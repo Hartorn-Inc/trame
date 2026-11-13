@@ -1,0 +1,106 @@
+# Continuous deployment to the near-free Cloud Run target (deploy/terraform, README
+# "Continuous deployment"): after CI passes on a push to `main`, build the production
+# images of that exact commit, push them to Artifact Registry, back up Neon, then roll
+# the new images out to the `trame-backup` job and the `trame-server` service.
+# Google credentials come from Workload Identity Federation (no key); the provider
+# only accepts this repository on refs/heads/main (deploy/terraform/github_deploy.tf).
+name: "Deploy"
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+# Deploys queue instead of cancelling each other: a half-finished rollout is worse
+# than a late one.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: "Deploy to Cloud Run"
+    # `branches: [main]` matches the head branch name only, so a pull request (from a
+    # fork too) whose branch is called `main` would also match. Only a successful CI
+    # run of a push to this repository deploys.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-26.04
+    timeout-minutes: 75
+    environment: production
+    permissions:
+      contents: read # check out the commit CI tested
+      id-token: write # GitHub OIDC token exchanged for the deployer's Google credentials
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      IMAGE_REPOSITORY: ${{ vars.GCP_IMAGE_REPOSITORY }}
+      CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      CLOUD_RUN_BACKUP_JOB: ${{ vars.CLOUD_RUN_BACKUP_JOB }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      # Same recipe as the README (bootstrap step 7): one linux/amd64 manifest per image,
+      # no attestations, so the Artifact Registry cleanup policy counts one version per
+      # release. Built before authenticating so no credentials file sits in the workspace.
+      - name: Build trame-server (root Dockerfile)
+        run: |
+          docker buildx build --platform linux/amd64 --provenance=false --sbom=false --load \
+            --tag "${IMAGE_REPOSITORY}/trame-server:${DEPLOY_SHA}" .
+      - name: Build trame-ops (deploy/compose/ops)
+        run: |
+          docker buildx build --platform linux/amd64 --provenance=false --sbom=false --load \
+            --tag "${IMAGE_REPOSITORY}/trame-ops:${DEPLOY_SHA}" deploy/compose/ops
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - name: Push images to Artifact Registry
+        run: |
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+          docker push "${IMAGE_REPOSITORY}/trame-server:${DEPLOY_SHA}"
+          docker push "${IMAGE_REPOSITORY}/trame-ops:${DEPLOY_SHA}"
+      # The new server migrates the database when it starts; this dump (still taken by the
+      # current job image) is the rollback point (README "Updates").
+      - name: Back up Neon before the rollout
+        run: |
+          gcloud run jobs execute "$CLOUD_RUN_BACKUP_JOB" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --wait
+      # `update --image` changes only the image; everything else stays as Terraform set it,
+      # and Terraform ignores the image (cloud_run.tf, backup.tf).
+      - name: Update the backup job image
+        run: |
+          gcloud run jobs update "$CLOUD_RUN_BACKUP_JOB" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" \
+            --image="${IMAGE_REPOSITORY}/trame-ops:${DEPLOY_SHA}" --quiet
+      - name: Deploy trame-server
+        run: |
+          gcloud run services update "$CLOUD_RUN_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" \
+            --image="${IMAGE_REPOSITORY}/trame-server:${DEPLOY_SHA}" --quiet
+      # The startup probe already gates the rollout; this checks the public path end to end
+      # and allows for a cold start (Neon wake-up + migrations) if the instance scaled down.
+      - name: Verify /healthz
+        run: |
+          url="$(gcloud run services describe "$CLOUD_RUN_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format='value(status.url)')"
+          for attempt in $(seq 1 18); do
+            if curl --fail --silent --show-error --max-time 10 "${url}/healthz"; then
+              echo
+              echo "Deployed ${DEPLOY_SHA} to ${url}"
+              exit 0
+            fi
+            echo "Attempt ${attempt}/18: /healthz not ready, retrying in 10 s"
+            sleep 10
+          done
+          echo "::error::${url}/healthz did not answer 200 within 3 minutes"
+          exit 1
