@@ -66,6 +66,8 @@ export const FR: Record<MessageKey, string> = {
   "feedback.reason.speedZero": "la vitesse de cette créature est 0 à cause d'un état (par exemple agrippé, entravé ou paralysé). Retirez l'état ou demandez au MJ de trancher.",
   "feedback.reason.doorLocked": "la porte est verrouillée. Seul le MJ peut l'ouvrir.",
   "feedback.reason.doorOutOfReach": "aucune de vos créatures n'est à 5 ft ou moins de la porte avec une vue dégagée sur elle. Approchez d'abord un pion de la porte.",
+  "feedback.reason.rateLimited": "trop d'actions sur la table en peu de temps. Patientez un instant, puis réessayez.",
+  "feedback.reason.conditionImmune": "cette créature est immunisée contre cet état. Le MJ peut quand même l'imposer avec une décision d'état.",
   "quarantine.title": "Actions de table mises de côté après un redémarrage",
   "quarantine.summary.one": "{{count}} action de table n'a pas pu être restaurée après le redémarrage du serveur. La table affiche l'état sans elle.",
   "quarantine.summary.other": "{{count}} actions de table n'ont pas pu être restaurées après le redémarrage du serveur. La table affiche l'état sans elles.",

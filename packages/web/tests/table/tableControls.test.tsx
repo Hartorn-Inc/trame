@@ -944,6 +944,48 @@ describe("Rejections and redacted wire fields", () => {
     });
   }
 
+  const serverLimits = [
+    {
+      id: "rate limit toast in English",
+      locale: "en",
+      action: "MOVE_TOKEN",
+      reason: "rate limited: too many table actions, wait a moment",
+      expected: /^Move token was refused: too many table actions in a short time\. Wait a moment/,
+    },
+    {
+      id: "rate limit toast in French",
+      locale: "fr",
+      action: "MOVE_TOKEN",
+      reason: "rate limited: too many table actions, wait a moment",
+      expected: /trop d'actions sur la table en peu de temps/,
+    },
+    {
+      id: "condition immunity toast in English",
+      locale: "en",
+      action: "SET_TOKEN_CONDITIONS",
+      reason: "condition immunity: this creature is immune to paralyzed",
+      expected: /^Change conditions was refused: this creature is immune to that condition\. The Game Master can still force it/,
+    },
+    {
+      id: "condition immunity toast in French",
+      locale: "fr",
+      action: "SET_TOKEN_CONDITIONS",
+      reason: "condition immunity: this creature is immune to paralyzed",
+      expected: /^Action refusée \(Modifier les états\) : cette créature est immunisée contre cet état/,
+    },
+  ] as const;
+  for (const c of serverLimits) {
+    it(c.id, () => {
+      localeSignal.value = c.locale;
+      const live = liveTable(PLAYER_ID, playerView());
+      live.client.state.commandFeedback.value = [{ id: 1, kind: "rejected", action: c.action, reason: c.reason }];
+      const ui = mount(h(CommandFeedbackToasts, { client: live.client }));
+      assert.match(ui.byTestId("command-feedback-item").textContent, c.expected);
+      ui.unmount();
+      localeSignal.value = "en";
+    });
+  }
+
   it("a refused move shows the SpeedZero explanation in the toast", () => {
     const live = liveTable(PLAYER_ID, playerView());
     live.client.state.commandFeedback.value = [{ id: 1, kind: "rejected", action: "MOVE_TOKEN", reason: "speed is 0: a condition prevents this token from moving" }];

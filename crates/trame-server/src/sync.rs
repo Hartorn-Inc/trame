@@ -72,6 +72,12 @@
 //!        the same audience.
 //!      - Concentration checks (state, `ConcentrationCheckRequested`,
 //!        `ConcentrationCheckRolled`) reach the token's controller only.
+//!      - The server's Concentration `DiceRolled` has the same audience: it is
+//!        rolled `GmOnly` and fanned out like an initiative roll, so the GM and
+//!        the token's controller get it and every other player gets neither
+//!        the event nor the dice (its timeline record is GM-only). A
+//!        Constitution save total bounds a hidden stat, and the roll would
+//!        otherwise tell bystanders a check the event hides from them.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------

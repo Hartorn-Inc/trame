@@ -70,7 +70,7 @@
 //!        non-`Normal` affinity, before the command reaches the engine or the WAL.
 //!   7. `Hidden Initiative & Sheet Privacy (G5, RT7)`:
 //!      - Initiative for a token some player cannot see (`CHANNEL_GM_HIDDEN`, or
-//!        out of the line of sight of a token controller or connected player)
+//!        out of the line of sight of a token controller or a campaign player)
 //!        is rolled `RollVisibility::GmOnly`: only the GM and the token's
 //!        controller receive it, and its timeline record and the `initiative`
 //!        order record are GM-only. Tokens whose player already rolled
@@ -103,7 +103,9 @@
 //!      - `ResolveAction` and `RollConcentrationCheck` are always filled by the
 //!        room (`resolve_action_rolls`, `resolution.rs`), whatever the client
 //!        sent, and cannot be batched. Resolution rolls never reach the dice
-//!        log; a Concentration roll of a GM-controlled token is `GmOnly`.
+//!        log; a Concentration roll is `GmOnly` and reaches the GM and the
+//!        token's controller only, like `ConcentrationCheckRolled` (sync.rs
+//!        invariant 8).
 //!      - `ApplyResolution` adjustments are bounded like `ApplyDamage`.
 //!  11. `Unchanged Projections Are Not Resent (RT12)`:
 //!      - The actor keeps, per session, the `ProjectionHash` (SHA-256 of the
@@ -115,6 +117,28 @@
 //!        skipped `seq_id` is harmless; the next frame carries the full state.
 //!      - Every attach sends a full `StateSnapshot` and records its hash, so a
 //!        reconnect or resync always starts from a complete frame.
+//!      - State changed outside the command stream (sheet tactical sync, MCP
+//!        staging) sends a `StateSnapshot` to each session whose hash changed
+//!        (`push_changed_projections`), so a sheet HP edit reaches the table
+//!        without waiting for the next command.
+//!  12. `Dead Sessions Are Pruned (RT4)`:
+//!      - Before every mailbox message the actor drops sessions whose socket
+//!        task is gone (`ClientSender::is_closed`, what `send` reports as
+//!        `OutboundSendError::Closed`) with their projection hash and command
+//!        bucket. A timed-out attach or a lost `DisconnectClient` therefore
+//!        cannot keep `active_connections` above zero and block hibernation.
+//!  13. `Per-Session Command Rate Limit`:
+//!      - `SubmitCommand` and `RollDice` spend one token of the session's
+//!        bucket (`COMMAND_RATE_BURST` = 20, refilled at
+//!        `COMMAND_RATE_REFILL_PER_SEC` = 10/s, monotonic clock). An empty
+//!        bucket answers `CommandRejected` with `CommandError::RateLimited`
+//!        and the client's `correlation_id`, before any authorization, dice
+//!        or WAL work. Pings and pointer pings are not counted.
+//!  14. `Campaign Player Roster`:
+//!      - Hidden roll privacy (invariant 7) counts every `Player` member of
+//!        the campaign (`set_player_roster`, refreshed by the HTTP layer when
+//!        it wakes or attaches to a room and when membership changes), not only
+//!        connected ones: the timeline is read later by offline players.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -230,13 +254,54 @@ pub const POINTER_PING_MIN_INTERVAL_MS: u64 = 250;
 /// Longest accepted `PointerPing.color_hex` (`bytes`).
 pub const MAX_POINTER_PING_COLOR_LEN: usize = 48;
 
+/// Commands and dice rolls one session may send back to back (token bucket capacity). Above
+/// any burst of real play (a GM resolving a fireball on a dozen targets, a player spamming
+/// undo-able moves) while keeping one socket from monopolizing the room actor.
+pub const COMMAND_RATE_BURST: u32 = 20;
+
+/// Tokens refilled per second into a session's command bucket (`COMMAND_RATE_BURST` cap).
+pub const COMMAND_RATE_REFILL_PER_SEC: u32 = 10;
+
+/// Per-session token bucket for `SubmitCommand` and `RollDice` (see `COMMAND_RATE_BURST`).
+/// Monotonic clock (`tokio::time::Instant`) so wall-clock jumps cannot refill or freeze it.
+#[derive(Debug, Clone, Copy)]
+struct CommandBucket {
+    /// Tokens left, `0.0..=COMMAND_RATE_BURST`.
+    tokens: f64,
+    /// When `tokens` was last refilled.
+    refilled_at: tokio::time::Instant,
+}
+
+impl CommandBucket {
+    fn full(now: tokio::time::Instant) -> Self {
+        Self {
+            tokens: f64::from(COMMAND_RATE_BURST),
+            refilled_at: now,
+        }
+    }
+
+    /// Refills for the time elapsed since the last call, then spends one token if available.
+    fn try_take(&mut self, now: tokio::time::Instant) -> bool {
+        let elapsed = now.duration_since(self.refilled_at).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * f64::from(COMMAND_RATE_REFILL_PER_SEC))
+            .min(f64::from(COMMAND_RATE_BURST));
+        self.refilled_at = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Why `ClientSender::send` did not queue a frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutboundSendError {
     /// The queue was full: the frame was dropped and the socket is being closed with
     /// `WS_CLOSE_CODE_SLOW_CONSUMER`.
     Overflow,
-    /// The socket task is gone.
+    /// The socket task is gone; the actor drops the session (`prune_closed_clients`).
     Closed,
 }
 
@@ -269,6 +334,12 @@ impl ClientSender {
     /// waits on it to close the socket.
     pub fn overflow_signal(&self) -> Arc<tokio::sync::Notify> {
         self.overflow.clone()
+    }
+
+    /// `true` once the receiving socket task is gone: every further `send` would return
+    /// `OutboundSendError::Closed`.
+    pub fn is_closed(&self) -> bool {
+        self.tx.is_closed()
     }
 }
 
@@ -568,6 +639,12 @@ pub enum RoomActorMessage {
         /// Session UUID to remove.
         session_id: Uuid,
     },
+    /// Replaces the room's roster of the campaign's `Player` members (connected or not), used
+    /// by hidden roll privacy (`TableRoomActor::player_views`).
+    SetPlayerRoster {
+        /// User ids of every `Player` member of the campaign.
+        players: Vec<Uuid>,
+    },
     /// Closes (code `WS_CLOSE_CODE_MEMBERSHIP_REVOKED`) and removes every session of `user_id`.
     EvictUser {
         /// Account whose membership changed.
@@ -693,6 +770,15 @@ impl TableRoomHandle {
     pub async fn disconnect_client(&self, session_id: Uuid) -> Result<(), RoomError> {
         self.tx
             .send(RoomActorMessage::DisconnectClient { session_id })
+            .await
+            .map_err(|_| RoomError::ActorClosed)
+    }
+
+    /// Replaces the room's roster of `Player` members (see `RoomActorMessage::SetPlayerRoster`).
+    /// Fire-and-forget like `disconnect_client`: later messages see the new roster.
+    pub async fn set_player_roster(&self, players: Vec<Uuid>) -> Result<(), RoomError> {
+        self.tx
+            .send(RoomActorMessage::SetPlayerRoster { players })
             .await
             .map_err(|_| RoomError::ActorClosed)
     }
@@ -886,6 +972,11 @@ pub struct TableRoomActor {
     /// disconnects (one entry per member who pinged); a monotonic clock so a wall-clock jump
     /// can neither lift nor freeze the throttle.
     last_pointer_ping: HashMap<Uuid, tokio::time::Instant>,
+    /// Command token bucket per session (`COMMAND_RATE_BURST`), kept in step with `clients`.
+    command_buckets: HashMap<Uuid, CommandBucket>,
+    /// Every `Player` member of the campaign, connected or not (`set_player_roster`). Hidden
+    /// roll privacy counts them so a roll is not public just because a player was offline.
+    player_roster: BTreeSet<Uuid>,
     sinks: RoomSinks,
     /// Entries quarantined when this actor recovered (empty on a clean replay); sent to GMs.
     quarantine_notice: Vec<QuarantinedWalSummary>,
@@ -952,6 +1043,8 @@ impl TableRoomActor {
             rx,
             player_initiative_rolls: HashMap::new(),
             last_pointer_ping: HashMap::new(),
+            command_buckets: HashMap::new(),
+            player_roster: BTreeSet::new(),
             sinks,
             quarantine_notice: recovered
                 .quarantined
@@ -966,6 +1059,7 @@ impl TableRoomActor {
 
     async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
+            self.prune_closed_clients();
             match msg {
                 RoomActorMessage::ConnectClient { client, reply } => {
                     self.last_activity_ms = now_ms();
@@ -999,8 +1093,11 @@ impl TableRoomActor {
                 }
                 RoomActorMessage::DisconnectClient { session_id } => {
                     self.clients.remove(&session_id);
-                    self.sent_projection_hashes.remove(&session_id);
+                    self.forget_departed_sessions();
                     self.last_activity_ms = now_ms();
+                }
+                RoomActorMessage::SetPlayerRoster { players } => {
+                    self.player_roster = players.into_iter().collect();
                 }
                 RoomActorMessage::EvictUser { user_id, reply } => {
                     let before = self.clients.len();
@@ -1014,8 +1111,7 @@ impl TableRoomActor {
                         });
                         false
                     });
-                    self.sent_projection_hashes
-                        .retain(|session_id, _| self.clients.contains_key(session_id));
+                    self.forget_departed_sessions();
                     let _ = reply.send(before - self.clients.len());
                 }
                 RoomActorMessage::HandleEnvelope {
@@ -1076,6 +1172,7 @@ impl TableRoomActor {
                     // sheet itself is already stored, so a failed snapshot is only logged.
                     if updated_tokens > 0 {
                         self.flush_snapshot_best_effort();
+                        self.push_changed_projections();
                     }
                     let _ = reply.send(Ok(updated_tokens));
                 }
@@ -1153,6 +1250,7 @@ impl TableRoomActor {
                             }
                         }
                     }
+                    self.push_changed_projections();
                     let _ = reply.send(Ok(proposal));
                 }
                 RoomActorMessage::GetTableSnapshot { reply } => {
@@ -1179,6 +1277,71 @@ impl TableRoomActor {
         self.clients.clear();
     }
 
+    /// Drops every session whose socket task is gone (`ClientSender::is_closed`, the state in
+    /// which `send` returns `OutboundSendError::Closed`). Runs before each mailbox message, so
+    /// a session whose attach timed out or whose `DisconnectClient` was lost cannot pin
+    /// `active_connections` above zero and block `Idle-Lease` hibernation.
+    fn prune_closed_clients(&mut self) {
+        let before = self.clients.len();
+        self.clients.retain(|_, client| !client.tx.is_closed());
+        if self.clients.len() != before {
+            self.forget_departed_sessions();
+            self.last_activity_ms = now_ms();
+        }
+    }
+
+    /// Removes per-session bookkeeping (`sent_projection_hashes`, `command_buckets`) of
+    /// sessions no longer in `clients`.
+    fn forget_departed_sessions(&mut self) {
+        let clients = &self.clients;
+        self.sent_projection_hashes
+            .retain(|session_id, _| clients.contains_key(session_id));
+        self.command_buckets
+            .retain(|session_id, _| clients.contains_key(session_id));
+    }
+
+    /// Spends one token of `session_id`'s command bucket; `false` when it is empty.
+    fn take_command_token(&mut self, session_id: Uuid) -> bool {
+        let now = tokio::time::Instant::now();
+        self.command_buckets
+            .entry(session_id)
+            .or_insert_with(|| CommandBucket::full(now))
+            .try_take(now)
+    }
+
+    /// Sends a `StateSnapshot` at the current `seq_id` to every session whose projection
+    /// changed since the last state frame it was sent (invariant 11), for state changes made
+    /// outside the command stream (sheet tactical sync, MCP staging). Clients accept a
+    /// `StateSnapshot` whatever its `seq_id`, so the unchanged `seq_id` of a sheet sync is
+    /// still applied.
+    fn push_changed_projections(&mut self) {
+        for client in self.clients.values() {
+            let projected = project_state_for_recipient(
+                self.campaign_id,
+                &self.state,
+                client.user_id,
+                client.role,
+            );
+            let hash = projection_hash(&projected);
+            if hash.is_some()
+                && self.sent_projection_hashes.get(&client.session_id) == hash.as_ref()
+            {
+                continue;
+            }
+            let out = ServerEnvelope::StateSnapshot {
+                seq_id: self.seq_id,
+                state: projected,
+            };
+            if let Ok(bytes) = encode_server_envelope(&out) {
+                let _ = client.tx.send(OutboundClientFrame::Binary(bytes));
+                match hash {
+                    Some(hash) => self.sent_projection_hashes.insert(client.session_id, hash),
+                    None => self.sent_projection_hashes.remove(&client.session_id),
+                };
+            }
+        }
+    }
+
     /// Compensates an append whose outcome is unknown: deletes every stored entry after
     /// `self.seq_id` (the one that may have been committed, and anything a retry left). When
     /// the delete fails as well, storage may hold the rejected command, so the actor halts.
@@ -1203,6 +1366,21 @@ impl TableRoomActor {
         let actor_user_id = sender.user_id;
         let actor_role = sender.role;
         let sender_tx = sender.tx.clone();
+
+        let rate_limited = match &envelope {
+            ClientEnvelope::SubmitCommand(submission) => Some(submission.correlation_id.clone()),
+            ClientEnvelope::RollDice { correlation_id, .. } => Some(correlation_id.clone()),
+            _ => None,
+        }
+        .filter(|_| !self.take_command_token(session_id));
+        if let Some(correlation_id) = rate_limited {
+            send_rejection(
+                &sender_tx,
+                trame_engine::commands::CommandError::RateLimited.to_string(),
+                correlation_id,
+            );
+            return Ok(());
+        }
 
         match envelope {
             ClientEnvelope::SubmitCommand(submission) => {
@@ -1364,8 +1542,8 @@ impl TableRoomActor {
             self.fan_out_initiative_roll(*token_id, outcome);
             self.note_timeline(roll_timeline_note(self.campaign_id, outcome));
         }
-        if let Some(outcome) = &concentration_roll {
-            self.fan_out_roll(outcome);
+        if let Some((token_id, outcome)) = &concentration_roll {
+            self.fan_out_initiative_roll(*token_id, outcome);
             self.note_timeline(roll_timeline_note(self.campaign_id, outcome));
         }
         self.after_accepted(&events, &checkpoint, &prior_vitals);
@@ -1373,14 +1551,15 @@ impl TableRoomActor {
     }
 
     /// Fills the server rolls of `ResolveAction` and `RollConcentrationCheck` (invariant 10),
-    /// replacing whatever the client sent. The Concentration roll is returned for fan-out after
-    /// commit, with the death save privacy rule; resolution rolls are never fanned out.
+    /// replacing whatever the client sent. The Concentration roll is returned with its token
+    /// for fan-out after commit: `GmOnly`, so only the GM and the token's controller get it
+    /// (the `ConcentrationCheckRolled` audience); resolution rolls are never fanned out.
     /// Unknown tokens or a missing check pass through so the engine reports them.
     fn resolve_action_rolls(
         &mut self,
         actor: &CommandActor,
         cmd: TrameCommand,
-    ) -> Result<(TrameCommand, Option<DiceRollOutcome>), String> {
+    ) -> Result<(TrameCommand, Option<InitiativeRoll>), String> {
         match cmd {
             TrameCommand::ResolveAction { request, .. } => {
                 let resolution = crate::resolution::fill_action_resolution(
@@ -1420,19 +1599,15 @@ impl TableRoomActor {
                     ));
                 };
                 let bonus = crate::resolution::server_save_bonus(token, "con");
-                // A GM-controlled token's save bonus is a hidden stat (G5): GM only.
-                let visibility = if token.owner_user_id.is_none() {
-                    RollVisibility::GmOnly
-                } else {
-                    initiative_roll_visibility(token, &self.player_views())
-                };
                 let reason = format!("Concentration check (DC {dc}): {}", token.name);
+                // Same audience as `ConcentrationCheckRolled` (sync.rs invariant 8): the GM
+                // and the token's controller, through `fan_out_initiative_roll`.
                 let outcome = self
                     .dice_roller
                     .roll(
                         actor.user_id,
                         &crate::resolution::d20_expression(roll_mode, bonus),
-                        visibility,
+                        RollVisibility::GmOnly,
                         reason,
                     )
                     .map_err(|err| err.to_string())?;
@@ -1446,7 +1621,7 @@ impl TableRoomActor {
                             total: outcome.total,
                         }),
                     },
-                    Some(outcome),
+                    Some((token_id, outcome)),
                 ))
             }
             other => Ok((other, None)),
@@ -1915,8 +2090,11 @@ impl TableRoomActor {
     }
 
     /// Line of sight (`visible_token_ids_for_recipient`) of every player who could read an
-    /// initiative roll: the controllers of tokens on the table and the connected players.
-    /// Spectators control nothing and are left out, so they cannot hide every roll.
+    /// initiative roll or its timeline record: the controllers of tokens on the table, every
+    /// `Player` member of the campaign (`player_roster`, connected or not, since the timeline
+    /// is read later), and the connected players. A player with no token sees nothing, so
+    /// their presence makes every roll `GmOnly`. Spectators control nothing and are left out,
+    /// so they cannot hide every roll.
     fn player_views(&self) -> Vec<HashSet<Uuid>> {
         let mut players: BTreeSet<Uuid> = self
             .state
@@ -1925,6 +2103,7 @@ impl TableRoomActor {
             .values()
             .filter_map(|t| t.owner_user_id)
             .collect();
+        players.extend(self.player_roster.iter().copied());
         players.extend(
             self.clients
                 .values()
@@ -2097,6 +2276,14 @@ pub struct RoomLeaseManager {
 /// Default `Idle-Lease`: rooms with no connection and no activity for 15 minutes hibernate.
 pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
+/// Whole SIGTERM shutdown (`RoomLeaseManager::shutdown_all`): 8 s, leaving 2 s of Cloud Run's
+/// 10 s grace for the HTTP server to stop and the process to exit before `SIGKILL`.
+pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(8);
+
+/// Time given to socket writers, after every room hibernated, to send their queued `1001`
+/// close frames (`ms`). Part of `SHUTDOWN_BUDGET`.
+pub const SOCKET_FLUSH_GRACE: Duration = Duration::from_millis(500);
+
 impl RoomLeaseManager {
     /// Creates a new `RoomLeaseManager` backed by `wal`, taking write-behind snapshots every
     /// `snapshot_interval` commands and hibernating zero-connection rooms after `idle_timeout_ms` (`ms`).
@@ -2222,6 +2409,21 @@ impl RoomLeaseManager {
             Ok(hibernated) => Ok(hibernated),
             Err(_) => Err(RoomError::Timeout),
         }
+    }
+
+    /// SIGTERM path: `hibernate_all` within `SHUTDOWN_BUDGET - SOCKET_FLUSH_GRACE`, then, when
+    /// any room was awake, waits `SOCKET_FLUSH_GRACE` so socket writers can deliver the queued
+    /// `1001` close frames before the process exits. The whole call stays within
+    /// `SHUTDOWN_BUDGET`, below Cloud Run's 10 s SIGTERM grace.
+    pub async fn shutdown_all(&self) -> Result<Vec<Uuid>, RoomError> {
+        let had_rooms = self.active_room_count().await > 0;
+        let result = self
+            .hibernate_all(SHUTDOWN_BUDGET.saturating_sub(SOCKET_FLUSH_GRACE))
+            .await;
+        if had_rooms {
+            tokio::time::sleep(SOCKET_FLUSH_GRACE).await;
+        }
+        result
     }
 
     /// Sweeps all rooms and hibernates any room with `0` active connections whose idle duration

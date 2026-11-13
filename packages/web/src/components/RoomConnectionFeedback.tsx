@@ -199,6 +199,8 @@ const KNOWN_REASONS: readonly [RegExp, MessageKey][] = [
   [/^speed is 0\b/, 'feedback.reason.speedZero'],
   [/^door is locked\b/, 'feedback.reason.doorLocked'],
   [/^door is out of reach\b/, 'feedback.reason.doorOutOfReach'],
+  [/^rate limited\b/, 'feedback.reason.rateLimited'],
+  [/^condition immunity\b/, 'feedback.reason.conditionImmune'],
 ];
 
 /** Localized explanation of a rejection reason, or the server text when unknown. */

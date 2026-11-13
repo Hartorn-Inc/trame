@@ -95,7 +95,7 @@ use crate::config::ServerConfig;
 pub use crate::maps::{InMemoryMapStorage, get_campaign_maps_handler, put_campaign_maps_handler};
 use crate::room::{
     ClientSender, ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomError,
-    RoomLeaseManager, WS_CLOSE_CODE_GOING_AWAY, WS_CLOSE_CODE_INTERNAL_ERROR,
+    RoomLeaseManager, TableRoomHandle, WS_CLOSE_CODE_GOING_AWAY, WS_CLOSE_CODE_INTERNAL_ERROR,
     WS_CLOSE_CODE_MEMBERSHIP_REVOKED, WS_CLOSE_CODE_SLOW_CONSUMER, client_channel,
 };
 use crate::security::{opaque_server_errors_middleware, security_headers_middleware};
@@ -774,6 +774,46 @@ pub async fn resolve_campaign_role(
         Some(CampaignRole::Player)
     } else {
         None
+    }
+}
+
+/// Sends every `Player` member of `campaign_id` to its room (`set_player_roster`) so hidden
+/// roll privacy also counts offline players. Uses `room` when the caller holds the handle,
+/// otherwise updates the room only if it is awake. Called on attach, MCP wake, and
+/// membership changes; a storage error keeps the previous roster and is logged.
+pub async fn refresh_player_roster(
+    state: &AppState,
+    campaign_id: Uuid,
+    room: Option<&TableRoomHandle>,
+) {
+    let active;
+    let room = match room {
+        Some(room) => room,
+        None => match state.lease_manager.get_active_room(campaign_id).await {
+            Some(handle) => {
+                active = handle;
+                &active
+            }
+            None => return,
+        },
+    };
+    match state
+        .auth_state
+        .session_store
+        .list_campaign_members(campaign_id)
+        .await
+    {
+        Ok(members) => {
+            let players = members
+                .into_iter()
+                .filter(|m| !matches!(m.role.to_ascii_uppercase().as_str(), "GM" | "SPECTATOR"))
+                .map(|m| m.user_id)
+                .collect();
+            let _ = room.set_player_roster(players).await;
+        }
+        Err(err) => {
+            tracing::warn!(%campaign_id, error = %err, "player roster not refreshed");
+        }
     }
 }
 
@@ -1487,6 +1527,7 @@ async fn handle_ws_connection(
 
     let attach = async {
         let room_handle = state.lease_manager.get_or_wake_room(campaign_id).await?;
+        refresh_player_roster(&state, campaign_id, Some(&room_handle)).await;
         room_handle.connect_client(client).await?;
         Ok::<_, RoomError>(room_handle)
     };

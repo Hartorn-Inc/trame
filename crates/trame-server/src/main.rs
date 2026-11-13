@@ -20,8 +20,10 @@
 //!    - Checks `TRAME_PORT`, then `PORT`, and defaults to `8080`.
 //! 3. `SIGTERM / SIGINT Lifecycle`:
 //!    - Sets `IS_SHUTTING_DOWN` so new HTTP/WebSocket connections are rejected.
-//!    - Invokes `RoomLeaseManager::hibernate_all` within a 10-second timeout so
-//!      every active room flushes its WAL before the process exits.
+//!    - Invokes `RoomLeaseManager::shutdown_all`: every active room flushes its
+//!      WAL and queues a `1001` close, then socket writers get
+//!      `SOCKET_FLUSH_GRACE` to send it, all within `SHUTDOWN_BUDGET` (8 s),
+//!      below Cloud Run's 10 s SIGTERM grace.
 //!
 //! 4. `Fail-Closed Secrets (G7)`:
 //!    - `ServerConfig::from_env` must succeed before anything binds; outside
@@ -67,9 +69,6 @@ use trame_server::storage::s3::{S3Client, S3Store, migrate_inline_assets};
 use trame_server::timeline::InMemoryTimelineStorage;
 use trame_server::wal::InMemoryWalStorage;
 use uuid::Uuid;
-
-/// Maximum grace period allowed for room actors to flush state and close client connections.
-pub const SHUTDOWN_TIMEOUT_SECONDS: u64 = 10;
 
 /// Number of committed commands between WAL snapshots.
 const SNAPSHOT_INTERVAL_COMMANDS: u64 = 50;
@@ -124,8 +123,7 @@ pub async fn shutdown_handler(lease_manager: Arc<RoomLeaseManager>) {
     IS_SHUTTING_DOWN.store(true, Ordering::Release);
     tracing::info!("shutdown signal received: rejecting new connections");
 
-    let timeout = Duration::from_secs(SHUTDOWN_TIMEOUT_SECONDS);
-    match lease_manager.hibernate_all(timeout).await {
+    match lease_manager.shutdown_all().await {
         Ok(hibernated) => {
             tracing::info!(
                 rooms = hibernated.len(),

@@ -1693,6 +1693,17 @@ pub enum CommandError {
     /// sight to it. The `door is out of reach` prefix is matched by the client.
     #[error("door is out of reach: none of your tokens is within 5 ft and can see it")]
     DoorOutOfReach,
+    /// The session submitted commands or dice rolls faster than the room's per-socket token
+    /// bucket refills (burst 20, 10 per second on the server). Raised by the room, never by
+    /// `apply_command`. The `rate limited` prefix is matched by the client.
+    #[error("rate limited: too many table actions, wait a moment")]
+    RateLimited,
+    /// `SetTokenConditions` added a condition listed in the token's stat block
+    /// `conditionImmunities` (for example a Lich and `paralyzed`). Only a GM `ConditionOverride`
+    /// ruling forcing that condition lets it through. The `condition immunity` prefix is
+    /// matched by the client.
+    #[error("condition immunity: this creature is immune to {0}")]
+    ConditionImmune(String),
     /// A scene, map, or door configuration parameter was out of valid bounds.
     #[error("invalid configuration: {0}")]
     InvalidConfiguration(String),

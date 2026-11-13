@@ -467,6 +467,7 @@ async fn handle_tools_call(
                 .into_response();
         }
     };
+    crate::http::refresh_player_roster(&state, campaign_id, Some(&room)).await;
     let summary = args
         .get("summary")
         .and_then(Value::as_str)

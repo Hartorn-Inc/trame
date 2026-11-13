@@ -7,7 +7,9 @@
 //!   projection is unchanged since the last state frame it was sent (and who
 //!   sees no event) gets no frame, a recipient whose projection changed gets a
 //!   `CommandAccepted`, and a reconnect always starts from a full
-//!   `StateSnapshot`.
+//!   `StateSnapshot`. A visible event is sent even when the projection is
+//!   unchanged, and an out-of-band change (sheet sync) pushes a snapshot whose
+//!   hash later commands compare against.
 //!
 //! INVARIANTS & SAFETY BOUNDARIES:
 //!   - The actor enqueues every frame before it answers the dispatch, so an
@@ -16,10 +18,13 @@
 
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use trame_engine::commands::{CampaignRole, CommandActor, TableState, TokenState, TrameCommand};
+use trame_engine::commands::{
+    CampaignRole, CommandActor, TableState, TokenState, TrameCommand, TrameEvent,
+};
 use trame_engine::geometry::{CHANNEL_GM_HIDDEN, Point2D};
 use trame_server::room::{
-    ConnectedClient, OutboundClientFrame, TableRoomActor, TableRoomHandle, client_channel,
+    ActorTacticalSync, ConnectedClient, OutboundClientFrame, TableRoomActor, TableRoomHandle,
+    client_channel,
 };
 use trame_server::sync::ServerEnvelope;
 use trame_server::wal::{InMemoryWalStorage, TableStateSnapshot, WalStorage};
@@ -31,6 +36,8 @@ struct Table {
     player: Uuid,
     /// Token controlled by `player`.
     hero: Uuid,
+    /// Actor sheet linked to `hero` (sheet syncs reach the hero through it).
+    hero_actor: Uuid,
     /// GM-hidden token the player never sees.
     lurker: Uuid,
 }
@@ -43,6 +50,8 @@ impl Table {
         let hero = Uuid::new_v4();
         let mut hero_token = TokenState::new_default(hero, "Hero", Point2D::new(100.0, 100.0));
         hero_token.owner_user_id = Some(player);
+        let hero_actor = Uuid::new_v4();
+        hero_token.actor_id = Some(hero_actor);
         state.data.tokens.insert(hero, hero_token);
         let lurker = Uuid::new_v4();
         let mut lurker_token =
@@ -61,6 +70,7 @@ impl Table {
             },
             player,
             hero,
+            hero_actor,
             lurker,
         }
     }
@@ -184,6 +194,87 @@ async fn unchanged_projection_sends_nothing_and_changed_projection_sends_a_frame
         );
         if token_id == table.hero {
             assert_eq!(hero_x(&player_frames, table.hero), Some(x), "case {case}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn visible_event_with_unchanged_projection_is_still_sent() {
+    let table = Table::new();
+    let (_, mut gm_rx) = table.connect(table.gm.user_id, CampaignRole::Gm).await;
+    let (_, mut player_rx) = table.connect(table.player, CampaignRole::Player).await;
+    drain(&mut gm_rx);
+    drain(&mut player_rx);
+    let (_, current) = table.room.get_table_snapshot().await.unwrap();
+
+    // Re-selecting the current ambient preset changes no projection but emits a public
+    // `AmbientLightingChanged`.
+    table
+        .room
+        .dispatch_direct_command(
+            table.gm.clone(),
+            TrameCommand::SetAmbientLighting {
+                preset: current.data.ambient_lighting,
+            },
+        )
+        .await
+        .unwrap();
+    let frames = drain(&mut player_rx);
+    assert_eq!(kinds(&frames), ["accepted"], "case visible_event_sent");
+    let Some(ServerEnvelope::CommandAccepted { events, .. }) = frames.first() else {
+        panic!("case visible_event_sent: no CommandAccepted");
+    };
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, TrameEvent::AmbientLightingChanged { .. })),
+        "case visible_event_sent: event carried"
+    );
+}
+
+#[tokio::test]
+async fn out_of_band_change_then_commands_keep_hashes_in_step() {
+    let linked = Table::new();
+    let (_, mut player_rx) = linked.connect(linked.player, CampaignRole::Player).await;
+    drain(&mut player_rx);
+
+    linked
+        .room
+        .notify_actor_updated(
+            linked.hero_actor,
+            2,
+            serde_json::json!({}),
+            ActorTacticalSync {
+                hp_current: Some(1),
+                ..ActorTacticalSync::default()
+            },
+        )
+        .await
+        .unwrap();
+    // `ActorUpdated` (the controller's sheet) then the changed projection.
+    let pushed = drain(&mut player_rx);
+    assert_eq!(
+        kinds(&pushed),
+        ["other", "snapshot"],
+        "case out_of_band_change_pushed"
+    );
+
+    // (case_id, token moved, x, frames for the player)
+    let cases: [(&str, Uuid, f64, &[&str]); 2] = [
+        ("hidden_move_after_push_skipped", linked.lurker, 650.0, &[]),
+        (
+            "visible_move_after_push_sent",
+            linked.hero,
+            350.0,
+            &["accepted"],
+        ),
+    ];
+    for (case, token_id, x, want) in cases {
+        linked.gm_moves(token_id, x).await;
+        let frames = drain(&mut player_rx);
+        assert_eq!(kinds(&frames), want, "case {case}");
+        if token_id == linked.hero {
+            assert_eq!(hero_x(&frames, linked.hero), Some(x), "case {case}");
         }
     }
 }
