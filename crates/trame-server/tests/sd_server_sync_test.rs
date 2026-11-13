@@ -377,6 +377,49 @@ fn sheet_derives_armor_class_and_speed() {
 }
 
 #[test]
+fn sheet_exhaustion_syncs_and_clamps_onto_the_token() {
+    // (case_id, sheet, initial token exhaustion, expected synced token exhaustion)
+    let cases = [
+        (
+            "actor_data_exhaustion_syncs",
+            json!({ "attributes": { "exhaustion": 3 } }),
+            0,
+            3,
+        ),
+        (
+            "flat_sheet_exhaustion_level_syncs",
+            json!({ "exhaustionLevel": 2 }),
+            0,
+            2,
+        ),
+        (
+            "exhaustion_above_six_clamps_to_six",
+            json!({ "attributes": { "exhaustion": 12 } }),
+            0,
+            6,
+        ),
+        (
+            "negative_exhaustion_clamps_to_zero",
+            json!({ "attributes": { "exhaustion": -4 } }),
+            2,
+            0,
+        ),
+        (
+            "partial_sheet_without_exhaustion_keeps_current_level",
+            json!({ "attributes": { "hp": { "current": 5 } } }),
+            4,
+            4,
+        ),
+    ];
+    for (case, sheet, initial, expected) in cases {
+        let mut token = lying_token(None);
+        token.exhaustion = initial;
+        tactical_sync_from_sheet(None, &sheet).apply_to_token(&mut token, TableMode::Exploration);
+        assert_eq!(token.exhaustion, expected, "case {case}");
+    }
+}
+
+#[test]
 fn sheet_values_get_stat_block_bounds_on_the_token() {
     let many: Vec<Value> = (0..40).map(|i| json!({ "id": format!("c{i}") })).collect();
     let capped: Vec<String> = (0..32).map(|i| format!("c{i}")).collect();

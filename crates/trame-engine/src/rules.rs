@@ -708,6 +708,12 @@ pub struct DamageResolution {
     pub dead: bool,
 }
 
+/// DC of a `DeathSavingThrow` d20 test (`10`, SRD 5.2.1).
+pub const DEATH_SAVE_DC: i32 = 10;
+
+/// Highest SRD 5.2.1 Exhaustion level (`6`); each level subtracts `2` from d20 tests.
+pub const MAX_EXHAUSTION_LEVEL: u8 = 6;
+
 /// Number of failed `DeathSavingThrow`s at which a creature dies.
 pub const DEATH_SAVE_FAILURES_TO_DIE: u8 = 3;
 
@@ -730,15 +736,29 @@ pub struct DeathSaveOutcome {
     pub dead: bool,
 }
 
-/// Resolves one `DeathSavingThrow` d20 (SRD 5.2.1) from the current counters.
+/// Resolves one `DeathSavingThrow` d20 (SRD 5.2.1) from the current counters and effective
+/// Exhaustion level (`0..=6`).
 ///
-/// Resolution order: natural 20 regains 1 HP and resets both counters; natural 1 adds two
-/// failures; `2..=9` adds one failure; `10..=19` adds one success. Counters cap at 3. Three
-/// failures kill; three successes make the creature Stable, and becoming Stable resets both
-/// counters to `0` (SRD: "reset to zero when you regain any Hit Points or become Stable").
-/// `d20` outside `1..=20` is clamped, so a malformed value can never skip the rules.
-pub fn resolve_death_save(successes: u8, failures: u8, d20: u8) -> DeathSaveOutcome {
+/// Resolution order:
+/// 1. An unmodified natural `20` on the raw d20 face always regains 1 HP and resets both
+///    counters regardless of exhaustion.
+/// 2. An unmodified natural `1` on the raw d20 face always adds two failures regardless of
+///    exhaustion.
+/// 3. On raw rolls `2..=19`, `i32::from(d20) - 2 * i32::from(exhaustion) >= DEATH_SAVE_DC`
+///    (`10`) adds one success; `< 10` adds one failure.
+///
+/// Counters cap at 3. Three failures kill; three successes make the creature Stable, and
+/// becoming Stable resets both counters to `0` (SRD: "reset to zero when you regain any Hit
+/// Points or become Stable"). `d20` outside `1..=20` and `exhaustion` above `6` are clamped,
+/// so malformed values can never skip the rules.
+pub fn resolve_death_save(
+    successes: u8,
+    failures: u8,
+    d20: u8,
+    exhaustion: u8,
+) -> DeathSaveOutcome {
     let d20 = d20.clamp(1, 20);
+    let exhaustion = exhaustion.min(MAX_EXHAUSTION_LEVEL);
     if d20 == 20 {
         return DeathSaveOutcome {
             successes: 0,
@@ -748,10 +768,12 @@ pub fn resolve_death_save(successes: u8, failures: u8, d20: u8) -> DeathSaveOutc
             dead: false,
         };
     }
-    let (added_successes, added_failures) = match d20 {
-        1 => (0, 2),
-        2..=9 => (0, 1),
-        _ => (1, 0),
+    let (added_successes, added_failures) = if d20 == 1 {
+        (0, 2)
+    } else if i32::from(d20) - 2 * i32::from(exhaustion) >= DEATH_SAVE_DC {
+        (1, 0)
+    } else {
+        (0, 1)
     };
     let failures = failures
         .saturating_add(added_failures)

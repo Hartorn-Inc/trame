@@ -28,9 +28,12 @@
 //!        `ActorUpdated`; the room snapshots the synced tokens (WAL durability).
 //!   4. `Linked Vitals Persistence`:
 //!      - `install_room_sinks` drains `LinkedVitalsChange` from rooms and writes hp /
-//!        temp hp (and changed conditions) into the linked actor sheet. Synthetic
-//!        tokens never reach storage. At 0 hp the class feature toggles that end
-//!        there (`SRD_FEATURES_ENDING_AT_ZERO_HP`: Rage) leave `activeFeatureIds`.
+//!        temp hp, death saving throw counters (`death_save_successes`,
+//!        `death_save_failures`), `is_stable`, `is_dead`, and changed conditions into
+//!        the linked actor sheet (`Dnd5eActorData` or flat `Dnd5eActorSheet`).
+//!        Synthetic tokens never reach storage. At 0 hp the class feature toggles
+//!        that end there (`SRD_FEATURES_ENDING_AT_ZERO_HP`: Rage) leave
+//!        `activeFeatureIds`.
 //!   4b. `Sheet-Derived Rules Fields`:
 //!      - Threat reach (equipped reach weapon or stat-block melee reach) and darkvision
 //!        (species or stat-block senses) come from the stored sheet on every resync and
@@ -1104,11 +1107,15 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
     let damage_affinities = merge_feature_resistances(damage_affinities, data);
     let dex_mod = i32_at(data, &["abilities", "dex", "score"])
         .map(|s| (s.clamp(*ABILITY_SCORES.start(), *ABILITY_SCORES.end()) - 10).div_euclid(2));
+    let exhaustion = sheet_exhaustion(data);
+    let (death_save_successes, death_save_failures, is_stable, is_dead) =
+        sheet_death_saves_and_mortality(data, exhaustion);
     ActorTacticalSync {
         name: name.map(str::to_string),
-        hp_current: i32_at(data, &["attributes", "hp", "current"]),
-        hp_max: i32_at(data, &["attributes", "hp", "max"]),
-        temp_hp: i32_at(data, &["attributes", "hp", "temp"]),
+        hp_current: i32_at(data, &["attributes", "hp", "current"])
+            .or_else(|| i32_at(data, &["hpCurrent"])),
+        hp_max: i32_at(data, &["attributes", "hp", "max"]).or_else(|| i32_at(data, &["hpMax"])),
+        temp_hp: i32_at(data, &["attributes", "hp", "temp"]).or_else(|| i32_at(data, &["tempHp"])),
         ac: sheet_armor_class(data),
         dex_mod,
         initiative_extra: dex_mod.map(|_| derived_initiative_extra(data)),
@@ -1119,7 +1126,84 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
         darkvision_ft: darkvision_ft(data),
         save_bonuses: sheet_save_bonuses(data),
         feature_roll_advantages: feature_roll_advantages(data),
+        exhaustion,
+        death_save_successes,
+        death_save_failures,
+        is_stable,
+        is_dead,
     }
+}
+
+/// SRD 5.2.1 Exhaustion level (`0..=6`) stored on `attributes.exhaustion` (`Dnd5eActorData`)
+/// or `exhaustionLevel` (flat `Dnd5eActorSheet`). `None` when neither field is present so
+/// partial sheet updates leave the token's level unchanged.
+fn sheet_exhaustion(data: &Value) -> Option<u8> {
+    i32_at(data, &["attributes", "exhaustion"])
+        .or_else(|| i32_at(data, &["exhaustionLevel"]))
+        .map(|n| n.clamp(0, i32::from(trame_engine::rules::MAX_EXHAUSTION_LEVEL)) as u8)
+}
+
+fn bool_at(v: &Value, path: &[&str]) -> Option<bool> {
+    let mut cur = v;
+    for key in path {
+        cur = cur.get(key)?;
+    }
+    cur.as_bool()
+}
+
+/// Extracts `(death_save_successes, death_save_failures, is_stable, is_dead)` from either
+/// `Dnd5eActorData` (`attributes.deathSaves.{successes,failures,isStable?}`, root `isDead`)
+/// or flat `Dnd5eActorSheet` (`deathSaves.{successes,failures,isStable,isDead}`).
+///
+/// Reaching `3` successes marks `is_stable` and resets both counters (`resolve_death_save`
+/// invariant); reaching `3` failures or Exhaustion level `6` (`MAX_EXHAUSTION_LEVEL`) marks
+/// `is_dead`. Missing fields stay `None` so partial sheet payloads do not clobber live token
+/// counters.
+fn sheet_death_saves_and_mortality(
+    data: &Value,
+    exhaustion: Option<u8>,
+) -> (Option<u8>, Option<u8>, Option<bool>, Option<bool>) {
+    use trame_engine::rules::{
+        DEATH_SAVE_FAILURES_TO_DIE, DEATH_SAVE_SUCCESSES_TO_STABILIZE, MAX_EXHAUSTION_LEVEL,
+    };
+
+    let raw_successes = i32_at(data, &["attributes", "deathSaves", "successes"])
+        .or_else(|| i32_at(data, &["deathSaves", "successes"]))
+        .map(|n| n.clamp(0, i32::from(DEATH_SAVE_SUCCESSES_TO_STABILIZE)) as u8);
+    let raw_failures = i32_at(data, &["attributes", "deathSaves", "failures"])
+        .or_else(|| i32_at(data, &["deathSaves", "failures"]))
+        .map(|n| n.clamp(0, i32::from(DEATH_SAVE_FAILURES_TO_DIE)) as u8);
+
+    let explicit_dead = bool_at(data, &["isDead"])
+        .or_else(|| bool_at(data, &["deathSaves", "isDead"]))
+        .or_else(|| bool_at(data, &["attributes", "deathSaves", "isDead"]));
+    let dead_from_failures = raw_failures.is_some_and(|f| f >= DEATH_SAVE_FAILURES_TO_DIE);
+    let dead_from_exhaustion = exhaustion.is_some_and(|e| e >= MAX_EXHAUSTION_LEVEL);
+    let is_dead = if dead_from_failures || dead_from_exhaustion {
+        Some(true)
+    } else {
+        explicit_dead
+    };
+
+    let explicit_stable = bool_at(data, &["attributes", "deathSaves", "isStable"])
+        .or_else(|| bool_at(data, &["deathSaves", "isStable"]));
+    let stable_from_successes =
+        raw_successes.is_some_and(|s| s >= DEATH_SAVE_SUCCESSES_TO_STABILIZE);
+    let is_stable = if is_dead == Some(true) {
+        Some(false)
+    } else if stable_from_successes {
+        Some(true)
+    } else {
+        explicit_stable
+    };
+
+    let (successes, failures) = if stable_from_successes && is_dead != Some(true) {
+        (Some(0), Some(0))
+    } else {
+        (raw_successes, raw_failures)
+    };
+
+    (successes, failures, is_stable, is_dead)
 }
 
 /// Server-rolled d20s the sheet's features in force give Advantage on, from
@@ -1151,10 +1235,10 @@ fn feature_roll_advantages(data: &Value) -> Option<Vec<String>> {
 }
 
 /// Resolves the storage-backed parts of a `SpawnToken` before it reaches the room:
-/// - Actor-linked token: every synced field (HP, AC, speed, conditions, affinities, reach,
-///   darkvision) is overwritten from the stored sheet, so a client cannot spawn its token
-///   with better numbers than the sheet allows. An actor that cannot be loaded leaves the
-///   token unchanged.
+/// - Actor-linked token: every synced field (HP, death saves, stability, `is_dead`, AC, speed,
+///   exhaustion, conditions, affinities, reach, darkvision) is overwritten from the stored
+///   sheet, so a client cannot spawn its token with better numbers than the sheet allows. An
+///   actor that cannot be loaded leaves the token unchanged.
 /// - `stat_block` holding an actor template UUID: replaced by a copy of that actor's
 ///   `statBlock`; the room then validates and applies it (`statblock::normalize_command`).
 ///   A template that is missing or has no stat block rejects the command.
@@ -1182,6 +1266,15 @@ pub async fn resolve_spawn(
     {
         token.stat_block = Some(actor_template_stat_block(state, campaign_id, template_id).await?);
     }
+    if token.actor_id.is_some() && token.stat_block.is_some() {
+        crate::statblock::normalize_token(&mut token)?;
+        if let Some(actor_id) = token.actor_id
+            && let Ok(Some(actor)) = get_actor(state, campaign_id, actor_id).await
+        {
+            tactical_sync_from_sheet(None, &actor.payload)
+                .apply_to_token(&mut token, trame_engine::commands::TableMode::Exploration);
+        }
+    }
     Ok(TrameCommand::SpawnToken { token })
 }
 
@@ -1199,6 +1292,30 @@ pub async fn actor_template_stat_block(
         .and_then(|actor| actor.payload.get("statBlock").cloned())
         .filter(Value::is_object)
         .ok_or_else(|| format!("not found: actor template {template_id} has no stat block"))
+}
+
+/// Re-synchronizes every actor-linked token currently in `campaign_id`'s active room from its
+/// stored `Actor` sheet (`tactical_sync_from_sheet`) and broadcasts `ActorUpdated`. Invoked
+/// when loading a scene (`maps::resolve_scene_command`) so kept `HeroToken`s pick up any
+/// stored sheet state (HP, death saves, `is_stable`, `is_dead`, exhaustion, conditions).
+pub async fn resync_linked_room_tokens(state: &AppState, campaign_id: Uuid) {
+    let Ok(actors) = list_actors(state, campaign_id).await else {
+        return;
+    };
+    let Some(room) = state.lease_manager.get_active_room(campaign_id).await else {
+        return;
+    };
+    for actor in actors {
+        let sync = tactical_sync_from_sheet(Some(&actor.name), &actor.payload);
+        let _ = room
+            .notify_actor_updated(
+                actor.id,
+                u64::try_from(actor.version).unwrap_or(0),
+                actor.payload,
+                sync,
+            )
+            .await;
+    }
 }
 
 /// Wakes the room and resyncs linked tokens + broadcasts `ActorUpdated` for `record`.
@@ -2099,10 +2216,70 @@ fn end_features_at_zero_hp(data: &mut Value, hp: i32) {
     }
 }
 
-/// Writes a linked token's hp / temp hp into its actor sheet (`attributes.hp`), and its
-/// conditions when they changed (`merge_sheet_conditions`), retrying once on a concurrent
-/// sheet edit, then broadcasts the new version (`ActorUpdated`). At 0 hp the toggles that
-/// end there are switched off (`end_features_at_zero_hp`).
+/// Applies `change` onto `data`, preserving either flat `Dnd5eActorSheet` or nested
+/// `Dnd5eActorData` schema shape.
+fn apply_vitals_to_sheet_json(data: &mut Value, change: &LinkedVitalsChange) {
+    let is_flat_sheet = !data.get("attributes").is_some_and(Value::is_object)
+        && (data.get("hpCurrent").is_some()
+            || data.get("hpMax").is_some()
+            || data.get("deathSaves").is_some_and(Value::is_object)
+            || data.get("exhaustionLevel").is_some());
+
+    if is_flat_sheet {
+        data["hpCurrent"] = json!(change.hp);
+        data["tempHp"] = json!(change.temp_hp);
+        if !data.get("deathSaves").is_some_and(Value::is_object) {
+            data["deathSaves"] = json!({});
+        }
+        data["deathSaves"]["successes"] = json!(change.death_save_successes);
+        data["deathSaves"]["failures"] = json!(change.death_save_failures);
+        data["deathSaves"]["isStable"] = json!(change.is_stable);
+        data["deathSaves"]["isDead"] = json!(change.is_dead);
+    } else {
+        if !data.get("attributes").is_some_and(Value::is_object) {
+            data["attributes"] = json!({});
+        }
+        if !data["attributes"].get("hp").is_some_and(Value::is_object) {
+            data["attributes"]["hp"] = json!({});
+        }
+        data["attributes"]["hp"]["current"] = json!(change.hp);
+        data["attributes"]["hp"]["temp"] = json!(change.temp_hp);
+        if !data["attributes"]
+            .get("deathSaves")
+            .is_some_and(Value::is_object)
+        {
+            data["attributes"]["deathSaves"] = json!({});
+        }
+        data["attributes"]["deathSaves"]["successes"] = json!(change.death_save_successes);
+        data["attributes"]["deathSaves"]["failures"] = json!(change.death_save_failures);
+        data["attributes"]["deathSaves"]["isStable"] = json!(change.is_stable);
+        data["isDead"] = json!(change.is_dead);
+        if data.get("deathSaves").is_some_and(Value::is_object) {
+            data["deathSaves"]["successes"] = json!(change.death_save_successes);
+            data["deathSaves"]["failures"] = json!(change.death_save_failures);
+            data["deathSaves"]["isStable"] = json!(change.is_stable);
+            data["deathSaves"]["isDead"] = json!(change.is_dead);
+        }
+    }
+
+    end_features_at_zero_hp(data, change.hp);
+    if let Some(conditions) = &change.conditions {
+        data["conditions"] = merge_sheet_conditions(data.get("conditions"), conditions);
+    }
+}
+
+/// Writes a linked token's vitals (`hp`, `temp_hp`, death saving throw counters,
+/// `is_stable`, `is_dead`, and changed `conditions`) into its actor sheet without drifting
+/// the sheet's representation:
+/// - Flat `Dnd5eActorSheet` (no `attributes` object, carries `hpCurrent` or top-level
+///   `deathSaves`): updates `hpCurrent`, `tempHp`, and
+///   `deathSaves: { successes, failures, isStable, isDead }`.
+/// - Standard `Dnd5eActorData` (or minimal sheet JSON): updates `attributes.hp.{current,temp}`,
+///   `attributes.deathSaves.{successes,failures,isStable}`, and root `isDead` (plus
+///   top-level `deathSaves` when also present).
+///
+/// Retries once on a concurrent sheet edit, then broadcasts the new version (`ActorUpdated`).
+/// At 0 hp the toggles that end there are switched off (`end_features_at_zero_hp`).
 pub async fn persist_linked_vitals(
     state: &AppState,
     change: &LinkedVitalsChange,
@@ -2112,18 +2289,7 @@ pub async fn persist_linked_vitals(
             return Ok(());
         };
         let mut data = actor.payload.clone();
-        if !data.get("attributes").is_some_and(Value::is_object) {
-            data["attributes"] = json!({});
-        }
-        if !data["attributes"].get("hp").is_some_and(Value::is_object) {
-            data["attributes"]["hp"] = json!({});
-        }
-        data["attributes"]["hp"]["current"] = json!(change.hp);
-        data["attributes"]["hp"]["temp"] = json!(change.temp_hp);
-        end_features_at_zero_hp(&mut data, change.hp);
-        if let Some(conditions) = &change.conditions {
-            data["conditions"] = merge_sheet_conditions(data.get("conditions"), conditions);
-        }
+        apply_vitals_to_sheet_json(&mut data, change);
         match update_actor(
             state,
             change.campaign_id,

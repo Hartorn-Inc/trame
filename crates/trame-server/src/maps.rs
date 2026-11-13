@@ -583,8 +583,9 @@ pub fn scene_activation(scene: &CampaignMapScene) -> SceneActivation {
     }
 }
 
-/// Fills `ActivateScene.scene` from storage (overwriting any client-supplied payload); other
-/// commands pass through unchanged. Unknown scene IDs are rejected.
+/// Fills `ActivateScene.scene` from storage (overwriting any client-supplied payload) and
+/// resynchronizes kept linked `HeroToken`s from their stored `Actor` sheets; other commands
+/// pass through unchanged. Unknown scene IDs are rejected.
 pub async fn resolve_scene_command(
     state: &AppState,
     campaign_id: Uuid,
@@ -598,6 +599,7 @@ pub async fn resolve_scene_command(
         .iter()
         .find(|s| s.id == scene_id)
         .ok_or_else(|| format!("not found: scene {scene_id} does not exist in this campaign"))?;
+    crate::campaigns::resync_linked_room_tokens(state, campaign_id).await;
     Ok(TrameCommand::ActivateScene {
         scene_id,
         scene: Some(scene_activation(scene)),

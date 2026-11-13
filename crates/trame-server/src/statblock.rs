@@ -324,6 +324,7 @@ pub fn apply_stat_block(token: &mut TokenState, block: Value) {
     token.dex_mod = (dex - 10).div_euclid(2);
     token.initiative_extra =
         num("/initiativeBonus").map_or(0, |b| b.round() as i32 - token.dex_mod);
+    token.exhaustion = 0;
     let size = block
         .get("size")
         .and_then(Value::as_str)

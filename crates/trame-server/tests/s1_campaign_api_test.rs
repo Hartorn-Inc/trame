@@ -1504,6 +1504,314 @@ async fn a16_damage_persists_only_for_linked_tokens() {
     }
 }
 
+#[tokio::test]
+async fn g4_linked_token_death_saves_and_mortality_round_trip_with_actor_sheet() {
+    #[derive(Clone, Copy)]
+    enum SchemaKind {
+        NestedAttributes,
+        FlatDnd5eActorSheet,
+    }
+
+    let make_initial_sheet = |schema: SchemaKind| match schema {
+        SchemaKind::NestedAttributes => json!({
+            "attributes": {
+                "hp": { "current": 10, "max": 20, "temp": 0 },
+                "deathSaves": { "successes": 0, "failures": 0, "isStable": false },
+                "exhaustion": 0
+            },
+            "isDead": false,
+            "conditions": []
+        }),
+        SchemaKind::FlatDnd5eActorSheet => json!({
+            "schemaVersion": 1,
+            "hpCurrent": 10,
+            "hpMax": 20,
+            "tempHp": 0,
+            "deathSaves": { "successes": 0, "failures": 0, "isStable": false, "isDead": false },
+            "exhaustionLevel": 0,
+            "conditions": []
+        }),
+    };
+
+    let read_sheet_state = |schema: SchemaKind, data: &Value| -> (i64, u64, u64, bool, bool) {
+        match schema {
+            SchemaKind::NestedAttributes => (
+                data["attributes"]["hp"]["current"].as_i64().unwrap_or(-1),
+                data["attributes"]["deathSaves"]["successes"]
+                    .as_u64()
+                    .unwrap_or(99),
+                data["attributes"]["deathSaves"]["failures"]
+                    .as_u64()
+                    .unwrap_or(99),
+                data["attributes"]["deathSaves"]["isStable"]
+                    .as_bool()
+                    .unwrap_or(false),
+                data["isDead"].as_bool().unwrap_or(false),
+            ),
+            SchemaKind::FlatDnd5eActorSheet => (
+                data["hpCurrent"].as_i64().unwrap_or(-1),
+                data["deathSaves"]["successes"].as_u64().unwrap_or(99),
+                data["deathSaves"]["failures"].as_u64().unwrap_or(99),
+                data["deathSaves"]["isStable"].as_bool().unwrap_or(false),
+                data["deathSaves"]["isDead"].as_bool().unwrap_or(false),
+            ),
+        }
+    };
+
+    // (case_id, schema, commands_to_run, expected (hp, successes, failures, is_stable, is_dead))
+    let cases: Vec<(&str, SchemaKind, Vec<Value>, (i64, u64, u64, bool, bool))> = vec![
+        (
+            "nested_zero_hp_damage_and_death_saves_to_stabilize",
+            SchemaKind::NestedAttributes,
+            vec![
+                json!({ "cmd": "APPLY_DAMAGE", "raw_damage": 10, "affinity": "NORMAL" }),
+                json!({ "cmd": "APPLY_DAMAGE", "raw_damage": 4, "affinity": "NORMAL" }),
+                json!({ "cmd": "RECORD_DEATH_SAVE", "d20": 14 }),
+                json!({ "cmd": "RECORD_DEATH_SAVE", "d20": 12 }),
+                json!({ "cmd": "RECORD_DEATH_SAVE", "d20": 10 }),
+            ],
+            (0, 0, 0, true, false),
+        ),
+        (
+            "nested_nat1_plus_failure_causes_death",
+            SchemaKind::NestedAttributes,
+            vec![
+                json!({ "cmd": "APPLY_DAMAGE", "raw_damage": 10, "affinity": "NORMAL" }),
+                json!({ "cmd": "RECORD_DEATH_SAVE", "d20": 15 }),
+                json!({ "cmd": "RECORD_DEATH_SAVE", "d20": 1 }),
+                json!({ "cmd": "RECORD_DEATH_SAVE", "d20": 5 }),
+            ],
+            (0, 1, 3, false, true),
+        ),
+        (
+            "nested_healing_from_dying_clears_death_saves",
+            SchemaKind::NestedAttributes,
+            vec![
+                json!({ "cmd": "APPLY_DAMAGE", "raw_damage": 10, "affinity": "NORMAL" }),
+                json!({ "cmd": "RECORD_DEATH_SAVE", "d20": 14 }),
+                json!({ "cmd": "RECORD_DEATH_SAVE", "d20": 4 }),
+                json!({ "cmd": "HEAL_ACTOR", "amount": 6 }),
+            ],
+            (6, 0, 0, false, false),
+        ),
+        (
+            "flat_sheet_zero_hp_damage_and_nat20_revive",
+            SchemaKind::FlatDnd5eActorSheet,
+            vec![
+                json!({ "cmd": "APPLY_DAMAGE", "raw_damage": 10, "affinity": "NORMAL" }),
+                json!({ "cmd": "APPLY_DAMAGE", "raw_damage": 3, "affinity": "NORMAL" }),
+                json!({ "cmd": "RECORD_DEATH_SAVE", "d20": 16 }),
+                json!({ "cmd": "RECORD_DEATH_SAVE", "d20": 20 }),
+            ],
+            (1, 0, 0, false, false),
+        ),
+        (
+            "flat_sheet_massive_damage_kills_immediately",
+            SchemaKind::FlatDnd5eActorSheet,
+            vec![json!({ "cmd": "APPLY_DAMAGE", "raw_damage": 35, "affinity": "NORMAL" })],
+            (0, 0, 0, false, true),
+        ),
+    ];
+
+    for (case, schema, raw_cmds, expected) in cases {
+        let h = Harness::new();
+        let app = h.app();
+        let (campaign_id, gm_id, gm) = h.campaign(&app).await;
+        let (_, created) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/campaigns/{campaign_id}/actors"),
+            Some(&gm),
+            json!({ "name": "Hero", "data": make_initial_sheet(schema) }),
+        )
+        .await;
+        let actor_id = Uuid::parse_str(created["actor"]["id"].as_str().unwrap()).unwrap();
+        let mut t = token("Hero", None, Some(actor_id), 0.0);
+        t.hp = 10;
+        t.max_hp = 20;
+        let room = h.room(campaign_id).await;
+        room.dispatch_direct_command(
+            gm_actor(gm_id),
+            TrameCommand::SpawnToken {
+                token: Box::new(t.clone()),
+            },
+        )
+        .await
+        .unwrap();
+
+        for mut cmd_json in raw_cmds {
+            cmd_json["token_id"] = json!(t.id);
+            let cmd: TrameCommand = serde_json::from_value(cmd_json).unwrap();
+            room.dispatch_direct_command(gm_actor(gm_id), cmd)
+                .await
+                .unwrap();
+        }
+
+        let mut got = (-1, 99, 99, false, false);
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let (_, body) = call(
+                &app,
+                "GET",
+                &format!("/api/v1/campaigns/{campaign_id}/actors/{actor_id}"),
+                Some(&gm),
+                Value::Null,
+            )
+            .await;
+            got = read_sheet_state(schema, &body["actor"]["data"]);
+            if got == expected {
+                break;
+            }
+        }
+        assert_eq!(got, expected, "case {case}");
+    }
+}
+
+#[tokio::test]
+async fn g4_sheet_edits_and_exhaustion_six_propagate_back_to_linked_tokens_and_scenes() {
+    let h = Harness::new();
+    let app = h.app();
+    let (campaign_id, _, gm) = h.campaign(&app).await;
+    let (_, created) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/campaigns/{campaign_id}/actors"),
+        Some(&gm),
+        json!({
+            "name": "Kara",
+            "data": {
+                "attributes": {
+                    "hp": { "current": 0, "max": 24, "temp": 0 },
+                    "deathSaves": { "successes": 2, "failures": 1, "isStable": false },
+                    "exhaustion": 2
+                },
+                "isDead": false
+            }
+        }),
+    )
+    .await;
+    let actor_id = Uuid::parse_str(created["actor"]["id"].as_str().unwrap()).unwrap();
+    let room = h.room(campaign_id).await;
+
+    // 1. Spawning a linked token hydrates death saves, stability, exhaustion, and is_dead from sheet.
+    let mut hero = token("Kara", Some(Uuid::new_v4()), Some(actor_id), 0.0);
+    hero.hp = 24;
+    hero.max_hp = 24;
+    let spawn_res = mcp_tool(
+        &app,
+        &gm,
+        "trame.dispatch_command",
+        json!({ "campaign_id": campaign_id, "command": spawn_cmd(&hero) }),
+    )
+    .await;
+    assert!(spawn_res["error"].is_null(), "{spawn_res}");
+    let tok = &table(&room).await.data.tokens[&hero.id];
+    assert_eq!(
+        (
+            tok.hp,
+            tok.death_save_successes,
+            tok.death_save_failures,
+            tok.is_stable,
+            tok.is_dead,
+            tok.exhaustion
+        ),
+        (0, 2, 1, false, false, 2),
+        "spawn_hydrates_from_sheet"
+    );
+
+    // 2. Editing the sheet via PUT propagates updated deathSaves & stability onto the live room token,
+    // and activating a new scene keeps those synced fields on the retained hero token.
+    let edited_sheet = json!({
+        "attributes": {
+            "hp": { "current": 0, "max": 24, "temp": 0 },
+            "deathSaves": { "successes": 0, "failures": 0, "isStable": true },
+            "exhaustion": 1
+        },
+        "isDead": false
+    });
+    let (status, updated) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/campaigns/{campaign_id}/actors/{actor_id}"),
+        Some(&gm),
+        json!({ "name": "Kara", "data": edited_sheet, "expected_version": 1 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    let next_version = updated["actor"]["version"].as_i64().unwrap();
+    let tok = &table(&room).await.data.tokens[&hero.id];
+    assert_eq!(
+        (
+            tok.death_save_successes,
+            tok.death_save_failures,
+            tok.is_stable,
+            tok.is_dead,
+            tok.exhaustion
+        ),
+        (0, 0, true, false, 1),
+        "put_actor_propagates_to_live_token"
+    );
+
+    let scene = stored_scene(campaign_id, &[]);
+    h.state
+        .map_storage
+        .save_campaign_maps(campaign_id, vec![scene.clone()]);
+    let act_res = mcp_tool(
+        &app,
+        &gm,
+        "trame.dispatch_command",
+        json!({ "campaign_id": campaign_id, "command": { "cmd": "ACTIVATE_SCENE", "scene_id": scene.id } }),
+    )
+    .await;
+    assert!(act_res["error"].is_null(), "{act_res}");
+    let tok = &table(&room).await.data.tokens[&hero.id];
+    assert_eq!(
+        (tok.hp, tok.is_stable, tok.is_dead, tok.exhaustion),
+        (0, true, false, 1),
+        "activate_scene_preserves_sheet_mortality"
+    );
+
+    // 3. Setting exhaustion = 6 on the sheet kills the linked token AND persists isDead = true back to the sheet.
+    let exhaustion_six = json!({
+        "attributes": {
+            "hp": { "current": 12, "max": 24, "temp": 0 },
+            "deathSaves": { "successes": 0, "failures": 0, "isStable": false },
+            "exhaustion": 6
+        },
+        "isDead": false
+    });
+    let (status, updated2) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/campaigns/{campaign_id}/actors/{actor_id}"),
+        Some(&gm),
+        json!({ "name": "Kara", "data": exhaustion_six, "expected_version": next_version }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated2}");
+    let tok = &table(&room).await.data.tokens[&hero.id];
+    assert!(tok.is_dead, "exhaustion_6_kills_token");
+    assert!(!tok.is_stable, "dead_token_is_not_stable");
+
+    let mut sheet_dead = false;
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let (_, body) = call(
+            &app,
+            "GET",
+            &format!("/api/v1/campaigns/{campaign_id}/actors/{actor_id}"),
+            Some(&gm),
+            Value::Null,
+        )
+        .await;
+        sheet_dead = body["actor"]["data"]["isDead"].as_bool().unwrap_or(false);
+        if sheet_dead {
+            break;
+        }
+    }
+    assert!(sheet_dead, "exhaustion_6_death_persists_is_dead_to_sheet");
+}
+
 // ---------------------------------------------------------------------------
 // GS11 / UA15 — threat reach and darkvision derive from the sheet
 // ---------------------------------------------------------------------------

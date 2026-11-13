@@ -88,9 +88,11 @@
 //!        out of `TurnByTurn`, whatever supplied the initiative order, so a roll
 //!        made for one encounter never carries over to the next.
 //!      - `RecordDeathSave` follows the same rule: a player's d20 is replaced by
-//!        a server `1d20`, `2d20kh1` with Survivor (`resolve_death_save_roll`), broadcast after commit
-//!        like an initiative roll (the token's controller always receives it).
-//!        Batches (MCP) resolve an empty `d20` the same way.
+//!        a server `1d20` (`2d20kh1` with Survivor) minus `2 * effective_exhaustion`
+//!        (`resolve_death_save_roll`), forwarding the kept natural d20 face to the
+//!        engine and broadcasting the roll after commit like an initiative roll
+//!        (the token's controller always receives it). Batches (MCP) resolve an
+//!        empty `d20` the same way.
 //!   9. `Bounded Fan-Out & Pointer Pings (RT2)`:
 //!      - Each client has a `CLIENT_OUTBOUND_QUEUE_FRAMES`-deep queue the actor
 //!        fills without waiting (`ClientSender`). A full queue drops the frame
@@ -242,6 +244,22 @@ fn initiative_expression(token: &trame_engine::commands::TokenState) -> String {
         std::cmp::Ordering::Greater => format!("{term}+{modifier}"),
         std::cmp::Ordering::Less => format!("{term}{modifier}"),
         std::cmp::Ordering::Equal => term.to_string(),
+    }
+}
+
+/// Dice expression for a server-rolled `RecordDeathSave`: the d20 term of `mode` (`1d20`, or
+/// `2d20kh1` with Survivor) minus `2 * effective_exhaustion` (`1d20-2`..`1d20-12`, omitted
+/// when `0`).
+fn death_save_expression(
+    mode: trame_engine::resolution::RollMode,
+    effective_exhaustion: u8,
+) -> String {
+    let term = mode.d20_term();
+    let penalty = 2 * i32::from(effective_exhaustion);
+    if penalty > 0 {
+        format!("{term}-{penalty}")
+    } else {
+        term.to_string()
     }
 }
 
@@ -506,6 +524,24 @@ pub struct ActorTacticalSync {
     /// `"death_save"` only), copied onto `TokenState::feature_roll_advantages`. `None` keeps
     /// the token's current list.
     pub feature_roll_advantages: Option<Vec<String>>,
+    /// SRD 5.2.1 Exhaustion level (`0..=6`) from the sheet, copied onto
+    /// `TokenState::exhaustion` so engine-resolved d20 tests (such as `RecordDeathSave`)
+    /// apply `-2 * effective_exhaustion`. `None` keeps the token's current level.
+    pub exhaustion: Option<u8>,
+    /// Accumulated death saving throw successes (`0..=3`) from the sheet's
+    /// `attributes.deathSaves.successes` (`Dnd5eActorData`) or `deathSaves.successes`
+    /// (`Dnd5eActorSheet`). `None` keeps the token's counter.
+    pub death_save_successes: Option<u8>,
+    /// Accumulated death saving throw failures (`0..=3`) from the sheet's
+    /// `attributes.deathSaves.failures` (`Dnd5eActorData`) or `deathSaves.failures`
+    /// (`Dnd5eActorSheet`). `None` keeps the token's counter.
+    pub death_save_failures: Option<u8>,
+    /// Whether the actor is Stable at `0` HP (`attributes.deathSaves.isStable` or
+    /// `deathSaves.isStable`). `None` keeps the token's flag (cleared when HP `> 0` or dead).
+    pub is_stable: Option<bool>,
+    /// Whether the actor is dead (`isDead`, `deathSaves.isDead`, `failures >= 3`, or
+    /// Exhaustion level `6`). `None` keeps the token's flag.
+    pub is_dead: Option<bool>,
 }
 
 impl ActorTacticalSync {
@@ -530,6 +566,28 @@ impl ActorTacticalSync {
         }
         if let Some(temp_hp) = self.temp_hp {
             token.temp_hp = temp_hp.max(0);
+        }
+        if let Some(successes) = self.death_save_successes {
+            token.death_save_successes =
+                successes.min(trame_engine::rules::DEATH_SAVE_SUCCESSES_TO_STABILIZE);
+        }
+        if let Some(failures) = self.death_save_failures {
+            token.death_save_failures =
+                failures.min(trame_engine::rules::DEATH_SAVE_FAILURES_TO_DIE);
+        }
+        if let Some(is_stable) = self.is_stable {
+            token.is_stable = is_stable;
+        }
+        if let Some(is_dead) = self.is_dead {
+            token.is_dead = is_dead;
+        }
+        if token.hp > 0 {
+            token.death_save_successes = 0;
+            token.death_save_failures = 0;
+            token.is_stable = false;
+        }
+        if token.is_dead {
+            token.is_stable = false;
         }
         if let Some(ac) = self.ac {
             token.ac = ac.clamp(*SHEET_AC_RANGE.start(), *SHEET_AC_RANGE.end());
@@ -579,11 +637,14 @@ impl ActorTacticalSync {
         if let Some(ref advantages) = self.feature_roll_advantages {
             token.feature_roll_advantages = advantages.clone();
         }
+        if let Some(exhaustion) = self.exhaustion {
+            token.exhaustion = exhaustion.min(trame_engine::rules::MAX_EXHAUSTION_LEVEL);
+        }
     }
 }
 
 /// Vitals of an actor-linked token after a tabletop command changed them, forwarded to the
-/// persistence sink so the actor sheet in storage follows the table (S1). Synthetic tokens
+/// persistence sink so the actor sheet in storage follows the table (S1, G4). Synthetic tokens
 /// (`actor_id == None`) never produce one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedVitalsChange {
@@ -595,6 +656,14 @@ pub struct LinkedVitalsChange {
     pub hp: i32,
     /// Temporary hit points after the command (`>= 0`).
     pub temp_hp: i32,
+    /// Accumulated death saving throw successes after the command (`0..=3`).
+    pub death_save_successes: u8,
+    /// Accumulated death saving throw failures after the command (`0..=3`).
+    pub death_save_failures: u8,
+    /// Whether the token is Stable at `0` HP after the command.
+    pub is_stable: bool,
+    /// Whether the token is dead after the command.
+    pub is_dead: bool,
     /// Condition ids of the token (`TokenState::conditions`, without GM overrides) when the
     /// command changed them; `None` leaves the sheet's conditions untouched.
     pub conditions: Option<Vec<String>>,
@@ -605,6 +674,10 @@ pub struct LinkedVitalsChange {
 struct LinkedVitals {
     hp: i32,
     temp_hp: i32,
+    death_save_successes: u8,
+    death_save_failures: u8,
+    is_stable: bool,
+    is_dead: bool,
     conditions: Vec<String>,
 }
 
@@ -1670,7 +1743,9 @@ impl TableRoomActor {
 
     /// Server-rolled `RecordDeathSave` d20, like `AuthoritativeInitiativeRoll`: a player's
     /// submitted value is ignored and `1d20` (`2d20kh1` with a synced Survivor feature,
-    /// `resolution::death_save_roll_mode`) is rolled for them; a Game Master may enter a
+    /// `resolution::death_save_roll_mode`) minus `2 * effective_exhaustion` is rolled for
+    /// them, forwarding the kept natural d20 face (`1..=20`) to `RecordDeathSave` so natural
+    /// `1` and natural `20` retain their unmodified SRD 5.2.1 rules; a Game Master may enter a
     /// physical die result or leave `d20` empty to have it rolled. The roll is broadcast only
     /// after the command commits, with the initiative privacy rule (`GmOnly` when some player
     /// cannot see the token) and the initiative fan-out (`fan_out_initiative_roll`), so the
@@ -1698,14 +1773,18 @@ impl TableRoomActor {
         };
         let visibility = initiative_roll_visibility(token, &self.player_views());
         let reason = format!("Death Saving Throw: {}", token.name);
-        let term = trame_engine::resolution::death_save_roll_mode(token).d20_term();
+        let mode = trame_engine::resolution::death_save_roll_mode(token);
+        let expr = death_save_expression(mode, token.effective_exhaustion());
         let outcome = self
             .dice_roller
-            .roll(actor.user_id, term, visibility, reason)
+            .roll(actor.user_id, &expr, visibility, reason)
             .map_err(|err| err.to_string())?;
-        let d20 = u8::try_from(outcome.total).ok();
+        let (_, kept_d20) = crate::resolution::d20s_of(&outcome, mode);
         Ok((
-            TrameCommand::RecordDeathSave { token_id, d20 },
+            TrameCommand::RecordDeathSave {
+                token_id,
+                d20: Some(kept_d20),
+            },
             Some((token_id, outcome)),
         ))
     }
@@ -2214,6 +2293,10 @@ impl TableRoomActor {
                     let vitals = LinkedVitals {
                         hp: t.hp,
                         temp_hp: t.temp_hp,
+                        death_save_successes: t.death_save_successes,
+                        death_save_failures: t.death_save_failures,
+                        is_stable: t.is_stable,
+                        is_dead: t.is_dead,
                         conditions: t.conditions.clone(),
                     };
                     ((t.id, a), vitals)
@@ -2241,6 +2324,10 @@ impl TableRoomActor {
                     actor_id,
                     hp: vitals.hp,
                     temp_hp: vitals.temp_hp,
+                    death_save_successes: vitals.death_save_successes,
+                    death_save_failures: vitals.death_save_failures,
+                    is_stable: vitals.is_stable,
+                    is_dead: vitals.is_dead,
                     conditions: (prev.conditions != vitals.conditions).then_some(vitals.conditions),
                 });
             }
@@ -2249,8 +2336,10 @@ impl TableRoomActor {
 
     /// Synchronizes tactical fields onto every `LinkedActorToken` (`token.actor_id == Some(actor_id)`)
     /// without pushing to `undo_stack`; synthetic tokens are never touched even when their
-    /// `token.id` happens to equal `actor_id`. Then broadcasts `ServerEnvelope::ActorUpdated`
-    /// to the GM and the linked tokens' controllers (`ADR-0037`).
+    /// `token.id` happens to equal `actor_id`. When a sheet save brings a linked token to death
+    /// (for example reaching Exhaustion level `6` or `3` death save failures), mirrors that new
+    /// vitals state (`is_dead`) back onto the sheet via `forward_linked_vitals`. Then broadcasts
+    /// `ServerEnvelope::ActorUpdated` to the GM and the linked tokens' controllers (`ADR-0037`).
     fn apply_actor_tactical_sync(
         &mut self,
         actor_id: Uuid,
@@ -2258,6 +2347,7 @@ impl TableRoomActor {
         data: serde_json::Value,
         sync: ActorTacticalSync,
     ) -> usize {
+        let before = self.linked_vitals();
         let mut updated_count = 0usize;
         let mut sheet_owners: Vec<Uuid> = Vec::new();
         let mode = self.state.data.mode;
@@ -2266,13 +2356,42 @@ impl TableRoomActor {
                 if let Some(owner) = token.owner_user_id {
                     sheet_owners.push(owner);
                 }
+                let prev_dead = token.is_dead;
                 sync.apply_to_token(token, mode);
+                if token.is_dead && !prev_dead {
+                    token.concentrating = false;
+                    if let Some(aoe_id) = token.concentrating_on_aoe_id.take() {
+                        self.state.data.persistent_aoes.remove(&aoe_id);
+                    }
+                }
                 updated_count += 1;
             }
         }
         // Sheet conditions can incapacitate a concentrating caster outside the command
         // stream; the next projection carries the ended concentration.
         self.state.end_incapacitated_concentration();
+
+        // Only forward back to storage when a sheet-derived transition newly killed the token
+        // while the stored sheet had not yet marked `isDead` / `deathSaves.isDead`: ordinary
+        // sheet edits (`hp`, `conditions`, `deathSaves`) already come from `data`.
+        let sheet_already_dead = data
+            .get("isDead")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+            || data
+                .pointer("/deathSaves/isDead")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+        if !sheet_already_dead
+            && self
+                .state
+                .data
+                .tokens
+                .values()
+                .any(|t| t.actor_id == Some(actor_id) && t.is_dead)
+        {
+            self.forward_linked_vitals(&before);
+        }
 
         let out = ServerEnvelope::ActorUpdated {
             actor_id,

@@ -1648,7 +1648,7 @@ fn vision_request_without_a_range_fails_closed() {
 #[test]
 fn resolve_death_save_follows_srd_counters() {
     use trame_engine::{DeathSaveOutcome, resolve_death_save};
-    // (case_id, successes, failures, d20, expected outcome)
+    // (case_id, successes, failures, d20, exhaustion, expected outcome)
     let outcome = |successes, failures, regains_hp, stable, dead| DeathSaveOutcome {
         successes,
         failures,
@@ -1658,17 +1658,67 @@ fn resolve_death_save_follows_srd_counters() {
     };
     let cases = [
         (
-            "ten_is_a_success",
+            "d20_10_exhaustion_0_is_success",
             0,
             0,
             10,
+            0,
             outcome(1, 0, false, false, false),
+        ),
+        (
+            "d20_10_exhaustion_1_is_failure_8_lt_10",
+            0,
+            0,
+            10,
+            1,
+            outcome(0, 1, false, false, false),
+        ),
+        (
+            "d20_12_exhaustion_1_is_success_10_ge_10",
+            0,
+            0,
+            12,
+            1,
+            outcome(1, 0, false, false, false),
+        ),
+        (
+            "d20_19_exhaustion_5_is_failure_9_lt_10",
+            0,
+            0,
+            19,
+            5,
+            outcome(0, 1, false, false, false),
+        ),
+        (
+            "d20_20_exhaustion_5_nat20_regains_one_hp",
+            2,
+            2,
+            20,
+            5,
+            outcome(0, 0, true, false, false),
+        ),
+        (
+            "d20_1_exhaustion_0_adds_two_failures",
+            0,
+            0,
+            1,
+            0,
+            outcome(0, 2, false, false, false),
+        ),
+        (
+            "d20_1_exhaustion_5_nat1_adds_two_failures",
+            0,
+            0,
+            1,
+            5,
+            outcome(0, 2, false, false, false),
         ),
         (
             "nineteen_is_a_success",
             1,
             1,
             19,
+            0,
             outcome(2, 1, false, false, false),
         ),
         (
@@ -1676,6 +1726,7 @@ fn resolve_death_save_follows_srd_counters() {
             0,
             0,
             9,
+            0,
             outcome(0, 1, false, false, false),
         ),
         (
@@ -1683,20 +1734,15 @@ fn resolve_death_save_follows_srd_counters() {
             2,
             1,
             2,
+            0,
             outcome(2, 2, false, false, false),
-        ),
-        (
-            "natural_one_is_two_failures",
-            0,
-            0,
-            1,
-            outcome(0, 2, false, false, false),
         ),
         (
             "natural_one_at_two_failures_kills_capped_at_three",
             1,
             2,
             1,
+            0,
             outcome(1, 3, false, false, true),
         ),
         (
@@ -1704,6 +1750,15 @@ fn resolve_death_save_follows_srd_counters() {
             2,
             2,
             5,
+            0,
+            outcome(2, 3, false, false, true),
+        ),
+        (
+            "exhaustion_third_failure_kills",
+            2,
+            2,
+            10,
+            1,
             outcome(2, 3, false, false, true),
         ),
         (
@@ -1711,6 +1766,15 @@ fn resolve_death_save_follows_srd_counters() {
             2,
             2,
             15,
+            0,
+            outcome(0, 0, false, true, false),
+        ),
+        (
+            "exhaustion_third_success_stabilizes_and_resets",
+            2,
+            2,
+            14,
+            2,
             outcome(0, 0, false, true, false),
         ),
         (
@@ -1718,10 +1782,12 @@ fn resolve_death_save_follows_srd_counters() {
             2,
             2,
             20,
+            0,
             outcome(0, 0, true, false, false),
         ),
         (
             "out_of_range_low_clamps_to_natural_one",
+            0,
             0,
             0,
             0,
@@ -1732,12 +1798,13 @@ fn resolve_death_save_follows_srd_counters() {
             0,
             1,
             25,
+            5,
             outcome(0, 0, true, false, false),
         ),
     ];
-    for (id, successes, failures, d20, expected) in cases {
+    for (id, successes, failures, d20, exhaustion, expected) in cases {
         assert_eq!(
-            resolve_death_save(successes, failures, d20),
+            resolve_death_save(successes, failures, d20, exhaustion),
             expected,
             "case {id}"
         );
@@ -1813,6 +1880,66 @@ fn record_death_save_updates_the_token_and_is_undoable() {
             hero: dying_hero(0, 2),
             d20: Some(3),
             expected: Some((0, 3, 0, false, true)),
+        },
+        Case {
+            id: "exhaustion_1_turns_raw_10_into_failure",
+            actor: player(),
+            hero: {
+                let mut h = dying_hero(0, 0);
+                h.exhaustion = 1;
+                h
+            },
+            d20: Some(10),
+            expected: Some((0, 1, 0, false, false)),
+        },
+        Case {
+            id: "exhaustion_1_raw_12_is_success",
+            actor: player(),
+            hero: {
+                let mut h = dying_hero(0, 0);
+                h.exhaustion = 1;
+                h
+            },
+            d20: Some(12),
+            expected: Some((1, 0, 0, false, false)),
+        },
+        Case {
+            id: "exhaustion_5_raw_19_is_failure",
+            actor: player(),
+            hero: {
+                let mut h = dying_hero(0, 2);
+                h.exhaustion = 5;
+                h
+            },
+            d20: Some(19),
+            expected: Some((0, 3, 0, false, true)),
+        },
+        Case {
+            id: "exhaustion_5_nat20_still_wakes_at_one_hp",
+            actor: player(),
+            hero: {
+                let mut h = dying_hero(1, 2);
+                h.exhaustion = 5;
+                h
+            },
+            d20: Some(20),
+            expected: Some((0, 0, 1, false, false)),
+        },
+        Case {
+            id: "removed_exhaustion_ruling_restores_raw_10_success",
+            actor: player(),
+            hero: {
+                let mut h = dying_hero(0, 0);
+                h.exhaustion = 2;
+                h.condition_overrides = vec![trame_engine::ConditionOverrideEntry {
+                    subject: trame_engine::OverrideSubject::Condition,
+                    id: "exhaustion".to_string(),
+                    mode: trame_engine::OverrideMode::Remove,
+                }];
+                h
+            },
+            d20: Some(10),
+            expected: Some((1, 0, 0, false, false)),
         },
         Case {
             id: "spectator_is_refused",

@@ -420,6 +420,10 @@ fn is_zero_i32(value: &i32) -> bool {
     *value == 0
 }
 
+fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
+}
+
 /// SRD condition IDs that include Incapacitated (no actions or reactions).
 pub(crate) const INCAPACITATING_CONDITIONS: [&str; 5] = [
     "incapacitated",
@@ -742,6 +746,10 @@ pub struct TokenState {
     /// `resolution::death_save_roll_mode`; omitted when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub feature_roll_advantages: Vec<String>,
+    /// SRD 5.2.1 Exhaustion level (`0..=6`), synchronized from the linked actor sheet
+    /// (`ADR-0037`); default `0`. Omitted from the wire when `0`.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub exhaustion: u8,
 }
 
 impl TokenState {
@@ -789,6 +797,7 @@ impl TokenState {
             stat_block: None,
             save_bonuses: BTreeMap::new(),
             feature_roll_advantages: Vec::new(),
+            exhaustion: 0,
         }
     }
 
@@ -830,6 +839,23 @@ impl TokenState {
     /// Modifier added to the server's `1d20` initiative roll (`AuthoritativeInitiativeRoll`).
     pub fn initiative_modifier(&self) -> i32 {
         self.dex_mod.saturating_add(self.initiative_extra)
+    }
+
+    /// Effective SRD 5.2.1 Exhaustion level (`0..=6`) after Game Master `ConditionOverride`
+    /// rulings and stat-block `conditionImmunities`: `0` when a `Remove` ruling on the
+    /// `"exhaustion"` condition suspends it or the token is immune to `"exhaustion"`,
+    /// otherwise `self.exhaustion` clamped to `0..=MAX_EXHAUSTION_LEVEL` (`6`).
+    pub fn effective_exhaustion(&self) -> u8 {
+        let removed = self.condition_overrides.iter().any(|o| {
+            o.subject == OverrideSubject::Condition
+                && o.mode == OverrideMode::Remove
+                && o.id == "exhaustion"
+        });
+        if removed || self.is_immune_to_condition("exhaustion") {
+            0
+        } else {
+            self.exhaustion.min(crate::rules::MAX_EXHAUSTION_LEVEL)
+        }
     }
 
     /// Derives the `(raw_damage, DamageAffinity)` pair to mitigate typed damage with, from this
@@ -2803,8 +2829,12 @@ impl TableState {
                             .to_string(),
                     ));
                 }
-                let outcome =
-                    resolve_death_save(token.death_save_successes, token.death_save_failures, d20);
+                let outcome = resolve_death_save(
+                    token.death_save_successes,
+                    token.death_save_failures,
+                    d20,
+                    token.effective_exhaustion(),
+                );
                 self.push_undo(format!("Death saving throw for {}", token.name));
                 let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
                 tok_mut.death_save_successes = outcome.successes;
