@@ -2036,3 +2036,66 @@ fn break_concentration_clears_the_spell_flag() {
         .unwrap();
     assert!(!state.data.tokens[&HERO_ID].concentrating);
 }
+
+#[test]
+fn one_way_walls_block_one_direction_even_without_a_stored_normal() {
+    struct Case {
+        id: &'static str,
+        wall: Value,
+        ray: (f64, f64),
+        blocks: bool,
+    }
+    let editor = json!({ "id": Uuid::from_u128(0x77), "p1": { "x": 0.0, "y": 0.0 }, "p2": { "x": 100.0, "y": 0.0 }, "wallType": "OneWay" });
+    let zero = json!({ "id": Uuid::from_u128(0x78), "a": { "x": 0.0, "y": 0.0 }, "b": { "x": 100.0, "y": 0.0 }, "kind": { "kind": "ONE_WAY", "normal_x": 0.0, "normal_y": 0.0 } });
+    let explicit = json!({ "id": Uuid::from_u128(0x79), "a": { "x": 0.0, "y": 0.0 }, "b": { "x": 100.0, "y": 0.0 }, "kind": { "kind": "ONE_WAY", "normal_x": 0.0, "normal_y": -1.0 } });
+    let cases = [
+        Case {
+            id: "editor_wall_drawn_left_to_right_blocks_sight_going_down",
+            wall: editor.clone(),
+            ray: (0.0, 1.0),
+            blocks: true,
+        },
+        Case {
+            id: "editor_wall_drawn_left_to_right_lets_sight_go_up",
+            wall: editor,
+            ray: (0.0, -1.0),
+            blocks: false,
+        },
+        Case {
+            id: "stored_zero_normal_falls_back_to_the_drawn_direction",
+            wall: zero,
+            ray: (0.0, 1.0),
+            blocks: true,
+        },
+        Case {
+            id: "explicit_normal_wins_over_the_drawn_direction",
+            wall: explicit.clone(),
+            ray: (0.0, 1.0),
+            blocks: false,
+        },
+        Case {
+            id: "explicit_normal_blocks_rays_along_it",
+            wall: explicit,
+            ray: (0.0, -1.0),
+            blocks: true,
+        },
+    ];
+    for c in cases {
+        let wall: WallSegment = serde_json::from_value(c.wall).expect(c.id);
+        assert!(
+            matches!(wall.kind, WallKind::OneWay { .. }),
+            "case {}: kind",
+            c.id
+        );
+        let ray = Point2D {
+            x: c.ray.0,
+            y: c.ray.1,
+        };
+        assert_eq!(
+            wall.effective_blocks_vision(false, ray),
+            (c.blocks, false),
+            "case {}",
+            c.id
+        );
+    }
+}
