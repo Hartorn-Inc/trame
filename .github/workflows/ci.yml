@@ -65,6 +65,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Rust Lint check (cargo clippy)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Terraform format, validate & tflint (make lint-terraform)
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # tflint --init downloads its pinned ruleset from GitHub releases
+        run: make lint-terraform
       - name: Rust Tests (cargo test)
         env:
           DATABASE_URL: postgresql://trame:trame_ci_password@localhost:5432/trame

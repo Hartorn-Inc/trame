@@ -11,7 +11,14 @@ DC ?= docker compose
 DEV_COMPOSE := $(DC) --project-name $(DEV_PROJECT) --project-directory "$(REPO_DIR)" $(COMPOSE_ENV_FILE) -f "$(COMPOSE_FILE)"
 E2E_COMPOSE := E2E_UID=$$(id -u) E2E_GID=$$(id -g) $(DC) --project-name trame-e2e-$(PROJECT_HASH) --project-directory "$(REPO_DIR)" --env-file "$(REPO_DIR)/e2e/e2e.env" -f "$(REPO_DIR)/deploy/compose/docker-compose.prod.yml" -f "$(REPO_DIR)/e2e/docker-compose.e2e.yml"
 
-.PHONY: help up down logs ps build wasm test test-rust test-web test-game-systems srd-content lint lint-rust lint-web lint-design fmt check shell-rust shell-web db-psql clean e2e-image e2e e2e-video deploy-compose-smoke
+TERRAFORM_DIR := $(REPO_DIR)/deploy/terraform
+TERRAFORM_IMAGE := hashicorp/terraform:1.17.1@sha256:a5d5a5a892c98f60fcbfa81eac2a40fc19e7b3fa7719bccae10ff6111d22524a
+TFLINT_IMAGE := ghcr.io/terraform-linters/tflint:v0.65.0@sha256:2788f4d4fc663c0e953b011b01bf443fe5bfce7587ee916e588e6057b85d6359
+# Sources mounted read-only; provider and plugin downloads go to a per-checkout cache volume.
+TERRAFORM_RUN := docker run --rm --memory 2g -v "$(TERRAFORM_DIR)":/src:ro -v trame-terraform-$(PROJECT_HASH):/cache -w /src \
+	-e TF_DATA_DIR=/cache/data -e TFLINT_PLUGIN_DIR=/cache/tflint -e GITHUB_TOKEN
+
+.PHONY: help up down logs ps build wasm test test-rust test-web test-game-systems srd-content lint lint-rust lint-web lint-design lint-terraform fmt check shell-rust shell-web db-psql clean e2e-image e2e e2e-video deploy-compose-smoke
 
 help: ## Display available Docker-based development commands
 	@awk 'BEGIN {FS = ":.*##"; printf "TRAME Docker Development Workflow\nUsage: make <target>\n\nTargets:\n"} /^[a-zA-Z][a-zA-Z0-9_-]*:.*##/ {printf "  %-20s %s\n", $$1, $$2}' "$(MAKEFILE_PATH)"
@@ -63,7 +70,7 @@ test-game-systems: wasm ## Run packages/game-systems/dnd5e tests inside the Node
 srd-content: ## Regenerate the dnd5e SRD 5.2.1 packs from the pinned Open5e snapshot (ARGS="--check" verifies them)
 	$(DEV_COMPOSE) run --rm --no-deps web-dev node ../game-systems/dnd5e/scripts/generate-srd-content.ts $(ARGS)
 
-lint: lint-rust lint-web lint-design ## Run all linters and format checks (glossary/ADR integrity, Impeccable design audit, rustfmt, clippy, eslint, tsc) inside Docker
+lint: lint-rust lint-web lint-design lint-terraform ## Run all linters and format checks (glossary/ADR integrity, Impeccable design audit, rustfmt, clippy, eslint, tsc, terraform, tflint) inside Docker
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev python3 scripts/check-glossary-and-adrs.py
 
 lint-design: ## Run Impeccable design system audit (WCAG AA, tokens, Craft Floor) inside the Node Docker container
@@ -72,6 +79,11 @@ lint-design: ## Run Impeccable design system audit (WCAG AA, tokens, Craft Floor
 lint-rust: ## Run cargo fmt check and clippy inside the Rust Docker container
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev cargo fmt --all -- --check
 	$(DEV_COMPOSE) run --rm --no-deps rust-dev cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+lint-terraform: ## Check deploy/terraform: terraform fmt, init -backend=false (lock file read-only) + validate, tflint (pinned images)
+	$(TERRAFORM_RUN) $(TERRAFORM_IMAGE) fmt -check -recursive -diff
+	$(TERRAFORM_RUN) --entrypoint sh $(TERRAFORM_IMAGE) -c 'mkdir -p /cache/plugins && TF_PLUGIN_CACHE_DIR=/cache/plugins terraform init -backend=false -input=false -lockfile=readonly >/dev/null && terraform validate'
+	$(TERRAFORM_RUN) --entrypoint sh $(TFLINT_IMAGE) -c 'tflint --init >/dev/null && tflint --format=compact'
 
 lint-web: wasm ## Run frontend lint and typecheck inside the Node Docker container
 	$(DEV_COMPOSE) run --rm --no-deps web-dev sh -c "npm run lint && npm run typecheck"
