@@ -101,7 +101,7 @@ pub struct UndoEntry {
 
 ### 3.1 Frictionless Authentication & Onboarding
 
-1. **Direct campaign invite link (`?invite=<jwt>`, `GuestSessionUpgrade`) + magic link / Argon2id passwords**. Invites are minted only by the campaign's GM (`POST /api/v1/campaigns/{id}/invites`). Roles come only from campaign membership (`UserRole`); the global account role grants nothing.
+1. **Invite-only accounts ([ADR-0039](../adr/0039-invite-only-registration-and-instance-role.md)) + Argon2id passwords**. The first `Owner` claims the instance through a one-time setup URL logged at startup. Players join through a bounded `CampaignInvite` link (`?invite=<token>`) minted only by the campaign's GM (`POST /api/v1/campaigns/{id}/invites`); `InviteRedemption` creates a `Member` account. Campaign permissions come from campaign membership (`UserRole`); the `InstanceRole` only decides who may create campaigns and administer accounts.
 2. **Optional OAuth2 / OIDC (Discord & Google)**.
 3. **Administrator / GM security (TOTP MFA) & Personal Access Tokens (`trame_pat_...`)** scoped by role and campaign for the MCP server.
 
@@ -110,7 +110,7 @@ pub struct UndoEntry {
 To stop a curious player from guessing a map URL or downloading the high-resolution image of a dungeon with secret rooms before entering it:
 
 1. **Opaque, unguessable object keys**: every file on R2/S3 is stored under a random `UUIDv4` identifier (`instances/{instance_id}/maps/{random_uuid}.webp`) with no readable file name.
-2. **Short presigned URLs (`Presigned URLs — TTL 15 min`) generated after the RBAC check**:
+2. **Short presigned URLs (`SignedDirectDownload`, TTL 5 min) generated after the RBAC check**:
    * The R2/S3 bucket is **100% private** (no direct public access).
    * `trame-server` generates a signed URL for a map or handout only if the player is a member of the campaign and is currently on that map (or the handout has `revealed = true`).
 3. **Player layer vs GM layer separation (no secrets in the background image)**:
@@ -132,11 +132,13 @@ To guarantee full reversibility between **dedicated cloud (Cloud Run + Neon + R2
 
 ## 4. On-Demand Dedicated Hosting: Cloud Run vs `e2-micro` VM
 
+The delivered hosting targets are documented in the operator guides: [Cloud Run + Neon + R2 with Terraform](../../deploy/terraform/README.md) and [Docker Compose on one machine](../../deploy/compose/README.md) (an Oracle Cloud Always Free VM replaces the `e2-micro` VM), with a shared [backup and restore runbook](../../deploy/backup-and-restore.md) ([ADR-0041](../adr/0041-s3-asset-storage-signed-downloads-and-free-hosting.md)).
+
 ### 4.1 Target Model: 1 Dedicated Micro-Instance = 1 Multi-Campaign Group Server
 
 * **1 `trame-server` container / binary** (~20–35 MB RAM) serving the SPA, the API and the WebSocket on port `8080`.
-* **1 dedicated Neon Serverless Postgres database** (through the PgBouncer pooler on `:6543`).
-* **1 private prefix on Cloudflare R2 / S3** or a local volume.
+* **1 dedicated Neon Serverless Postgres database** through its direct endpoint. The PgBouncer pooled endpoint does not work: the server sets `statement_timeout` at connect time.
+* **1 private S3-compatible bucket** (Cloudflare R2 or Silo), or asset bytes kept in PostgreSQL.
 
 ### 4.2 `Scale-to-Zero` Lifecycle & `Idle-Lease` (€0 at rest on Cloud Run + Neon)
 

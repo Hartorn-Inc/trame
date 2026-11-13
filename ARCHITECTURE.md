@@ -18,6 +18,16 @@ This document is the entry point to the architectural and functional specificati
 
 Feature specifications (`e1`-`e5`, `spec-*`) live next to these four documents in [`docs/specs/`](./docs/specs/). The current whole-application spec is [`spec-internet-ready-playable-trame.md`](./docs/specs/spec-internet-ready-playable-trame.md) (v4: invite-only access, crash-safe WAL recovery, full SRD 5.2.1 play, free hosting). It builds on the delivered convergence baseline [`spec-playable-dnd5e-campaign-convergence.md`](./docs/specs/spec-playable-dnd5e-campaign-convergence.md) (v3).
 
+## Operator Guides (`deploy/`)
+
+| File | Scope |
+| :--- | :--- |
+| [`deploy/compose/README.md`](./deploy/compose/README.md) | Strictly-free hosting target: production Docker Compose stack behind Caddy (automatic HTTPS) on an Oracle Cloud Always Free VM or a home machine behind Cloudflare Tunnel, optional Silo, nightly backups (ADR-0041). |
+| [`deploy/terraform/README.md`](./deploy/terraform/README.md) | Near-free hosting target: Cloud Run `europe-west9` + Neon + Cloudflare R2 with Terraform, keyless GitHub Actions deploys, and the budget spending cap (warnings at 1 and 5 EUR, billing unlinked at 10 EUR) (ADR-0041). |
+| [`deploy/backup-and-restore.md`](./deploy/backup-and-restore.md) | Backup and restore runbook for both targets: schedule, retention, restore, restore drills, and asset bucket protection. |
+
+The server configuration (every environment variable, default and requirement) is listed in [`README.md`](./README.md#server-configuration).
+
 ---
 
 ## Technology Stack Summary
@@ -47,7 +57,7 @@ graph TB
 
     subgraph Infra["Serverless Persistence & Storage (near-zero cost at rest)"]
         Neon["PostgreSQL 18 (Neon serverless or self-hosted)\n1 dedicated DB per instance\n1 s write-behind + immediate WAL"]
-        R2["Cloudflare R2 / S3 (or local disk)\nPrivate WebP assets + presigned URLs (15 min TTL)"]
+        R2["Cloudflare R2 / Silo S3 (or PostgreSQL)\nPrivate WebP assets + presigned URLs (5 min TTL)"]
     end
 
     Client -- "WebSocket / HTTPS" --> Axum

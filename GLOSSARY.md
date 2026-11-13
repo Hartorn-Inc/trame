@@ -615,4 +615,22 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: Switching an existing instance from PostgreSQL to object storage.
 - **_Avoid_**: AssetSync, BlobExport, S3Backfill.
 
+### OwnerBootstrap
+
+- **Definition**: The one-time claim of an instance that has no `Owner`. At each start without an `Owner`, the server mints a single-use token valid for 1 hour, stores only its hash, and logs the setup URL once (`event="owner_bootstrap_url"`, field `setup_url`). Redeeming it creates the `Owner` account; `TRAME_BOOTSTRAP_OWNER_EMAIL` restricts it to one email (ADR-0039).
+- **Allowed Context**: First start of a deployment, operator guides, and the owner setup screen.
+- **_Avoid_**: AdminSetup, FirstRunWizard, Superuser creation.
+
+### HostingTarget
+
+- **Definition**: One of the two documented deployments of TRAME (ADR-0041): the strictly-free target (production Docker Compose behind Caddy on an Oracle Cloud Always Free VM or a home machine behind Cloudflare Tunnel, `deploy/compose`) and the near-free target (Cloud Run `europe-west9` + Neon + Cloudflare R2 provisioned by Terraform, `deploy/terraform`).
+- **Allowed Context**: Operator guides, cost comparisons, and backup and restore procedures.
+- **_Avoid_**: Environment (reserved for `TRAME_ENV` and the GitHub `production` environment), Stage, Tier.
+
+### SpendingCap
+
+- **Definition**: The near-free target's monthly Google Cloud budget control: email warnings at 1 EUR and 5 EUR of actual spend, and at 10 EUR (`budget_amount`) the `trame-budget-cap` Cloud Run function unlinks the project from billing, which stops every Google Cloud service of the project. Budget data lags usage by hours, so a month can end slightly above the cap. Neon and R2 data are billed elsewhere and are untouched.
+- **Allowed Context**: Terraform deployment, budget alerts, and cost documentation.
+- **_Avoid_**: Budget alert (it is only the warning part), Billing kill switch, Quota.
+
 
