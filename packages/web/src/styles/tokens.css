@@ -98,6 +98,7 @@
   --atlas-radius-lg: 8px;
 
   /* 4px Spatial Rhythm */
+  --atlas-space-2xs: 2px;
   --atlas-space-xs: 4px;
   --atlas-space-sm: 8px;
   --atlas-space-md: 16px;
@@ -291,6 +292,7 @@ body {
 }
 
 .ds-btn:focus-visible,
+label.ds-btn:focus-within,
 .ds-input:focus-visible {
   outline: 2px solid var(--atlas-focus);
   outline-offset: 2px;
@@ -349,6 +351,12 @@ body {
 
 select.ds-input {
   width: 100%;
+}
+
+.ds-studio-num-input {
+  width: 4.75rem;
+  padding: var(--atlas-space-2xs) var(--atlas-space-xs);
+  font-size: var(--atlas-font-size-xs);
 }
 
 /* Button reset: strips UA chrome so composite controls (icon buttons, sheet rows) start clean */
@@ -676,6 +684,7 @@ select.ds-input {
 
 .ds-tablist {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--atlas-space-sm);
   border-bottom: 1px solid var(--atlas-border);
 }
@@ -1160,6 +1169,15 @@ button.ds-prof-pip {
   position: relative;
 }
 
+.ds-hud-drawers-container > [role="alert"] {
+  position: fixed;
+  top: var(--atlas-space-md);
+  right: var(--atlas-space-md);
+  z-index: 30;
+  width: min(24rem, calc(100vw - 2 * var(--atlas-space-md)));
+  box-shadow: var(--atlas-elevation-overlay);
+}
+
 .ds-hud-sheet-drawer {
   position: fixed;
   top: 0;
@@ -1325,9 +1343,14 @@ button.ds-prof-pip {
   background-color: var(--atlas-surface-raised);
 }
 
-.ds-compendium-entry-card > .ds-panel {
+.ds-compendium-entry-card > .ds-panel,
+.ds-character-sheet-header > .ds-panel {
   flex-basis: 100%;
   margin-top: var(--atlas-space-xs);
+  background-color: var(--atlas-surface-raised);
+  border: 0;
+  border-top: 1px solid var(--atlas-border);
+  border-radius: 0;
 }
 
 .ds-entry-name {
@@ -1467,6 +1490,7 @@ button.ds-prof-pip {
   display: flex;
   flex-direction: column;
   gap: var(--atlas-space-md);
+  min-width: 0;
 }
 
 .ds-layout-row {
@@ -1593,7 +1617,6 @@ button.ds-ability-card {
 
 .ds-resource-bar-widget,
 .ds-hdds-widget,
-.ds-attack-table-widget,
 .ds-spellbook-widget,
 .ds-inventory-widget,
 .ds-features-widget,
@@ -1601,6 +1624,15 @@ button.ds-ability-card {
   display: flex;
   flex-direction: column;
   gap: var(--atlas-space-sm);
+}
+
+.ds-attack-table-widget {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-sm);
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .ds-resource-header,
@@ -1730,6 +1762,7 @@ button.ds-ability-card {
   align-items: center;
   justify-content: center;
   min-height: var(--atlas-hit-desktop);
+  min-width: var(--atlas-hit-desktop);
   padding: var(--atlas-space-xs) var(--atlas-space-sm);
   border-radius: var(--atlas-radius-sm);
   border: 1px solid var(--atlas-border-control);
@@ -2008,6 +2041,13 @@ button.ds-ability-card {
   .ds-pip-btn,
   .ds-slot-pip,
   button.ds-prof-pip,
+  .ds-btn-spend-hitdie,
+  .ds-btn-death-save,
+  .ds-btn-unpack-item,
+  .ds-btn-attune,
+  .ds-btn-del-item,
+  .ds-btn-remove-cond,
+  .ds-spell-level-header,
   .nav-tab-btn {
     min-height: var(--atlas-hit-touch);
     min-width: var(--atlas-hit-touch);
@@ -2015,7 +2055,11 @@ button.ds-ability-card {
 
   .ds-choice,
   .ds-save-roll,
-  .ds-skill-roll {
+  .ds-skill-roll,
+  .ds-resource-input-current,
+  .ds-resource-input-max,
+  .ds-resource-input-temp,
+  .ds-currency-input {
     min-height: var(--atlas-hit-touch);
   }
 

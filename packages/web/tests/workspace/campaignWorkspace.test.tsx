@@ -200,6 +200,67 @@ describe("CampaignWorkspace: five tabs", () => {
     assert.equal(isCompendiumDrawerOpenSignal.value, false, "HUD signal remains closed");
     ui.unmount();
   });
+
+  it("W1: ArrowLeft onto workspace-tab-compendium preserves tablist focus across flush() and ArrowRight wraps back to workspace-tab-table", async () => {
+    const { client } = liveTable(GM_ID, tableState());
+    const ui = mount(h(CampaignWorkspace, { campaignId: CAMPAIGN, userRole: "GM", client }));
+    const doc = (globalThis as any).document;
+
+    ui.byTestId("workspace-tab-table").focus();
+    assert.equal(doc.activeElement?.id, "workspace-tab-table");
+
+    ui.key("workspace-tab-table", "ArrowLeft");
+    await flush(2);
+
+    assert.equal(ui.byTestId("workspace-tab-compendium").getAttribute("aria-selected"), "true");
+    assert.ok(ui.byTestId("compendium-drawer"), "inline CompendiumDrawer mounted");
+    assert.equal(
+      doc.activeElement?.id,
+      "workspace-tab-compendium",
+      "inline CompendiumDrawer with autoFocus={false} must not yank focus out of roving tablist",
+    );
+
+    doc.dispatchEvent({ type: "keydown", key: "Escape" });
+    await flush();
+    assert.equal(
+      ui.byTestId("workspace-tab-compendium").getAttribute("aria-selected"),
+      "true",
+      "inline CompendiumDrawer must not register a global Escape listener",
+    );
+
+    ui.key("workspace-tab-compendium", "ArrowRight");
+    await flush(2);
+
+    assert.equal(ui.byTestId("workspace-tab-table").getAttribute("aria-selected"), "true");
+    assert.equal(doc.activeElement?.id, "workspace-tab-table", "ArrowRight wraps focus cleanly back to workspace-tab-table");
+    ui.unmount();
+  });
+
+  it("W1: clicking Close inside inline Compendium tab switches to Table tab and focuses workspace-tab-table", async () => {
+    const { client } = liveTable(PLAYER_ID, tableState());
+    const ui = mount(h(CampaignWorkspace, { campaignId: CAMPAIGN, userRole: "PLAYER", client, activeTab: "compendium" }));
+    const doc = (globalThis as any).document;
+
+    ui.click("btn-close-compendium");
+    await flush(2);
+
+    assert.equal(ui.byTestId("workspace-tab-table").getAttribute("aria-selected"), "true");
+    assert.equal(doc.activeElement?.id, "workspace-tab-table");
+    ui.unmount();
+  });
+
+  for (const tc of [
+    { id: "W3-dismiss-alert-label-in-name-en", catalog: EN, expected: "Close sheet alert" },
+    { id: "W3-dismiss-alert-label-in-name-fr", catalog: FR, expected: "Fermer l'alerte de la fiche" },
+  ]) {
+    it(`[${tc.id}] sheet.persistence.dismissAlert starts verbatim with action.close (WCAG 2.5.3)`, () => {
+      assert.equal(tc.catalog["sheet.persistence.dismissAlert"], tc.expected);
+      assert.ok(
+        tc.catalog["sheet.persistence.dismissAlert"].startsWith(tc.catalog["action.close"]),
+        `expected '${tc.catalog["sheet.persistence.dismissAlert"]}' to start with '${tc.catalog["action.close"]}'`,
+      );
+    });
+  }
 });
 
 describe("ActorsTab: create, open, place, portrait", () => {

@@ -195,7 +195,17 @@ export function CampaignWorkspace({ campaignId, userRole, client = apiClient, ac
         {tab === 'documents' && <CampaignDocumentsTab campaignId={campaignId} client={client} isGm={isGm} />}
         {tab === 'compendium' && (
           <div class="ds-stack">
-            <CompendiumDrawer isOpen entries={compendium} systemId="dnd5e" onClose={() => selectTab('table')} onSpawnMonster={onSpawnMonster} />
+            <CompendiumDrawer
+              isOpen
+              autoFocus={false}
+              entries={compendium}
+              systemId="dnd5e"
+              onClose={() => {
+                selectTab('table');
+                (typeof document !== 'undefined' ? document.getElementById?.('workspace-tab-table') : null)?.focus();
+              }}
+              onSpawnMonster={onSpawnMonster}
+            />
             <section class="ds-panel" aria-labelledby="srd-attribution-title" data-testid="srd-attribution">
               <h2 id="srd-attribution-title" class="ds-panel-title">{t('compendium.attributionTitle')}</h2>
               <p class="ds-meta" lang="en">{SRD_521_ATTRIBUTION}</p>

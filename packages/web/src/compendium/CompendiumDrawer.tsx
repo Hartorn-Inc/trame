@@ -30,9 +30,14 @@
  *      being prepared instead of spawned live; the studio stores only its
  *      `srd:monster:<slug>` reference (`maps/monsterStaging.ts`).
  * 5. `Accessible Escape & Focus Lifecycle`:
- *    - Opening the drawer moves keyboard focus into the search input while
+ *    - When `autoFocus` is enabled (the default for overlay and picker drawers),
+ *      opening the drawer moves keyboard focus into the search input while
  *      recording the previously focused trigger element; closing via `Escape`
- *      or the close button restores focus to that trigger when still mounted.
+ *      or the close button restores focus to that trigger before invoking
+ *      `onClose` so explicit caller focus targets win cleanly.
+ *    - When mounted inline (`autoFocus={false}`, e.g. the workspace Compendium
+ *      tabpanel), opening neither steals tablist focus nor binds a global
+ *      `Escape` listener.
  * ============================================================================
  */
 import { h, type VNode } from 'preact';
@@ -57,6 +62,13 @@ export interface CompendiumEntry {
 export interface CompendiumDrawerProps {
   isOpen: boolean;
   onClose: () => void;
+  /**
+   * Moves focus into the search input on open, registers the document-level
+   * `Escape` listener, and restores the prior focus target on close. Defaults
+   * to `true` for overlay/picker drawers; pass `false` when mounted inline
+   * inside a tabpanel so roving tablist keyboard navigation keeps focus.
+   */
+  autoFocus?: boolean;
   entries?: CompendiumEntry[];
   systemId?: string;
   dispatchCommand?: CommandDispatcher;
@@ -132,6 +144,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
   const wasOpenRef = useSafeRef<boolean>(false);
   const onCloseRef = useSafeRef(props.onClose);
   onCloseRef.current = props.onClose;
+  const shouldAutoFocus = props.autoFocus !== false;
 
   const restorePreviousFocus = () => {
     const previous = previousFocusRef.current;
@@ -148,20 +161,24 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
   useSafeEffect(() => {
     if (props.isOpen && !wasOpenRef.current) {
       wasOpenRef.current = true;
-      if (typeof document !== 'undefined') {
-        const active = document.activeElement as HTMLElement | null;
-        if (active && typeof active.focus === 'function' && !drawerRef.current?.contains(active)) {
-          previousFocusRef.current = active;
+      if (shouldAutoFocus) {
+        if (typeof document !== 'undefined') {
+          const active = document.activeElement as HTMLElement | null;
+          if (active && typeof active.focus === 'function' && !drawerRef.current?.contains(active)) {
+            previousFocusRef.current = active;
+          }
         }
+        const focusTarget = searchInputRef.current ?? drawerRef.current;
+        focusTarget?.focus?.();
       }
-      const focusTarget = searchInputRef.current ?? drawerRef.current;
-      focusTarget?.focus?.();
     } else if (!props.isOpen && wasOpenRef.current) {
       wasOpenRef.current = false;
-      restorePreviousFocus();
+      if (shouldAutoFocus) {
+        restorePreviousFocus();
+      }
     }
 
-    if (!props.isOpen || typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
+    if (!props.isOpen || !shouldAutoFocus || typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
       return;
     }
 
@@ -170,15 +187,15 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
       if (document.body?.querySelector?.('.ds-modal-backdrop')) return;
       e.preventDefault?.();
       e.stopPropagation?.();
-      onCloseRef.current();
       restorePreviousFocus();
+      onCloseRef.current();
     };
 
     document.addEventListener('keydown', handleDocumentKeyDown);
     return () => {
       document.removeEventListener('keydown', handleDocumentKeyDown);
     };
-  }, [props.isOpen]);
+  }, [props.isOpen, shouldAutoFocus]);
 
   if (!props.isOpen) return null;
 
@@ -226,8 +243,10 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
   };
 
   const closeDrawer = () => {
+    if (shouldAutoFocus) {
+      restorePreviousFocus();
+    }
     props.onClose();
-    restorePreviousFocus();
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {

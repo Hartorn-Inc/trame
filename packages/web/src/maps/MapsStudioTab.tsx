@@ -477,29 +477,29 @@ export function MapsStudioTab({
         <div style={{ display: 'flex', gap: 'var(--atlas-space-sm)' }}>
           <button
             type="button"
+            class="ds-btn ds-btn-secondary ds-btn-sm"
             data-testid="toggle-revealed-btn"
             disabled={!selectedScene}
             aria-pressed={Boolean(selectedScene?.revealedToPlayers)}
             onClick={handleToggleRevealed}
-            style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', background: 'var(--atlas-surface-raised)', color: 'var(--atlas-text)' }}
           >
             {t('maps.revealToPlayers')}
           </button>
           <button
             type="button"
+            class="ds-btn ds-btn-primary ds-btn-sm"
             data-testid="activate-scene-btn"
             disabled={!selectedScene}
             onClick={() => selectedScene && onActivateScene?.(selectedScene)}
-            style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', background: 'var(--atlas-action)', color: 'var(--atlas-on-action)' }}
           >
             {t('maps.activateScene')}
           </button>
           <button
             type="button"
+            class="ds-btn ds-btn-secondary ds-btn-sm"
             data-testid="save-scene-btn"
             disabled={!selectedScene || isSavingSignal.value}
             onClick={handleSave}
-            style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)' }}
           >
             {isSavingSignal.value ? t('action.saving') : t('maps.saveScene')}
           </button>
@@ -513,17 +513,17 @@ export function MapsStudioTab({
             <div style={{ display: 'flex', gap: 'var(--atlas-space-xs)' }}>
               <button
                 type="button"
+                class="ds-btn ds-btn-secondary ds-btn-sm"
                 data-testid="starter-dungeon-btn"
                 onClick={handleGenerateStarterDungeon}
-                style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
               >
                 {t('maps.starterDungeon')}
               </button>
               <button
                 type="button"
+                class="ds-btn ds-btn-secondary ds-btn-sm"
                 data-testid="create-scene-btn"
                 onClick={handleCreateScene}
-                style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
               >
                 {t('maps.newScene')}
               </button>
@@ -850,10 +850,11 @@ export function MapsStudioTab({
                   <label for="studio-wall-type" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.wallLabel')}</label>
                   <select
                     id="studio-wall-type"
+                    class="ds-input"
                     data-testid="wall-type-select"
                     value={wallTypeSignal.value}
                     onChange={(e) => { wallTypeSignal.value = (e.currentTarget as HTMLSelectElement).value as WallType; }}
-                    style={{ minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
+                    style={{ width: 'auto', fontSize: 'var(--atlas-font-size-xs)' }}
                   >
                     {(Object.keys(WALL_TYPE_LABEL_KEYS) as WallType[]).map((wallType) => (
                       <option key={wallType} value={wallType}>{t(WALL_TYPE_LABEL_KEYS[wallType])}</option>
@@ -862,64 +863,64 @@ export function MapsStudioTab({
                   <span style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.point', { index: 1 })}</span>
                   <input
                     id="wall-p1x"
+                    class="ds-input ds-studio-num-input atlas-tabular-nums"
                     aria-label={t('maps.pointX', { index: 1 })}
                     data-testid="wall-p1x-input"
                     type="number"
                     value={wallP1XSignal.value}
                     onInput={(e) => { wallP1XSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
                   <input
                     id="wall-p1y"
+                    class="ds-input ds-studio-num-input atlas-tabular-nums"
                     aria-label={t('maps.pointY', { index: 1 })}
                     data-testid="wall-p1y-input"
                     type="number"
                     value={wallP1YSignal.value}
                     onInput={(e) => { wallP1YSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
                   <span style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.point', { index: 2 })}</span>
                   <input
                     id="wall-p2x"
+                    class="ds-input ds-studio-num-input atlas-tabular-nums"
                     aria-label={t('maps.pointX', { index: 2 })}
                     data-testid="wall-p2x-input"
                     type="number"
                     value={wallP2XSignal.value}
                     onInput={(e) => { wallP2XSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
                   <input
                     id="wall-p2y"
+                    class="ds-input ds-studio-num-input atlas-tabular-nums"
                     aria-label={t('maps.pointY', { index: 2 })}
                     data-testid="wall-p2y-input"
                     type="number"
                     value={wallP2YSignal.value}
                     onInput={(e) => { wallP2YSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
                   <label for="wall-bottom-elevation" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.bottomFt')}</label>
                   <input
                     id="wall-bottom-elevation"
+                    class="ds-input ds-studio-num-input atlas-tabular-nums"
                     data-testid="wall-bottom-elevation"
                     type="number"
                     value={wallBottomFtSignal.value}
                     onInput={(e) => { wallBottomFtSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
                   <label for="wall-top-elevation" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.topFt')}</label>
                   <input
                     id="wall-top-elevation"
+                    class="ds-input ds-studio-num-input atlas-tabular-nums"
                     data-testid="wall-top-elevation"
                     type="number"
                     value={wallTopFtSignal.value}
                     onInput={(e) => { wallTopFtSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
                   <button
                     type="button"
+                    class="ds-btn ds-btn-secondary ds-btn-sm"
                     data-testid="add-wall-btn"
                     onClick={handleAddWall}
-                    style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
                   >
                     {t('maps.addWall')}
                   </button>
@@ -929,36 +930,36 @@ export function MapsStudioTab({
                   <span style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.lightPosition')}</span>
                   <input
                     id="light-x"
+                    class="ds-input ds-studio-num-input atlas-tabular-nums"
                     aria-label={t('maps.lightX')}
                     data-testid="light-x-input"
                     type="number"
                     value={lightXSignal.value}
                     onInput={(e) => { lightXSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
                   <input
                     id="light-y"
+                    class="ds-input ds-studio-num-input atlas-tabular-nums"
                     aria-label={t('maps.lightY')}
                     data-testid="light-y-input"
                     type="number"
                     value={lightYSignal.value}
                     onInput={(e) => { lightYSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
                   <label for="light-radius" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.radius')}</label>
                   <input
                     id="light-radius"
+                    class="ds-input ds-studio-num-input atlas-tabular-nums"
                     data-testid="light-radius-input"
                     type="number"
                     value={lightRadiusFtSignal.value}
                     onInput={(e) => { lightRadiusFtSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
                   <button
                     type="button"
+                    class="ds-btn ds-btn-secondary ds-btn-sm"
                     data-testid="add-light-btn"
                     onClick={handleAddLight}
-                    style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
                   >
                     {t('maps.addLight')}
                   </button>
@@ -966,27 +967,27 @@ export function MapsStudioTab({
                   <span style={{ fontSize: 'var(--atlas-font-size-xs)', marginLeft: 'var(--atlas-space-sm)' }}>{t('maps.audioPosition')}</span>
                   <input
                     id="audio-x"
+                    class="ds-input ds-studio-num-input atlas-tabular-nums"
                     aria-label={t('maps.audioX')}
                     data-testid="audio-x-input"
                     type="number"
                     value={audioXSignal.value}
                     onInput={(e) => { audioXSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
                   <input
                     id="audio-y"
+                    class="ds-input ds-studio-num-input atlas-tabular-nums"
                     aria-label={t('maps.audioY')}
                     data-testid="audio-y-input"
                     type="number"
                     value={audioYSignal.value}
                     onInput={(e) => { audioYSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
-                    style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
                   <button
                     type="button"
+                    class="ds-btn ds-btn-secondary ds-btn-sm"
                     data-testid="add-audio-btn"
                     onClick={handleAddAudio}
-                    style={{ minHeight: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
                   >
                     {t('maps.addAudio')}
                   </button>
@@ -1013,20 +1014,20 @@ export function MapsStudioTab({
                           {w.wallType === 'OneWay' ? (
                             <button
                               type="button"
+                              class="ds-btn ds-btn-secondary ds-btn-sm"
                               aria-label={t('maps.flipOneWay', { index: wallIndex })}
                               data-testid={`flip-wall-${w.id}`}
                               onClick={() => handleFlipWall(w.id)}
-                              style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
                             >
                               {t('maps.flip')}
                             </button>
                           ) : null}
                           <button
                             type="button"
+                            class="ds-btn ds-btn-danger ds-btn-sm"
                             aria-label={t('maps.deleteWall', { index: wallIndex })}
                             data-testid={`delete-wall-${w.id}`}
                             onClick={() => handleDeleteWall(w.id)}
-                            style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
                           >
                             {t('action.delete')}
                           </button>
@@ -1064,29 +1065,29 @@ export function MapsStudioTab({
                             {door.wallType === 'Door' && (
                               <button
                                 type="button"
+                                class="ds-btn ds-btn-secondary ds-btn-sm"
                                 aria-label={t(isDoorLocked ? 'maps.door.unlockAria' : 'maps.door.lockAria', { index: doorIndex })}
                                 data-testid={`toggle-lock-${door.id}`}
                                 onClick={() => handleToggleDoorLock(door.id)}
-                                style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
                               >
                                 {isDoorLocked ? t('maps.door.unlock') : t('maps.door.lock')}
                               </button>
                             )}
                             <button
                               type="button"
+                              class="ds-btn ds-btn-secondary ds-btn-sm"
                               aria-label={t('maps.door.toggleAria', { index: doorIndex })}
                               data-testid={`toggle-door-${door.id}`}
                               onClick={() => handleDoorToggle(door.id)}
-                              style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
                             >
                               {t('maps.door.toggle')}
                             </button>
                             <button
                               type="button"
+                              class="ds-btn ds-btn-danger ds-btn-sm"
                               aria-label={t('maps.deleteDoor', { index: doorIndex })}
                               data-testid={`delete-door-${door.id}`}
                               onClick={() => handleDeleteWall(door.id)}
-                              style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
                             >
                               {t('action.delete')}
                             </button>

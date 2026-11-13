@@ -789,10 +789,10 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
         h(
           "div",
           null,
-          h("h2", { id: titleId, class: "ds-modal-title" }, t("levelUp.title", { from: currentLevel, to: targetLevel })),
+          h("h2", { id: titleId, class: "ds-modal-title atlas-tabular-nums" }, t("levelUp.title", { from: currentLevel, to: targetLevel })),
           h(
             "p",
-            { id: descId, class: "ds-modal-subtitle" },
+            { id: descId, class: "ds-modal-subtitle atlas-tabular-nums" },
             t("levelUp.subtitle", { className: classId || t("levelUp.unknownClass"), bonus: calculateProficiencyBonus(targetLevel) })
           )
         ),
@@ -879,7 +879,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
             "div",
             { class: "ds-stack" },
             stepHeading(t("levelUp.step2.heading")),
-            h("p", { class: "ds-hint" }, t("levelUp.hp.dieInfo", { die: hitDieSize, mod: formatModifier(conModifier) })),
+            h("p", { class: "ds-hint atlas-tabular-nums" }, t("levelUp.hp.dieInfo", { die: hitDieSize, mod: formatModifier(conModifier) })),
             h(
               "div",
               { class: "ds-grid-2" },
@@ -888,12 +888,16 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
                 t("levelUp.hp.fixed"),
                 h(
                   "span",
-                  null,
+                  { class: "atlas-tabular-nums" },
                   `floor(${hitDieSize}/2) + 1 + (${conModifier}) = `,
                   h("strong", { class: "atlas-tabular-nums" }, t("hp.gain", { value: fixedHpGain }))
                 )
               ),
-              hpChoice("rolled", t("levelUp.hp.rolled"), t("levelUp.hp.rolledHint", { die: hitDieSize, mod: formatModifier(conModifier) }))
+              hpChoice(
+                "rolled",
+                t("levelUp.hp.rolled"),
+                h("span", { class: "atlas-tabular-nums" }, t("levelUp.hp.rolledHint", { die: hitDieSize, mod: formatModifier(conModifier) }))
+              )
             ),
             hpMode === "rolled" &&
               h(
@@ -918,7 +922,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
                     h(
                       "div",
                       null,
-                      h("span", { class: "ds-meta" }, t("levelUp.hp.dieResult", { value: rolledValue })),
+                      h("span", { class: "ds-meta atlas-tabular-nums" }, t("levelUp.hp.dieResult", { value: rolledValue })),
                       h("span", { class: "ds-value-lg atlas-tabular-nums" }, t("hp.gain", { value: Math.max(1, rolledValue + conModifier) }))
                     )
                 ),
@@ -927,7 +931,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
               ),
             h(
               "p",
-              { class: "ds-inset ds-hint" },
+              { class: "ds-inset ds-hint atlas-tabular-nums" },
               t("levelUp.hp.projected", { current: actor.attributes.hp.max }),
               h("strong", { class: "atlas-tabular-nums" }, actor.attributes.hp.max + currentHpGain)
             )
@@ -1098,7 +1102,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
                     { class: "ds-stack-sm" },
                     h(
                       "h4",
-                      { id: `${hintId}-spells`, class: "ds-subheading" },
+                      { id: `${hintId}-spells`, class: "ds-subheading atlas-tabular-nums" },
                       isWizard
                         ? t("levelUp.spells.wizardHeading", { selected: selectedSpellIds.length, required: requiredWizardCount })
                         : isKnownCaster
@@ -1135,7 +1139,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
                             }),
                             h("span", null, localizedName(spell))
                           ),
-                          h("span", { class: "ds-meta" }, t("levelUp.spells.level", { level: String(spell.data.level) }))
+                          h("span", { class: "ds-meta atlas-tabular-nums" }, t("levelUp.spells.level", { level: String(spell.data.level) }))
                         );
                       })
                     ),

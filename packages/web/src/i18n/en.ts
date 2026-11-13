@@ -880,7 +880,7 @@ export const EN = {
   "sheet.persistence.conflictSynced": "This sheet was changed elsewhere. Your edit was not saved; the latest sheet has been reloaded.",
   "sheet.persistence.conflictSyncedVersion": "This sheet was changed elsewhere (now version {{version}}). Your edit was not saved; the latest sheet has been reloaded.",
   "sheet.persistence.saveFailed": "Could not save the character sheet.",
-  "sheet.persistence.dismissAlert": "Dismiss sheet alert",
+  "sheet.persistence.dismissAlert": "Close sheet alert",
   "hud.noSheet": "No character sheet is available for this token.",
   "builder.title": "Create a character",
   "builder.close": "Close character creation",
