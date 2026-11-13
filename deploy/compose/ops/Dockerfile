@@ -27,13 +27,17 @@
 #        verifies the server certificate chain and hostname without needing a
 #        per-user `~/.postgresql/root.crt`, while remaining inert for internal
 #        Compose bridge connections (`PGHOST=postgres`).
+#   5. `Zero Secrets On Process Argv`:
+#      - `MC_CONFIG_DIR=/tmp/.mc` points `mc` at the container's tmpfs mount;
+#        `ops-common.sh` writes `config.json` (`0600`) and parses `DATABASE_URL`
+#        into `PG*` variables so passwords and S3 keys never appear on argv.
 # ============================================================================
 
 FROM pgsty/mc:RELEASE.2026-10-26T00-00-00Z@sha256:ce62c9053c69ce12a527a322345b5ad9f44b5f8a7b8189f82e516f2e3f30f1d8 AS mc
 
 FROM postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
 COPY --from=mc /usr/bin/mc /usr/local/bin/mc
-COPY --chmod=0755 backup.sh restore.sh apply-bucket-cors.sh /usr/local/bin/
+COPY --chmod=0755 ops-common.sh backup.sh restore.sh apply-bucket-cors.sh /usr/local/bin/
 RUN install -d -o postgres -g postgres -m 0750 /backups
 ENV BACKUP_DIR=/backups \
     MC_CONFIG_DIR=/tmp/.mc \

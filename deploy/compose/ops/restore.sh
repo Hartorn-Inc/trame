@@ -5,9 +5,11 @@
 #
 # PURPOSE:
 # --------
-# Turns a `backup.sh` archive back into the live TRAME database: after a dead
-# disk (fresh volume) or a bad deploy (existing database). Run inside the
-# `backup` service so it shares the PostgreSQL client and network:
+# Turns a `backup.sh` archive back into the live TRAME database — and, when
+# distinct `S3_*` and `BACKUP_S3_*` buckets are configured, mirrors backed-up
+# asset objects back into `S3_BUCKET` — after a dead disk (fresh volumes) or a
+# bad deploy (existing database). Run inside the `backup` service so it shares
+# the PostgreSQL client and network:
 #   docker compose stop trame-server
 #   docker compose exec backup restore.sh trame-trame-20261107T030000Z.dump
 #   docker compose start trame-server
@@ -28,10 +30,18 @@
 #   4. `Plain File Names Only`:
 #      - The argument is a file name in `BACKUP_DIR` (no `/`). When it is not
 #        there and `BACKUP_S3_*` is set, it is first downloaded from the bucket.
-#   5. `Connection From PG* Or DATABASE_URL`:
-#      - Compose sets the libpq `PG*` variables. The Cloud Run job only has
-#        `DATABASE_URL` (Neon): its `/dbname` path is the target database and
-#        the same URL on `/postgres` is the maintenance connection.
+#   5. `Zero Secrets On Process Argv`:
+#      - Compose sets the libpq `PG*` variables directly. The Cloud Run job
+#        passes `DATABASE_URL` (Neon): `ops-common.sh` parses it into exported
+#        `PG*` variables and unsets `DATABASE_URL`, so `psql`, `dropdb`,
+#        `createdb`, and `pg_restore` always connect via `PG*` (`maintenance=postgres`,
+#        `target=$PGDATABASE`) with zero URIs or passwords on argv. `mc` reads
+#        `$MC_CONFIG_DIR/config.json` (`0600` on tmpfs).
+#   6. `Mirrored Asset Recovery`:
+#      - When both `S3_*` and `BACKUP_S3_*` are configured and distinct, and
+#        objects exist under `backup/$BACKUP_S3_BUCKET/$BACKUP_S3_ASSETS_PREFIX/`,
+#        `mc mirror --overwrite --quiet` restores them into `store/$S3_BUCKET/`
+#        without `--remove`. Never runs `mc mb` against `BACKUP_S3_BUCKET`.
 #
 # EXECUTION LIFECYCLE:
 # --------------------
@@ -40,46 +50,29 @@
 #     ├── 1. Locate (or download) the dump; check it with `pg_restore --list`.
 #     ├── 2. Refuse if other sessions use `PGDATABASE`.
 #     ├── 3. `dropdb` + `createdb` (through the `postgres` maintenance DB).
-#     └── 4. `pg_restore --single-transaction --exit-on-error`.
+#     ├── 4. `pg_restore --single-transaction --exit-on-error`.
+#     └── 5. With distinct `S3_*` + `BACKUP_S3_*` and mirrored objects: `mc mirror` back into `S3_BUCKET`.
 # ============================================================================
 set -eu
 
 BACKUP_DIR=${BACKUP_DIR:-/backups}
 BACKUP_S3_PREFIX=${BACKUP_S3_PREFIX:-trame/postgres}
+BACKUP_S3_ASSETS_PREFIX=${BACKUP_S3_ASSETS_PREFIX:-trame/assets}
 
 log() {
 	printf '%s restore: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
 }
 
-# `target` is the database to restore into, `maintenance` the connection used to drop
-# and recreate it: plain database names for PG*, URIs for DATABASE_URL.
-if [ -n "${DATABASE_URL:-}" ]; then
-	url_without_params=${DATABASE_URL%%\?*}
-	case "$url_without_params" in
-	*://*/?*) ;;
-	*)
-		log "DATABASE_URL must end with /<database>"
-		exit 2
-		;;
-	esac
-	PGDATABASE=${url_without_params##*/}
-	target=$DATABASE_URL
-	maintenance="${url_without_params%/*}/postgres${DATABASE_URL#"$url_without_params"}"
-else
-	target=$PGDATABASE
-	maintenance=postgres
-fi
+OPS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=ops-common.sh
+. "$OPS_DIR/ops-common.sh"
 
-remote_enabled() {
-	[ -n "${BACKUP_S3_ENDPOINT:-}" ] && [ -n "${BACKUP_S3_BUCKET:-}" ]
-}
-
-remote_prefix() {
-	mc alias set backup "$BACKUP_S3_ENDPOINT" "${BACKUP_S3_ACCESS_KEY_ID:-}" \
-		"${BACKUP_S3_SECRET_ACCESS_KEY:-}" --api S3v4 >/dev/null
-	prefix=${BACKUP_S3_PREFIX#/}
-	printf 'backup/%s/%s' "$BACKUP_S3_BUCKET" "${prefix%/}"
-}
+# Parses `DATABASE_URL` (when set) into exported `PG*` variables and unsets it,
+# so `target` and `maintenance` are always plain database names (zero URIs on argv).
+parse_database_url
+: "${PGDATABASE:?set PGDATABASE or DATABASE_URL}"
+target=$PGDATABASE
+maintenance=postgres
 
 usage() {
 	echo "usage: restore.sh list | restore.sh <dump-file-name>" >&2
@@ -98,6 +91,7 @@ if [ "$1" = list ]; then
 	done
 	"$found" || echo "  (none)"
 	if remote_enabled; then
+		write_mc_config
 		echo "Dumps in the bucket:"
 		mc ls "$(remote_prefix)/"
 	fi
@@ -115,6 +109,7 @@ if [ ! -f "$dump" ]; then
 		log "$dump not found and no BACKUP_S3_* bucket is configured"
 		exit 1
 	}
+	write_mc_config
 	log "downloading $name from the bucket"
 	mc cp --quiet "$(remote_prefix)/$name" "$dump" >/dev/null
 fi
@@ -138,4 +133,17 @@ createdb --maintenance-db="$maintenance" "$PGDATABASE"
 log "restoring $name"
 pg_restore --single-transaction --exit-on-error --no-owner --no-privileges \
 	--dbname="$target" "$dump"
+
+if assets_mirror_enabled; then
+	write_mc_config
+	if ! mirrored_entries=$(mc ls "$(remote_assets_prefix)/"); then
+		log "checking mirrored assets in $(remote_assets_prefix | cut -d/ -f2-) failed"
+		exit 1
+	fi
+	if [ -n "$mirrored_entries" ]; then
+		log "restoring mirrored assets into $S3_BUCKET"
+		mc mirror --overwrite --quiet "$(remote_assets_prefix)/" "store/$S3_BUCKET/" >/dev/null
+	fi
+fi
+
 log "restored $name into $PGDATABASE; start trame-server again"

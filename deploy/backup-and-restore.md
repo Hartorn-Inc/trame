@@ -5,8 +5,9 @@ This runbook covers both hosting targets: the Compose stack in [`deploy/compose`
 ## What a backup contains
 
 - **In the dump:** the whole PostgreSQL database: accounts, campaigns, actors, maps and scenes, notes, invites, the WAL, and asset metadata. When assets are stored in PostgreSQL (no `S3_*` set), the asset bytes are in the dump too.
+- **Mirrored alongside the dump on Compose (when `S3_*` and `BACKUP_S3_*` point to distinct buckets):** every object in `<S3_BUCKET>` is mirrored to `<BACKUP_S3_BUCKET>/<BACKUP_S3_ASSETS_PREFIX>/` (default `trame/assets`) with `mc mirror --overwrite --quiet` and no `--remove`, so immutable content-addressed map and portrait blobs referenced by older dumps remain intact. `restore.sh` mirrors them back into `<S3_BUCKET>`.
 - **Not in the dump:**
-  - Asset bytes in an object store (Silo or R2). The database only holds their keys. See [Asset buckets](#asset-buckets).
+  - Asset bytes on Cloud Run (`trame-backup` only receives `DATABASE_URL` and `BACKUP_S3_*`, since assets already live off-compute in R2 `trame-assets`), or on Compose when `BACKUP_S3_*` is unset. See [Asset buckets](#asset-buckets).
   - The GM undo history. It lives in memory and is lost at every restart.
   - Secrets. Keep a copy of `MASTER_ENCRYPTION_KEY` and the other secrets in a password manager. A dump restored with a different `MASTER_ENCRYPTION_KEY` loses every stored TOTP enrolment, and those users must enrol again.
 
@@ -17,21 +18,21 @@ Each dump is a `pg_dump` custom-format archive named `trame-<database>-<UTC time
 | | Compose (`backup` service) | Cloud Run (`trame-backup` job) |
 | :--- | :--- | :--- |
 | When | Every day at `BACKUP_TIME` (default `03:00` UTC) | Every day at 03:00 UTC (`backup_schedule`, Cloud Scheduler) |
-| Kept for | `BACKUP_RETENTION_DAYS` (default 14) days, on disk and in the bucket | `backup_retention_days` (default 14) days; an R2 lifecycle rule also deletes older dumps |
-| Where | The `backups` volume (`/backups` in the container). With `BACKUP_S3_*` set, also `<BACKUP_S3_BUCKET>/<BACKUP_S3_PREFIX>/` (default prefix `trame/postgres`) | R2 bucket `trame-backups`, under `trame/postgres/` (`backup_s3_prefix`) |
+| Kept for | `BACKUP_RETENTION_DAYS` (default 14) days, on disk and in the dump prefix (mirrored assets are kept indefinitely) | `backup_retention_days` (default 14) days; an R2 lifecycle rule also deletes older dumps |
+| Where | The `backups` volume (`/backups` in the container). With `BACKUP_S3_*` set, dumps also go to `<BACKUP_S3_BUCKET>/<BACKUP_S3_PREFIX>/` (default `trame/postgres`) and `S3_BUCKET` assets mirror to `<BACKUP_S3_BUCKET>/<BACKUP_S3_ASSETS_PREFIX>/` (default `trame/assets`) | R2 bucket `trame-backups`, under `trame/postgres/` (`backup_s3_prefix`) |
 | A failed run | Marks the container unhealthy (`docker compose ps`) until the next successful run | Retried once, then the execution shows as failed |
 | Back up now | `docker compose exec backup backup.sh now` | `eval "$(terraform output -raw backup_now_command)"` |
 | List dumps | `docker compose exec backup restore.sh list` | `eval "$(terraform output -raw restore_list_command)"`, then read the job's logs (see below) |
 
 Run the Compose commands from `deploy/compose` and the Terraform commands from `deploy/terraform`.
 
-**Keep a copy off the machine.** On the Compose target, a dump on the VM's disk does not survive losing the VM. Set `BACKUP_S3_*` to a bucket separate from the assets (an R2 bucket with its own token), or copy a dump out yourself with `docker compose cp backup:/backups/<file> .`. On Cloud Run, dumps go to R2, which is billed by Cloudflare and keeps working if the Google Cloud project is unlinked from billing.
+**Keep a copy off the machine.** On the Compose target, a dump or Silo volume on the VM's disk does not survive losing the VM. Set `BACKUP_S3_*` to a bucket separate from `S3_BUCKET` (an R2 bucket pre-created in the R2 dashboard with a bucket-scoped *Object Read & Write* token) so both PostgreSQL dumps and S3 assets are mirrored off the host automatically, or copy `/backups/<file>` and `silo_data` out yourself. On Cloud Run, dumps go to R2, which is billed by Cloudflare and keeps working if the Google Cloud project is unlinked from billing.
 
 Back up by hand before every update: the new server migrates the database when it starts, so the dump taken just before is the rollback point. The Cloud Run deploy workflow does this automatically.
 
 ## Restore on the Compose target
 
-The restore drops and recreates the database, then restores the dump in one transaction (a failing archive leaves an empty database, never a partial one). It refuses while another session is connected, so stop the server first. When the dump is not in `/backups` and `BACKUP_S3_*` is set, the script downloads it from the bucket.
+The restore drops and recreates the database, then restores the dump in one transaction (a failing archive leaves an empty database, never a partial one). It refuses while another session is connected, so stop the server first. When the dump is not in `/backups` and `BACKUP_S3_*` is set, the script downloads it from the bucket; when `S3_*` and `BACKUP_S3_*` point to distinct buckets and mirrored assets exist under `<BACKUP_S3_ASSETS_PREFIX>`, it also mirrors them back into `<S3_BUCKET>`.
 
 ```sh
 cd deploy/compose
@@ -101,11 +102,11 @@ The PostgreSQL version of the container must be at least the version of the serv
 
 ## Asset buckets
 
-When assets live in Silo or R2, losing the bucket loses every map image and portrait, even with a perfect database dump. Give the asset bucket its own protection:
+When assets live in Silo or R2, losing the bucket without an off-machine mirror loses every map image and portrait, even with a perfect database dump. Give the asset bucket its own protection:
 
-- **Never expire current objects in the asset bucket.** Its keys are content addresses referenced from PostgreSQL, and a deleted object is a lost map. Only the backup bucket expires dumps.
-- **Keep a second copy.** Asset objects are never overwritten or deleted by the server, so a plain scheduled copy is enough, for example `mc mirror` to a second bucket on another provider or machine. This works with every backend.
-- **Silo (Compose target):** the bucket is the `silo_data` volume. Back up that volume or mirror the bucket off the machine. Silo also supports bucket versioning (`mc version enable`): a deleted object then stays recoverable as a noncurrent version. Pair it with a lifecycle rule that expires only noncurrent versions (for example after 30 days), never current objects.
-- **R2 (Cloud Run target, or Compose with R2):** R2 has no object versioning (checked 2026-11-08). Its bucket locks can forbid deletes and overwrites for a period or indefinitely; an indefinite lock on `trame-assets` fits TRAME, whose server never overwrites or deletes an asset object, but it also blocks emptying the bucket until the lock is removed. The `prevent_destroy` flag in Terraform only guards against `terraform destroy`, not against a deleted object or a lost Cloudflare account.
+- **Never expire current objects in the asset bucket or its backup mirror.** Asset keys are content addresses referenced from PostgreSQL, and a deleted object is a lost map. Only `<BACKUP_S3_PREFIX>/` expires old `.dump` files.
+- **Keep a second copy.** Asset objects are never overwritten or deleted by the server, so an append-only mirror (`mc mirror --overwrite` without `--remove`) is enough.
+- **Silo (Compose target):** the live bucket is the `silo_data` volume. When `BACKUP_S3_*` is configured to a separate bucket (for example Cloudflare R2), `backup.sh` automatically mirrors `<S3_BUCKET>` to `<BACKUP_S3_BUCKET>/<BACKUP_S3_ASSETS_PREFIX>/` (default `trame/assets`) after every dump upload, and `restore.sh` mirrors those objects back into `<S3_BUCKET>`. Without `BACKUP_S3_*`, back up the `silo_data` volume yourself. Silo also supports bucket versioning (`mc version enable`): a deleted object then stays recoverable as a noncurrent version. Pair it with a lifecycle rule that expires only noncurrent versions (for example after 30 days), never current objects.
+- **R2 (Cloud Run target, or Compose with R2):** on Compose, setting `BACKUP_S3_*` to a second bucket mirrors `trame-assets` there automatically; on Cloud Run, `trame-backup` only backs up Neon because assets already live in R2. R2 has no object versioning (checked 2026-11-08). Its bucket locks can forbid deletes and overwrites for a period or indefinitely; an indefinite lock on `trame-assets` fits TRAME, whose server never overwrites or deletes an asset object, but it also blocks emptying the bucket until the lock is removed. The `prevent_destroy` flag in Terraform only guards against `terraform destroy`, not against a deleted object or a lost Cloudflare account.
 
 Restoring a dump older than the bucket's newest objects is safe: the extra objects are simply unused. Restoring a bucket older than the dump is not: maps uploaded in between have no image.

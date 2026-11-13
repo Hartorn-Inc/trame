@@ -264,8 +264,8 @@ services:
           memory: 128M
 
   backup:
-    # Nightly pg_dump + 14-day retention + optional bucket copy (ops/backup.sh);
-    # `docker compose exec backup restore.sh <dump>` restores (ops/restore.sh).
+    # Nightly pg_dump + 14-day retention + optional bucket copy & asset mirror (ops/backup.sh);
+    # `docker compose exec backup restore.sh <dump>` restores DB + mirrored assets (ops/restore.sh).
     image: trame-ops:local
     build: *ops-build
     logging: *logging
@@ -281,9 +281,14 @@ services:
       PGDATABASE: ${POSTGRES_DB:-trame}
       BACKUP_TIME: ${BACKUP_TIME:-03:00}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
       BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
       BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
       BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-trame/postgres}
+      BACKUP_S3_ASSETS_PREFIX: ${BACKUP_S3_ASSETS_PREFIX:-trame/assets}
       BACKUP_S3_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:-}
       BACKUP_S3_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:-}
     volumes:

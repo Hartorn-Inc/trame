@@ -9,7 +9,7 @@ This directory runs TRAME on one machine: an Oracle Cloud Always Free VM, or a h
 | `postgres` | Database, internal network only | 512M |
 | `silo` (profile `silo`) | S3-compatible asset store | 512M |
 | `storage-init` (profile `silo`) | One-shot: creates the bucket and its CORS rule | 128M |
-| `backup` | Nightly `pg_dump`, 14-day retention, optional copy to a bucket | 256M |
+| `backup` | Nightly `pg_dump`, 14-day retention, optional dump + asset mirror to a bucket | 256M |
 | `cloudflared` (tunnel variant) | Cloudflare Tunnel connector | 128M |
 
 Every container has a read-only root filesystem, `no-new-privileges` and dropped capabilities, and its logs rotate at 3 x 10 MB.
@@ -104,11 +104,11 @@ Database migrations run automatically when the server starts. To roll back, chec
 
 The full procedure, including restore drills and asset bucket protection, is in the [backup and restore runbook](../backup-and-restore.md). In short:
 
-- `backup` writes `trame-<db>-<UTC time>.dump` (`pg_dump` custom format) to the `backups` volume every day at `BACKUP_TIME` (UTC) and keeps `BACKUP_RETENTION_DAYS` (14) days. With `BACKUP_S3_*` set, each dump is also copied to that bucket. Use an R2 bucket separate from the assets: a copy on the same VM does not survive losing the VM.
-- A failed run marks the `backup` container unhealthy (`docker compose ps`). Run one now with `docker compose exec backup backup.sh now`.
-- Restore: `docker compose stop trame-server`, `docker compose exec backup restore.sh <dump file>`, `docker compose up -d --wait trame-server`.
-- **Assets are not in the dumps** when they live in Silo or R2. Protect the asset bucket separately.
+- `backup` writes `trame-<db>-<UTC time>.dump` (`pg_dump` custom format) to the `backups` volume every day at `BACKUP_TIME` (UTC) and keeps `BACKUP_RETENTION_DAYS` (14) days. With `BACKUP_S3_*` set to a pre-created bucket separate from `S3_BUCKET` (such as Cloudflare R2 with a bucket-scoped *Object Read & Write* token), each run also uploads the dump to `<BACKUP_S3_PREFIX>` (default `trame/postgres`) and mirrors `<S3_BUCKET>` to `<BACKUP_S3_ASSETS_PREFIX>` (default `trame/assets`, without `--remove`). Keep the backup bucket off the VM: a copy on the same machine does not survive losing the VM.
+- A failed dump upload or asset mirror marks the `backup` container unhealthy (`docker compose ps`). Run one now with `docker compose exec backup backup.sh now`.
+- Restore: `docker compose stop trame-server`, `docker compose exec backup restore.sh <dump file>`, `docker compose up -d --wait trame-server`. When distinct `S3_*` and `BACKUP_S3_*` buckets are configured, `restore.sh` also mirrors backed-up asset objects back into `<S3_BUCKET>`.
+- **Without `BACKUP_S3_*`**, Silo assets live only on the local `silo_data` volume (they are not inside `.dump` archives unless `S3_*` is unset so assets stay in PostgreSQL).
 
 ## Smoke test
 
-`make deploy-compose-smoke` (from the repository root, after `make e2e-image`) starts a throwaway copy of this stack on `https://localhost:18743` with Caddy's internal CA. It checks `/healthz` through Caddy, single-pass compression, owner bootstrap, a WebSocket with `trame.v1+deflate`, a map upload served from Silo through a presigned redirect with the CORS header, and a backup. Then it deletes the database volume and the local dump, restores from the bucket copy, and checks that the campaign and session are back. Finally it removes every container, volume and network it created.
+`make deploy-compose-smoke` (from the repository root, after `make e2e-image`) starts a throwaway copy of this stack on `https://localhost:18743` with Caddy's internal CA. It checks `/healthz` through Caddy, single-pass compression, owner bootstrap, a WebSocket with `trame.v1+deflate`, a map upload served from Silo through a presigned redirect with the CORS header, and a backup to a separate `trame-backups` bucket (verifying zero leaked credentials in `/proc/*/cmdline`). Then it deletes the database volume, the local dump, and every object in `trame-assets`, restores both the database and mirrored assets from `trame-backups`, and checks that the campaign, session, and presigned WebP map download all work again. Finally it removes every container, volume and network it created.

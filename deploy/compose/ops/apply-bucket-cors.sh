@@ -23,6 +23,9 @@
 #      - `mc mb --ignore-existing` creates the bucket only when it is missing
 #        and `mc cors set` replaces the rule, so the job can run on every
 #        `docker compose up`.
+#   3. `Zero Secrets On Process Argv`:
+#      - `ops-common.sh` writes `$MC_CONFIG_DIR/config.json` (`0600` on tmpfs)
+#        from environment variables instead of passing keys to `mc alias set`.
 #
 # ENVIRONMENT:
 # ------------
@@ -42,7 +45,11 @@ http://?* | https://?*) ;;
 esac
 : "${S3_ENDPOINT:?set S3_ENDPOINT}" "${S3_BUCKET:?set S3_BUCKET}"
 
-mc alias set store "$S3_ENDPOINT" "${S3_ACCESS_KEY_ID:-}" "${S3_SECRET_ACCESS_KEY:-}" --api S3v4 >/dev/null
+OPS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=ops-common.sh
+. "$OPS_DIR/ops-common.sh"
+
+write_mc_config
 
 mc mb --ignore-existing "store/$S3_BUCKET"
 

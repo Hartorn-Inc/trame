@@ -7,8 +7,11 @@
 # --------
 # Without it a dead disk or a bad deploy loses every campaign (SEC18, D21).
 # Writes a `pg_dump` custom-format archive of the TRAME database, keeps
-# `BACKUP_RETENTION_DAYS` (14) days of them in `BACKUP_DIR`, and copies each
-# one to an S3-compatible bucket (Cloudflare R2) when `BACKUP_S3_*` is set.
+# `BACKUP_RETENTION_DAYS` (14) days of them in `BACKUP_DIR`, copies each
+# dump to an S3-compatible bucket (Cloudflare R2 or a separate Silo bucket)
+# when `BACKUP_S3_*` is set, and mirrors the S3 asset bucket (`S3_BUCKET`)
+# into `<BACKUP_S3_BUCKET>/<BACKUP_S3_ASSETS_PREFIX>` when both stores are
+# configured and distinct.
 #
 # INVARIANTS & SAFETY BOUNDARIES:
 # -------------------------------
@@ -19,14 +22,26 @@
 #        only ever see complete archives.
 #   2. `Bounded Disk Use`:
 #      - Local dumps older than `BACKUP_RETENTION_DAYS` days are deleted after
-#        each successful run; the same age limit prunes the bucket prefix.
+#        each successful run; the same age limit prunes the dump prefix.
 #   3. `Visible Failures`:
 #      - A failed run creates `/tmp/backup-failed`, which turns the container
 #        healthcheck unhealthy until the next successful run. The schedule
 #        loop keeps running.
-#   4. `Database Only`:
-#      - Asset blobs in the object store are NOT dumped; the asset bucket needs
-#        its own versioning or replication (see the deployment README).
+#   4. `Append-Only Asset Mirroring`:
+#      - When both `S3_*` and `BACKUP_S3_*` point to distinct `(endpoint, bucket)`
+#        pairs, `mc mirror --overwrite --quiet` copies objects from
+#        `store/$S3_BUCKET/` to `backup/$BACKUP_S3_BUCKET/$BACKUP_S3_ASSETS_PREFIX/`
+#        without `--remove`, preserving immutable content-addressed blobs
+#        referenced by older dumps. Skipped cleanly when `S3_*` or `BACKUP_S3_*`
+#        is unset (Postgres-only Compose, `make e2e` local backup, or the Cloud
+#        Run job where assets already live in R2) or when both point to the
+#        same bucket. Never calls `mc mb` on `BACKUP_S3_BUCKET` so bucket-scoped
+#        R2 Object Read & Write tokens succeed.
+#   5. `Zero Secrets On Process Argv`:
+#      - `ops-common.sh` parses `DATABASE_URL` into exported `PG*` variables
+#        (then unsets `DATABASE_URL`) and writes `$MC_CONFIG_DIR/config.json`
+#        (`0600` on tmpfs) so neither database passwords nor S3 secret keys
+#        appear in `/proc/<pid>/cmdline`.
 #
 # EXECUTION LIFECYCLE:
 # --------------------
@@ -35,20 +50,26 @@
 #   `backup.sh now`
 #     ├── 1. `pg_dump --format=custom` -> `.partial` -> `pg_restore --list`.
 #     ├── 2. Rename into place, prune local dumps past retention.
-#     └── 3. With `BACKUP_S3_*`: `mc cp` to the bucket, prune the prefix.
+#     ├── 3. With `BACKUP_S3_*`: `mc cp` dump to the bucket, prune dump prefix.
+#     └── 4. With distinct `S3_*` + `BACKUP_S3_*`: `mc mirror` assets to the bucket.
 #
 # ENVIRONMENT:
 # ------------
 #   PGHOST, PGUSER, PGPASSWORD, PGDATABASE   libpq connection (set by Compose).
 #   DATABASE_URL            `postgresql://user:password@host[:port]/db[?params]`;
-#                           when set it replaces the PG* variables (Cloud Run job
-#                           against Neon, which only receives the server's URL).
+#                           when set it is parsed into `PG*` variables and unset
+#                           (Cloud Run job against Neon, which only receives the
+#                           server's URL).
 #   BACKUP_DIR              Dump directory (default `/backups`).
 #   BACKUP_TIME             Daily run time, `HH:MM` UTC (default `03:00`).
-#   BACKUP_RETENTION_DAYS   Days to keep, locally and in the bucket (default 14).
+#   BACKUP_RETENTION_DAYS   Days to keep dumps, locally and in the bucket (default 14).
 #   BACKUP_S3_ENDPOINT, BACKUP_S3_BUCKET, BACKUP_S3_ACCESS_KEY_ID,
 #   BACKUP_S3_SECRET_ACCESS_KEY, BACKUP_S3_PREFIX (default `trame/postgres`)
-#                           Off-machine copy; disabled while endpoint or bucket is empty.
+#                           Off-machine dump copy; disabled while endpoint or bucket is empty.
+#   S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY,
+#   BACKUP_S3_ASSETS_PREFIX (default `trame/assets`)
+#                           Optional S3 asset mirror into `<BACKUP_S3_BUCKET>/<BACKUP_S3_ASSETS_PREFIX>`
+#                           when both `S3_*` and `BACKUP_S3_*` are set and distinct.
 # ============================================================================
 set -eu
 
@@ -56,44 +77,26 @@ BACKUP_DIR=${BACKUP_DIR:-/backups}
 BACKUP_TIME=${BACKUP_TIME:-03:00}
 BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-14}
 BACKUP_S3_PREFIX=${BACKUP_S3_PREFIX:-trame/postgres}
+BACKUP_S3_ASSETS_PREFIX=${BACKUP_S3_ASSETS_PREFIX:-trame/assets}
 FAILED_MARKER=/tmp/backup-failed
 
 log() {
 	printf '%s backup: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
 }
 
-# The URL's database name labels the dump files (libpq takes the rest from the URL).
-# Without a `/dbname` path the label would be the user:password@host part.
-if [ -n "${DATABASE_URL:-}" ]; then
-	url_without_params=${DATABASE_URL%%\?*}
-	case "$url_without_params" in
-	*://*/?*) PGDATABASE=${url_without_params##*/} ;;
-	*)
-		log "DATABASE_URL must end with /<database>"
-		exit 2
-		;;
-	esac
-fi
+OPS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=ops-common.sh
+. "$OPS_DIR/ops-common.sh"
 
-remote_enabled() {
-	[ -n "${BACKUP_S3_ENDPOINT:-}" ] && [ -n "${BACKUP_S3_BUCKET:-}" ]
-}
-
-# Registers the `backup` mc alias (config lives in the tmpfs MC_CONFIG_DIR).
-remote_login() {
-	mc alias set backup "$BACKUP_S3_ENDPOINT" "${BACKUP_S3_ACCESS_KEY_ID:-}" \
-		"${BACKUP_S3_SECRET_ACCESS_KEY:-}" --api S3v4 >/dev/null
-}
-
-remote_prefix() {
-	prefix=${BACKUP_S3_PREFIX#/}
-	printf 'backup/%s/%s' "$BACKUP_S3_BUCKET" "${prefix%/}"
-}
+# Parses `DATABASE_URL` (when set) into exported `PG*` variables and unsets it
+# so `pg_dump` runs with zero connection URIs or passwords on argv.
+parse_database_url
+: "${PGDATABASE:?set PGDATABASE or DATABASE_URL}"
 
 backup_now() {
 	name="trame-${PGDATABASE}-$(date -u +%Y%m%dT%H%M%SZ).dump"
 	partial="$BACKUP_DIR/.$name.partial"
-	if ! pg_dump --format=custom --file="$partial" ${DATABASE_URL:+"--dbname=$DATABASE_URL"}; then
+	if ! pg_dump --format=custom --file="$partial" --dbname="$PGDATABASE"; then
 		rm -f "$partial"
 		log "pg_dump failed"
 		return 1
@@ -111,13 +114,29 @@ backup_now() {
 		while read -r old; do log "pruned $old"; done
 
 	if remote_enabled; then
-		if ! remote_login || ! mc cp --quiet "$BACKUP_DIR/$name" "$(remote_prefix)/$name" >/dev/null; then
+		if ! write_mc_config || ! mc cp --quiet "$BACKUP_DIR/$name" "$(remote_prefix)/$name" >/dev/null; then
 			log "upload of $name to the bucket failed"
 			return 1
 		fi
 		log "uploaded $name to $(remote_prefix | cut -d/ -f2-)"
 		mc rm --recursive --force --older-than "${BACKUP_RETENTION_DAYS}d" "$(remote_prefix)/" >/dev/null 2>&1 ||
 			log "warning: pruning old dumps in the bucket failed"
+
+		if assets_mirror_enabled; then
+			if ! asset_entries=$(mc ls "store/$S3_BUCKET/"); then
+				log "listing asset bucket $S3_BUCKET failed"
+				return 1
+			fi
+			if [ -n "$asset_entries" ]; then
+				if ! mc mirror --overwrite --quiet "store/$S3_BUCKET/" "$(remote_assets_prefix)/" >/dev/null; then
+					log "mirroring assets from $S3_BUCKET to $(remote_assets_prefix | cut -d/ -f2-) failed"
+					return 1
+				fi
+				log "mirrored assets from $S3_BUCKET to $(remote_assets_prefix | cut -d/ -f2-)"
+			else
+				log "asset bucket $S3_BUCKET is empty; nothing to mirror"
+			fi
+		fi
 	fi
 }
 
@@ -153,7 +172,7 @@ now)
 	run_once
 	;;
 schedule)
-	log "daily backups at $BACKUP_TIME UTC, kept $BACKUP_RETENTION_DAYS days$(remote_enabled && echo ', copied to the bucket' || true)"
+	log "daily backups at $BACKUP_TIME UTC, kept $BACKUP_RETENTION_DAYS days$(remote_enabled && echo ', copied to the bucket' || true)$(assets_mirror_enabled && echo ', mirroring assets' || true)"
 	while :; do
 		wait_s=$(seconds_until_next_run)
 		log "next backup in ${wait_s}s"
