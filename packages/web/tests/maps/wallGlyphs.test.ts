@@ -5,7 +5,7 @@ import type { WireWallKind } from "../../src/api/wire.ts";
 import { DARK_CANVAS_PALETTE } from "../../src/canvas/CanvasThemePalette.ts";
 import { glyphPath, oneWayNormal, wallGlyphs } from "../../src/canvas/wallGlyphs.ts";
 import { computeVisibilityPolygon, type Point2D } from "../../src/engine/wasmBridge.ts";
-import { localeSignal } from "../../src/i18n/index.ts";
+import { localeSignal, unitSystemSignal, type LocaleCode, type UnitSystem } from "../../src/i18n/index.ts";
 import { MapsStudioTab } from "../../src/maps/MapsStudioTab.tsx";
 import { mapBackendSceneToFrontend, mapFrontendSceneToBackend } from "../../src/maps/domain.ts";
 import type { CampaignMapScene } from "../../src/maps/types.ts";
@@ -224,14 +224,249 @@ describe("maps studio: one-way walls keep the direction the GM sees", () => {
             assert.equal(ui.byTestId(`delete-wall-${WALL_ID}`).getAttribute("aria-label"), tc.expectedDeleteWall);
             const doorsList = ui.byTestId("doors-list");
             assert.match(doorsList.textContent, new RegExp(tc.expectedDoorStatus!));
-            const doorButtons = doorsList.querySelectorAll("button");
-            const deleteDoorBtn = doorButtons[doorButtons.length - 1];
+            const deleteDoorBtn = ui.byTestId(`delete-door-${DOOR_UUID}`);
             assert.equal(deleteDoorBtn.getAttribute("aria-label"), tc.expectedDeleteDoor);
             assert.doesNotMatch(ui.byTestId("all-walls-list").textContent, new RegExp(WALL_ID));
             assert.doesNotMatch(doorsList.textContent, new RegExp(DOOR_UUID));
           }
           ui.unmount();
         } finally {
+          localeSignal.value = "en";
+        }
+      });
+    }
+  });
+
+  describe("Studio coordinate captions, indexed door labels, delete-door testid, and localized wall elevations (F7, F8)", () => {
+    const DOOR_1 = "88888888-0000-4000-8000-000000000011";
+    const DOOR_2 = "88888888-0000-4000-8000-000000000012";
+
+    const buildF7F8Scene = (): CampaignMapScene => ({
+      ...scene({ x: 0, y: 1 }),
+      walls: [
+        {
+          id: WALL_ID,
+          a: { x: 0, y: 70 },
+          b: { x: 140, y: 70 },
+          wallType: "Normal",
+          blocksMovement: true,
+          blocksVision: true,
+          blocksLight: true,
+          blocksSound: true,
+          bottomElevationFt: 0,
+          topElevationFt: 10,
+        },
+        {
+          id: DOOR_1,
+          a: { x: 140, y: 70 },
+          b: { x: 210, y: 70 },
+          wallType: "Door",
+          blocksMovement: true,
+          blocksVision: true,
+          blocksLight: true,
+          blocksSound: true,
+          bottomElevationFt: 0,
+          topElevationFt: 10,
+          doorState: { isOpen: false, isLocked: false },
+        },
+        {
+          id: DOOR_2,
+          a: { x: 210, y: 70 },
+          b: { x: 280, y: 70 },
+          wallType: "SecretDoor",
+          blocksMovement: true,
+          blocksVision: true,
+          blocksLight: true,
+          blocksSound: true,
+          bottomElevationFt: 5,
+          topElevationFt: 15,
+          secretDoorState: { isOpen: false },
+        },
+      ],
+    });
+
+    const coordCases: Array<{
+      id: string;
+      locale: LocaleCode;
+      expectedCaptions: string[];
+      expectedInputArias: Record<string, string>;
+    }> = [
+      {
+        id: "F7-studio-coords-en",
+        locale: "en",
+        expectedCaptions: ["P1:", "P2:", "Light X,Y:", "Audio X,Y:"],
+        expectedInputArias: {
+          "wall-p1x-input": "P1 X coordinate",
+          "wall-p1y-input": "P1 Y coordinate",
+          "wall-p2x-input": "P2 X coordinate",
+          "wall-p2y-input": "P2 Y coordinate",
+          "light-x-input": "Light X coordinate",
+          "light-y-input": "Light Y coordinate",
+          "audio-x-input": "Audio X coordinate",
+          "audio-y-input": "Audio Y coordinate",
+        },
+      },
+      {
+        id: "F7-studio-coords-fr",
+        locale: "fr",
+        expectedCaptions: ["P1 :", "P2 :", "Lumière X,Y :", "Audio X,Y :"],
+        expectedInputArias: {
+          "wall-p1x-input": "Coordonnée X de P1",
+          "wall-p1y-input": "Coordonnée Y de P1",
+          "wall-p2x-input": "Coordonnée X de P2",
+          "wall-p2y-input": "Coordonnée Y de P2",
+          "light-x-input": "Coordonnée X de la lumière",
+          "light-y-input": "Coordonnée Y de la lumière",
+          "audio-x-input": "Coordonnée X de l'audio",
+          "audio-y-input": "Coordonnée Y de l'audio",
+        },
+      },
+    ];
+
+    for (const tc of coordCases) {
+      it(`[${tc.id}] replaces X/Y pair <label for> conflicts with <span> captions while preserving single-control <label for> associations`, () => {
+        localeSignal.value = tc.locale;
+        try {
+          const ui = mount(h(MapsStudioTab, { campaignId: "c1", userRole: "GM", initialScenes: [buildF7F8Scene()] }));
+
+          for (const pairId of ["wall-p1x", "wall-p2x", "light-x", "audio-x"]) {
+            assertAbsent(ui.container.querySelector(`label[for="${pairId}"]`), `conflicting label[for="${pairId}"]`);
+            assertAbsent(ui.container.querySelector(`label[htmlfor="${pairId}"]`), `conflicting label[htmlFor="${pairId}"]`);
+          }
+          for (const singleId of ["studio-wall-type", "wall-bottom-elevation", "wall-top-elevation", "light-radius"]) {
+            const label = ui.container.querySelector(`label[for="${singleId}"]`);
+            assertPresent(label, `single-input label[for="${singleId}"]`);
+            const target = ui.container.querySelector(`#${singleId}`);
+            assertPresent(target, `target #${singleId}`);
+            assert.equal(target.hasAttribute("aria-label"), false, `#${singleId} must not override its <label> with aria-label`);
+          }
+
+          const spanTexts = ui.container.querySelectorAll("span").map((s: any) => s.textContent);
+          for (const caption of tc.expectedCaptions) {
+            assert.ok(spanTexts.includes(caption), `expected span caption '${caption}'`);
+          }
+          for (const [testId, expectedAria] of Object.entries(tc.expectedInputArias)) {
+            assert.equal(ui.byTestId(testId).getAttribute("aria-label"), expectedAria);
+          }
+
+          ui.unmount();
+        } finally {
+          localeSignal.value = "en";
+        }
+      });
+    }
+
+    const doorCases: Array<{
+      id: string;
+      locale: LocaleCode;
+      lockAria1: string;
+      unlockAria1: string;
+      toggleAria1: string;
+      toggleAria2: string;
+      deleteWallAria2: string;
+      deleteDoorAria1: string;
+    }> = [
+      {
+        id: "F8-studio-doors-en",
+        locale: "en",
+        lockAria1: "Lock door #1",
+        unlockAria1: "Unlock door #1",
+        toggleAria1: "Toggle Door #1",
+        toggleAria2: "Toggle Door #2",
+        deleteWallAria2: "Delete wall segment #2",
+        deleteDoorAria1: "Delete door #1",
+      },
+      {
+        id: "F8-studio-doors-fr",
+        locale: "fr",
+        lockAria1: "Verrouiller la porte n° 1",
+        unlockAria1: "Déverrouiller la porte n° 1",
+        toggleAria1: "Ouvrir/fermer la porte n° 1",
+        toggleAria2: "Ouvrir/fermer la porte n° 2",
+        deleteWallAria2: "Supprimer le segment de mur n° 2",
+        deleteDoorAria1: "Supprimer la porte n° 1",
+      },
+    ];
+
+    for (const tc of doorCases) {
+      it(`[${tc.id}] exposes indexed WCAG 2.5.3 door button aria-labels and unique delete-door-<id> testids`, () => {
+        localeSignal.value = tc.locale;
+        try {
+          const ui = mount(h(MapsStudioTab, { campaignId: "c1", userRole: "GM", initialScenes: [buildF7F8Scene()] }));
+
+          const lockBtn = ui.byTestId(`toggle-lock-${DOOR_1}`);
+          assert.equal(lockBtn.getAttribute("aria-label"), tc.lockAria1);
+          assert.ok(lockBtn.getAttribute("aria-label").startsWith(lockBtn.textContent), "lock aria-label starts with visible text");
+
+          ui.click(`toggle-lock-${DOOR_1}`);
+          const unlockBtn = ui.byTestId(`toggle-lock-${DOOR_1}`);
+          assert.equal(unlockBtn.getAttribute("aria-label"), tc.unlockAria1);
+          assert.ok(unlockBtn.getAttribute("aria-label").startsWith(unlockBtn.textContent), "unlock aria-label starts with visible text");
+
+          const toggle1 = ui.byTestId(`toggle-door-${DOOR_1}`);
+          const toggle2 = ui.byTestId(`toggle-door-${DOOR_2}`);
+          assert.equal(toggle1.getAttribute("aria-label"), tc.toggleAria1);
+          assert.equal(toggle2.getAttribute("aria-label"), tc.toggleAria2);
+          assert.ok(toggle1.getAttribute("aria-label").startsWith(toggle1.textContent), "toggle #1 aria-label starts with visible text");
+          assert.ok(toggle2.getAttribute("aria-label").startsWith(toggle2.textContent), "toggle #2 aria-label starts with visible text");
+
+          assert.equal(ui.container.querySelectorAll(`[data-testid="delete-wall-${DOOR_1}"]`).length, 1);
+          assert.equal(ui.container.querySelectorAll(`[data-testid="delete-door-${DOOR_1}"]`).length, 1);
+          assert.equal(ui.byTestId(`delete-wall-${DOOR_1}`).getAttribute("aria-label"), tc.deleteWallAria2);
+          assert.equal(ui.byTestId(`delete-door-${DOOR_1}`).getAttribute("aria-label"), tc.deleteDoorAria1);
+
+          ui.click(`delete-door-${DOOR_1}`);
+          assertAbsent(ui.byTestId(`delete-door-${DOOR_1}`), "deleted door button");
+
+          ui.unmount();
+        } finally {
+          localeSignal.value = "en";
+        }
+      });
+    }
+
+    const elevationCases: Array<{
+      id: string;
+      locale: LocaleCode;
+      units: UnitSystem;
+      expectedWall1: string;
+      expectedWall3: string;
+    }> = [
+      {
+        id: "F8-wall-elevation-imperial-en",
+        locale: "en",
+        units: "imperial_ft",
+        expectedWall1: "[0 ft .. 10 ft]",
+        expectedWall3: "[5 ft .. 15 ft]",
+      },
+      {
+        id: "F8-wall-elevation-metric-en",
+        locale: "en",
+        units: "metric_m",
+        expectedWall1: "[0 m (0 squares) .. 3 m (2 squares)]",
+        expectedWall3: "[1.5 m (1 square) .. 4.5 m (3 squares)]",
+      },
+      {
+        id: "F8-wall-elevation-metric-fr",
+        locale: "fr",
+        units: "metric_m",
+        expectedWall1: "[0 m (0 case) .. 3 m (2 cases)]",
+        expectedWall3: "[1,5 m (1 case) .. 4,5 m (3 cases)]",
+      },
+    ];
+
+    for (const tc of elevationCases) {
+      it(`[${tc.id}] formats studio wall elevations through formatDistanceFt()`, () => {
+        localeSignal.value = tc.locale;
+        unitSystemSignal.value = tc.units;
+        try {
+          const ui = mount(h(MapsStudioTab, { campaignId: "c1", userRole: "GM", initialScenes: [buildF7F8Scene()] }));
+          const wallsText = ui.byTestId("all-walls-list").textContent;
+          assert.ok(wallsText.includes(tc.expectedWall1), `expected '${tc.expectedWall1}' in '${wallsText}'`);
+          assert.ok(wallsText.includes(tc.expectedWall3), `expected '${tc.expectedWall3}' in '${wallsText}'`);
+          ui.unmount();
+        } finally {
+          unitSystemSignal.value = "imperial_ft";
           localeSignal.value = "en";
         }
       });

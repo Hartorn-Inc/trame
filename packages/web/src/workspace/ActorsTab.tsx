@@ -133,20 +133,32 @@ export function ActorsTab({ campaignId, client, isGm }: ActorsTabProps) {
                     {t('actors.place')}
                   </button>
                 ) : null}
-                <label class="ds-btn ds-btn-ghost">
-                  {t('actors.portrait')}
-                  <input
-                    type="file"
-                    class="ds-visually-hidden"
-                    accept={PORTRAIT_ACCEPT}
-                    data-testid={`actor-portrait-${actorId}`}
-                    aria-label={t('actors.portraitFor', { name: record.name ?? '' })}
-                    onChange={(e) => {
-                      const file = (e.target as HTMLInputElement).files?.[0];
-                      if (file) void uploadPortrait(actorId, record, file);
-                    }}
-                  />
-                </label>
+                {(() => {
+                  const visibleLabel = t('actors.portrait');
+                  const actorName = record.name?.trim() ?? '';
+                  const fullLabel = actorName ? t('actors.portraitFor', { name: actorName }) : visibleLabel;
+                  const hiddenSuffix = fullLabel.startsWith(visibleLabel)
+                    ? fullLabel.slice(visibleLabel.length)
+                    : ` (${actorName})`;
+                  const portraitInputId = `actor-portrait-input-${actorId}`;
+                  return (
+                    <label for={portraitInputId} class="ds-btn ds-btn-ghost">
+                      <span>{visibleLabel}</span>
+                      {hiddenSuffix ? <span class="ds-visually-hidden">{hiddenSuffix}</span> : null}
+                      <input
+                        id={portraitInputId}
+                        type="file"
+                        class="ds-visually-hidden"
+                        accept={PORTRAIT_ACCEPT}
+                        data-testid={`actor-portrait-${actorId}`}
+                        onChange={(e) => {
+                          const file = (e.target as HTMLInputElement).files?.[0];
+                          if (file) void uploadPortrait(actorId, record, file);
+                        }}
+                      />
+                    </label>
+                  );
+                })()}
               </div>
             </li>
           ))}

@@ -10,7 +10,7 @@ import { SceneAtlas } from './SceneAtlas.tsx';
 import { DARK_CANVAS_PALETTE, SHARED_WALL_KINDS, type CanonicalWallKind } from '../canvas/CanvasThemePalette.ts';
 import type { Point2D } from '../engine/wasmBridge.ts';
 import { session } from '../api/session.ts';
-import { t, type MessageKey } from '../i18n/index.ts';
+import { formatDistanceFt, t, type MessageKey } from '../i18n/index.ts';
 import { flipOneWay, scenePoint, snapToGridCorner, wallFromDrag } from './wallDrawing.ts';
 import { glyphPath, wallGlyphs } from '../canvas/wallGlyphs.ts';
 
@@ -847,7 +847,7 @@ export function MapsStudioTab({
                 }}
               >
                 <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 'var(--atlas-space-xs)' }}>
-                  <label htmlFor="studio-wall-type" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.wallLabel')}</label>
+                  <label for="studio-wall-type" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.wallLabel')}</label>
                   <select
                     id="studio-wall-type"
                     data-testid="wall-type-select"
@@ -859,7 +859,7 @@ export function MapsStudioTab({
                       <option key={wallType} value={wallType}>{t(WALL_TYPE_LABEL_KEYS[wallType])}</option>
                     ))}
                   </select>
-                  <label htmlFor="wall-p1x" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.point', { index: 1 })}</label>
+                  <span style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.point', { index: 1 })}</span>
                   <input
                     id="wall-p1x"
                     aria-label={t('maps.pointX', { index: 1 })}
@@ -878,7 +878,7 @@ export function MapsStudioTab({
                     onInput={(e) => { wallP1YSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
                     style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
-                  <label htmlFor="wall-p2x" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.point', { index: 2 })}</label>
+                  <span style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.point', { index: 2 })}</span>
                   <input
                     id="wall-p2x"
                     aria-label={t('maps.pointX', { index: 2 })}
@@ -897,7 +897,7 @@ export function MapsStudioTab({
                     onInput={(e) => { wallP2YSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
                     style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
-                  <label htmlFor="wall-bottom-elevation" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.bottomFt')}</label>
+                  <label for="wall-bottom-elevation" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.bottomFt')}</label>
                   <input
                     id="wall-bottom-elevation"
                     data-testid="wall-bottom-elevation"
@@ -906,7 +906,7 @@ export function MapsStudioTab({
                     onInput={(e) => { wallBottomFtSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
                     style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
-                  <label htmlFor="wall-top-elevation" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.topFt')}</label>
+                  <label for="wall-top-elevation" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.topFt')}</label>
                   <input
                     id="wall-top-elevation"
                     data-testid="wall-top-elevation"
@@ -926,7 +926,7 @@ export function MapsStudioTab({
                 </div>
 
                 <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 'var(--atlas-space-xs)' }}>
-                  <label htmlFor="light-x" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.lightPosition')}</label>
+                  <span style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.lightPosition')}</span>
                   <input
                     id="light-x"
                     aria-label={t('maps.lightX')}
@@ -945,7 +945,7 @@ export function MapsStudioTab({
                     onInput={(e) => { lightYSignal.value = Number((e.currentTarget as HTMLInputElement).value); }}
                     style={{ width: '45px', minHeight: '40px', fontSize: 'var(--atlas-font-size-xs)' }}
                   />
-                  <label htmlFor="light-radius" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.radius')}</label>
+                  <label for="light-radius" style={{ fontSize: 'var(--atlas-font-size-xs)' }}>{t('maps.radius')}</label>
                   <input
                     id="light-radius"
                     data-testid="light-radius-input"
@@ -963,7 +963,7 @@ export function MapsStudioTab({
                     {t('maps.addLight')}
                   </button>
 
-                  <label htmlFor="audio-x" style={{ fontSize: 'var(--atlas-font-size-xs)', marginLeft: 'var(--atlas-space-sm)' }}>{t('maps.audioPosition')}</label>
+                  <span style={{ fontSize: 'var(--atlas-font-size-xs)', marginLeft: 'var(--atlas-space-sm)' }}>{t('maps.audioPosition')}</span>
                   <input
                     id="audio-x"
                     aria-label={t('maps.audioX')}
@@ -1008,7 +1008,7 @@ export function MapsStudioTab({
                       return (
                         <div key={w.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--atlas-font-size-xs)', padding: '2px 4px', background: 'var(--atlas-surface-raised)', borderRadius: 'var(--atlas-radius-sm)' }}>
                           <span class="atlas-tabular-nums">
-                            <strong>{t(WALL_TYPE_LABEL_KEYS[w.wallType] ?? 'maps.wallType.normal')}</strong> #{wallIndex}: [{w.bottomElevationFt}ft .. {w.topElevationFt}ft] ({w.a.x},{w.a.y}) &rarr; ({w.b.x},{w.b.y})
+                            <strong>{t(WALL_TYPE_LABEL_KEYS[w.wallType] ?? 'maps.wallType.normal')}</strong> #{wallIndex}: [{formatDistanceFt(w.bottomElevationFt)} .. {formatDistanceFt(w.topElevationFt)}] ({w.a.x},{w.a.y}) &rarr; ({w.b.x},{w.b.y})
                           </span>
                           {w.wallType === 'OneWay' ? (
                             <button
@@ -1064,6 +1064,7 @@ export function MapsStudioTab({
                             {door.wallType === 'Door' && (
                               <button
                                 type="button"
+                                aria-label={t(isDoorLocked ? 'maps.door.unlockAria' : 'maps.door.lockAria', { index: doorIndex })}
                                 data-testid={`toggle-lock-${door.id}`}
                                 onClick={() => handleToggleDoorLock(door.id)}
                                 style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
@@ -1073,6 +1074,7 @@ export function MapsStudioTab({
                             )}
                             <button
                               type="button"
+                              aria-label={t('maps.door.toggleAria', { index: doorIndex })}
                               data-testid={`toggle-door-${door.id}`}
                               onClick={() => handleDoorToggle(door.id)}
                               style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
@@ -1082,7 +1084,7 @@ export function MapsStudioTab({
                             <button
                               type="button"
                               aria-label={t('maps.deleteDoor', { index: doorIndex })}
-                              data-testid={`delete-wall-${door.id}`}
+                              data-testid={`delete-door-${door.id}`}
                               onClick={() => handleDeleteWall(door.id)}
                               style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
                             >

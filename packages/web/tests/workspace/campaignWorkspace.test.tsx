@@ -9,7 +9,9 @@ import {
   openCompendiumDrawer,
   openSheetDrawer,
 } from "../../src/hud/HudDrawers.tsx";
-import { localeSignal } from "../../src/i18n/index.ts";
+import { EN } from "../../src/i18n/en.ts";
+import { FR } from "../../src/i18n/fr.ts";
+import { localeSignal, type LocaleCode } from "../../src/i18n/index.ts";
 import { MapsWorkspaceTab, sceneNameFromFile, upsertScene } from "../../src/maps/MapsWorkspaceTab.tsx";
 import type { CampaignMapScene } from "../../src/maps/types.ts";
 import {
@@ -311,6 +313,72 @@ describe("ActorsTab: create, open, place, portrait", () => {
       assert.equal(ui.byTestId("actors-error").textContent, c.message);
       assert.equal(table.transport.calls.some((call) => call.method === "PUT"), false);
       ui.unmount();
+    });
+  }
+
+  const portraitLabelCases: Array<{
+    id: string;
+    locale: LocaleCode;
+    actorName: string;
+    expectedVisible: string;
+    expectedAccessibleName: string;
+  }> = [
+    {
+      id: "F7-portrait-label-in-name-en",
+      locale: "en",
+      actorName: "Brakka",
+      expectedVisible: "Upload portrait",
+      expectedAccessibleName: "Upload portrait for Brakka",
+    },
+    {
+      id: "F7-portrait-label-in-name-fr",
+      locale: "fr",
+      actorName: "Brakka",
+      expectedVisible: "Téléverser un portrait",
+      expectedAccessibleName: "Téléverser un portrait pour Brakka",
+    },
+    {
+      id: "F7-portrait-label-unnamed-fallback-en",
+      locale: "en",
+      actorName: "",
+      expectedVisible: "Upload portrait",
+      expectedAccessibleName: "Upload portrait",
+    },
+  ];
+
+  for (const tc of portraitLabelCases) {
+    it(`[${tc.id}] satisfies WCAG 2.5.3 label-in-name without <label> + aria-label double-labeling`, async () => {
+      assert.ok(EN["actors.portraitFor"].startsWith(EN["actors.portrait"]), "EN portraitFor must start verbatim with EN portrait");
+      assert.ok(FR["actors.portraitFor"].startsWith(FR["actors.portrait"]), "FR portraitFor must start verbatim with FR portrait");
+      localeSignal.value = tc.locale;
+      try {
+        const dto = heroDto({ name: tc.actorName, data: { ...heroSheet, name: tc.actorName } });
+        const table = liveTable(PLAYER_ID, null, {
+          [`GET ${ACTORS_URL}`]: { status: 200, body: { actors: [dto] } },
+        });
+        const ui = mount(h(ActorsTab, { campaignId: CAMPAIGN, client: table.client, isGm: false }));
+        await flush();
+
+        const input = ui.byTestId(`actor-portrait-${HERO_ACTOR}`);
+        const inputId = `actor-portrait-input-${HERO_ACTOR}`;
+        assert.equal(input.id, inputId);
+        assert.equal(input.hasAttribute("aria-label"), false, "file input must not override its <label> with aria-label");
+
+        const label = ui.container.querySelector(`label[for="${inputId}"]`);
+        assert.ok(label, `label[for="${inputId}"] must exist`);
+        const spans = label.querySelectorAll("span");
+        assert.ok(spans.length >= 1, "label must render visible text span");
+        assert.equal(spans[0].textContent, tc.expectedVisible);
+        assert.equal(label.textContent, tc.expectedAccessibleName);
+        assert.ok(
+          label.textContent.startsWith(spans[0].textContent),
+          "computed accessible label must start verbatim with visible label (WCAG 2.5.3)",
+        );
+
+        ui.unmount();
+      } finally {
+        localeSignal.value = "en";
+      }
     });
   }
 });
