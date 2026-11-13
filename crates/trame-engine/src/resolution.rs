@@ -444,6 +444,62 @@ pub fn save_condition_mode(target: &TokenState, ability: &str) -> RollMode {
     }
 }
 
+/// `TokenState::feature_roll_advantages` entry: Advantage on Initiative (Feral Instinct).
+pub const FEATURE_ROLL_INITIATIVE: &str = "initiative";
+/// `TokenState::feature_roll_advantages` entry: Advantage on Death Saving Throws (Survivor).
+pub const FEATURE_ROLL_DEATH_SAVE: &str = "death_save";
+
+/// Conditions granting Advantage on Initiative (`initiative_advantage`).
+const INITIATIVE_ADVANTAGE_CONDITIONS: [&str; 1] = ["invisible"];
+/// Conditions imposing Disadvantage on ability checks, Initiative included
+/// (`check_disadvantage`). Frightened applies while the source is in sight; the server
+/// cannot know the source, so the condition counts and a GM effect ruling lifts it.
+const CHECK_DISADVANTAGE_CONDITIONS: [&str; 2] = ["frightened", "poisoned"];
+
+impl RollMode {
+    /// Mode of a d20 roll with the given sources: both or neither cancel to `Normal`
+    /// (SRD 5.2.1: one Advantage and one Disadvantage cancel regardless of their count).
+    pub fn from_sources(advantage: bool, disadvantage: bool) -> Self {
+        match (advantage, disadvantage) {
+            (true, false) => Self::Advantage,
+            (false, true) => Self::Disadvantage,
+            _ => Self::Normal,
+        }
+    }
+}
+
+/// Mode of the server's Initiative roll for `token` (SRD 5.2.1), GM rulings applied, like the
+/// `dnd5e` game system's `resolveInitiativeMode`: Advantage from Invisible
+/// (`initiative_advantage`) or a synced feature (`FEATURE_ROLL_INITIATIVE`); Disadvantage
+/// from Incapacitated and the conditions that include it (`initiative_disadvantage`), or
+/// from Poisoned and Frightened (`check_disadvantage`, Initiative is a Dexterity check).
+pub fn initiative_roll_mode(token: &TokenState) -> RollMode {
+    let rule = |name: &str, sources: &[&str]| {
+        rule_active(&token.conditions, &token.condition_overrides, name, sources)
+    };
+    let feature = token
+        .feature_roll_advantages
+        .iter()
+        .any(|r| r == FEATURE_ROLL_INITIATIVE);
+    RollMode::from_sources(
+        feature || rule("initiative_advantage", &INITIATIVE_ADVANTAGE_CONDITIONS),
+        rule(
+            "initiative_disadvantage",
+            &crate::commands::INCAPACITATING_CONDITIONS,
+        ) || rule("check_disadvantage", &CHECK_DISADVANTAGE_CONDITIONS),
+    )
+}
+
+/// Mode of the server's Death Saving Throw for `token`: Advantage when a synced feature grants
+/// it (`FEATURE_ROLL_DEATH_SAVE`, Champion Survivor); no SRD 5.2.1 condition changes it.
+pub fn death_save_roll_mode(token: &TokenState) -> RollMode {
+    let feature = token
+        .feature_roll_advantages
+        .iter()
+        .any(|r| r == FEATURE_ROLL_DEATH_SAVE);
+    RollMode::from_sources(feature, false)
+}
+
 fn invalid(message: impl Into<String>) -> CommandError {
     CommandError::InvalidConfiguration(message.into())
 }

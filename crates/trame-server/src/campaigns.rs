@@ -1116,7 +1116,36 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
         reach_ft: threat_reach_ft(data),
         darkvision_ft: darkvision_ft(data),
         save_bonuses: sheet_save_bonuses(data),
+        feature_roll_advantages: feature_roll_advantages(data),
     }
+}
+
+/// Server-rolled d20s the sheet's features in force give Advantage on, from
+/// `derived.featureRules.rolls` (`{ kind: "advantage", on: { roll } }`): only
+/// `FEATURE_ROLL_INITIATIVE` (Feral Instinct) and `FEATURE_ROLL_DEATH_SAVE` (Champion
+/// Survivor) are kept, each once, so a client cannot widen what the server rolls with
+/// Advantage. `None` without `derived.featureRules` keeps the token's list.
+fn feature_roll_advantages(data: &Value) -> Option<Vec<String>> {
+    use trame_engine::resolution::{FEATURE_ROLL_DEATH_SAVE, FEATURE_ROLL_INITIATIVE};
+    let rules = data.pointer("/derived/featureRules")?.as_object()?;
+    let mut out = Vec::new();
+    for rule in rules
+        .get("rolls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if rule.get("kind").and_then(Value::as_str) != Some("advantage") {
+            continue;
+        }
+        let scope = rule.pointer("/on/roll").and_then(Value::as_str);
+        for wanted in [FEATURE_ROLL_INITIATIVE, FEATURE_ROLL_DEATH_SAVE] {
+            if scope == Some(wanted) && !out.iter().any(|r| r == wanted) {
+                out.push(wanted.to_string());
+            }
+        }
+    }
+    Some(out)
 }
 
 /// Resolves the storage-backed parts of a `SpawnToken` before it reaches the room:

@@ -79,13 +79,16 @@
 //!   8. `Server-Only Initiative (SEC3)`:
 //!      - A player's initiative `RollDice` ignores the submitted expression: the
 //!        server rolls `1d20 + TokenState::initiative_modifier()` for their token,
-//!        once per encounter. Encounter-start rolls are broadcast only after the
+//!        once per encounter. The d20 term follows the server-derived mode
+//!        (`resolution::initiative_roll_mode`: Invisible or Feral Instinct give
+//!        `2d20kh1`; Incapacitated, Poisoned or Frightened give `2d20kl1`; both
+//!        cancel). Encounter-start rolls are broadcast only after the
 //!        command commits, so a rejected start leaks no hidden combatant.
 //!      - Stored player rolls are dropped on every committed transition into or
 //!        out of `TurnByTurn`, whatever supplied the initiative order, so a roll
 //!        made for one encounter never carries over to the next.
 //!      - `RecordDeathSave` follows the same rule: a player's d20 is replaced by
-//!        a server `1d20` (`resolve_death_save_roll`), broadcast after commit
+//!        a server `1d20`, `2d20kh1` with Survivor (`resolve_death_save_roll`), broadcast after commit
 //!        like an initiative roll (the token's controller always receives it).
 //!        Batches (MCP) resolve an empty `d20` the same way.
 //!   9. `Bounded Fan-Out & Pointer Pings (RT2)`:
@@ -229,12 +232,16 @@ fn initiative_roll_visibility(
     }
 }
 
-/// Dice expression for an `AuthoritativeInitiativeRoll`: `1d20` plus a signed modifier.
-fn initiative_expression(modifier: i32) -> String {
+/// Dice expression for an `AuthoritativeInitiativeRoll` of `token`: the d20 term of its
+/// server-derived mode (`resolution::initiative_roll_mode`: `1d20`, `2d20kh1` or `2d20kl1`)
+/// plus its signed initiative modifier.
+fn initiative_expression(token: &trame_engine::commands::TokenState) -> String {
+    let term = trame_engine::resolution::initiative_roll_mode(token).d20_term();
+    let modifier = token.initiative_modifier();
     match modifier.cmp(&0) {
-        std::cmp::Ordering::Greater => format!("1d20+{modifier}"),
-        std::cmp::Ordering::Less => format!("1d20{modifier}"),
-        std::cmp::Ordering::Equal => "1d20".to_string(),
+        std::cmp::Ordering::Greater => format!("{term}+{modifier}"),
+        std::cmp::Ordering::Less => format!("{term}{modifier}"),
+        std::cmp::Ordering::Equal => term.to_string(),
     }
 }
 
@@ -491,6 +498,10 @@ pub struct ActorTacticalSync {
     /// Saving throw bonuses by ability id derived from the sheet (bounded scores), copied onto
     /// `TokenState::save_bonuses` so the room can roll a hidden target's save.
     pub save_bonuses: Option<BTreeMap<String, i32>>,
+    /// Server-rolled d20s the sheet's features give Advantage on (`"initiative"`,
+    /// `"death_save"` only), copied onto `TokenState::feature_roll_advantages`. `None` keeps
+    /// the token's current list.
+    pub feature_roll_advantages: Option<Vec<String>>,
 }
 
 impl ActorTacticalSync {
@@ -560,6 +571,9 @@ impl ActorTacticalSync {
         }
         if let Some(ref save_bonuses) = self.save_bonuses {
             token.save_bonuses = save_bonuses.clone();
+        }
+        if let Some(ref advantages) = self.feature_roll_advantages {
+            token.feature_roll_advantages = advantages.clone();
         }
     }
 }
@@ -1629,7 +1643,8 @@ impl TableRoomActor {
     }
 
     /// Server-rolled `RecordDeathSave` d20, like `AuthoritativeInitiativeRoll`: a player's
-    /// submitted value is ignored and `1d20` is rolled for them; a Game Master may enter a
+    /// submitted value is ignored and `1d20` (`2d20kh1` with a synced Survivor feature,
+    /// `resolution::death_save_roll_mode`) is rolled for them; a Game Master may enter a
     /// physical die result or leave `d20` empty to have it rolled. The roll is broadcast only
     /// after the command commits, with the initiative privacy rule (`GmOnly` when some player
     /// cannot see the token) and the initiative fan-out (`fan_out_initiative_roll`), so the
@@ -1657,9 +1672,10 @@ impl TableRoomActor {
         };
         let visibility = initiative_roll_visibility(token, &self.player_views());
         let reason = format!("Death Saving Throw: {}", token.name);
+        let term = trame_engine::resolution::death_save_roll_mode(token).d20_term();
         let outcome = self
             .dice_roller
-            .roll(actor.user_id, "1d20", visibility, reason)
+            .roll(actor.user_id, term, visibility, reason)
             .map_err(|err| err.to_string())?;
         let d20 = u8::try_from(outcome.total).ok();
         Ok((
@@ -2010,7 +2026,7 @@ impl TableRoomActor {
         };
         let visibility = initiative_roll_visibility(token, &views);
         let token_id = token.id;
-        let expr = initiative_expression(token.initiative_modifier());
+        let expr = initiative_expression(token);
         let reason = format!("Initiative: {}", token.name);
         let outcome = self
             .dice_roller
@@ -2031,14 +2047,14 @@ impl TableRoomActor {
         &mut self,
         actor_user_id: Uuid,
     ) -> (Vec<Uuid>, BTreeMap<Uuid, i32>, Vec<InitiativeRoll>) {
-        type Candidate = (Uuid, String, i32, i32, RollVisibility, Option<Uuid>);
+        type Candidate = (Uuid, String, i32, String, RollVisibility, Option<Uuid>);
         let views = self.player_views();
         let to_candidate = |t: &trame_engine::commands::TokenState| -> Candidate {
             (
                 t.id,
                 t.name.clone(),
                 t.dex_mod,
-                t.initiative_modifier(),
+                initiative_expression(t),
                 initiative_roll_visibility(t, &views),
                 t.owner_user_id,
             )
@@ -2061,12 +2077,11 @@ impl TableRoomActor {
         let self_rolls = std::mem::take(&mut self.player_initiative_rolls);
         let mut rolled: Vec<(i32, i32, Uuid)> = Vec::with_capacity(candidates.len());
         let mut outcomes = Vec::new();
-        for (token_id, token_name, dex_mod, modifier, visibility, owner) in candidates {
+        for (token_id, token_name, dex_mod, expr, visibility, owner) in candidates {
             if let Some(total) = owner.and_then(|o| self_rolls.get(&o)) {
                 rolled.push((*total, dex_mod, token_id));
                 continue;
             }
-            let expr = initiative_expression(modifier);
             let reason = format!("Initiative: {token_name}");
             if let Ok(outcome) = self
                 .dice_roller

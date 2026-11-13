@@ -666,6 +666,44 @@ fn sheet_save_bonuses_follow_the_sheet_shape() {
 }
 
 #[test]
+fn feature_roll_advantages_follow_the_derived_feature_rules() {
+    // (case_id, sheet, expected list or None)
+    let rolls = |rolls: serde_json::Value| json!({ "derived": { "featureRules": { "rolls": rolls } } });
+    let cases = [
+        (
+            "feral_instinct_and_survivor_are_kept",
+            rolls(json!([
+                { "kind": "advantage", "on": { "roll": "initiative" }, "featureId": "barbarian:feral_instinct" },
+                { "kind": "advantage", "on": { "roll": "death_save" }, "featureId": "champion:survivor" }
+            ])),
+            Some(vec!["initiative", "death_save"]),
+        ),
+        (
+            "other_scopes_and_kinds_are_dropped",
+            rolls(json!([
+                { "kind": "advantage", "on": { "roll": "attack", "source": "weapon_str" } },
+                { "kind": "minimum_d20", "value": 10, "on": { "roll": "initiative" } },
+                { "kind": "advantage", "on": { "roll": "initiative" } },
+                { "kind": "advantage", "on": { "roll": "initiative" } }
+            ])),
+            Some(vec!["initiative"]),
+        ),
+        (
+            "feature_rules_without_rolls_clear_the_list",
+            json!({ "derived": { "featureRules": { "resistances": [] } } }),
+            Some(vec![]),
+        ),
+        ("no_feature_rules_keeps_the_token_list", json!({}), None),
+    ];
+    for (id, sheet, expected) in cases {
+        let got = trame_server::campaigns::tactical_sync_from_sheet(None, &sheet)
+            .feature_roll_advantages;
+        let expected = expected.map(|v| v.into_iter().map(str::to_string).collect::<Vec<_>>());
+        assert_eq!(got, expected, "{id}");
+    }
+}
+
+#[test]
 fn active_feature_resistances_reach_the_token() {
     // (case_id, sheet, damage type, raw damage, HP lost)
     let rage = json!({ "featureRules": { "resistances": ["bludgeoning", "piercing", "slashing"] } });

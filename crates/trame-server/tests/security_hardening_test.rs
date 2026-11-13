@@ -394,6 +394,97 @@ async fn sec3_player_initiative_ignores_the_client_expression() {
 }
 
 #[tokio::test]
+async fn sec3_initiative_and_death_save_modes_are_derived_server_side() {
+    struct Case {
+        id: &'static str,
+        conditions: &'static [&'static str],
+        features: &'static [&'static str],
+        death_save: bool,
+        expected: &'static str,
+    }
+    let initiative = |id, conditions, features, expected| Case {
+        id,
+        conditions,
+        features,
+        death_save: false,
+        expected,
+    };
+    let cases = [
+        initiative("poisoned_has_disadvantage", &["poisoned"], &[], "2d20kl1+2"),
+        initiative("frightened_has_disadvantage", &["frightened"], &[], "2d20kl1+2"),
+        initiative("incapacitated_has_disadvantage", &["incapacitated"], &[], "2d20kl1+2"),
+        initiative("stunned_includes_incapacitated", &["stunned"], &[], "2d20kl1+2"),
+        initiative("invisible_has_advantage", &["invisible"], &[], "2d20kh1+2"),
+        initiative("feral_instinct_has_advantage", &[], &["initiative"], "2d20kh1+2"),
+        initiative("invisible_and_poisoned_cancel", &["invisible", "poisoned"], &[], "1d20+2"),
+        initiative("feral_instinct_and_poisoned_cancel", &["poisoned"], &["initiative"], "1d20+2"),
+        initiative("prone_changes_nothing", &["prone"], &[], "1d20+2"),
+        initiative("survivor_does_not_touch_initiative", &[], &["death_save"], "1d20+2"),
+        Case {
+            id: "survivor_death_save_has_advantage",
+            conditions: &[],
+            features: &["death_save"],
+            death_save: true,
+            expected: "2d20kh1",
+        },
+        Case {
+            id: "feral_instinct_does_not_touch_death_saves",
+            conditions: &[],
+            features: &["initiative"],
+            death_save: true,
+            expected: "1d20",
+        },
+    ];
+    for c in cases {
+        let player_user = Uuid::new_v4();
+        let hero = Uuid::new_v4();
+        let mut t = token(hero, "Hero", Some(player_user));
+        t.dex_mod = 2;
+        t.conditions = c.conditions.iter().map(|s| s.to_string()).collect();
+        t.feature_roll_advantages = c.features.iter().map(|s| s.to_string()).collect();
+        if c.death_save {
+            t.hp = 0;
+        }
+        let mut state = TableState::new(100.0, 5.0, Vec::new());
+        state.data.tokens.insert(hero, t);
+        let mut table = Table::open(state, player_user).await;
+
+        if c.death_save {
+            table
+                .submit(
+                    false,
+                    ClientEnvelope::SubmitCommand(Box::new(CommandSubmission {
+                        command: TrameCommand::RecordDeathSave {
+                            token_id: hero,
+                            d20: Some(20),
+                        },
+                        correlation_id: None,
+                    })),
+                )
+                .await;
+        } else {
+            table.roll(false, "1d20", "Initiative").await;
+        }
+        let frames = Table::drain(&mut table.player.1);
+        let got = rolls(&frames);
+        assert_eq!(got.len(), 1, "case {}: {got:?}", c.id);
+        assert_eq!(got[0].1, c.expected, "case {}", c.id);
+        if c.death_save {
+            let kept = frames.iter().find_map(|e| match e {
+                ServerEnvelope::CommandAccepted { events, .. } => events.iter().find_map(|ev| {
+                    match ev {
+                        TrameEvent::DeathSaveRecorded { d20, .. } => Some(i32::from(*d20)),
+                        _ => None,
+                    }
+                }),
+                _ => None,
+            });
+            assert_eq!(kept, got[0].2, "case {}: the kept die is the d20", c.id);
+        }
+    }
+}
+
+#[tokio::test]
 async fn sec3_only_the_first_player_roll_per_encounter_counts() {
     let player_user = Uuid::new_v4();
     let (hero, npc) = (Uuid::new_v4(), Uuid::new_v4());

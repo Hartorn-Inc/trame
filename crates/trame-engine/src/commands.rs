@@ -412,7 +412,7 @@ fn is_zero_i32(value: &i32) -> bool {
 }
 
 /// SRD condition IDs that include Incapacitated (no actions or reactions).
-const INCAPACITATING_CONDITIONS: [&str; 5] = [
+pub(crate) const INCAPACITATING_CONDITIONS: [&str; 5] = [
     "incapacitated",
     "paralyzed",
     "petrified",
@@ -715,6 +715,13 @@ pub struct TokenState {
     /// without a linked sheet (stat block tokens read their copy); omitted when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub save_bonuses: BTreeMap<String, i32>,
+    /// Server-rolled d20s the linked sheet's class features give Advantage on
+    /// (`resolution::FEATURE_ROLL_INITIATIVE`: Feral Instinct;
+    /// `resolution::FEATURE_ROLL_DEATH_SAVE`: Champion Survivor), synchronized from
+    /// `derived.featureRules.rolls`. Read by `resolution::initiative_roll_mode` and
+    /// `resolution::death_save_roll_mode`; omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feature_roll_advantages: Vec<String>,
 }
 
 impl TokenState {
@@ -761,6 +768,7 @@ impl TokenState {
             condition_overrides: Vec::new(),
             stat_block: None,
             save_bonuses: BTreeMap::new(),
+            feature_roll_advantages: Vec::new(),
         }
     }
 
