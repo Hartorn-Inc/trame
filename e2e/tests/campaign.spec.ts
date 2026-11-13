@@ -109,7 +109,9 @@
  * -> [harness: SIGKILL] -> sockets reconnect, undone HP, pending hit applied
  * once -> [harness: restart] -> map image again from Silo after a reload
  * -> [harness: backup] -> GM writes a note -> [harness: wipe + restore] ->
- * campaign, map and table back, the note gone -> fonts + CSP checks ->
+ * campaign, map and table back, the note gone -> difficult terrain 2x move
+ * cost -> keyboard-only move + polite live region -> HUD death save at 0 HP
+ * without canvas selection -> fonts + CSP checks ->
  * videos saved under `artifacts/`.
  * ============================================================================
  */
@@ -1904,6 +1906,213 @@ test('GM and three players play one campaign session end to end, across a SIGKIL
     await shot(both, 'after-restore-map-from-s3');
     for (const [who, value] of Object.entries(green)) expect(value, `${who}: the restored map is drawn from Silo (mean G - R)`).toBeGreaterThan(BACKGROUND_GREEN_MIN);
     return `${fetched.join(', ')}; G-R ${JSON.stringify(green)}`;
+  });
+
+  /** Open cardinal neighbor in the clear northwest floor (`x, y <= 350`), unoccupied on the GM table. */
+  const openCardinalStep = () => {
+    const start = topLeftOf(plFrames, pcTokenId);
+    if (!start) throw new Error('no PC position');
+    const cell = Number(latestState(plFrames)?.cell_size_px ?? 70);
+    const taken = Object.values(latestState(gmFrames)?.tokens ?? {}).map((t) => t.top_left as { x: number; y: number });
+    const step = (
+      [
+        { dx: 0, dy: 1, go: 'ArrowDown', back: 'ArrowUp' },
+        { dx: 1, dy: 0, go: 'ArrowRight', back: 'ArrowLeft' },
+        { dx: 0, dy: -1, go: 'ArrowUp', back: 'ArrowDown' },
+        { dx: -1, dy: 0, go: 'ArrowLeft', back: 'ArrowRight' },
+      ] as const
+    ).find(({ dx, dy }) => {
+      const x = start.x + dx * cell;
+      const y = start.y + dy * cell;
+      return x >= 0 && y >= 0 && x + cell <= 350 && y + cell <= 350 && !taken.some((t) => t.x === x && t.y === y);
+    });
+    if (!step) throw new Error(`no open cardinal cell next to PC at ${JSON.stringify(start)}`);
+    const target = { x: start.x + step.dx * cell, y: start.y + step.dy * cell };
+    const startCell = { col: Math.round(start.x / cell), row: Math.round(start.y / cell) };
+    const targetCell = { col: Math.round(target.x / cell), row: Math.round(target.y / cell) };
+    return { start, target, startCell, targetCell, cell, step };
+  };
+
+  /** Advances combat to a fresh PC turn so `speed_remaining_ft` resets and `combat-turn-live` announces it. */
+  const advanceToFreshPcTurn = async () => {
+    await openTab(gm, 'table');
+    await openTab(pl, 'table');
+    if ((await gm.getByTestId('combat-active').innerText()).includes(PC_NAME)) {
+      await gm.getByTestId('combat-next').click();
+      await expect(gm.getByTestId('combat-active')).not.toContainText(PC_NAME);
+    }
+    for (let i = 0; i < 6 && !(await gm.getByTestId('combat-active').innerText()).includes(PC_NAME); i++) {
+      await gm.getByTestId('combat-next').click();
+      await gm.waitForTimeout(300);
+    }
+    await expect(gm.getByTestId('combat-active')).toContainText(PC_NAME);
+    await expect(pl.getByTestId('combat-active')).toContainText(PC_NAME);
+  };
+
+  await phase('Difficult terrain: GM paints a cell on the PC path; entering the 5-ft cell costs 10 ft (2x) in preview and remaining speed, then GM clears it', async () => {
+    await advanceToFreshPcTurn();
+    await expect(pl.getByTestId('combat-turn-live')).toHaveText(new RegExp(`^Your turn: ${PC_NAME}\\u200B?$`));
+    const token = pl.getByTestId(`token-${pcTokenId}`);
+    await token.focus();
+    await token.press('Shift+F10');
+    await expect(pl.getByTestId('token-menu')).toBeVisible();
+    await pl.getByTestId('token-menu-disengage').press('Enter');
+    await expect(pl.getByTestId('token-menu')).toBeHidden();
+    await expect.poll(() => Boolean(latestState(plFrames)?.tokens[pcTokenId]?.disengaged)).toBe(true);
+
+    const { start, target, startCell, targetCell, cell } = openCardinalStep();
+    const speedBefore = Number(latestState(plFrames)?.tokens[pcTokenId]?.speed_remaining_ft);
+    expect(speedBefore, 'fresh turn speed budget before entering difficult terrain').toBeGreaterThanOrEqual(25);
+
+    const hasTerrain = (frames: RecordedFrame[]) =>
+      ((latestState(frames)?.difficult_terrain ?? []) as Array<{ col: number; row: number }>).some(
+        (c) => c.col === targetCell.col && c.row === targetCell.row,
+      );
+    await gm.getByTestId('table-tool-terrainPaint').click();
+    await expect(gm.getByTestId('table-tool-terrainPaint')).toHaveAttribute('aria-pressed', 'true');
+    await gm.getByTestId('table-board').click({ position: { x: target.x + cell / 2, y: target.y + cell / 2 } });
+    await expect.poll(() => hasTerrain(gmFrames)).toBe(true);
+    await expect.poll(() => hasTerrain(plFrames)).toBe(true);
+
+    await token.click();
+    await expect(pl.getByTestId(`token-speed-${pcTokenId}`)).toHaveText(`${speedBefore} ft`);
+    await pl.getByTestId('table-board').hover({ position: { x: target.x + cell / 2, y: target.y + cell / 2 } });
+    await expect(pl.getByTestId('table-move-preview')).toContainText('10 ft');
+    await expect(pl.getByTestId('table-move-preview-text')).toHaveText(`Moving here costs 10 ft, leaving ${speedBefore - 10} ft.`);
+    await pl.getByTestId('table-board').click({ position: { x: target.x + cell / 2, y: target.y + cell / 2 } });
+    await expect.poll(() => topLeftOf(plFrames, pcTokenId)).toEqual(target);
+    await expect.poll(() => Number(latestState(plFrames)?.tokens[pcTokenId]?.speed_remaining_ft)).toBe(speedBefore - 10);
+    await expect(pl.getByTestId(`token-speed-${pcTokenId}`)).toHaveText(`${speedBefore - 10} ft`);
+    await expect(token).toHaveAttribute('aria-label', new RegExp(`${speedBefore - 10} ft of movement left$`));
+    await expect(pl.getByTestId('table-move-status')).toHaveText(
+      new RegExp(`^Moved to column ${targetCell.col + 1}, row ${targetCell.row + 1}, ${speedBefore - 10} ft left\\u200B?$`),
+    );
+    await shot(both, 'difficult-terrain-move');
+
+    await gm.getByTestId('table-tool-terrainErase').click();
+    await gm.getByTestId('table-board').click({ position: { x: target.x + cell / 2, y: target.y + cell / 2 } });
+    await gm.getByTestId('table-tool-select').click();
+    await expect.poll(() => hasTerrain(gmFrames)).toBe(false);
+    await expect.poll(() => hasTerrain(plFrames)).toBe(false);
+
+    await pl.getByTestId('table-board').click({ position: { x: start.x + cell / 2, y: start.y + cell / 2 } });
+    await expect.poll(() => topLeftOf(plFrames, pcTokenId)).toEqual(start);
+    await expect(token).toHaveCSS('left', `${start.x}px`);
+    await expect(token).toHaveCSS('top', `${start.y}px`);
+    await expect(pl.getByTestId(`token-speed-${pcTokenId}`)).toHaveText(`${speedBefore - 15} ft`);
+    return `entered (${targetCell.col + 1}, ${targetCell.row + 1}) for 10 ft (${speedBefore} -> ${speedBefore - 10} ft), erased terrain, returned to (${startCell.col + 1}, ${startCell.row + 1}) for 5 ft`;
+  });
+
+  await phase('Keyboard-only movement: focused token moves via M + Arrow + Enter and Arrow keys, announcing coordinates in the polite live region', async () => {
+    const token = pl.getByTestId(`token-${pcTokenId}`);
+    if (Number(latestState(plFrames)?.tokens[pcTokenId]?.speed_remaining_ft ?? 0) < 10 || !latestState(plFrames)?.tokens[pcTokenId]?.disengaged) {
+      await advanceToFreshPcTurn();
+      await token.focus();
+      await token.press('Shift+F10');
+      await pl.getByTestId('token-menu-disengage').press('Enter');
+      await expect(pl.getByTestId('token-menu')).toBeHidden();
+      await expect.poll(() => Boolean(latestState(plFrames)?.tokens[pcTokenId]?.disengaged)).toBe(true);
+    }
+
+    const { start, target, startCell, targetCell, step } = openCardinalStep();
+    const speedLeft = Number(latestState(plFrames)?.tokens[pcTokenId]?.speed_remaining_ft);
+    await token.focus();
+    await token.press('Escape');
+    await expect(token).toHaveAttribute('aria-pressed', 'false');
+
+    await token.focus();
+    await token.press('M');
+    const cursor = pl.getByTestId('table-cell-cursor');
+    await expect(cursor).toBeFocused();
+    await cursor.press(step.go);
+    await expect(pl.getByTestId('table-cursor-status')).toContainText(
+      `Column ${targetCell.col + 1}, row ${targetCell.row + 1}. Moving here costs 5 ft, leaving ${speedLeft - 5} ft.`,
+    );
+    await cursor.press('Enter');
+    await expect(cursor).toHaveCount(0);
+    await expect.poll(() => topLeftOf(plFrames, pcTokenId)).toEqual(target);
+    await expect(token).toHaveCSS('left', `${target.x}px`);
+    await expect(token).toHaveCSS('top', `${target.y}px`);
+    await expect(token).toBeFocused();
+
+    const moveLive = pl.getByTestId('table-move-status');
+    await expect(moveLive).toHaveAttribute('aria-live', 'polite');
+    const firstAnnouncement = `Moved to column ${targetCell.col + 1}, row ${targetCell.row + 1}, ${speedLeft - 5} ft left`;
+    await expect(moveLive).toHaveText(new RegExp(`^${firstAnnouncement}\\u200B?$`));
+
+    await token.press(step.back);
+    await expect.poll(() => topLeftOf(plFrames, pcTokenId)).toEqual(start);
+    await expect(token).toHaveCSS('left', `${start.x}px`);
+    await expect(token).toHaveCSS('top', `${start.y}px`);
+    const secondAnnouncement = `Moved to column ${startCell.col + 1}, row ${startCell.row + 1}, ${speedLeft - 10} ft left`;
+    await expect(moveLive).toHaveText(new RegExp(`^${secondAnnouncement}\\u200B?$`));
+    await shot({ player: pl }, 'keyboard-only-move');
+    return `${firstAnnouncement} -> ${secondAnnouncement}`;
+  });
+
+  await phase('Death saving throw without canvas selection: PC dropped to 0 HP on turn announces dying state and rolls from the HUD prompt', async () => {
+    if (!(await gm.getByTestId('combat-active').innerText()).includes(PC_NAME)) {
+      await advanceToFreshPcTurn();
+    }
+    const token = pl.getByTestId(`token-${pcTokenId}`);
+    await token.focus();
+    await token.press('Escape');
+    await expect(token).toHaveAttribute('aria-pressed', 'false');
+    await expect(pl.getByTestId('vitals-none')).toBeVisible();
+    await expect(pl.getByTestId('vitals-death-roll')).toHaveCount(0);
+    await expect(pl.getByTestId('death-save-prompt')).toHaveCount(0);
+
+    await gm.getByTestId(`token-${pcTokenId}`).click();
+    const startHp = hpOf(await gm.getByTestId('vitals-hp').innerText());
+    await gm.getByTestId('vitals-amount').fill(String(startHp.hp));
+    await gm.getByTestId('vitals-damage').click();
+    await expect.poll(pcHp).toBe(0);
+    await expect
+      .poll(() => JSON.stringify(latestState(plFrames)?.tokens[pcTokenId]?.conditions ?? []).toLowerCase())
+      .toContain('unconscious');
+
+    await expect(pl.getByTestId('vitals-none'), 'canvas token remains unselected').toBeVisible();
+    await expect(pl.getByTestId('vitals-death-roll')).toHaveCount(0);
+    const dyingLive = pl.getByTestId('combat-dying-live');
+    await expect(dyingLive).toHaveAttribute('aria-live', 'polite');
+    await expect(dyingLive).toHaveText(new RegExp(`^${PC_NAME} is dying: roll a death save\\u200B?$`));
+
+    const prompt = pl.getByTestId('death-save-prompt');
+    await expect(prompt).toBeVisible();
+    await expect(pl.getByTestId(`death-save-counters-${pcTokenId}`)).toHaveText('Successes 0 of 3, failures 0 of 3');
+    const rollBtn = pl.getByTestId(`death-save-roll-${pcTokenId}`);
+    await expect(rollBtn).toHaveAttribute('aria-label', `Roll death saving throw for ${PC_NAME}`);
+    await rollBtn.focus();
+    await rollBtn.press('Enter');
+
+    const announcement = pl.getByTestId('death-save-result');
+    await expect(announcement).toHaveText(new RegExp(`^${PC_NAME} rolled (?:[1-9]|1\\d|20) on a death saving throw\\. `));
+    const rolledText = (await announcement.innerText()).trim();
+    const plTok = latestState(plFrames)?.tokens[pcTokenId];
+    const hpAfterRoll = Number(plTok?.hp ?? 0);
+    await expect.poll(pcHp).toBe(hpAfterRoll);
+    if (hpAfterRoll === 1) {
+      await expect(announcement).toContainText(`${PC_NAME} regains 1 Hit Point and wakes up.`);
+      await expect(prompt).toHaveCount(0);
+    } else {
+      const successes = Number(plTok?.death_save_successes ?? 0);
+      const failures = Number(plTok?.death_save_failures ?? 0);
+      expect(successes + failures, 'death save updated tally').toBeGreaterThanOrEqual(1);
+      const tally = `Successes ${successes} of 3, failures ${failures} of 3`;
+      await expect(pl.getByTestId(`death-save-counters-${pcTokenId}`)).toHaveText(tally);
+      await expect(announcement).toContainText(tally);
+    }
+    await expect(pl.getByTestId('vitals-none'), 'completed HUD death save without selecting canvas token').toBeVisible();
+    await shot(both, 'hud-death-save');
+
+    const toHeal = startHp.hp - hpAfterRoll;
+    if (toHeal > 0) {
+      await gm.getByTestId('vitals-amount').fill(String(toHeal));
+      await gm.getByTestId('vitals-heal').click();
+    }
+    await expect.poll(pcHp).toBe(startHp.hp);
+    await expect(prompt).toHaveCount(0);
+    return `${rolledText}; restored HP ${startHp.hp}/${startHp.max}`;
   });
 
   await phase('Final table state on both screens', async () => {
