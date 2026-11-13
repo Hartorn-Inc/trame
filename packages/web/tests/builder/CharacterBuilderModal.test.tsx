@@ -274,6 +274,45 @@ describe("CharacterBuilderModal: Origin feat choices on background step (G1)", (
         assert.ok(data.proficiencies.tools.includes("Thieves' Tools"));
       },
     },
+    {
+      id: "[ADR-0038-modal-artisan-skilled] Artisan gates on 3 Skilled picks and excludes Smith's Tools and investigation",
+      backgroundId: "artisan",
+      setupPicks: async (ui) => {
+        assertAbsent(ui.byTestId("builder-feat-proficiencies-investigation"), "Artisan skill is excluded from Skilled");
+        assertAbsent(ui.byTestId("builder-feat-proficiencies-tool:Smith's Tools"), "Artisan tool is excluded from Skilled");
+        await ui.fire("builder-feat-proficiencies-stealth", "change");
+        await ui.fire("builder-feat-proficiencies-arcana", "change");
+        await ui.fire("builder-feat-proficiencies-tool:Brewer's Supplies", "change");
+        assert.equal(ui.byTestId("builder-feat-proficiencies-count").textContent, "3 of 3 chosen");
+      },
+      verifyCreated: (data) => {
+        assert.equal(data.backgroundId, "srd:background:artisan");
+        assert.equal(data.skills.investigation.proficiencyRank, 1);
+        assert.equal(data.skills.persuasion.proficiencyRank, 1);
+        assert.equal(data.skills.stealth.proficiencyRank, 1);
+        assert.ok(data.proficiencies.tools.includes("Smith's Tools"));
+        assert.ok(data.proficiencies.tools.includes("Brewer's Supplies"));
+      },
+    },
+    {
+      id: "[ADR-0038-modal-merchant-skilled] Merchant gates on 3 Skilled picks and excludes Navigator's Tools and persuasion",
+      backgroundId: "merchant",
+      setupPicks: async (ui) => {
+        assertAbsent(ui.byTestId("builder-feat-proficiencies-persuasion"), "Merchant skill is excluded from Skilled");
+        assertAbsent(ui.byTestId("builder-feat-proficiencies-tool:Navigator's Tools"), "Merchant tool is excluded from Skilled");
+        await ui.fire("builder-feat-proficiencies-stealth", "change");
+        await ui.fire("builder-feat-proficiencies-arcana", "change");
+        await ui.fire("builder-feat-proficiencies-tool:Cartographer's Tools", "change");
+        assert.equal(ui.byTestId("builder-feat-proficiencies-count").textContent, "3 of 3 chosen");
+      },
+      verifyCreated: (data) => {
+        assert.equal(data.backgroundId, "srd:background:merchant");
+        assert.equal(data.skills.persuasion.proficiencyRank, 1);
+        assert.equal(data.skills.insight.proficiencyRank, 1);
+        assert.ok(data.proficiencies.tools.includes("Navigator's Tools"));
+        assert.ok(data.proficiencies.tools.includes("Cartographer's Tools"));
+      },
+    },
   ];
 
   for (const c of originFeatCases) {
@@ -408,4 +447,49 @@ describe("CharacterBuilderModal: Point-Buy label semantics and tabular numerals 
     assert.equal(ui.byTestId("builder-mod-str").textContent, "(+3)");
     ui.unmount();
   });
+
+  const trameOriginLocaleCases: Array<{
+    id: string;
+    locale: LocaleCode;
+    speciesId: string;
+    speciesLabel: string;
+    backgroundId: string;
+    backgroundLabel: string;
+  }> = [
+    {
+      id: "[ADR-0038-en-half-elf-house-guardian] renders Half-Elf and House Guardian in English",
+      locale: "en",
+      speciesId: "half_elf",
+      speciesLabel: "Half-Elf",
+      backgroundId: "house_guardian",
+      backgroundLabel: "House Guardian",
+    },
+    {
+      id: "[ADR-0038-fr-radiant-scion-merchant] renders Radiant Scion and Merchant in French",
+      locale: "fr",
+      speciesId: "radiant_scion",
+      speciesLabel: "Héritier radieux",
+      backgroundId: "merchant",
+      backgroundLabel: "Marchand",
+    },
+  ];
+
+  for (const c of trameOriginLocaleCases) {
+    it(c.id, async () => {
+      localeSignal.value = c.locale;
+      const ui = await mount({ status: 201, body: { actor: actorDto() } });
+      const speciesInput = ui.byTestId(`builder-species-${c.speciesId}`);
+      assertPresent(speciesInput, `species radio ${c.speciesId}`);
+      assert.ok(speciesInput.closest("label")?.textContent.includes(c.speciesLabel));
+      await ui.fire(`builder-species-${c.speciesId}`, "change");
+      await ui.fire("builder-next", "click");
+      await ui.fire("builder-class-paladin", "change");
+      await ui.fire("builder-next", "click");
+      const bgInput = ui.byTestId(`builder-background-${c.backgroundId}`);
+      assertPresent(bgInput, `background radio ${c.backgroundId}`);
+      assert.ok(bgInput.closest("label")?.textContent.includes(c.backgroundLabel));
+      ui.unmount();
+      localeSignal.value = "en";
+    });
+  }
 });

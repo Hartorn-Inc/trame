@@ -926,17 +926,20 @@ fn recomputed_save_bonuses(data: &Value) -> Option<BTreeMap<String, i32>> {
 /// packs by `packages/game-systems/dnd5e/tests/serverTablesDrift.test.ts`.
 const SRD_REACH_WEAPONS: [&str; 5] = ["glaive", "halberd", "lance", "pike", "whip"];
 
-/// Darkvision in feet of each SRD 5.2.1 species (`speciesId` key without `srd:species:`),
-/// mirroring `SRD_SPECIES[*].darkvisionFt` in `packages/game-systems/dnd5e/src/origins.ts`.
-const SRD_SPECIES_DARKVISION_FT: [(&str, f64); 9] = [
+/// Darkvision in feet of each built-in species (`speciesId` key without prefix: 9 SRD 5.2.1
+/// species + 2 TRAME originals per ADR-0038), mirroring `SRD_SPECIES[*].darkvisionFt` in
+/// `packages/game-systems/dnd5e/src/origins.ts`.
+const SRD_SPECIES_DARKVISION_FT: [(&str, f64); 11] = [
     ("dragonborn", 60.0),
     ("dwarf", 120.0),
     ("elf", 60.0),
     ("gnome", 60.0),
     ("goliath", 0.0),
+    ("half_elf", 60.0),
     ("halfling", 0.0),
     ("human", 0.0),
     ("orc", 120.0),
+    ("radiant_scion", 60.0),
     ("tiefling", 60.0),
 ];
 
@@ -985,8 +988,9 @@ fn threat_reach_ft(data: &Value) -> Option<f64> {
 }
 
 /// Darkvision in feet from the sheet: a stat block's `senses.darkvision` (`0` when the
-/// `senses` object omits it), else the SRD species of `speciesId`, else `None` (unknown
-/// species: the token keeps its current senses).
+/// `senses` object omits it), else the built-in species of `speciesId` (accepting bare keys,
+/// `srd:species:<key>`, or `trame:species:<key>`), else `None` (unknown species: the token
+/// keeps its current senses).
 fn darkvision_ft(data: &Value) -> Option<f64> {
     if let Some(senses) = data.get("senses").and_then(Value::as_object) {
         let ft = senses
@@ -996,7 +1000,10 @@ fn darkvision_ft(data: &Value) -> Option<f64> {
         return Some(ft.clamp(0.0, 500.0));
     }
     let species = data.get("speciesId").and_then(Value::as_str)?;
-    let key = species.strip_prefix("srd:species:").unwrap_or(species);
+    let key = species
+        .strip_prefix("srd:species:")
+        .or_else(|| species.strip_prefix("trame:species:"))
+        .unwrap_or(species);
     SRD_SPECIES_DARKVISION_FT
         .iter()
         .find(|(id, _)| *id == key)

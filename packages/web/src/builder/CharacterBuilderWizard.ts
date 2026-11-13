@@ -40,8 +40,8 @@
  *      A Fighter also picks its Fighting Style feat on the skills step.
  * 7. `Origin Feat Picks From The System Pack`:
  *    - Backgrounds granting `Magic Initiate` (Acolyte: Cleric, Sage: Wizard)
- *      or `Skilled` (Caravan Guide) expose `getOriginFeatChoices` on the
- *      background step, auto-seeding fixed single-option picks (`spell_list`),
+ *      or `Skilled` (Caravan Guide, Artisan, Merchant) expose `getOriginFeatChoices`
+ *      on the background step, auto-seeding fixed single-option picks (`spell_list`),
  *      gating progression until every sub-choice is complete, and applying
  *      `applyFeatChoices` inside `originActor` before class choices run.
  *

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { LevelUpModal, type LevelUpModalProps } from "../../src/components/modals/LevelUpModal.tsx";
+import { LevelUpModal, getNewSpellsAllowance, type LevelUpModalProps } from "../../src/components/modals/LevelUpModal.tsx";
 import { createDefaultActorData, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
 import { localeSignal } from "../../src/i18n/index.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
@@ -1160,6 +1160,153 @@ describe("LevelUpModal: GS10 feat slot filtering, +1 abilityIncrease ceiling, an
       tc.verifySaved(saved as Dnd5eActorData);
 
       unmount();
+    });
+  }
+});
+
+describe("LevelUpModal: SRD 5.2.1 prepared-caster spell allowances & described L2 choice reminders (Q7, Q11)", () => {
+  const click = (el: any) => el.dispatchEvent(new (globalThis as any).Event("click"));
+  const change = (el: any) => el.dispatchEvent(new (globalThis as any).Event("change"));
+
+  const ALLOWANCE_CASES = [
+    { id: "sorcerer-1-to-2-grants-2-spells", classId: "sorcerer", currentLevel: 1, subclassId: undefined, expectedAllowance: 2, isWizard: false },
+    { id: "sorcerer-2-to-3-grants-2-spells", classId: "sorcerer", currentLevel: 2, subclassId: "srd:subclass:draconic", expectedAllowance: 2, isWizard: false },
+    { id: "sorcerer-3-to-4-grants-1-spell", classId: "sorcerer", currentLevel: 3, subclassId: "srd:subclass:draconic", expectedAllowance: 1, isWizard: false },
+    { id: "bard-1-to-2-grants-1-spell", classId: "bard", currentLevel: 1, subclassId: undefined, expectedAllowance: 1, isWizard: false },
+    { id: "warlock-1-to-2-grants-1-spell", classId: "warlock", currentLevel: 1, subclassId: undefined, expectedAllowance: 1, isWizard: false },
+    { id: "wizard-1-to-2-grants-2-spellbook-spells", classId: "wizard", currentLevel: 1, subclassId: undefined, expectedAllowance: 2, isWizard: true },
+  ] as const;
+
+  for (const tc of ALLOWANCE_CASES) {
+    it(`[${tc.id}] derives allowance from SRD 5.2.1 prepared spell counts and caps Step 4 checkboxes`, async () => {
+      localeSignal.value = "en";
+      const targetLevel = tc.currentLevel + 1;
+      assert.equal(getNewSpellsAllowance(tc.classId, targetLevel), tc.expectedAllowance);
+
+      const actor = createDefaultActorData(`actor-${tc.id}`, "Caster");
+      actor.classId = tc.classId;
+      actor.attributes.level = tc.currentLevel;
+      actor.attributes.casterType = tc.classId === "warlock" ? "pact" : "full";
+      actor.abilities.dex.score = 14;
+      if (tc.subclassId) actor.subclassId = tc.subclassId;
+
+      const { container, getNextButton, getConfirmButton, unmount } = await renderModal({
+        isOpen: true,
+        actor,
+        onClose: () => {},
+        onSave: () => {},
+      });
+
+      click(getNextButton()); // Step 1 -> 2
+      click(getNextButton()); // Step 2 -> 3
+      click(getNextButton()); // Step 3 -> 4
+
+      const expectedHeading = tc.isWizard
+        ? `Add spells to your spellbook (Required: 0/${tc.expectedAllowance})`
+        : `Add new spells (Limit: 0/${tc.expectedAllowance})`;
+      assert.ok(
+        container.textContent.includes(expectedHeading),
+        `Expected '${expectedHeading}' in Step 4 text: ${container.textContent}`
+      );
+
+      const checkboxes = container.querySelectorAll("input[type='checkbox']");
+      assert.ok(checkboxes.length > tc.expectedAllowance, "Compendium must offer more spells than the cap");
+
+      for (let i = 0; i < tc.expectedAllowance; i++) {
+        change(checkboxes[i]);
+      }
+
+      assert.equal(checkboxes[tc.expectedAllowance].disabled, true, "Unpicked spells must disable once allowance is reached");
+      assert.equal(getConfirmButton().getAttribute("aria-disabled"), null, "Confirm must be enabled at exact allowance");
+
+      unmount();
+    });
+  }
+
+  const REMINDER_CASES = [
+    {
+      id: "wizard-l2-scholar-reminder-en",
+      locale: "en" as const,
+      classId: "wizard",
+      currentLevel: 1,
+      fightingStylePick: null,
+      expectReminder: /Scholar/,
+    },
+    {
+      id: "wizard-l2-scholar-reminder-fr",
+      locale: "fr" as const,
+      classId: "wizard",
+      currentLevel: 1,
+      fightingStylePick: null,
+      expectReminder: /Rappel \(Scholar\)/,
+    },
+    {
+      id: "ranger-l2-deft-explorer-reminder-en",
+      locale: "en" as const,
+      classId: "ranger",
+      currentLevel: 1,
+      fightingStylePick: "srd:feat:archery",
+      expectReminder: /Deft Explorer/,
+    },
+    {
+      id: "sorcerer-l2-metamagic-reminder-en",
+      locale: "en" as const,
+      classId: "sorcerer",
+      currentLevel: 1,
+      fightingStylePick: null,
+      expectReminder: /Metamagic/,
+    },
+    {
+      id: "fighter-l2-no-manual-choice-reminder",
+      locale: "en" as const,
+      classId: "fighter",
+      currentLevel: 1,
+      fightingStylePick: null,
+      expectReminder: null,
+    },
+    {
+      id: "cleric-l2-no-manual-choice-reminder",
+      locale: "en" as const,
+      classId: "cleric",
+      currentLevel: 1,
+      fightingStylePick: null,
+      expectReminder: null,
+    },
+  ];
+
+  for (const tc of REMINDER_CASES) {
+    it(`[${tc.id}] renders levelup-manual-feature-reminder iff targetLevel grants Scholar, Deft Explorer, or Metamagic`, async () => {
+      localeSignal.value = tc.locale;
+      const actor = createDefaultActorData(`actor-${tc.id}`, "Hero");
+      actor.classId = tc.classId;
+      actor.attributes.level = tc.currentLevel;
+
+      const { container, unmount } = await renderModal({
+        isOpen: true,
+        actor,
+        onClose: () => {},
+        onSave: () => {},
+      });
+
+      click(container.querySelector(".ds-btn-primary")); // Step 1 -> 2
+      click(container.querySelector(".ds-btn-primary")); // Step 2 -> 3
+      if (tc.fightingStylePick) {
+        const fsSelect = container.querySelector("#fighting-style-select");
+        fsSelect.value = tc.fightingStylePick;
+        change(fsSelect);
+      }
+      click(container.querySelector(".ds-btn-primary")); // Step 3 -> 4
+
+      const reminder = container.querySelector("[data-testid='levelup-manual-feature-reminder']");
+      if (tc.expectReminder) {
+        assert.ok(reminder, "Expected [data-testid='levelup-manual-feature-reminder'] on Step 4");
+        assert.match(reminder.textContent, tc.expectReminder);
+      } else {
+        assertAbsent(reminder, "Expected no manual feature reminder on Step 4");
+      }
+
+      unmount();
+      localeSignal.value = "en";
     });
   }
 });

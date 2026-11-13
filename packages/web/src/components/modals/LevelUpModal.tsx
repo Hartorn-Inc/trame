@@ -28,6 +28,12 @@
  *      - Traps focus inside `role="dialog"`, focuses each step heading on step
  *        transitions, keeps roving tabindex on the ASI/Feat tablist, and escalates
  *        validation hints to `role="alert"` only after an invalid Next/Confirm attempt.
+ *   5. `Prepared-Caster Spell Allowance & Described Choice Reminders`:
+ *      - `getNewSpellsAllowance` derives Bard, Sorcerer, and Warlock spell gains from
+ *        `getPreparedSpellCount(class, targetLevel) - getPreparedSpellCount(class, targetLevel - 1)`
+ *        (SRD 5.2.1 tables) while keeping Wizard at `2` spellbook spells per level.
+ *      - Step 4 Summary displays a localized reminder when `targetLevel` grants
+ *        `Scholar`, `Deft Explorer`, or `Metamagic` so players record manual picks.
  *
  * EXECUTION LIFECYCLE:
  * --------------------
@@ -51,9 +57,11 @@ import {
   applyLevelUp,
   calculateProficiencyBonus,
   getCasterTypeForClass,
+  getClassProgression,
   getFeatChoices,
   getFightingStyleFeatOptions,
   getLevelUpFeatOptions,
+  getPreparedSpellCount,
   getSubclassUnlockLevel,
   grantsFightingStyleFeat,
   isAsiLevel,
@@ -119,40 +127,31 @@ const ABILITY_LABEL_KEYS: Record<AbilityId, MessageKey> = {
 
 const ABILITY_KEYS: AbilityId[] = ["str", "dex", "con", "int", "wis", "cha"];
 
-const BARD_SPELLS_KNOWN: Record<number, number> = {
-  1: 4, 2: 5, 3: 6, 4: 7, 5: 8, 6: 9, 7: 10, 8: 11, 9: 12, 10: 14,
-  11: 15, 12: 15, 13: 16, 14: 18, 15: 19, 16: 19, 17: 20, 18: 22, 19: 22, 20: 22,
-};
+const MANUAL_CHOICE_FEATURES = ["Scholar", "Deft Explorer", "Metamagic"] as const;
 
-const SORCERER_SPELLS_KNOWN: Record<number, number> = {
-  1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7, 7: 8, 8: 9, 9: 10, 10: 11,
-  11: 12, 12: 12, 13: 13, 14: 13, 15: 14, 16: 14, 17: 15, 18: 15, 19: 15, 20: 15,
-};
-
-const WARLOCK_SPELLS_KNOWN: Record<number, number> = {
-  1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7, 7: 8, 8: 9, 9: 10, 10: 10,
-  11: 11, 12: 11, 13: 12, 14: 12, 15: 13, 16: 13, 17: 14, 18: 14, 19: 15, 20: 15,
-};
-
-function getNewSpellsAllowance(cleanClass: string, targetLevel: number): number {
-  if (targetLevel < 1 || targetLevel > 20) return 0;
-  if (cleanClass === "wizard") {
+/**
+ * Computes the maximum number of new class spells an actor may add at `targetLevel`:
+ * - Wizard adds `2` spells to its spellbook at each level-up.
+ * - Bard, Sorcerer, and Warlock add the SRD 5.2.1 prepared-spells delta
+ *   `max(0, getPreparedSpellCount(class, targetLevel) - getPreparedSpellCount(class, targetLevel - 1))`.
+ * - Other classes return `0`.
+ */
+export function getNewSpellsAllowance(cleanClass: string, targetLevel: number): number {
+  const normalized = cleanClass.replace(/^srd:class:/, "").toLowerCase();
+  if (targetLevel < 2 || targetLevel > 20) {
+    if (targetLevel === 1) {
+      return normalized === "wizard" ? 2 : getPreparedSpellCount(normalized, 1);
+    }
+    return 0;
+  }
+  if (normalized === "wizard") {
     return 2;
   }
-  if (cleanClass === "bard") {
-    const current = BARD_SPELLS_KNOWN[targetLevel] ?? 0;
-    const previous = BARD_SPELLS_KNOWN[targetLevel - 1] ?? 0;
-    return Math.max(0, current - previous);
-  }
-  if (cleanClass === "sorcerer") {
-    const current = SORCERER_SPELLS_KNOWN[targetLevel] ?? 0;
-    const previous = SORCERER_SPELLS_KNOWN[targetLevel - 1] ?? 0;
-    return Math.max(0, current - previous);
-  }
-  if (cleanClass === "warlock") {
-    const current = WARLOCK_SPELLS_KNOWN[targetLevel] ?? 0;
-    const previous = WARLOCK_SPELLS_KNOWN[targetLevel - 1] ?? 0;
-    return Math.max(0, current - previous);
+  if (normalized === "bard" || normalized === "sorcerer" || normalized === "warlock") {
+    return Math.max(
+      0,
+      getPreparedSpellCount(normalized, targetLevel) - getPreparedSpellCount(normalized, targetLevel - 1)
+    );
   }
   return 0;
 }
@@ -315,6 +314,10 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
     ? getFightingStyleFeatOptions(actor.features ?? [])
     : [];
   const needsFightingStyle = fightingStyleOptions.length > 0;
+  const targetLevelFeatures = getClassProgression(classId)?.features[targetLevel] ?? [];
+  const manualChoiceFeatures = targetLevelFeatures.filter((name) =>
+    (MANUAL_CHOICE_FEATURES as readonly string[]).includes(name)
+  );
 
   // Step Validations
   const isStep1Valid = !needsSubclass || Boolean(subclassId.trim());
@@ -1158,7 +1161,13 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
                     : t("levelUp.summary.feat", { feat: selectedFeatLabel })
                 ),
               needsFightingStyle && fightingStyleFeatId && h("div", null, t("levelUp.summary.fightingStyle", { feat: fightingStyleLabel(fightingStyleFeatId) })),
-              selectedSpellIds.length > 0 && h("div", { class: "atlas-tabular-nums" }, t("levelUp.summary.spells", { count: selectedSpellIds.length }))
+              selectedSpellIds.length > 0 && h("div", { class: "atlas-tabular-nums" }, t("levelUp.summary.spells", { count: selectedSpellIds.length })),
+              manualChoiceFeatures.length > 0 &&
+                h(
+                  "p",
+                  { class: "ds-hint", "data-testid": "levelup-manual-feature-reminder" },
+                  t("levelUp.summary.manualFeatureReminder", { features: manualChoiceFeatures.join(", ") })
+                )
             ),
             saveError && h("p", { role: "alert", class: "ds-field-error" }, saveError)
           )

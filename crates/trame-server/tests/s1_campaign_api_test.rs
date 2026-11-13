@@ -1872,6 +1872,42 @@ fn sheet_derives_threat_reach_and_darkvision() {
             Some(0.0),
         ),
         (
+            "half_elf_bare_species_sees_60_ft",
+            json!({ "speciesId": "half_elf" }),
+            None,
+            Some(60.0),
+        ),
+        (
+            "half_elf_srd_species_sees_60_ft",
+            json!({ "speciesId": "srd:species:half_elf" }),
+            None,
+            Some(60.0),
+        ),
+        (
+            "half_elf_trame_species_sees_60_ft",
+            json!({ "speciesId": "trame:species:half_elf" }),
+            None,
+            Some(60.0),
+        ),
+        (
+            "radiant_scion_bare_species_sees_60_ft",
+            json!({ "speciesId": "radiant_scion" }),
+            None,
+            Some(60.0),
+        ),
+        (
+            "radiant_scion_srd_species_sees_60_ft",
+            json!({ "speciesId": "srd:species:radiant_scion" }),
+            None,
+            Some(60.0),
+        ),
+        (
+            "radiant_scion_trame_species_sees_60_ft",
+            json!({ "speciesId": "trame:species:radiant_scion" }),
+            None,
+            Some(60.0),
+        ),
+        (
             "unknown_species_keeps_token_senses",
             json!({ "speciesId": "homebrew:species:owlfolk" }),
             None,
