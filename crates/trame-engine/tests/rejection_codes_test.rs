@@ -3,7 +3,7 @@
 //! with feet instead of an English message with pixel coordinates. Table-driven; every case
 //! carries a descriptive ID printed on failure.
 
-use trame_engine::commands::{CommandError as E, COMMAND_ERROR_CODES};
+use trame_engine::commands::{COMMAND_ERROR_CODES, CommandError as E};
 
 /// One error per variant. The exhaustive `match` (no wildcard) stops compiling when a
 /// variant is added, so the new variant must get a code and a case here.

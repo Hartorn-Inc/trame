@@ -33,6 +33,11 @@ use trame_engine::resolution::{ActionRequest, ActionTargetRequest, ResolutionChe
 use trame_engine::rules::DamageAffinity;
 use trame_server::assets::store::AssetStore;
 use trame_server::auth::accounts::InstanceRole;
+use trame_server::auth::magic_link::now_epoch_seconds;
+use trame_server::auth::recovery::{
+    PASSWORD_RESET_TTL_SECONDS, PasswordResetError, PasswordResetLookup, PasswordResetRecord,
+    RecoveryStore,
+};
 use trame_server::auth::session::{IdentityStore, SessionStore, UserRecord, hash_session_token};
 use trame_server::campaigns::LIVE_SESSION_NUM;
 use trame_server::config::{DEV_HMAC_SECRET, ServerConfig};
@@ -1579,4 +1584,115 @@ async fn pg_healthz_and_campaign_asset_usage() {
             .unwrap();
         assert_eq!(used > 0, has_bytes, "case {case}: {used}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_password_reset_links_are_single_use_and_revoke_sessions() {
+    let Some((_, store)) = harness().await else {
+        return;
+    };
+    let (user_id, mine) = account_with_role(&store, InstanceRole::Member).await;
+    let other = format!("pg-other-session-{user_id}");
+    store
+        .create_session(user_id, &hash_session_token(&other), 3600)
+        .await
+        .unwrap();
+    let now = now_epoch_seconds();
+    let record = |token: &str, created_at: u64, expires_at: u64| PasswordResetRecord {
+        token_hash: hash_session_token(token),
+        user_id,
+        created_by: None,
+        created_at,
+        expires_at,
+    };
+    let first = format!("pg-reset-first-{user_id}");
+    let second = format!("pg-reset-second-{user_id}");
+    store
+        .create_password_reset(record(&first, now, now + PASSWORD_RESET_TTL_SECONDS))
+        .await
+        .unwrap();
+    store
+        .create_password_reset(record(&second, now, now + PASSWORD_RESET_TTL_SECONDS))
+        .await
+        .unwrap();
+    // (case_id, token, lookup is valid)
+    let lookups = [
+        ("a_newer_link_replaces_the_older_one", &first, false),
+        ("the_newest_link_is_valid", &second, true),
+    ];
+    for (case, token, valid) in lookups {
+        let lookup = store
+            .password_reset_lookup(&hash_session_token(token), now)
+            .await
+            .unwrap();
+        assert_eq!(
+            matches!(lookup, PasswordResetLookup::Valid(ref u) if u.id == user_id),
+            valid,
+            "case {case}: {lookup:?}"
+        );
+    }
+
+    let redeemed = store
+        .redeem_password_reset(&hash_session_token(&second), "pg-new-hash", now)
+        .await
+        .unwrap();
+    assert_eq!(redeemed, user_id);
+    let user = store.get_user_by_id(user_id).await.unwrap().unwrap();
+    assert_eq!(user.password_hash.as_deref(), Some("pg-new-hash"));
+    for token in [mine.trim_start_matches("trame_session="), other.as_str()] {
+        assert_eq!(
+            store
+                .get_session_by_token_hash(&hash_session_token(token))
+                .await
+                .unwrap(),
+            None,
+            "a reset revokes every session"
+        );
+    }
+    assert_eq!(
+        store
+            .redeem_password_reset(&hash_session_token(&second), "pg-again", now)
+            .await,
+        Err(PasswordResetError::Invalid),
+        "a link works once"
+    );
+
+    let expired = format!("pg-reset-expired-{user_id}");
+    store
+        .create_password_reset(record(&expired, now - 100, now - 1))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .redeem_password_reset(&hash_session_token(&expired), "pg-late", now)
+            .await,
+        Err(PasswordResetError::Expired)
+    );
+
+    let keep = format!("pg-keep-{user_id}");
+    let drop = format!("pg-drop-{user_id}");
+    for token in [&keep, &drop] {
+        store
+            .create_session(user_id, &hash_session_token(token), 3600)
+            .await
+            .unwrap();
+    }
+    store
+        .change_password(user_id, "pg-changed-hash", Some(&hash_session_token(&keep)))
+        .await
+        .unwrap();
+    // (case_id, session token, still valid)
+    let sessions = [
+        ("the_callers_session_is_kept", &keep, true),
+        ("other_sessions_are_revoked", &drop, false),
+    ];
+    for (case, token, kept) in sessions {
+        let found = store
+            .get_session_by_token_hash(&hash_session_token(token))
+            .await
+            .unwrap();
+        assert_eq!(found.is_some(), kept, "case {case}");
+    }
+    let user = store.get_user_by_id(user_id).await.unwrap().unwrap();
+    assert_eq!(user.password_hash.as_deref(), Some("pg-changed-hash"));
 }

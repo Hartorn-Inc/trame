@@ -833,7 +833,10 @@ async fn websocket_spawn_derives_combat_numbers_and_rejects_bad_blocks() {
                     panic!("case {case}: expected CommandRejected, got {reply:?}");
                 };
                 assert!(reason.contains(fragment), "case {case}: {reason}");
-                assert_eq!(detail, None, "case {case}: server-side refusals carry no engine code");
+                assert_eq!(
+                    detail, None,
+                    "case {case}: server-side refusals carry no engine code"
+                );
                 assert_eq!(correlation_id.as_deref(), Some(case), "case {case}");
                 assert!(
                     !table(&room).await.data.tokens.contains_key(&t.id),

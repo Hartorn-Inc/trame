@@ -470,8 +470,15 @@ fn route_family(path: &str) -> &'static str {
     if path.starts_with("/api/v1/instance/bootstrap") {
         return "bootstrap";
     }
+    if path.starts_with("/api/v1/instance/users/") {
+        return "admin";
+    }
     let rest = path.trim_start_matches("/api/v1/auth/");
-    if rest.starts_with("totp") {
+    if rest.starts_with("password-reset") {
+        "reset"
+    } else if rest.starts_with("password") {
+        "password"
+    } else if rest.starts_with("totp") {
         "totp"
     } else if rest.starts_with("bind") {
         "bind"

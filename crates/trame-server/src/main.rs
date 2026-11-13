@@ -35,11 +35,19 @@
 //!      `0`/`1` without reading secrets, so the distroless image can back a
 //!      Compose `healthcheck` (`crate::healthcheck`).
 //!
+//! 6. `Owner Recovery Mode`:
+//!    - `trame-server owner-reset-link` loads the same configuration, connects
+//!      to PostgreSQL, mints the `Owner`'s one-time password-reset link (24 h)
+//!      and logs it as one line with `event = "owner_password_reset_url"`,
+//!      then exits without binding a port (`crate::auth::recovery`). It needs
+//!      `DATABASE_URL`: the in-memory dev store has nothing to recover.
+//!
 //! EXECUTION LIFECYCLE:
 //! --------------------
 //!   `main()`
 //!     ├── -1. `healthcheck` argument: probe `/healthz`, exit 0 (healthy) or 1.
 //!     ├── 0. Resolve `ServerConfig` (exit 1 on `ConfigError`, e.g. no `DATABASE_URL` outside dev).
+//!     ├── 0b. `owner-reset-link` argument: mint and log the `Owner`'s reset link, exit 0 or 1.
 //!     ├── 1. Resolve port; open PostgreSQL (or the dev in-memory store).
 //!     ├── 2. `prepare_instance`: persisted instance id + owner setup URL log line when no `Owner`.
 //!     ├── 3. Build `RoomLeaseManager` over the PostgreSQL or in-memory WAL.
@@ -55,6 +63,9 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use trame_server::assets::store::{AssetStore, InMemoryAssetStore};
 use trame_server::auth::magic_link::now_epoch_seconds;
+use trame_server::auth::recovery::{
+    OWNER_RESET_ARG, log_owner_password_reset, mint_owner_password_reset,
+};
 use trame_server::auth::session::{FullAuthStore, InMemorySessionStore};
 use trame_server::config::{LogFormat, RuntimeEnv, ServerConfig, TRAME_ENV_VAR};
 use trame_server::healthcheck::{HEALTHCHECK_ARG, HEALTHCHECK_TIMEOUT, probe_healthz};
@@ -114,6 +125,48 @@ async fn prepare_instance(store: &dyn FullAuthStore, config: &ServerConfig) -> U
         }
     }
     instance_id
+}
+
+/// `owner-reset-link`: mints the `Owner`'s one-time reset link on PostgreSQL and logs it.
+/// Returns the process exit status.
+async fn mint_owner_reset_link(config: &ServerConfig) -> i32 {
+    let Some(db_url) = config.database_url.as_deref() else {
+        tracing::error!(
+            "owner-reset-link needs DATABASE_URL: the in-memory dev store keeps no Owner across restarts"
+        );
+        return 1;
+    };
+    let store = match SqlxPostgresStore::connect_and_migrate(
+        db_url,
+        "/assets/download",
+        config.secrets.asset_signing_secret.clone(),
+    )
+    .await
+    {
+        Ok(store) => store,
+        Err(err) => {
+            tracing::error!(error = %err, "cannot connect to PostgreSQL");
+            return 1;
+        }
+    };
+    match mint_owner_password_reset(&store, config.public_origin.as_deref(), now_epoch_seconds())
+        .await
+    {
+        Ok(Some(ticket)) => {
+            log_owner_password_reset(&ticket);
+            0
+        }
+        Ok(None) => {
+            tracing::error!(
+                "instance has no Owner yet: claim it with the setup URL from the server log"
+            );
+            1
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "cannot mint the Owner reset link");
+            1
+        }
+    }
 }
 
 /// Coordinates graceful termination upon receiving SIGTERM or SIGINT.
@@ -203,6 +256,9 @@ async fn main() {
     };
     if config.env == RuntimeEnv::Dev {
         tracing::warn!("TRAME_ENV=dev: missing secrets use public development defaults");
+    }
+    if std::env::args().nth(1).as_deref() == Some(OWNER_RESET_ARG) {
+        std::process::exit(mint_owner_reset_link(&config).await);
     }
 
     let port = listen_port();
