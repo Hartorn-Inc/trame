@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { EN } from "../src/i18n/en.ts";
 import { FR } from "../src/i18n/fr.ts";
 import { localeSignal, t, tn, type LocaleCode } from "../src/i18n/index.ts";
@@ -53,6 +56,21 @@ describe("i18n dictionary parity (G3, A39, A40)", () => {
     localeSignal.value = "en";
     assert.equal(t("rest.refill", { current: 1, max: 4 }), "1 / 4 → 4 / 4");
   });
+});
+
+describe("no hard-coded user-facing attribute text in components", () => {
+  const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
+  const components = fs
+    .readdirSync(srcRoot, { recursive: true, encoding: "utf8" })
+    .filter((file) => file.endsWith(".tsx"))
+    .map((file) => ({ file, source: fs.readFileSync(path.join(srcRoot, file), "utf8") }));
+  const attributes = ["aria-label", "aria-description", "title", "placeholder", "alt"];
+  for (const attribute of attributes) {
+    it(`[${attribute}-goes-through-t] no ${attribute} is a literal or template string with words`, () => {
+      const literal = new RegExp(`\\s${attribute}=(?:"[^"$]*[A-Za-z]{2}[^"$]*"|\\{\\s*['"\`][^'"\`$]*[A-Za-z]{2})`);
+      assert.deepEqual(components.filter((c) => literal.test(c.source)).map((c) => c.file), []);
+    });
+  }
 });
 
 describe("platform-neutral copy instructions", () => {

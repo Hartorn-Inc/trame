@@ -47,7 +47,7 @@ function toRow(item: any): AttackRow {
     item.damageFormula ?? item.damage ?? (typeof item.damageDice === 'string' ? damageExpression(item.damageDice, Number(item.damageModifier ?? 0), false) : '1d6');
   return {
     id: String(item.id ?? ''),
-    name: String(item.name ?? 'Attack'),
+    name: String(item.name ?? t('sheet.attacks.unnamed')),
     attackBonus: item.attackBonus === null ? null : Number(item.attackBonus ?? item.bonus ?? 0),
     ...(item.save ? { save: { ability: String(item.save.ability), dc: Number(item.save.dc) } } : {}),
     damageFormula: String(damageFormula),

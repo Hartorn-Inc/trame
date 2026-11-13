@@ -508,7 +508,7 @@ export function MapsStudioTab({
                 onClick={() => handleAddStagedMonster(tmpl)}
                 style={{ minHeight: '40px', textAlign: 'left', padding: 'var(--atlas-space-xs)', opacity: !selectedScene ? 0.5 : 1, cursor: !selectedScene ? 'not-allowed' : 'pointer' }}
               >
-                {t('maps.addHiddenTemplate', { template: tmpl })}
+                {t('maps.addHiddenTemplate', { template: t(`maps.template.${tmpl}`) })}
               </button>
             ))}
           </div>
