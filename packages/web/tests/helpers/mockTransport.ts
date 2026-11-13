@@ -26,10 +26,15 @@ export class MockSocket implements SocketLike {
   onopen: ((ev: unknown) => void) | null = null;
   onclose: ((ev: unknown) => void) | null = null;
   onmessage: ((ev: { data: unknown }) => void) | null = null;
+  /** Subprotocol the fake server selected; set it before `open()`. */
+  protocol = "";
   readonly url: string;
+  /** Subprotocols the client offered. */
+  readonly protocols: string[];
 
-  constructor(url: string) {
+  constructor(url: string, protocols: string[] = []) {
     this.url = url;
+    this.protocols = protocols;
   }
 
   send(data: Uint8Array): void {
@@ -86,8 +91,8 @@ export function createMockTransport(routes: Record<string, RouteReply> = {}): Mo
       const reply = transport.routes[`${method} ${url}`] ?? { status: 404, body: { error: "not found" } };
       return new Response(reply.body === undefined ? "" : JSON.stringify(reply.body), { status: reply.status });
     },
-    openSocket(url: string): SocketLike {
-      const socket = new MockSocket(url);
+    openSocket(url: string, protocols: string[]): SocketLike {
+      const socket = new MockSocket(url, protocols);
       transport.sockets.push(socket);
       return socket;
     },

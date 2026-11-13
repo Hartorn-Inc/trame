@@ -108,6 +108,7 @@ use crate::sync::{ClientEnvelope, decode_client_envelope};
 use crate::timeline::{
     InMemoryTimelineStorage, SessionTimelineEvent, SessionTimelineResponse, TimelineStorage,
 };
+use crate::ws_compression::{FrameEncoding, WS_SUBPROTOCOL_DEFLATE};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -1228,6 +1229,7 @@ pub async fn ws_campaign_handler(
 
     ws.max_message_size(policy.ws_max_message_bytes)
         .max_frame_size(policy.ws_max_message_bytes)
+        .protocols([WS_SUBPROTOCOL_DEFLATE])
         .on_upgrade(move |socket| handle_ws_connection(socket, state, campaign_id, user_id, role))
         .into_response()
 }
@@ -1392,6 +1394,7 @@ async fn close_socket(mut socket: WebSocket, code: u16, reason: &str) {
 
 /// Socket writer task: drains the client's bounded queue into `sink`, sends a `Ping` every
 /// `ping_interval`, and closes with `WS_CLOSE_CODE_SLOW_CONSUMER` when the queue overflowed.
+/// Binary frames go through `encoding`, so compression runs here and never in the room actor.
 ///
 /// Every send (frames, pings, the Close frame) is bounded by `send_timeout`: a peer that
 /// stops reading fills the TCP window, `send` then never completes, and without the bound
@@ -1403,6 +1406,7 @@ pub(crate) async fn run_socket_writer<S>(
     overflow: Arc<tokio::sync::Notify>,
     ping_interval: std::time::Duration,
     send_timeout: std::time::Duration,
+    encoding: FrameEncoding,
 ) where
     S: futures_util::Sink<Message> + Unpin,
 {
@@ -1417,7 +1421,9 @@ pub(crate) async fn run_socket_writer<S>(
                 reason: "Slow Consumer".into(),
             })),
             frame = rx.recv() => match frame {
-                Some(OutboundClientFrame::Binary(bytes)) => Message::Binary(bytes.into()),
+                Some(OutboundClientFrame::Binary(bytes)) => {
+                    Message::Binary(encoding.encode(bytes).into())
+                }
                 Some(OutboundClientFrame::Close { code, reason }) => {
                     Message::Close(Some(axum::extract::ws::CloseFrame {
                         code,
@@ -1492,6 +1498,7 @@ async fn handle_ws_connection(
         return;
     }
 
+    let encoding = FrameEncoding::from_selected_protocol(socket.protocol());
     let (ws_sender, mut ws_receiver) = socket.split();
     let send_timeout = state.auth_state.security.ws_pong_timeout;
     let mut send_task = tokio::spawn(run_socket_writer(
@@ -1500,6 +1507,7 @@ async fn handle_ws_connection(
         overflow,
         ping_interval,
         send_timeout,
+        encoding,
     ));
 
     // Any inbound frame (the browser's automatic `Pong`, the client's heartbeat `Ping`,
@@ -1664,14 +1672,79 @@ mod tests {
             if overflowed {
                 overflow.notify_one();
             }
-            let writer =
-                run_socket_writer(NeverReadingPeer, rx, overflow, ping_interval, send_timeout);
+            let writer = run_socket_writer(
+                NeverReadingPeer,
+                rx,
+                overflow,
+                ping_interval,
+                send_timeout,
+                FrameEncoding::Identity,
+            );
             let finished = tokio::time::timeout(Duration::from_secs(2), writer).await;
             assert!(
                 finished.is_ok(),
                 "case {case}: the writer must stop on its own"
             );
             drop(tx);
+        }
+    }
+
+    /// A peer that accepts every message at once and records it.
+    #[derive(Default)]
+    struct RecordingPeer(Vec<Message>);
+
+    impl futures_util::Sink<Message> for RecordingPeer {
+        type Error = std::convert::Infallible;
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.0.push(item);
+            Ok(())
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn socket_writer_applies_the_negotiated_frame_encoding() {
+        let frame = b"tokens".repeat(500);
+        // (case_id, negotiated encoding, binary payload expected on the wire)
+        let cases = [
+            (
+                "identity_sends_the_frame_as_is",
+                FrameEncoding::Identity,
+                frame.clone(),
+            ),
+            (
+                "deflate_sends_a_zlib_stream",
+                FrameEncoding::Deflate,
+                FrameEncoding::Deflate.encode(frame.clone()),
+            ),
+        ];
+        for (case, encoding, expected) in cases {
+            let (tx, rx) = crate::room::client_channel_with_capacity(1);
+            let overflow = tx.overflow_signal();
+            tx.send(OutboundClientFrame::Binary(frame.clone())).unwrap();
+            drop(tx);
+            let mut peer = RecordingPeer::default();
+            run_socket_writer(
+                &mut peer,
+                rx,
+                overflow,
+                Duration::from_secs(60),
+                Duration::from_secs(1),
+                encoding,
+            )
+            .await;
+            match peer.0.as_slice() {
+                [Message::Binary(sent)] => assert_eq!(sent.as_ref(), expected, "case {case}"),
+                other => panic!("case {case}: unexpected messages {other:?}"),
+            }
         }
     }
 

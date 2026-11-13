@@ -585,4 +585,16 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Allowed Context**: `MapsStudioTab` saves, scene REST routes, and concurrent GM editing.
 - **_Avoid_**: MapRevision, SceneEtag, MapsVersion.
 
+### ProjectionHash
+
+- **Definition**: SHA-256 digest of the MessagePack encoding of one recipient's `ProjectedTableState`, kept per session by the `TableRoomActor` for the last state frame sent to it (RT12). After a command, a recipient whose hash is unchanged and who sees no `TrameEvent` gets no frame. A connect or resync always sends a full `StateSnapshot` and records its hash.
+- **Allowed Context**: Room broadcast, frame skipping, and egress budgeting.
+- **_Avoid_**: StateChecksum, DiffHash, FrameEtag.
+
+### FrameEncoding
+
+- **Definition**: Encoding applied to every outbound binary WebSocket frame of one socket, fixed at the upgrade: `Identity` (plain MessagePack) or `Deflate` (one zlib stream per frame) when the client offered and the server selected the `trame.v1+deflate` subprotocol (D24). Client frames are never compressed.
+- **Allowed Context**: WebSocket upgrade, socket writer task, and browser frame decoding (`DecompressionStream`).
+- **_Avoid_**: permessage-deflate (the standard extension TRAME does not use), WsCompression, GzipFrame.
+
 

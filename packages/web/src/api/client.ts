@@ -109,7 +109,8 @@ export const ROLL_DICE_ACTION = "ROLL_DICE";
 /** Network seam: REST `fetch` and the WebSocket factory. */
 export interface Transport {
   fetch(url: string, init: RequestInit): Promise<Response>;
-  openSocket(url: string): SocketLike;
+  /** Opens a WebSocket offering the subprotocols `protocols` (`trame.v1+deflate`, D24). */
+  openSocket(url: string, protocols: string[]): SocketLike;
 }
 
 /** Construction options for `ApiClient`. */
@@ -482,7 +483,7 @@ function campaignPath(campaignId: Uuid, suffix = ""): string {
 function browserTransport(): Transport {
   return {
     fetch: (url, init) => fetch(url, init),
-    openSocket: (url) => new WebSocket(url) as unknown as SocketLike,
+    openSocket: (url, protocols) => new WebSocket(url, protocols) as unknown as SocketLike,
   };
 }
 
@@ -523,7 +524,7 @@ export class ApiClient {
     this.wsOrigin = options.wsOrigin ?? defaultWsOrigin();
     this.room = new ConnectionManager({
       state: this.state,
-      openSocket: (url) => this.transport.openSocket(url),
+      openSocket: (url, protocols) => this.transport.openSocket(url, protocols),
       onFrame: (data) => {
         const bytes = frameBytes(data);
         const envelope = bytes ? decodeServerEnvelope(bytes) : null;

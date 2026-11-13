@@ -1,7 +1,7 @@
 # ADR-0041: S3-compatible Asset Storage, Signed Direct Downloads, Traffic Compression and Free Hosting Targets
 
 ## Status
-Accepted (2026-11-05). Amends Decision 2 of [ADR-0010](./0010-hybrid-auth-preact-signals-and-postgres-runtime.md) and its 2026-11-01 amendment (`S3Store` not wired), and makes the `S3Store` path of [ADR-0002](./0002-asset-store-and-uvtt-import-pipeline.md) the configured production path. Records decisions D5, D18, D19, D20, D21 and D24 of [`spec-internet-ready-playable-trame.md`](../specs/spec-internet-ready-playable-trame.md). The WebSocket compression spike outcome is recorded below when the spike completes.
+Accepted (2026-11-05). Amends Decision 2 of [ADR-0010](./0010-hybrid-auth-preact-signals-and-postgres-runtime.md) and its 2026-11-01 amendment (`S3Store` not wired), and makes the `S3Store` path of [ADR-0002](./0002-asset-store-and-uvtt-import-pipeline.md) the configured production path. Records decisions D5, D18, D19, D20, D21 and D24 of [`spec-internet-ready-playable-trame.md`](../specs/spec-internet-ready-playable-trame.md). The WebSocket compression spike outcome is recorded below.
 
 ## Context
 ADR-0010 targets local Docker, a single VPS and Cloud Run + Neon + R2, and names `S3Store` as the asset backend. In practice:
@@ -30,7 +30,11 @@ An `Owner` running TRAME for friends needs a hosting path that costs nothing, or
 7. **Backups.** A nightly `pg_dump` is kept for 14 days and pushed to R2: a Cloud Run job triggered by Cloud Scheduler on the near-free target, and a `backup` container with an optional off-machine copy on the strictly-free target. A restore script ships with it and is exercised in E2E.
 
 ### WebSocket compression spike outcome
-Pending. The W3 traffic slice records here which path shipped (`permessage-deflate` or `trame.v1+deflate`) and why.
+Spike run 2026-11-07. **`trame.v1+deflate` shipped; standard `permessage-deflate` did not.**
+- **Library support.** The `deflate` feature the spike relied on does not exist. No released `tungstenite` (0.28, 0.29, 0.30) or `tokio-tungstenite` (0.29, 0.30) exposes it: frames with the RSV1 bit are refused and no extension can be negotiated. `axum` 0.8.9 pins `tokio-tungstenite` 0.29. Standard `permessage-deflate` would need a different WebSocket crate, which Option 4 rejects.
+- **Fallback.** The browser offers `Sec-WebSocket-Protocol: trame.v1+deflate` when it has `DecompressionStream` (Chrome 80, Firefox 113, Safari 16.4). The server selects it through the `axum` extractor, and the socket writer task compresses each outbound binary frame as one self-contained zlib stream at level 1. Client frames stay uncompressed, so the server never inflates untrusted input. A client that does not offer the protocol gets plain frames.
+- **Cost.** Measured on GM snapshot frames (debug build, so an upper bound): a 40-wall, 8-token scene goes from 14.8 KB to 2.4 KB (16 %), and a 600-wall, 40-token scene from 154 KB to 19.7 KB (13 %) in about 4 ms. Each frame allocates the compressor state (about 300 KB) and frees it right after. No state persists between frames, so idle sockets cost nothing.
+- **BREACH.** Frames carry no credential; the session cookie travels only in the upgrade request. The residual risk is a player who also watches the GM's encrypted traffic and compares frame sizes while changing text that appears next to GM-only text. That attack exposes table secrets, not credentials. It is accepted and listed for the security reviewer.
 
 ## Consequences
 ### Positive

@@ -1,19 +1,22 @@
 // Seam 5: room connection manager (RT11) and command feedback (RT10 / UA16) against a mocked transport and fake timers.
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it, mock } from "node:test";
-import { decode } from "@msgpack/msgpack";
+import { deflateSync } from "node:zlib";
+import { decode, encode } from "@msgpack/msgpack";
 import { ApiClient } from "../../src/api/client.ts";
 import {
+  ConnectionManager,
   HEARTBEAT_INTERVAL_MS,
   PONG_TIMEOUT_MS,
   RECONNECT_MAX_DELAY_MS,
   reconnectDelayMs,
+  WS_SUBPROTOCOL_DEFLATE,
   type NetworkWatcher,
 } from "../../src/api/connection.ts";
 import { createSessionState, type ConnectionStatus } from "../../src/api/session.ts";
 import type { ProjectedTableState, WireTokenState } from "../../src/api/wire.ts";
 import * as commands from "../../src/table/commands.ts";
-import { createMockTransport, type MockSocket, type RouteReply } from "../helpers/mockTransport.ts";
+import { createMockTransport, MockSocket, type RouteReply } from "../helpers/mockTransport.ts";
 
 const CAMPAIGN_ID = "22222222-2222-4222-8222-222222222222";
 const CAMPAIGN_ROUTE = `GET /api/v1/campaigns/${CAMPAIGN_ID}`;
@@ -445,4 +448,83 @@ describe("in_flight_commands_when_the_socket_dies", () => {
       env.client.disconnect();
     });
   }
+});
+
+describe("trame.v1+deflate frames (D24)", () => {
+  /** Waits for asynchronous inflation; `setImmediate` is not faked. */
+  async function until(done: () => boolean): Promise<void> {
+    for (let i = 0; i < 500 && !done(); i++) await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  const snapshotBytes = () => encode({ StateSnapshot: { seq_id: 1, state: table({ round: 7 }) } });
+
+  it("offers the deflate subprotocol when DecompressionStream exists", () => {
+    const env = setup();
+    env.client.connect(CAMPAIGN_ID);
+    assert.deepEqual(env.socket(0).protocols, [WS_SUBPROTOCOL_DEFLATE]);
+    env.client.disconnect();
+  });
+
+  const cases = [
+    {
+      id: "deflate selected: the zlib frame is inflated, then applied",
+      protocol: WS_SUBPROTOCOL_DEFLATE,
+      wire: (bytes: Uint8Array) => new Uint8Array(deflateSync(bytes)),
+    },
+    { id: "no subprotocol selected: the plain frame is applied", protocol: "", wire: (bytes: Uint8Array) => bytes },
+  ];
+  for (const c of cases) {
+    it(`snapshot_frame_reaches_the_table: ${c.id}`, async () => {
+      const env = setup();
+      env.client.connect(CAMPAIGN_ID);
+      env.socket(0).protocol = c.protocol;
+      env.socket(0).open();
+      env.socket(0).receive(c.wire(snapshotBytes()));
+      await until(() => env.state.table.value !== null);
+      assert.equal(env.state.table.value?.round, 7);
+      env.client.disconnect();
+    });
+  }
+
+  it("a frame that fails to inflate drops the socket and reconnects", async () => {
+    const env = setup();
+    env.client.connect(CAMPAIGN_ID);
+    env.socket(0).protocol = WS_SUBPROTOCOL_DEFLATE;
+    env.socket(0).open();
+    env.socket(0).receive(new Uint8Array([1, 2, 3]));
+    await until(() => env.state.connection.value === "reconnecting");
+    assert.equal(env.state.connection.value, "reconnecting");
+    assert.equal(env.socket(0).closed, true);
+    env.client.disconnect();
+  });
+
+  it("frames reach onFrame in arrival order when the first inflates slowest", async () => {
+    const delivered: number[] = [];
+    const sockets: MockSocket[] = [];
+    const manager = new ConnectionManager({
+      state: createSessionState(),
+      openSocket: (url, protocols) => {
+        const socket = new MockSocket(url, protocols);
+        sockets.push(socket);
+        return socket;
+      },
+      onFrame: (data) => delivered.push((data as Uint8Array)[0]),
+      onOpen: () => undefined,
+      probeAccess: async () => "ok",
+      encodePing: () => new Uint8Array(),
+      network: fakeNetwork(),
+      inflate: async (bytes) => {
+        if (bytes[0] === 1) for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+        return bytes;
+      },
+    });
+    manager.start("ws://table.test/ws");
+    sockets[0].protocol = WS_SUBPROTOCOL_DEFLATE;
+    sockets[0].open();
+    sockets[0].receive(new Uint8Array([1]));
+    sockets[0].receive(new Uint8Array([2]));
+    await until(() => delivered.length === 2);
+    assert.deepEqual(delivered, [1, 2]);
+    manager.stop();
+  });
 });

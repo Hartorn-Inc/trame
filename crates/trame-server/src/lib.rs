@@ -71,6 +71,7 @@ pub mod storage;
 pub mod sync;
 pub mod timeline;
 pub mod wal;
+pub mod ws_compression;
 
 #[cfg(test)]
 mod tests {

@@ -16,6 +16,7 @@ async_zip = { version = "=0.0.19", features = ["tokio", "deflate"] }
 base64 = "=0.23.1"
 bytes = "=1.12.1"
 data-encoding = "=2.11.1"
+flate2 = "=1.1.11"
 futures-lite = "=2.6.1"
 futures-util.workspace = true
 hmac = "=0.13.0"
