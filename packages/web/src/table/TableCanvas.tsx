@@ -64,6 +64,10 @@
  * 6. `GM-Only Brushes`:
  *    - The fog and terrain tools render for the GM only; while one is active
  *      board clicks paint instead of moving tokens (`tableTools.ts`).
+ *    - With a scene active, the GM can save the live terrain and fog rulings
+ *      back into it (`saveTableRulings`), so the next activation loads what
+ *      was painted during play; a status line reports saved, scene no
+ *      longer active, or failed.
  * 7. `Map-Art Independence`:
  *    - Neither the battlemap `<img>` nor the canvas carries a filter.
  * 8. `Pending Action Input`:
@@ -97,7 +101,7 @@
  */
 import { Fragment } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
-import type { ApiClient } from '../api/client.ts';
+import { ApiError, type ApiClient } from '../api/client.ts';
 import { selectedActorIdSignal, selectedCellSignal, selectedTokenIdSignal, viewportCenterSignal } from '../api/session.ts';
 import type { Uuid, WirePoint2D } from '../api/wire.ts';
 import { getCanvasThemePalette } from '../canvas/CanvasThemePalette.ts';
@@ -262,6 +266,9 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   const mapHash = scene.mapHash;
   const doors = doorHandles(table, isGm).filter((door) => isGm || door.sides.some((point) => isPointUnfogged(scene.fog, point)));
   const [doorNotice, setDoorNotice] = useState('');
+  const [rulingsNotice, setRulingsNotice] = useState<MessageKey | null>(null);
+  const [savingRulings, setSavingRulings] = useState(false);
+  const activeSceneId = table?.active_scene_id ?? null;
   const [mapUrl, setMapUrl] = useState<string | null>(null);
   const [mapImage, setMapImage] = useState<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -405,6 +412,19 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   };
 
   const ping = (pos: WirePoint2D) => client.sendPointerPing(pos, hexColor(palette.pointerPingHex));
+
+  const saveRulingsToScene = async (sceneId: Uuid) => {
+    setSavingRulings(true);
+    setRulingsNotice(null);
+    try {
+      await client.saveTableRulings(campaignId, sceneId);
+      setRulingsNotice('table.saveRulings.saved');
+    } catch (err) {
+      setRulingsNotice(err instanceof ApiError && err.code === 'SCENE_NOT_ACTIVE' ? 'table.saveRulings.notActive' : 'table.saveRulings.failed');
+    } finally {
+      setSavingRulings(false);
+    }
+  };
 
   const move = (token: TableToken, to: WirePoint2D) => {
     if (!token.controlled) return;
@@ -626,6 +646,17 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
                   <option key={size} value={String(size)}>{t('table.brushCells', { size })}</option>
                 ))}
               </select>
+              {activeSceneId ? (
+                <button
+                  type="button"
+                  class="ds-btn ds-btn-secondary ds-btn-sm"
+                  data-testid="table-save-rulings"
+                  disabled={savingRulings}
+                  onClick={() => void saveRulingsToScene(activeSceneId)}
+                >
+                  {t('table.saveRulings')}
+                </button>
+              ) : null}
             </div>
           </>
         ) : null}
@@ -633,6 +664,11 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
       {isGm && selectedCell ? (
         <p class="ds-hint" role="status" data-testid="table-selected-cell">
           {t('table.selectedCell', { col: Math.round(selectedCell.x / cell) + 1, row: Math.round(selectedCell.y / cell) + 1 })}
+        </p>
+      ) : null}
+      {isGm && rulingsNotice ? (
+        <p class="ds-hint" role="status" data-testid="table-save-rulings-status">
+          {t(rulingsNotice)}
         </p>
       ) : null}
       {capped && tool !== 'select' ? (

@@ -338,6 +338,58 @@ describe("TableCanvas: compendium spawn cell", () => {
   }
 });
 
+describe("TableCanvas: saving live terrain and fog to the scene", () => {
+  const rulingsRoute = `POST /api/v1/campaigns/${CAMPAIGN}/maps/${SCENE}/table-rulings`;
+  const presence = [
+    { id: "the GM gets the save button while a scene is active", role: "GM", scene: SCENE, present: true },
+    { id: "the GM gets no save button without an active scene", role: "GM", scene: null, present: false },
+    { id: "a player never gets the save button", role: "player", scene: SCENE, present: false },
+  ] as const;
+  for (const c of presence) {
+    it(c.id, () => {
+      const { userId, isGm } = viewer(c.role);
+      const live = liveTable(userId, (isGm ? gmView : playerView)({ active_scene_id: c.scene }));
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm }));
+      if (c.present) assertPresent(ui.byTestId("table-save-rulings"), c.id);
+      else assertAbsent(ui.byTestId("table-save-rulings"), c.id);
+      ui.unmount();
+    });
+  }
+
+  const outcomes = [
+    {
+      id: "a saved set tells the GM the next activation loads it",
+      reply: { status: 200, body: { scenes: [], version: 4 } },
+      status: "Difficult terrain and fog rulings saved to the scene. Activating it again loads them.",
+    },
+    {
+      id: "a scene that is no longer active says nothing was saved",
+      reply: { status: 409, body: { code: "SCENE_NOT_ACTIVE", error: "scene is not the scene active on the table" } },
+      status: "This scene is no longer active on the table, so nothing was saved.",
+    },
+    {
+      id: "a version conflict asks the GM to try again",
+      reply: { status: 409, body: { code: "VERSION_CONFLICT", error: "stale" } },
+      status: "Terrain and fog were not saved. Try again in a moment.",
+    },
+  ];
+  for (const c of outcomes) {
+    it(c.id, async () => {
+      const live = liveTable(GM_ID, gmView({ active_scene_id: SCENE }), { [rulingsRoute]: c.reply });
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
+      ui.click("table-save-rulings");
+      await flush();
+      assert.deepEqual(
+        live.transport.calls.filter((call) => call.method === "POST").map((call) => call.url),
+        [`/api/v1/campaigns/${CAMPAIGN}/maps/${SCENE}/table-rulings`],
+      );
+      assert.equal(ui.byTestId("table-save-rulings-status").textContent, c.status);
+      assert.equal(live.commands().length, 0, "saving sends no table command");
+      ui.unmount();
+    });
+  }
+});
+
 describe("TableCanvas: GM map brushes", () => {
   const visibility = [
     { id: "the GM gets the brush toolbar", role: "GM", present: true },

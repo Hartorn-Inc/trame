@@ -945,6 +945,17 @@ export class ApiClient {
     return Number(res.version);
   }
 
+  /**
+   * Copies the live table's difficult terrain and fog rulings into the stored scene
+   * `sceneId` (`POST .../maps/{sceneId}/table-rulings`, GM only), so the next activation
+   * loads them, and returns the new scene-list version. Rejects with `ApiError` code
+   * `SCENE_NOT_ACTIVE` when `sceneId` is no longer the table's active scene.
+   */
+  async saveTableRulings(campaignId: Uuid, sceneId: Uuid): Promise<number> {
+    const res = await this.request("POST", campaignPath(campaignId, `/maps/${encodeURIComponent(sceneId)}/table-rulings`));
+    return Number(res.version);
+  }
+
   /** Lists the notes the caller may read, content already role-filtered (`GET .../notes`). */
   async listNotes(campaignId: Uuid): Promise<CampaignNote[]> {
     const res = await this.request("GET", campaignPath(campaignId, "/notes"));
