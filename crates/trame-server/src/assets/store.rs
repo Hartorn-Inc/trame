@@ -76,6 +76,16 @@ pub trait AssetStore: Send + Sync {
     fn verify_presigned_get(&self, _key: &str, _exp: u64, _sig_hex: &str) -> bool {
         false
     }
+
+    /// Short-lived URL the browser can fetch `key` from directly, for a download whose
+    /// `verify_presigned_get` already passed. `None` (the default, and for rows not yet
+    /// migrated to the object store) means the server streams the bytes itself.
+    fn direct_download_url<'a>(
+        &'a self,
+        _key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, AssetStoreError>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 /// Verifies `sig_hex == hex(HMAC-SHA256(secret, "{key}:{exp}"))` in constant time and that

@@ -36,29 +36,48 @@
  *      focused controlled token one cell, `P` pings its centre, Shift+F10 /
  *      ContextMenu opens its action menu, Escape clears the selection or
  *      cancels a pending teleport. The canvas itself is a labelled
- *      `role="img"`. Door state is told by text and border style, not colour.
- *    - While a GM brush or a teleport is active, a focusable cell cursor is
+ *      `role="img"`. Token labels start with the creature's name followed by
+ *      its vitals or tier, 1-based grid cell, state and remaining speed;
+ *      door and lock handles name their action ("Open door" / "Close door" /
+ *      "Lock door" / "Unlock door", plus "locked" or "secret"), 1-based grid
+ *      cell, and distance in feet to the active/viewing controlled token,
+ *      never `aria-pressed`, while border style repeats the state without
+ *      colour. Accepted moves of a controlled token announce the destination
+ *      cell (and remaining feet in combat) in an always-mounted polite live
+ *      region, and repeated locked/secret door activations toggle a
+ *      zero-width suffix so screen readers re-announce identical notices.
+ *    - While a GM brush, a teleport or a planned move (`M` on a controlled
+ *      token) is active, a focusable cell cursor is
  *      the keyboard twin of the pointer: arrow keys move it (Shift+arrows
  *      mark a rectangle for brushes), Enter paints the brush or rectangle or
- *      teleports there, Escape drops the rectangle, cancels the teleport or
- *      leaves the brush. A teleport focuses the cursor on the token's cell;
- *      a polite status names the cursor cell.
+ *      teleports or moves there, Escape drops the rectangle, cancels the
+ *      teleport or move, or leaves the brush. A teleport or planned move
+ *      focuses the cursor on the token's cell; a polite status names the
+ *      cursor cell and, for a planned move, its cost.
  * 4. `Progressive Renderer`:
  *    - PixiJS is imported lazily and only where WebGL2 exists. Until it is up,
  *      when it fails to start, or after a draw throws, the board draws the
  *      battlemap `<img>`, a CSS grid and visible token buttons, so the table
  *      stays usable without WebGL.
  * 5. `Zoom Without Reprojection`:
- *    - Zoom scales the whole board (canvas and overlay buttons together) by a
- *      CSS transform inside a sized scroll area, so every pointer position is
- *      divided by the zoom once (`boardPoint`) and stays in canvas pixels.
+ *    - The PixiJS canvas is not CSS-scaled: it sits under the board, sized
+ *      to the zoomed board, and the renderer scales its stage and resolution
+ *      (`canvasResolution`), so zoomed maps stay sharp. The DOM overlay
+ *      (token and door buttons, fallback map and grid) is scaled by a CSS
+ *      transform on top of it, so every pointer position is divided by the
+ *      zoom once (`boardPoint`) and stays in canvas pixels.
  *      Ctrl/Cmd + wheel and two-finger pinch zoom around the pointer; plain
  *      wheel, scrollbars and touch drag pan. The anchored scroll offset is
  *      applied in a layout effect after the zoomed board has its new size,
  *      otherwise the browser clamps it to the old, smaller scroll area.
  * 6. `GM-Only Brushes`:
  *    - The fog and terrain tools render for the GM only; while one is active
- *      board clicks paint instead of moving tokens (`tableTools.ts`).
+ *      board pointer drags (mouse, pen or touch, with `touch-action: none`)
+ *      paint instead of panning or moving tokens (`tableTools.ts`).
+ *    - With a scene active, the GM can save the live terrain and fog rulings
+ *      back into it (`saveTableRulings`), so the next activation loads what
+ *      was painted during play; a status line reports saved, scene no
+ *      longer active, or failed.
  * 7. `Map-Art Independence`:
  *    - Neither the battlemap `<img>` nor the canvas carries a filter.
  * 8. `Pending Action Input`:
@@ -67,6 +86,17 @@
  *      instead of selecting. While an area spell waits for placement, board
  *      and token clicks place it; the placed template is drawn as a preview
  *      until the resolution card closes (`actionResolution.ts`).
+ * 9. `Player Fog Memory`:
+ *    - A player's explored cells are loaded per user, campaign and scene
+ *      (`fogMemory.ts`), extended from each frame's vision polygons and
+ *      saved after the render that changed them. Token buttons follow the
+ *      scene: a player gets no button for a token out of sight.
+ * 10. `Move Cost Before Sending`:
+ *    - With a controlled token selected, the cell under the pointer (or the
+ *      planned-move cursor) shows the engine cost in feet (`movePreview.ts`);
+ *      a cell the server would refuse (wall, over the turn budget) adds a
+ *      cross glyph, a dashed outline and words, not colour alone. In combat
+ *      the selected token's remaining feet show under it and in its name.
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -85,11 +115,12 @@
  *        `SET_DIFFICULT_TERRAIN` per stroke; a capped stroke shows a notice.
  * ============================================================================
  */
+import { useSignal, type Signal } from '@preact/signals';
 import { Fragment } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
-import type { ApiClient } from '../api/client.ts';
+import { ApiError, type ApiClient } from '../api/client.ts';
 import { selectedActorIdSignal, selectedCellSignal, selectedTokenIdSignal, viewportCenterSignal } from '../api/session.ts';
-import type { Uuid, WirePoint2D } from '../api/wire.ts';
+import type { ProjectedTableState, Uuid, WirePoint2D } from '../api/wire.ts';
 import { getCanvasThemePalette } from '../canvas/CanvasThemePalette.ts';
 import {
   computeTokenVisionPolygon,
@@ -99,7 +130,7 @@ import {
   previewAoeCells,
   type GridCell,
 } from '../engine/wasmBridge.ts';
-import { t, type MessageKey } from '../i18n/index.ts';
+import { formatDistanceFt, t, type MessageKey } from '../i18n/index.ts';
 import { resolvedThemeSignal } from '../signals/themeSignal.ts';
 import {
   actionTargetIdsSignal,
@@ -110,8 +141,10 @@ import {
   toggleActionTarget,
 } from './actionResolution.ts';
 import { configureDoorLock, moveToken, toggleDoor } from './commands.ts';
+import { previewTokenMove, type MoveCostPreview } from './movePreview.ts';
 import type { TableRenderer } from './scene/pixiTableRenderer.ts';
-import { buildTableScene, isPointUnfogged, type SceneGeometry, type TableScene } from './scene/tableScene.ts';
+import { exploreCells, fogGrid, fogMemoryKey, loadFogMemory, saveFogMemory, type FogStorage } from './fogMemory.ts';
+import { boardMetrics, buildTableScene, isPointUnfogged, type SceneGeometry, type TableScene } from './scene/tableScene.ts';
 import {
   BRUSH_SIZES,
   MAX_STROKE_CELLS,
@@ -130,7 +163,16 @@ import {
   zoomAround,
   type TableTool,
 } from './tableTools.ts';
-import { activeTurnTokenId, assetHashFromKey, doorHandles, listTableTokens, snapToCell, type DoorHandle, type TableToken } from './tableView.ts';
+import {
+  activeTurnTokenId,
+  assetHashFromKey,
+  doorDistanceFt,
+  doorHandles,
+  listTableTokens,
+  snapToCell,
+  type DoorHandle,
+  type TableToken,
+} from './tableView.ts';
 import { TokenMenuDialog } from './TokenMenuDialog.tsx';
 
 const ARROW_DELTAS: Record<string, [number, number]> = {
@@ -156,23 +198,120 @@ export interface TableCanvasProps {
   isGm?: boolean;
 }
 
-function tokenLabel(token: TableToken): string {
+/** Remaining feet shown for `token`: the selected controlled token, in combat only. */
+function shownSpeedFt(token: TableToken, selectedId: Uuid | null, inCombat: boolean): number | null {
+  return inCombat && token.controlled && token.id === selectedId ? token.speedRemainingFt : null;
+}
+
+/** Sentence describing a move preview (status line and visible hint). */
+function movePreviewText(preview: MoveCostPreview): string {
+  const cost = formatDistanceFt(preview.costFt);
+  if (preview.blocked) return t('table.move.blocked', { cost });
+  if (preview.remainingFt === null) return t('table.move.cost', { cost });
+  const remaining = formatDistanceFt(preview.remainingFt);
+  if (preview.overBudget) return t('table.move.overBudget', { cost, remaining });
+  return t('table.move.costLeft', { cost, left: formatDistanceFt(Math.max(0, preview.remainingFt - preview.costFt)) });
+}
+
+/** Engine preview of `mover` moving to `at`, `null` on its own cell or without a preview. */
+function cellPreview(
+  table: ProjectedTableState | null,
+  mover: TableToken | null,
+  at: GridCell | null,
+  cell: number,
+): { at: GridCell; preview: MoveCostPreview } | null {
+  if (!mover || !at || (at.col * cell === mover.topLeft.x && at.row * cell === mover.topLeft.y)) return null;
+  const preview = previewTokenMove(table, mover, { x: at.col * cell, y: at.row * cell });
+  return preview ? { at, preview } : null;
+}
+
+interface MovePreviewProps {
+  table: ProjectedTableState | null;
+  mover: TableToken | null;
+  cell: number;
+  /** Destination cell: the planned-move cursor, or the pointer's (`hoverCell`). */
+  at: GridCell | null;
+  hoverCell: Signal<GridCell | null>;
+}
+
+/**
+ * Destination outline and cost chip. Reading `hoverCell` here, not in
+ * `TableCanvas`, keeps pointer moves from rebuilding the whole scene.
+ */
+function MovePreviewCell({ table, mover, cell, at, hoverCell }: MovePreviewProps) {
+  const shown = cellPreview(table, mover, at ?? hoverCell.value, cell);
+  if (!shown || !mover) return null;
+  const { preview } = shown;
+  return (
+    <div
+      class={`ds-board-move-preview${preview.reachable ? '' : ' is-unreachable'}`}
+      aria-hidden="true"
+      data-testid="table-move-preview"
+      data-reachable={preview.reachable ? 'true' : 'false'}
+      style={{
+        left: `${shown.at.col * cell}px`,
+        top: `${shown.at.row * cell}px`,
+        width: `${mover.gridW * cell}px`,
+        height: `${mover.gridH * cell}px`,
+      }}
+    >
+      <span class="ds-board-chip atlas-tabular-nums">
+        {preview.reachable ? '' : '✕ '}
+        {formatDistanceFt(preview.costFt)}
+      </span>
+    </div>
+  );
+}
+
+/** Visible sentence for the pointer preview (keyboard users hear it in the cursor status). */
+function MovePreviewHint({ table, mover, cell, hoverCell }: Omit<MovePreviewProps, 'at'>) {
+  const shown = cellPreview(table, mover, hoverCell.value, cell);
+  return shown ? (
+    <p class="ds-hint" data-testid="table-move-preview-text">
+      {movePreviewText(shown.preview)}
+    </p>
+  ) : null;
+}
+
+function tokenLabel(token: TableToken, cell: number, speedFt: number | null = null): string {
   let label = token.name;
   if (token.hp !== null && token.maxHp !== null) {
     label = t('table.token.labelHp', { name: token.name, hp: token.hp, max: token.maxHp });
   } else if (token.bloodied) {
     label = t('table.token.labelTier', { name: token.name, tier: t(`table.tier.${token.bloodied}` as 'table.tier.UNHURT') });
   }
+  const at = cellAt(token.topLeft, cell);
+  label += `, ${t('table.cellPosition', { col: at.col + 1, row: at.row + 1 })}`;
   if (token.gmHidden) label += `, ${t('table.token.hidden')}`;
   if (token.disengaged) label += `, ${t('table.token.disengaged')}`;
   if (actionTargetIdsSignal.value.includes(token.id)) label += `, ${t('table.token.targeted')}`;
+  if (speedFt !== null) label += `, ${t('table.token.speedLeft', { distance: formatDistanceFt(speedFt) })}`;
   return label;
 }
 
-/** Name of a door handle; open / closed is its `aria-pressed` state, never part of the name. */
-function doorLabel(door: DoorHandle): string {
-  const extra = door.isSecret ? t('table.door.secret') : door.isLocked ? t('table.door.locked') : null;
-  return extra ? t('table.door.labelWith', { extra }) : t('table.door.label');
+function appendDoorSpatial(base: string, door: DoorHandle, cell: number, distanceFt: number | null): string {
+  const at = cellAt(door.pos, cell);
+  let label = `${base}, ${t('table.cellPosition', { col: at.col + 1, row: at.row + 1 })}`;
+  if (distanceFt !== null) label += `, ${t('table.door.distance', { distance: formatDistanceFt(distanceFt) })}`;
+  return label;
+}
+
+/**
+ * Name of a door handle: the action it performs ("Open door" on a closed door,
+ * "Close door" on an open one), plus the lock or secret state in words, the
+ * 1-based grid cell, and the distance to the active/viewing controlled token.
+ * The handle is a plain button, so no `aria-pressed` competes with the name.
+ */
+function doorLabel(door: DoorHandle, cell: number, distanceFt: number | null): string {
+  const action = t(door.isOpen ? 'table.door.close' : 'table.door.open');
+  const state = door.isSecret ? t('table.door.secret') : door.isLocked ? t('table.door.locked') : null;
+  const base = state ? t('table.door.withState', { action, state }) : action;
+  return appendDoorSpatial(base, door, cell, distanceFt);
+}
+
+/** Name of a GM door lock toggle, with the door's grid cell and optional token distance. */
+function doorLockLabel(door: DoorHandle, cell: number, distanceFt: number | null): string {
+  return appendDoorSpatial(t(door.isLocked ? 'table.door.unlockAction' : 'table.door.lockAction'), door, cell, distanceFt);
 }
 
 function initials(name: string): string {
@@ -181,6 +320,15 @@ function initials(name: string): string {
 
 function prefersReducedMotion(): boolean {
   return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+/** `localStorage`, or `null` where reading it throws (sandboxed frames, disabled storage). */
+function fogStorage(): FogStorage {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
 }
 
 function hexColor(color: number): string {
@@ -205,22 +353,53 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   const palette = getCanvasThemePalette(resolvedThemeSignal.value);
   const areaPreview = pendingAreaTemplate(table);
   const targetIds = actionTargetIdsSignal.value;
+  const metrics = boardMetrics(table);
+  const grid = fogGrid(metrics.widthPx, metrics.heightPx, metrics.cellPx);
+  const userId = client.state.user.value?.id ?? null;
+  const memoryKey = !isGm && table && userId ? fogMemoryKey(userId, campaignId, table.active_scene_id ?? table.background_asset_hash ?? 'table') : null;
+  const memoryRef = useRef<{ id: string | null; cells: ReadonlySet<number>; dirty: boolean }>({ id: null, cells: new Set(), dirty: false });
+  const memoryId = memoryKey && `${memoryKey}|${grid.cols}x${grid.rows}`;
+  if (memoryRef.current.id !== memoryId) {
+    memoryRef.current = { id: memoryId, cells: memoryKey ? loadFogMemory(fogStorage(), memoryKey, grid) : new Set(), dirty: false };
+  }
+  const activeTurnId = activeTurnTokenId(table);
+  const activeTurn = activeTurnId ? tokens.find((tok) => tok.id === activeTurnId) ?? null : null;
   const scene: TableScene = buildTableScene({
     state: areaPreview && table ? { ...table, persistent_aoes: { ...table.persistent_aoes, [areaPreview.id]: areaPreview } } : table,
     palette,
     isGm,
     selectedTokenId: selectedId,
-    activeTurnTokenId: activeTurnTokenId(table),
+    activeTurnTokenId: activeTurnId,
     previewPlayerView,
     reducedMotion: prefersReducedMotion(),
     pings: client.state.pointerPings.value,
     nowMs: Date.now(),
     geometry: isEngineReady() ? WASM_GEOMETRY : null,
+    exploredCells: memoryRef.current.cells,
   });
+  if (memoryKey && scene.fog) {
+    const explored = exploreCells(memoryRef.current.cells, scene.fog.vision, grid);
+    if (explored !== memoryRef.current.cells) memoryRef.current = { ...memoryRef.current, cells: explored, dirty: true };
+  }
+  const shownTokenIds = new Set(scene.tokens.map((tok) => tok.id));
+  const boardTokens = isGm ? tokens : tokens.filter((tok) => shownTokenIds.has(tok.id));
   const { cellPx: cell, widthPx: width, heightPx: height } = scene;
+  const feetPerCell = table && table.feet_per_cell > 0 ? table.feet_per_cell : 5;
   const mapHash = scene.mapHash;
   const doors = doorHandles(table, isGm).filter((door) => isGm || door.sides.some((point) => isPointUnfogged(scene.fog, point)));
+  const controlledTokens = tokens.filter((tok) => tok.controlled);
+  const doorViewerToken = selected?.controlled ? selected : activeTurn?.controlled ? activeTurn : null;
+  const distanceToDoor = (door: DoorHandle): number | null => {
+    if (doorViewerToken) return doorDistanceFt(door, doorViewerToken, cell, feetPerCell);
+    if (!isGm && controlledTokens.length > 0) {
+      return Math.min(...controlledTokens.map((tok) => doorDistanceFt(door, tok, cell, feetPerCell)));
+    }
+    return null;
+  };
   const [doorNotice, setDoorNotice] = useState('');
+  const [rulingsNotice, setRulingsNotice] = useState<MessageKey | null>(null);
+  const [savingRulings, setSavingRulings] = useState(false);
+  const activeSceneId = table?.active_scene_id ?? null;
   const [mapUrl, setMapUrl] = useState<string | null>(null);
   const [mapImage, setMapImage] = useState<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -235,26 +414,79 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   const [capped, setStrokeCapped] = useState(false);
   const [menuTokenId, setMenuTokenId] = useState<Uuid | null>(null);
   const [teleportId, setTeleportId] = useState<Uuid | null>(null);
+  /** Controlled token whose move is being planned with the keyboard cursor (`M`). */
+  const [planMoveId, setPlanMoveId] = useState<Uuid | null>(null);
+  /** Cell under the pointer while a controlled token is selected (move preview). */
+  const hoverCell = useSignal<GridCell | null>(null);
   /** Keyboard cell cursor (`null`: start at the teleported token, the selected cell or the origin). */
   const [cursor, setCursor] = useState<GridCell | null>(null);
   /** Corner a Shift+arrow rectangle started from (`null`: Enter paints one brush). */
   const [anchor, setAnchor] = useState<GridCell | null>(null);
   const cursorRef = useRef<HTMLButtonElement>(null);
-  const stroke = useRef<{ cells: GridCell[]; last: GridCell } | null>(null);
+  const stroke = useRef<{ pointerId?: number; cells: GridCell[]; last: GridCell } | null>(null);
   const touches = useRef(new Map<number, WirePoint2D>());
+  /** Previous controlled-token top-left coordinates (`px`) so only real post-mount moves announce. */
+  const prevPositionsRef = useRef<Map<Uuid, WirePoint2D> | null>(null);
+  const prevSceneRef = useRef<Uuid | null | undefined>(undefined);
+  const lastMoveRef = useRef<{ col: number; row: number; leftFt: number | null; repeat: boolean } | null>(null);
   const sceneRef = useRef(scene);
   sceneRef.current = scene;
   const activeTool: TableTool = isGm ? tool : 'select';
   const menuToken = tokens.find((tok) => tok.id === menuTokenId) ?? null;
   const teleportToken = isGm ? tokens.find((tok) => tok.id === teleportId) ?? null : null;
+  const planToken = teleportToken ? null : tokens.find((tok) => tok.id === planMoveId && tok.controlled) ?? null;
+  const cursorToken = teleportToken ?? planToken;
   const bounds = gridBounds(width, height, cell);
-  const cursorActive = activeTool !== 'select' || teleportToken !== null;
+  const cursorActive = activeTool !== 'select' || cursorToken !== null;
   const cursorCell =
-    cursor ?? (teleportToken ? cellAt(teleportToken.topLeft, cell) : selectedCell ? cellAt(selectedCell, cell) : { col: 0, row: 0 });
+    cursor ?? (cursorToken ? cellAt(cursorToken.topLeft, cell) : selectedCell ? cellAt(selectedCell, cell) : { col: 0, row: 0 });
+  const inCombat = table?.mode === 'TURN_BY_TURN';
+  const events = client.state.lastEvents.value;
+  if (!table) {
+    prevPositionsRef.current = null;
+    prevSceneRef.current = undefined;
+    lastMoveRef.current = null;
+  } else {
+    const nextPositions = new Map(controlledTokens.map((tok) => [tok.id, tok.topLeft]));
+    const sceneSwapped =
+      prevSceneRef.current !== activeSceneId ||
+      events.some((ev) => ev.event === 'SCENE_ACTIVATED' || ev.event === 'SCENE_LOADED');
+    if (prevPositionsRef.current === null || sceneSwapped) {
+      if (sceneSwapped) lastMoveRef.current = null;
+    } else {
+      const prevPositions = prevPositionsRef.current;
+      const movedTokens = controlledTokens.filter((tok) => {
+        const prev = prevPositions.get(tok.id);
+        return prev !== undefined && (prev.x !== tok.topLeft.x || prev.y !== tok.topLeft.y);
+      });
+      if (movedTokens.length > 0) {
+        const moved = movedTokens.find((tok) => tok.id === selectedId) ?? movedTokens[0];
+        const at = cellAt(moved.topLeft, cell);
+        const col = at.col + 1;
+        const row = at.row + 1;
+        const leftFt = inCombat ? moved.speedRemainingFt : null;
+        const prevMove = lastMoveRef.current;
+        const same = prevMove !== null && prevMove.col === col && prevMove.row === row && prevMove.leftFt === leftFt;
+        lastMoveRef.current = { col, row, leftFt, repeat: same ? !prevMove.repeat : false };
+      }
+    }
+    prevPositionsRef.current = nextPositions;
+    prevSceneRef.current = activeSceneId;
+  }
+  const moveState = lastMoveRef.current;
+  const moveBase = moveState
+    ? moveState.leftFt !== null
+      ? t('table.move.announcedLeft', { col: moveState.col, row: moveState.row, left: formatDistanceFt(moveState.leftFt) })
+      : t('table.move.announced', { col: moveState.col, row: moveState.row })
+    : '';
+  const moveNotice = moveBase && moveState?.repeat ? `${moveBase}\u200B` : moveBase;
+  const mover = teleportToken ? null : planToken ?? (activeTool === 'select' && selected?.controlled ? selected : null);
+  const hoverMover = !planToken && !isPlacingArea() && !isPickingTargets() ? mover : null;
+  const planPreview = planToken ? cellPreview(table, planToken, cursorCell, cell) : null;
 
   useLayoutEffect(() => {
-    if (teleportId && !menuTokenId) cursorRef.current?.focus();
-  }, [teleportId, menuTokenId]);
+    if ((teleportId || planMoveId) && !menuTokenId) cursorRef.current?.focus();
+  }, [teleportId, planMoveId, menuTokenId]);
 
   useEffect(() => {
     if (isEngineReady()) return;
@@ -306,6 +538,8 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
     if (!renderer || !mapUrl) return;
     let live = true;
     const image = new Image();
+    // Downloads may redirect to the S3 origin; a non-CORS image would taint the WebGL texture.
+    image.crossOrigin = "anonymous";
     image.src = mapUrl;
     image
       .decode()
@@ -317,9 +551,16 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   }, [renderer, mapUrl]);
 
   useEffect(() => {
+    const memory = memoryRef.current;
+    if (!memory.dirty || !memoryKey) return;
+    memory.dirty = false;
+    saveFogMemory(fogStorage(), memoryKey, memory.cells, grid);
+  });
+
+  useEffect(() => {
     if (!renderer) return;
     try {
-      renderer.update(scene, mapImage);
+      renderer.update(scene, mapImage, zoom);
     } catch {
       renderer.destroy();
       setRenderer(null);
@@ -355,6 +596,19 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   };
 
   const ping = (pos: WirePoint2D) => client.sendPointerPing(pos, hexColor(palette.pointerPingHex));
+
+  const saveRulingsToScene = async (sceneId: Uuid) => {
+    setSavingRulings(true);
+    setRulingsNotice(null);
+    try {
+      await client.saveTableRulings(campaignId, sceneId);
+      setRulingsNotice('table.saveRulings.saved');
+    } catch (err) {
+      setRulingsNotice(err instanceof ApiError && err.code === 'SCENE_NOT_ACTIVE' ? 'table.saveRulings.notActive' : 'table.saveRulings.failed');
+    } finally {
+      setSavingRulings(false);
+    }
+  };
 
   const move = (token: TableToken, to: WirePoint2D) => {
     if (!token.controlled) return;
@@ -392,31 +646,53 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
     const bounds = gridBounds(width, height, cell);
     const at = cellAt(boardPoint(e), cell);
     if (phase === 'start') {
-      stroke.current = { cells: mergeCells([], brushCells(at, brushSize, bounds)), last: at };
+      stroke.current = { pointerId: e.pointerId, cells: mergeCells([], brushCells(at, brushSize, bounds)), last: at };
       return;
     }
     const current = stroke.current;
     if (!current || (at.col === current.last.col && at.row === current.last.row)) return;
     const added = strokeCells(current.last, at).flatMap((c) => brushCells(c, brushSize, bounds));
-    stroke.current = { cells: mergeCells(current.cells, added), last: at };
+    stroke.current = { pointerId: current.pointerId, cells: mergeCells(current.cells, added), last: at };
   };
 
   const onBoardPointerDown = (e: PointerEvent) => {
-    if (activeTool === 'select' || e.pointerType === 'touch') return;
+    if (activeTool === 'select' || stroke.current) return;
     e.preventDefault();
     paint(e, 'start');
   };
 
   const onBoardPointerMove = (e: PointerEvent) => {
-    if (stroke.current) paint(e, 'move');
+    if (stroke.current) {
+      if (stroke.current.pointerId === undefined || e.pointerId === undefined || e.pointerId === stroke.current.pointerId) {
+        paint(e, 'move');
+      }
+      return;
+    }
+    if (e.pointerType === 'touch' || activeTool !== 'select') return;
+    const at = cellAt(boardPoint(e), cell);
+    const current = hoverCell.peek();
+    if (at.col !== current?.col || at.row !== current?.row) hoverCell.value = at;
   };
 
-  const onBoardPointerUp = () => {
+  const onBoardPointerLeave = () => {
+    hoverCell.value = null;
+    onBoardPointerUp();
+  };
+
+  const onBoardPointerUp = (e?: PointerEvent) => {
     const done = stroke.current;
-    stroke.current = null;
     if (!done) return;
+    if (e?.pointerId !== undefined && done.pointerId !== undefined && e.pointerId !== done.pointerId) return;
+    stroke.current = null;
     for (const command of strokeCommands(activeTool, done.cells)) client.submitCommand(command);
     setStrokeCapped(strokeCapped(done.cells));
+  };
+
+  const onBoardPointerCancel = (e: PointerEvent) => {
+    const current = stroke.current;
+    if (!current) return;
+    if (e.pointerId !== undefined && current.pointerId !== undefined && e.pointerId !== current.pointerId) return;
+    stroke.current = null;
   };
 
   const onScrollerWheel = (e: WheelEvent) => {
@@ -426,6 +702,7 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
   };
 
   const onScrollerPointerDown = (e: PointerEvent) => {
+    if (activeTool !== 'select') return;
     if (e.pointerType === 'touch') touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
   };
 
@@ -458,6 +735,15 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
       setMenuTokenId(token.id);
       return;
     }
+    if ((e.key === 'm' || e.key === 'M') && token.controlled) {
+      e.preventDefault();
+      selectToken(token);
+      setTeleportId(null);
+      setPlanMoveId(token.id);
+      setCursor(null);
+      setAnchor(null);
+      return;
+    }
     if (e.key === 'p' || e.key === 'P') {
       e.preventDefault();
       ping({ x: token.topLeft.x + (token.gridW * cell) / 2, y: token.topLeft.y + (token.gridH * cell) / 2 });
@@ -477,7 +763,7 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
     const delta = ARROW_DELTAS[e.key];
     if (delta) {
       e.preventDefault();
-      setAnchor(e.shiftKey && !teleportToken ? (anchor ?? cursorCell) : null);
+      setAnchor(e.shiftKey && !cursorToken ? (anchor ?? cursorCell) : null);
       setCursor(stepCell(cursorCell, delta, bounds));
       return;
     }
@@ -486,6 +772,12 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
       if (teleportToken) {
         focusToken(teleportToken.id);
         move(teleportToken, { x: cursorCell.col * cell, y: cursorCell.row * cell });
+        return;
+      }
+      if (planToken) {
+        focusToken(planToken.id);
+        move(planToken, { x: cursorCell.col * cell, y: cursorCell.row * cell });
+        setPlanMoveId(null);
         return;
       }
       const cells = anchor ? rectCells(anchor, cursorCell, bounds) : brushCells(cursorCell, brushSize, bounds);
@@ -497,9 +789,10 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
     if (e.key === 'Escape') {
       e.preventDefault();
       if (anchor) setAnchor(null);
-      else if (teleportToken) {
-        focusToken(teleportToken.id);
+      else if (cursorToken) {
+        focusToken(cursorToken.id);
         setTeleportId(null);
+        setPlanMoveId(null);
       } else setTool('select');
     }
   };
@@ -512,8 +805,10 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
         rows: Math.abs(cursorCell.row - anchor.row) + 1,
       })
     : t('table.cursor.at', { col: cursorCell.col + 1, row: cursorCell.row + 1 });
+  const cursorStatusText = planPreview ? `${cursorStatus} ${movePreviewText(planPreview.preview)}` : cursorStatus;
 
   const pixi = renderer !== null;
+  const zoomLabel = t('table.zoomLevel', { percent: Math.round(zoom * 100) });
   return (
     <section class="ds-table-canvas" aria-label={t('table.canvas')} data-testid="table-canvas">
       <p class="ds-visually-hidden">{t('table.canvasHelp')}</p>
@@ -521,8 +816,14 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
         <button type="button" class="ds-btn ds-btn-ghost ds-btn-sm" data-testid="table-zoom-out" aria-label={t('table.zoomOut')} onClick={() => zoomBy(1 / ZOOM_STEP)}>
           −
         </button>
-        <button type="button" class="ds-btn ds-btn-ghost ds-btn-sm" data-testid="table-zoom-reset" aria-label={t('table.zoomReset')} onClick={() => zoomBy(1 / zoom)}>
-          {t('table.zoomLevel', { percent: Math.round(zoom * 100) })}
+        <button
+          type="button"
+          class="ds-btn ds-btn-ghost ds-btn-sm"
+          data-testid="table-zoom-reset"
+          aria-label={t('table.zoomReset', { level: zoomLabel })}
+          onClick={() => zoomBy(1 / zoom)}
+        >
+          {zoomLabel}
         </button>
         <button type="button" class="ds-btn ds-btn-ghost ds-btn-sm" data-testid="table-zoom-in" aria-label={t('table.zoomIn')} onClick={() => zoomBy(ZOOM_STEP)}>
           +
@@ -576,6 +877,17 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
                   <option key={size} value={String(size)}>{t('table.brushCells', { size })}</option>
                 ))}
               </select>
+              {activeSceneId ? (
+                <button
+                  type="button"
+                  class="ds-btn ds-btn-secondary ds-btn-sm"
+                  data-testid="table-save-rulings"
+                  disabled={savingRulings}
+                  onClick={() => void saveRulingsToScene(activeSceneId)}
+                >
+                  {t('table.saveRulings')}
+                </button>
+              ) : null}
             </div>
           </>
         ) : null}
@@ -583,6 +895,11 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
       {isGm && selectedCell ? (
         <p class="ds-hint" role="status" data-testid="table-selected-cell">
           {t('table.selectedCell', { col: Math.round(selectedCell.x / cell) + 1, row: Math.round(selectedCell.y / cell) + 1 })}
+        </p>
+      ) : null}
+      {isGm && rulingsNotice ? (
+        <p class="ds-hint" role="status" data-testid="table-save-rulings-status">
+          {t(rulingsNotice)}
         </p>
       ) : null}
       {capped && tool !== 'select' ? (
@@ -595,18 +912,23 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
           {t('table.teleportArmed', { name: teleportToken.name })}
         </p>
       ) : null}
-      <p class="ds-visually-hidden" role="status" data-testid="table-door-status">
+      <MovePreviewHint table={table} mover={hoverMover} cell={cell} hoverCell={hoverCell} />
+      <p class="ds-visually-hidden" role="status" aria-live="polite" data-testid="table-door-status">
         {doorNotice}
+      </p>
+      <p class="ds-visually-hidden" role="status" aria-live="polite" data-testid="table-move-status">
+        {moveNotice}
       </p>
       {cursorActive ? (
         <p class="ds-visually-hidden" id="table-cursor-status" role="status" data-testid="table-cursor-status">
-          {cursorStatus}
+          {cursorStatusText}
         </p>
       ) : null}
       <div
         ref={scrollerRef}
         class="ds-board-scroller"
         data-testid="table-scroller"
+        style={activeTool === 'select' ? undefined : { touchAction: 'none' }}
         onWheel={onScrollerWheel}
         onScroll={trackViewportCenter}
         onPointerDown={onScrollerPointerDown}
@@ -615,6 +937,14 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
         onPointerCancel={onScrollerPointerEnd}
       >
         <div class="ds-board-viewport" style={{ width: `${width * zoom}px`, height: `${height * zoom}px` }}>
+          <canvas
+            ref={canvasRef}
+            class="ds-board-canvas trame-pixijs-canvas"
+            role="img"
+            aria-label={t('table.render')}
+            hidden={!pixi}
+            data-testid={pixi && mapImage ? 'table-map' : 'table-render'}
+          />
           <div
             ref={boardRef}
             class={`ds-board${pixi ? ' is-pixi' : ''}${activeTool === 'select' ? '' : ' is-brushing'}`}
@@ -625,59 +955,57 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
               height: `${height}px`,
               '--board-cell': `${cell}px`,
               transform: zoom === 1 ? undefined : `scale(${zoom})`,
+              touchAction: activeTool === 'select' ? undefined : 'none',
             }}
             onClick={onBoardClick}
             onPointerDown={onBoardPointerDown}
             onPointerMove={onBoardPointerMove}
             onPointerUp={onBoardPointerUp}
-            onPointerLeave={onBoardPointerUp}
+            onPointerCancel={onBoardPointerCancel}
+            onPointerLeave={onBoardPointerLeave}
           >
-            <canvas
-              ref={canvasRef}
-              class="ds-board-canvas trame-pixijs-canvas"
-              role="img"
-              aria-label={t('table.render')}
-              hidden={!pixi}
-              data-testid={pixi && mapImage ? 'table-map' : 'table-render'}
-            />
             {!pixi && mapUrl ? <img class="ds-board-map" src={mapUrl} alt="" data-testid="table-map" /> : null}
             {!pixi ? <div class="ds-board-grid" aria-hidden="true" /> : null}
-            {doors.map((door) => (
-              <Fragment key={door.wallId}>
-                <button
-                  type="button"
-                  class={`ds-door-handle${door.isOpen ? ' is-open' : ''}${door.isLocked || door.isSecret ? ' is-locked' : ''}`}
-                  data-testid={`door-${door.wallId}`}
-                  aria-label={doorLabel(door)}
-                  aria-pressed={door.isOpen ? 'true' : 'false'}
-                  aria-disabled={door.canToggle ? undefined : 'true'}
-                  style={{ left: `${door.pos.x - DOOR_HANDLE_PX / 2}px`, top: `${door.pos.y - DOOR_HANDLE_PX / 2}px` }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (door.canToggle) client.submitCommand(toggleDoor(door.wallId, !door.isOpen));
-                    else setDoorNotice(t(door.isSecret ? 'table.door.secretReason' : 'table.door.lockedReason'));
-                  }}
-                >
-                  <span aria-hidden="true">{door.isOpen ? '⊐' : '▮'}</span>
-                </button>
-                {isGm && !door.isSecret ? (
+            {doors.map((door) => {
+              const doorDistFt = distanceToDoor(door);
+              return (
+                <Fragment key={door.wallId}>
                   <button
                     type="button"
-                    class={`ds-door-handle${door.isLocked ? ' is-locked' : ''}`}
-                    data-testid={`door-lock-${door.wallId}`}
-                    aria-label={t('table.door.lock')}
-                    aria-pressed={door.isLocked ? 'true' : 'false'}
-                    style={{ left: `${door.pos.x + DOOR_HANDLE_PX / 2 + 4}px`, top: `${door.pos.y - DOOR_HANDLE_PX / 2}px` }}
+                    class={`ds-door-handle${door.isOpen ? ' is-open' : ''}${door.isLocked || door.isSecret ? ' is-locked' : ''}`}
+                    data-testid={`door-${door.wallId}`}
+                    aria-label={doorLabel(door, cell, doorDistFt)}
+                    aria-disabled={door.canToggle ? undefined : 'true'}
+                    style={{ left: `${door.pos.x - DOOR_HANDLE_PX / 2}px`, top: `${door.pos.y - DOOR_HANDLE_PX / 2}px` }}
                     onClick={(e) => {
                       e.stopPropagation();
-                      client.submitCommand(configureDoorLock(door.wallId, !door.isLocked));
+                      if (door.canToggle) client.submitCommand(toggleDoor(door.wallId, !door.isOpen));
+                      else {
+                        const next = t(door.isSecret ? 'table.door.secretReason' : 'table.door.lockedReason');
+                        setDoorNotice((prev) => (prev === next ? `${next}\u200B` : next));
+                      }
                     }}
                   >
-                    <span aria-hidden="true">{door.isLocked ? '●' : '○'}</span>
+                    <span aria-hidden="true">{door.isOpen ? '⊐' : '▮'}</span>
                   </button>
-                ) : null}
-              </Fragment>
-            ))}
+                  {isGm && !door.isSecret ? (
+                    <button
+                      type="button"
+                      class={`ds-door-handle${door.isLocked ? ' is-locked' : ''}`}
+                      data-testid={`door-lock-${door.wallId}`}
+                      aria-label={doorLockLabel(door, cell, doorDistFt)}
+                      style={{ left: `${door.pos.x + DOOR_HANDLE_PX / 2 + 4}px`, top: `${door.pos.y - DOOR_HANDLE_PX / 2}px` }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        client.submitCommand(configureDoorLock(door.wallId, !door.isLocked));
+                      }}
+                    >
+                      <span aria-hidden="true">{door.isLocked ? '●' : '○'}</span>
+                    </button>
+                  ) : null}
+                </Fragment>
+              );
+            })}
             {cursorActive && anchor ? (
               <div
                 class="ds-board-cursor-rect"
@@ -690,13 +1018,20 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
                 }}
               />
             ) : null}
+            <MovePreviewCell table={table} mover={planToken ?? hoverMover} cell={cell} at={planToken ? cursorCell : null} hoverCell={hoverCell} />
             {cursorActive ? (
               <button
                 ref={cursorRef}
                 type="button"
                 class="ds-board-cursor"
                 data-testid="table-cell-cursor"
-                aria-label={teleportToken ? t('table.cursor.teleport', { name: teleportToken.name }) : t('table.cursor.brush')}
+                aria-label={
+                  teleportToken
+                    ? t('table.cursor.teleport', { name: teleportToken.name })
+                    : planToken
+                      ? t('table.cursor.move', { name: planToken.name })
+                      : t('table.cursor.brush')
+                }
                 aria-describedby="table-cursor-status"
                 style={{ left: `${cursorCell.col * cell}px`, top: `${cursorCell.row * cell}px`, width: `${cell}px`, height: `${cell}px` }}
                 onKeyDown={onCursorKeyDown}
@@ -705,48 +1040,61 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
                 }}
               />
             ) : null}
-            {tokens.map((token) => (
-              <button
-                key={token.id}
-                type="button"
-                class={`ds-token${token.controlled ? '' : ' is-public'}${token.id === selectedId ? ' is-selected' : ''}${token.gmHidden ? ' is-hidden' : ''}${targetIds.includes(token.id) ? ' is-targeted' : ''}`}
-                data-testid={`token-${token.id}`}
-                aria-pressed={token.id === selectedId}
-                aria-label={tokenLabel(token)}
-                aria-haspopup="dialog"
-                style={{
-                  left: `${token.topLeft.x}px`,
-                  top: `${token.topLeft.y}px`,
-                  width: `${token.gridW * cell}px`,
-                  height: `${token.gridH * cell}px`,
-                }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (e.altKey) {
-                    ping(boardPoint(e));
-                    return;
-                  }
-                  if (isPickingTargets()) {
-                    toggleActionTarget(token.id);
-                    return;
-                  }
-                  if (isPlacingArea()) {
-                    areaOriginSignal.value = { x: token.topLeft.x + (token.gridW * cell) / 2, y: token.topLeft.y + (token.gridH * cell) / 2 };
-                    return;
-                  }
-                  selectToken(token);
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  selectToken(token);
-                  setMenuTokenId(token.id);
-                }}
-                onKeyDown={(e) => onTokenKeyDown(token, e)}
-              >
-                <span aria-hidden="true">{initials(token.name)}</span>
-              </button>
-            ))}
+            {boardTokens.map((token) => {
+              const speedFt = shownSpeedFt(token, selectedId, inCombat);
+              return (
+                <Fragment key={token.id}>
+                  <button
+                    type="button"
+                    class={`ds-token${token.controlled ? '' : ' is-public'}${token.id === selectedId ? ' is-selected' : ''}${token.gmHidden ? ' is-hidden' : ''}${targetIds.includes(token.id) ? ' is-targeted' : ''}`}
+                    data-testid={`token-${token.id}`}
+                    aria-pressed={token.id === selectedId}
+                    aria-label={tokenLabel(token, cell, speedFt)}
+                    style={{
+                      left: `${token.topLeft.x}px`,
+                      top: `${token.topLeft.y}px`,
+                      width: `${token.gridW * cell}px`,
+                      height: `${token.gridH * cell}px`,
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (e.altKey) {
+                        ping(boardPoint(e));
+                        return;
+                      }
+                      if (isPickingTargets()) {
+                        toggleActionTarget(token.id);
+                        return;
+                      }
+                      if (isPlacingArea()) {
+                        areaOriginSignal.value = { x: token.topLeft.x + (token.gridW * cell) / 2, y: token.topLeft.y + (token.gridH * cell) / 2 };
+                        return;
+                      }
+                      selectToken(token);
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      selectToken(token);
+                      setMenuTokenId(token.id);
+                    }}
+                    onKeyDown={(e) => onTokenKeyDown(token, e)}
+                  >
+                    <span aria-hidden="true">{initials(token.name)}</span>
+                  </button>
+                  {speedFt !== null ? (
+                    <span
+                      class="ds-board-chip ds-token-speed atlas-tabular-nums"
+                      aria-hidden="true"
+                      data-testid={`token-speed-${token.id}`}
+                      style={{ left: `${token.topLeft.x + (token.gridW * cell) / 2}px`, top: `${token.topLeft.y + token.gridH * cell + 2}px` }}
+                    >
+                      {formatDistanceFt(speedFt)}
+                    </span>
+                  ) : null}
+                </Fragment>
+              );
+            })}
           </div>
         </div>
       </div>

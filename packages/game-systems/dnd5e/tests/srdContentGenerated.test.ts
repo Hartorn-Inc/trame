@@ -173,6 +173,7 @@ describe("Generated SRD 5.2.1 packs (GS7, GS8, GS9, D8)", () => {
       { id: "spirit-guardians", spell: "srd:spell:spirit_guardians" },
       { id: "prismatic-spray", spell: "srd:spell:prismatic_spray" },
       { id: "burning-hands", spell: "srd:spell:burning_hands" },
+      { id: "vitriolic-sphere-initial-damage", spell: "srd:spell:vitriolic_sphere" },
     ];
     for (const { id, spell } of halfOnSaveSpellCases) {
       it(`[half-on-save-pack-${id}] ${spell} halves its damage on a successful save`, () => {
@@ -208,6 +209,60 @@ describe("Generated SRD 5.2.1 packs (GS7, GS8, GS9, D8)", () => {
         assert.ok(data);
         assert.equal(data.attackType, attackType);
         assert.equal("attackType" in data, attackType !== undefined);
+      });
+    }
+
+    const resolutionCases: { id: string; spell: string; damageResolution: string }[] = [
+      { id: "magic-missile-automatic", spell: "srd:spell:magic_missile", damageResolution: "automatic" },
+      { id: "hex-rider", spell: "srd:spell:hex", damageResolution: "rider" },
+      { id: "hunters-mark-rider", spell: "srd:spell:hunters_mark", damageResolution: "rider" },
+      { id: "divine-favor-rider", spell: "srd:spell:divine_favor", damageResolution: "rider" },
+      { id: "divine-smite-rider", spell: "srd:spell:divine_smite", damageResolution: "rider" },
+      { id: "shining-smite-rider", spell: "srd:spell:shining_smite", damageResolution: "rider" },
+      { id: "power-word-kill-described", spell: "srd:spell:power_word_kill", damageResolution: "described" },
+      { id: "spike-growth-described", spell: "srd:spell:spike_growth", damageResolution: "described" },
+      { id: "fire-shield-described", spell: "srd:spell:fire_shield", damageResolution: "described" },
+      { id: "dimension-door-described", spell: "srd:spell:dimension_door", damageResolution: "described" },
+      { id: "meld-into-stone-described", spell: "srd:spell:meld_into_stone", damageResolution: "described" },
+      { id: "teleport-described", spell: "srd:spell:teleport", damageResolution: "described" },
+      { id: "wish-described", spell: "srd:spell:wish", damageResolution: "described" },
+    ];
+    for (const { id, spell, damageResolution } of resolutionCases) {
+      it(`[damage-resolution-${id}] ${spell} has no attack roll, no save and resolves as ${damageResolution}`, () => {
+        const data = byId.get(spell)?.data;
+        assert.deepEqual([data?.attackType, data?.saveAbility, data?.damageResolution], [undefined, undefined, damageResolution]);
+      });
+    }
+
+    it("[damage-resolution-complete] every damaging spell without an attack roll or a save names its resolution", () => {
+      const unnamed = packs.spells
+        .filter((e) => typeof e.data.damageDice === "string" && e.data.attackType === undefined && e.data.saveAbility === undefined)
+        .filter((e) => e.data.damageResolution === undefined)
+        .map((e) => e.id);
+      assert.deepEqual(unnamed, []);
+    });
+
+    const combinationCases: { id: string; spell: string; damageCombination: "all" | "choice" }[] = [
+      { id: "flame-strike-all", spell: "srd:spell:flame_strike", damageCombination: "all" },
+      { id: "ice-storm-all", spell: "srd:spell:ice_storm", damageCombination: "all" },
+      { id: "spirit-guardians-choice", spell: "srd:spell:spirit_guardians", damageCombination: "choice" },
+      { id: "fire-shield-choice", spell: "srd:spell:fire_shield", damageCombination: "choice" },
+      { id: "prismatic-spray-choice", spell: "srd:spell:prismatic_spray", damageCombination: "choice" },
+    ];
+    for (const { id, spell, damageCombination } of combinationCases) {
+      it(`[damage-combination-${id}] ${spell} combines its damage parts as ${damageCombination}`, () => {
+        assert.equal(byId.get(spell)?.data.damageCombination, damageCombination);
+      });
+    }
+
+    const instanceCases: { id: string; spell: string; instances: Record<string, unknown> }[] = [
+      { id: "magic-missile-three-darts", spell: "srd:spell:magic_missile", instances: { unit: "dart", count: 3, perSlotLevel: 1 } },
+      { id: "eldritch-blast-beams-scale", spell: "srd:spell:eldritch_blast", instances: { unit: "beam", count: 1, cantripScaling: true } },
+      { id: "scorching-ray-three-rays", spell: "srd:spell:scorching_ray", instances: { unit: "ray", count: 3, perSlotLevel: 1 } },
+    ];
+    for (const { id, spell, instances } of instanceCases) {
+      it(`[instances-${id}] ${spell} resolves its instances separately`, () => {
+        assert.deepEqual(byId.get(spell)?.data.instances, instances);
       });
     }
 

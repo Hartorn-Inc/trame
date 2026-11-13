@@ -38,7 +38,8 @@
  * -----
  * `App` mount
  * ├── 1. `bootstrapSession` -> entry route + status `authenticated` | `anonymous`.
- * ├── 2. route `setup` -> `OwnerSetupScreen`; route `invite` -> `InviteRedemptionScreen`.
+ * ├── 2. route `setup` -> `OwnerSetupScreen`; `reset` -> `PasswordResetScreen`;
+ * │      route `invite` -> `InviteRedemptionScreen`.
  * ├── 3. `anonymous` -> `AuthScreen`.
  * ├── 4. `authenticated`, no campaign -> `CampaignLobby` | `InstanceAdminPanel` (Owner).
  * └── 5. campaign selected -> `client.connect(id)` + `CampaignWorkspace`.
@@ -53,8 +54,9 @@ import { AccountSettingsDialog } from './auth/AccountSettingsDialog.tsx';
 import { AuthScreen } from './auth/AuthScreen.tsx';
 import { InviteRedemptionScreen } from './auth/InviteRedemptionScreen.tsx';
 import { OwnerSetupScreen } from './auth/OwnerSetupScreen.tsx';
+import { PasswordResetScreen } from './auth/PasswordResetScreen.tsx';
 import { CommandFeedbackToasts, ConnectionBanner, WalQuarantineBanner } from './components/RoomConnectionFeedback.tsx';
-import { LocaleToggle, UnitsToggle } from './components/ShellToggles.tsx';
+import { LocaleToggle, ThemeToggle, UnitsToggle } from './components/ShellToggles.tsx';
 import { mobileCompanionOverrideSignal, t } from './i18n/index.ts';
 import { CampaignLobby } from './lobby/CampaignLobby.tsx';
 import { InstanceAdminPanel } from './lobby/InstanceAdminPanel.tsx';
@@ -139,6 +141,7 @@ function ShellHeader({ client, inCampaign, onOpenAccount, onOpenAdmin }: ShellHe
             {t('shell.backToLobby')}
           </button>
         )}
+        <ThemeToggle />
         <LocaleToggle />
         {inCampaign && (
           <>
@@ -276,6 +279,10 @@ export function App({ client = apiClient, location, replaceUrl = browserReplaceU
 
   if (route.kind === 'setup') {
     return <OwnerSetupScreen client={client} token={route.token} onDone={leaveEntryRoute} />;
+  }
+
+  if (route.kind === 'reset') {
+    return <PasswordResetScreen client={client} token={route.token} onDone={leaveEntryRoute} />;
   }
 
   if (route.kind === 'invite') {

@@ -1,0 +1,17 @@
+{
+  "name": "trame-budget-cap",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloud Run function that unlinks the TRAME project from its billing account when the monthly budget is reached.",
+  "main": "index.js",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@google-cloud/billing": "6.2.0",
+    "@google-cloud/functions-framework": "5.0.5"
+  }
+}

@@ -54,8 +54,10 @@ pub mod archive;
 pub mod assets;
 pub mod auth;
 pub mod campaigns;
+pub mod compression;
 pub mod config;
 pub mod dice;
+pub mod healthcheck;
 pub mod http;
 pub mod importers;
 pub mod instance;
@@ -70,6 +72,7 @@ pub mod storage;
 pub mod sync;
 pub mod timeline;
 pub mod wal;
+pub mod ws_compression;
 
 #[cfg(test)]
 mod tests {

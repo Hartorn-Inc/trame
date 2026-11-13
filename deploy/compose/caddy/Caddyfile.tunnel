@@ -1,0 +1,34 @@
+# ============================================================================
+# TRAME EDGE BEHIND CLOUDFLARE TUNNEL (Caddyfile.tunnel)
+# ============================================================================
+#
+# PURPOSE:
+# --------
+# Used by `docker-compose.tunnel.yml`. Cloudflare terminates TLS and
+# `cloudflared` dials out to Cloudflare, so no host port is published at all.
+# The tunnel's public hostname points at `http://caddy:80`; Caddy keeps the
+# same routing table as the HTTPS edge (`trame-routes.caddy`).
+#
+# INVARIANTS & SAFETY BOUNDARIES:
+# -------------------------------
+#   1. `Two Proxy Hops`:
+#      - Cloudflare's edge appends the browser address to `X-Forwarded-For`.
+#        Caddy trusts the header from private addresses (only `cloudflared`
+#        can reach it: no port is published) and appends the `cloudflared`
+#        address, so the browser is the 2nd entry from the right and
+#        `trame-server` runs with `TRAME_TRUSTED_PROXY_HOPS=2`.
+#   2. `Host Preserved`:
+#      - `cloudflared` forwards the public hostname as `Host`, which keeps
+#        the Silo SigV4 signatures and the WebSocket `Origin` check valid.
+# ============================================================================
+
+{
+	auto_https off
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:80 {
+	import trame-routes.caddy
+}

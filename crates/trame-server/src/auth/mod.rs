@@ -9,6 +9,7 @@
 //!   - OAuth2 authorization employs SHA-256 PKCE RFC 7636 challenge generation.
 //!   - Active guest sessions graduate seamlessly into bound permanent identities.
 //!   - `accounts` owns `InstanceRole`, owner bootstrap, and `CampaignInvite` storage.
+//!   - `recovery` owns one-time password-reset links and password changes.
 //! ============================================================================
 
 pub mod accounts;
@@ -16,6 +17,7 @@ pub mod magic_link;
 pub mod oauth;
 pub mod password;
 pub mod pat;
+pub mod recovery;
 pub mod session;
 pub mod totp;
 
@@ -24,5 +26,6 @@ pub use magic_link::*;
 pub use oauth::*;
 pub use password::*;
 pub use pat::*;
+pub use recovery::*;
 pub use session::*;
 pub use totp::*;

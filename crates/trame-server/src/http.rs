@@ -50,8 +50,10 @@
 //!      - The writer sends a WebSocket `Ping` every `SecurityPolicy::ws_ping_interval`
 //!        (20 s, like the client's heartbeat); a peer silent for `ws_ping_interval +
 //!        ws_pong_timeout` (30 s) is closed with `1001` so its room slot is freed.
-//!   5. `Hardening Headers`:
+//!   5. `Hardening Headers & Compression`:
 //!      - `security_headers_middleware` wraps the whole router (CSP, `nosniff`, frame denial).
+//!      - `compression::http_compression_layer` is the outermost layer: gzip, br or zstd
+//!        from `Accept-Encoding`, images, fonts and archives skipped.
 //!   6. `Deterministic Session Cleanup & Sub-5ms Healthz`:
 //!      - When a WebSocket disconnects, `disconnect_client(session_id)` and `send_task.abort()` execute
 //!        unconditionally so `RoomLeaseManager` tracks active connections accurately.
@@ -93,7 +95,7 @@ use crate::config::ServerConfig;
 pub use crate::maps::{InMemoryMapStorage, get_campaign_maps_handler, put_campaign_maps_handler};
 use crate::room::{
     ClientSender, ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomError,
-    RoomLeaseManager, WS_CLOSE_CODE_GOING_AWAY, WS_CLOSE_CODE_INTERNAL_ERROR,
+    RoomLeaseManager, TableRoomHandle, WS_CLOSE_CODE_GOING_AWAY, WS_CLOSE_CODE_INTERNAL_ERROR,
     WS_CLOSE_CODE_MEMBERSHIP_REVOKED, WS_CLOSE_CODE_SLOW_CONSUMER, client_channel,
 };
 use crate::security::{opaque_server_errors_middleware, security_headers_middleware};
@@ -106,6 +108,7 @@ use crate::sync::{ClientEnvelope, decode_client_envelope};
 use crate::timeline::{
     InMemoryTimelineStorage, SessionTimelineEvent, SessionTimelineResponse, TimelineStorage,
 };
+use crate::ws_compression::{FrameEncoding, WS_SUBPROTOCOL_DEFLATE};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -545,10 +548,28 @@ pub fn build_router_with_postgres_store(
     instance_id: Uuid,
     config: &ServerConfig,
 ) -> Router {
+    build_router_with_postgres_and_asset_store(
+        store.clone(),
+        store,
+        lease_manager,
+        instance_id,
+        config,
+    )
+}
+
+/// Same as `build_router_with_postgres_store` with assets in `asset_store` (`S3Store` when
+/// `S3_*` is configured) instead of PostgreSQL.
+pub fn build_router_with_postgres_and_asset_store(
+    store: Arc<SqlxPostgresStore>,
+    asset_store: Arc<dyn AssetStore>,
+    lease_manager: Arc<RoomLeaseManager>,
+    instance_id: Uuid,
+    config: &ServerConfig,
+) -> Router {
     let auth_state = auth_state_from_config(store.clone(), config);
     let state = AppState {
         lease_manager,
-        asset_store: store.clone(),
+        asset_store,
         membership: store.clone(),
         instance_id,
         timeline_storage: store.clone(),
@@ -640,6 +661,7 @@ pub fn build_router_with_state(state: AppState) -> Router {
     let auth_router = build_auth_router(state.auth_state.clone());
     crate::campaigns::install_room_sinks(&state);
     let static_dir = state.static_dir.clone();
+    let policy = state.auth_state.security.clone();
 
     let router = Router::new()
         .route("/healthz", get(healthz_handler))
@@ -665,6 +687,10 @@ pub fn build_router_with_state(state: AppState) -> Router {
             "/api/v1/campaigns/{campaign_id}/maps",
             get(get_campaign_maps_handler).put(put_campaign_maps_handler),
         )
+        .route(
+            "/api/v1/campaigns/{campaign_id}/maps/{scene_id}/table-rulings",
+            post(crate::maps::save_table_rulings_handler),
+        )
         .route("/api/v1/mcp", post(crate::mcp::mcp_jsonrpc_handler))
         .merge(crate::campaigns::campaign_routes())
         .merge(crate::access::campaign_access_routes())
@@ -677,7 +703,11 @@ pub fn build_router_with_state(state: AppState) -> Router {
     };
     router
         .layer(axum::middleware::from_fn(opaque_server_errors_middleware))
-        .layer(axum::middleware::from_fn(security_headers_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            policy,
+            security_headers_middleware,
+        ))
+        .layer(crate::compression::http_compression_layer())
 }
 
 /// Resolves an authenticated user ID from a session cookie, Bearer session token, or Bearer PAT.
@@ -748,6 +778,46 @@ pub async fn resolve_campaign_role(
         Some(CampaignRole::Player)
     } else {
         None
+    }
+}
+
+/// Sends every `Player` member of `campaign_id` to its room (`set_player_roster`) so hidden
+/// roll privacy also counts offline players. Uses `room` when the caller holds the handle,
+/// otherwise updates the room only if it is awake. Called on attach, MCP wake, and
+/// membership changes; a storage error keeps the previous roster and is logged.
+pub async fn refresh_player_roster(
+    state: &AppState,
+    campaign_id: Uuid,
+    room: Option<&TableRoomHandle>,
+) {
+    let active;
+    let room = match room {
+        Some(room) => room,
+        None => match state.lease_manager.get_active_room(campaign_id).await {
+            Some(handle) => {
+                active = handle;
+                &active
+            }
+            None => return,
+        },
+    };
+    match state
+        .auth_state
+        .session_store
+        .list_campaign_members(campaign_id)
+        .await
+    {
+        Ok(members) => {
+            let players = members
+                .into_iter()
+                .filter(|m| !matches!(m.role.to_ascii_uppercase().as_str(), "GM" | "SPECTATOR"))
+                .map(|m| m.user_id)
+                .collect();
+            let _ = room.set_player_roster(players).await;
+        }
+        Err(err) => {
+            tracing::warn!(%campaign_id, error = %err, "player roster not refreshed");
+        }
     }
 }
 
@@ -1225,6 +1295,7 @@ pub async fn ws_campaign_handler(
 
     ws.max_message_size(policy.ws_max_message_bytes)
         .max_frame_size(policy.ws_max_message_bytes)
+        .protocols([WS_SUBPROTOCOL_DEFLATE])
         .on_upgrade(move |socket| handle_ws_connection(socket, state, campaign_id, user_id, role))
         .into_response()
 }
@@ -1371,6 +1442,7 @@ pub(crate) async fn resolve_client_envelope(
 fn reject_frame(tx: &ClientSender, reason: &str, correlation_id: Option<String>) {
     let out = crate::sync::ServerEnvelope::CommandRejected {
         reason: reason.to_string(),
+        detail: None,
         correlation_id,
     };
     if let Ok(bytes) = crate::sync::encode_server_envelope(&out) {
@@ -1389,6 +1461,7 @@ async fn close_socket(mut socket: WebSocket, code: u16, reason: &str) {
 
 /// Socket writer task: drains the client's bounded queue into `sink`, sends a `Ping` every
 /// `ping_interval`, and closes with `WS_CLOSE_CODE_SLOW_CONSUMER` when the queue overflowed.
+/// Binary frames go through `encoding`, so compression runs here and never in the room actor.
 ///
 /// Every send (frames, pings, the Close frame) is bounded by `send_timeout`: a peer that
 /// stops reading fills the TCP window, `send` then never completes, and without the bound
@@ -1400,6 +1473,7 @@ pub(crate) async fn run_socket_writer<S>(
     overflow: Arc<tokio::sync::Notify>,
     ping_interval: std::time::Duration,
     send_timeout: std::time::Duration,
+    encoding: FrameEncoding,
 ) where
     S: futures_util::Sink<Message> + Unpin,
 {
@@ -1414,7 +1488,9 @@ pub(crate) async fn run_socket_writer<S>(
                 reason: "Slow Consumer".into(),
             })),
             frame = rx.recv() => match frame {
-                Some(OutboundClientFrame::Binary(bytes)) => Message::Binary(bytes.into()),
+                Some(OutboundClientFrame::Binary(bytes)) => {
+                    Message::Binary(encoding.encode(bytes).into())
+                }
                 Some(OutboundClientFrame::Close { code, reason }) => {
                     Message::Close(Some(axum::extract::ws::CloseFrame {
                         code,
@@ -1456,6 +1532,7 @@ async fn handle_ws_connection(
 
     let attach = async {
         let room_handle = state.lease_manager.get_or_wake_room(campaign_id).await?;
+        refresh_player_roster(&state, campaign_id, Some(&room_handle)).await;
         room_handle.connect_client(client).await?;
         Ok::<_, RoomError>(room_handle)
     };
@@ -1489,6 +1566,7 @@ async fn handle_ws_connection(
         return;
     }
 
+    let encoding = FrameEncoding::from_selected_protocol(socket.protocol());
     let (ws_sender, mut ws_receiver) = socket.split();
     let send_timeout = state.auth_state.security.ws_pong_timeout;
     let mut send_task = tokio::spawn(run_socket_writer(
@@ -1497,6 +1575,7 @@ async fn handle_ws_connection(
         overflow,
         ping_interval,
         send_timeout,
+        encoding,
     ));
 
     // Any inbound frame (the browser's automatic `Pong`, the client's heartbeat `Ping`,
@@ -1661,14 +1740,79 @@ mod tests {
             if overflowed {
                 overflow.notify_one();
             }
-            let writer =
-                run_socket_writer(NeverReadingPeer, rx, overflow, ping_interval, send_timeout);
+            let writer = run_socket_writer(
+                NeverReadingPeer,
+                rx,
+                overflow,
+                ping_interval,
+                send_timeout,
+                FrameEncoding::Identity,
+            );
             let finished = tokio::time::timeout(Duration::from_secs(2), writer).await;
             assert!(
                 finished.is_ok(),
                 "case {case}: the writer must stop on its own"
             );
             drop(tx);
+        }
+    }
+
+    /// A peer that accepts every message at once and records it.
+    #[derive(Default)]
+    struct RecordingPeer(Vec<Message>);
+
+    impl futures_util::Sink<Message> for RecordingPeer {
+        type Error = std::convert::Infallible;
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.0.push(item);
+            Ok(())
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn socket_writer_applies_the_negotiated_frame_encoding() {
+        let frame = b"tokens".repeat(500);
+        // (case_id, negotiated encoding, binary payload expected on the wire)
+        let cases = [
+            (
+                "identity_sends_the_frame_as_is",
+                FrameEncoding::Identity,
+                frame.clone(),
+            ),
+            (
+                "deflate_sends_a_zlib_stream",
+                FrameEncoding::Deflate,
+                FrameEncoding::Deflate.encode(frame.clone()),
+            ),
+        ];
+        for (case, encoding, expected) in cases {
+            let (tx, rx) = crate::room::client_channel_with_capacity(1);
+            let overflow = tx.overflow_signal();
+            tx.send(OutboundClientFrame::Binary(frame.clone())).unwrap();
+            drop(tx);
+            let mut peer = RecordingPeer::default();
+            run_socket_writer(
+                &mut peer,
+                rx,
+                overflow,
+                Duration::from_secs(60),
+                Duration::from_secs(1),
+                encoding,
+            )
+            .await;
+            match peer.0.as_slice() {
+                [Message::Binary(sent)] => assert_eq!(sent.as_ref(), expected, "case {case}"),
+                other => panic!("case {case}: unexpected messages {other:?}"),
+            }
         }
     }
 

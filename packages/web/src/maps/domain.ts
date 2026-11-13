@@ -1,4 +1,5 @@
 import { DARK_CANVAS_PALETTE } from '../canvas/CanvasThemePalette.ts';
+import { oneWayNormal } from '../canvas/wallGlyphs.ts';
 import type {
   ActiveTableRoomState,
   AudioEmitterConfig,
@@ -170,8 +171,8 @@ export function createStarterDungeonScene(campaignId: string): CampaignMapScene 
     {
       id: generateEntityUuid(),
       name: 'Skeleton 1',
-      templateKey: 'Skeleton',
-      monsterTemplateId: 'Skeleton',
+      templateKey: 'srd:monster:skeleton',
+      monsterTemplateId: 'srd:monster:skeleton',
       x: 1120,
       y: 980,
       elevationFt: 0,
@@ -183,8 +184,8 @@ export function createStarterDungeonScene(campaignId: string): CampaignMapScene 
     {
       id: generateEntityUuid(),
       name: 'Skeleton 2',
-      templateKey: 'Skeleton',
-      monsterTemplateId: 'Skeleton',
+      templateKey: 'srd:monster:skeleton',
+      monsterTemplateId: 'srd:monster:skeleton',
       x: 1120,
       y: 1120,
       elevationFt: 0,
@@ -196,15 +197,15 @@ export function createStarterDungeonScene(campaignId: string): CampaignMapScene 
     {
       id: generateEntityUuid(),
       name: 'Necromancer Boss',
-      templateKey: 'Boss',
-      monsterTemplateId: 'Boss',
+      templateKey: 'srd:monster:mage',
+      monsterTemplateId: 'srd:monster:mage',
       x: 2380,
       y: 1050,
       elevationFt: 0,
       visibilityChannel: 'GmHidden',
       ownerUserId: null,
-      hpCurrent: 45,
-      hpMax: 45,
+      hpCurrent: 81,
+      hpMax: 81,
     },
   ];
 
@@ -398,6 +399,7 @@ export function mapBackendSceneToFrontend(raw: Record<string, any>): CampaignMap
     const b = w.p2 || w.b || { x: 0, y: 0 };
     const isOpen = w.door_state === 'Open' || w.doorState?.isOpen || false;
     const isLocked = w.door_state === 'Locked' || w.doorState?.isLocked || false;
+    const storedNormal = w.kind?.kind === 'ONE_WAY' && (w.kind.normal_x || w.kind.normal_y) ? { x: Number(w.kind.normal_x), y: Number(w.kind.normal_y) } : undefined;
     return {
       id: String(w.id),
       a: { x: Number(a.x), y: Number(a.y) },
@@ -409,6 +411,7 @@ export function mapBackendSceneToFrontend(raw: Record<string, any>): CampaignMap
       blocksSound: Boolean(w.blocks_sound ?? w.blocksSound ?? true),
       bottomElevationFt: Number(w.bottom_elevation_ft ?? w.bottomElevationFt ?? 0),
       topElevationFt: Number(w.top_elevation_ft ?? w.topElevationFt ?? 10),
+      oneWayNormal: storedNormal ?? w.oneWayNormal,
       doorState: (w.wall_type === 'Door' || w.wallType === 'Door') ? { isOpen, isLocked } : undefined,
       secretDoorState: (w.wall_type === 'SecretDoor' || w.wallType === 'SecretDoor') ? { isOpen } : undefined,
     };
@@ -448,15 +451,15 @@ export function mapBackendSceneToFrontend(raw: Record<string, any>): CampaignMap
   const stagedTokens: StagedToken[] = rawTokens.map((t: any) => ({
     id: String(t.id),
     name: String(t.name || 'Token'),
-    templateKey: t.monster_template_id || t.templateKey || 'Goblin',
-    monsterTemplateId: t.monster_template_id || t.templateKey,
+    templateKey: t.monster_template_id || t.templateKey || undefined,
+    monsterTemplateId: t.monster_template_id || t.templateKey || undefined,
     x: Number(t.x ?? 0),
     y: Number(t.y ?? 0),
     elevationFt: Number(t.elevation_ft ?? t.elevationFt ?? 0),
     visibilityChannel: t.visibility || t.visibilityChannel || 'Public',
     ownerUserId: t.ownerUserId ?? t.owner_user_id ?? null,
-    hpCurrent: Number(t.hpCurrent ?? 10),
-    hpMax: Number(t.hpMax ?? 10),
+    hpCurrent: Number(t.hpCurrent ?? t.stat_block?.hitPoints?.average ?? 10),
+    hpMax: Number(t.hpMax ?? t.stat_block?.hitPoints?.average ?? 10),
     sizeCells: Number(t.size_cells ?? t.sizeCells ?? 1),
     tokenAvatarUrl: t.token_avatar_url || t.tokenAvatarUrl,
   }));
@@ -490,6 +493,8 @@ export function mapBackendSceneToFrontend(raw: Record<string, any>): CampaignMap
     audioEmitters,
     stagedTokens,
     exploredFogTexture: raw.explored_fog_texture || raw.exploredFogTexture,
+    difficultTerrain: raw.difficult_terrain ?? raw.difficultTerrain ?? [],
+    fogOverrides: raw.fog_overrides ?? raw.fogOverrides ?? [],
     name: String(raw.name || raw.title || 'Untitled Scene'),
     campaign_id: String(raw.campaign_id || raw.campaignId || ''),
     revealed_to_players: Boolean(raw.revealed_to_players ?? raw.revealedToPlayers ?? false),
@@ -511,6 +516,12 @@ const UUID_FORMAT_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 
 function normalizeEntityUuid(id: string | undefined): string {
   return id && UUID_FORMAT_REGEX.test(id) ? id : generateEntityUuid();
+}
+
+/** Engine `WallKind::OneWay` of a studio one-way wall, with its explicit normal. */
+function oneWayKind(w: StudioWallSegment): { kind: 'ONE_WAY'; normal_x: number; normal_y: number } {
+  const n = oneWayNormal(w.a, w.b, w.oneWayNormal ?? null);
+  return { kind: 'ONE_WAY', normal_x: n.x, normal_y: n.y };
 }
 
 export function mapFrontendSceneToBackend(scene: CampaignMapScene): Record<string, any> {
@@ -540,6 +551,8 @@ export function mapFrontendSceneToBackend(scene: CampaignMapScene): Record<strin
       blocks_movement: w.blocksMovement,
       blocks_sound: w.blocksSound,
       blocks_vision: w.blocksVision,
+      // The engine reads `kind` before `wall_type`; `wall_type` alone gives a one-way wall no normal.
+      ...(w.wallType === 'OneWay' ? { kind: oneWayKind(w) } : {}),
     };
   });
 
@@ -606,5 +619,7 @@ export function mapFrontendSceneToBackend(scene: CampaignMapScene): Record<strin
     spatial_audio_emitters,
     staged_tokens,
     explored_fog_texture: scene.exploredFogTexture ?? null,
+    difficult_terrain: scene.difficultTerrain ?? [],
+    fog_overrides: scene.fogOverrides ?? [],
   };
 }

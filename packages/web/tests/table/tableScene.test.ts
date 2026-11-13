@@ -240,6 +240,75 @@ describe("buildTableScene: the engine resolves wall kinds and senses (WASM)", ()
   }
 });
 
+describe("buildTableScene: darkvision greyscale belongs to the viewing token", () => {
+  const senses = (darkvision: number, devilsSight = false) => ({
+    normal_range_ft: 120,
+    darkvision_range_ft: darkvision,
+    blindsight_range_ft: 0,
+    tremorsense_range_ft: 0,
+    truesight_range_ft: 0,
+    devils_sight: devilsSight,
+    see_invisibility: false,
+  });
+  const scout = (darkvision: number) => fullToken(GOBLIN, "Scout", { owner_user_id: PLAYER_ID, top_left: { x: 600, y: 100 }, senses: senses(darkvision) });
+  const cases = [
+    { id: "a player's darkvision token in pitch darkness sees greyscale", preset: "PITCH_DARKNESS", heroDv: 60, scoutDv: null, isGm: false, preview: false, selected: null, viewer: HERO },
+    { id: "daylight needs no darkvision", preset: "DAYLIGHT", heroDv: 60, scoutDv: null, isGm: false, preview: false, selected: null, viewer: null },
+    { id: "moonlight is dim light, seen in colour", preset: "NIGHT_MOONLIGHT", heroDv: 60, scoutDv: null, isGm: false, preview: false, selected: null, viewer: null },
+    { id: "a token without darkvision gets no greyscale", preset: "PITCH_DARKNESS", heroDv: 0, scoutDv: null, isGm: false, preview: false, selected: null, viewer: null },
+    { id: "the selected controlled token is the viewer, not the first one", preset: "PITCH_DARKNESS", heroDv: 0, scoutDv: 60, isGm: false, preview: false, selected: GOBLIN, viewer: GOBLIN },
+    { id: "without a selection the first controlled token decides, not any token", preset: "PITCH_DARKNESS", heroDv: 0, scoutDv: 60, isGm: false, preview: false, selected: null, viewer: null },
+    { id: "the GM sees the whole map in colour", preset: "PITCH_DARKNESS", heroDv: 60, scoutDv: null, isGm: true, preview: false, selected: HERO, viewer: null },
+    { id: "the GM previewing the player view sees through the selected token", preset: "PITCH_DARKNESS", heroDv: 60, scoutDv: null, isGm: true, preview: true, selected: HERO, viewer: HERO },
+  ] as const;
+  for (const c of cases) {
+    it(c.id, () => {
+      const tokens: ProjectedTableState["tokens"] = { [HERO]: { ...hero, senses: senses(c.heroDv) } };
+      if (c.scoutDv !== null) tokens[GOBLIN] = scout(c.scoutDv);
+      const state = tableState({ ambient_lighting: c.preset, tokens });
+      const scene = buildTableScene(input(state, { isGm: c.isGm, previewPlayerView: c.preview, selectedTokenId: c.selected }));
+      assert.equal(scene.darkvision?.tokenId ?? null, c.viewer);
+    });
+  }
+
+  const monsterFirstCases = [
+    { id: "an unowned monster listed first never becomes the player's viewer", heroDv: 60, viewer: HERO },
+    { id: "an unowned monster listed first never lends its darkvision", heroDv: 0, viewer: null },
+  ] as const;
+  for (const c of monsterFirstCases) {
+    it(c.id, () => {
+      const monster = fullToken(GOBLIN, "Goblin", { owner_user_id: null, top_left: { x: 600, y: 100 }, senses: senses(60) });
+      const tokens: ProjectedTableState["tokens"] = { [GOBLIN]: monster, [HERO]: { ...hero, senses: senses(c.heroDv) } };
+      assert.equal(Object.keys(tokens)[0], GOBLIN);
+      const state = tableState({ ambient_lighting: "PITCH_DARKNESS", tokens });
+      assert.equal(buildTableScene(input(state)).darkvision?.tokenId ?? null, c.viewer);
+    });
+  }
+
+  it("Devil's Sight sees magical and nonmagical darkness normally, so no greyscale", () => {
+    const state = tableState({ ambient_lighting: "PITCH_DARKNESS", tokens: { [HERO]: { ...hero, senses: senses(60, true) } } });
+    assert.equal(buildTableScene(input(state)).darkvision, null);
+  });
+
+  it("the darkvision area comes from the engine: limited by range and cut by walls", () => {
+    const state = tableState({ ambient_lighting: "PITCH_DARKNESS", tokens: { [HERO]: { ...hero, senses: senses(60) } }, walls: [wall({ kind: "NORMAL" })] });
+    const dv = buildTableScene(input(state)).darkvision!;
+    assert.deepEqual(
+      [inside(dv.polygon, { x: 400, y: 150 }), inside(dv.polygon, { x: 900, y: 150 }), inside(dv.polygon, { x: 125, y: 500 })],
+      [true, false, false],
+    );
+  });
+
+  it("lights inside darkvision stay in colour and the darkness thins to dim light", () => {
+    const light = { id: WALL_ID, position: { x: 300, y: 100 }, elevation_ft: 0, bright_radius_ft: 10, dim_radius_ft: 20, color_hex: "#FFAA44", intensity: 0.8 };
+    const state = tableState({ ambient_lighting: "PITCH_DARKNESS", lights: [light], tokens: { [HERO]: { ...hero, senses: senses(60) } } });
+    const scene = buildTableScene(input(state));
+    const dv = scene.darkvision!;
+    assert.deepEqual([dv.lit.length, inside(dv.lit[0], { x: 300, y: 100 })], [1, true]);
+    assert.ok(Math.abs(scene.ambient.alpha * (1 - dv.thinDarkness) - 0.5) < 1e-9, "darkness thinned to the moonlight (dim) level");
+  });
+});
+
 describe("buildTableScene: difficult terrain and redacted fields", () => {
   it("difficult terrain cells become hatched cell rectangles", () => {
     const scene = buildTableScene(input(tableState({ difficult_terrain: [{ col: 1, row: 2 }] })));

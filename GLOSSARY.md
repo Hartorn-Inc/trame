@@ -191,7 +191,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### DeathSavingThrow
 
-- **Definition**: Untyped d20 saving throw rolled by an unconscious actor at 0 HP at the start of their turn, tracking successes (`>= 10`) and failures (`< 10`, 2 failures on natural 1, regain 1 HP on natural 20). Three successes make the actor Stable (counters reset, no further rolls until damaged); three failures kill it. The server rolls the d20 for players (`RecordDeathSave`).
+- **Definition**: Untyped d20 saving throw rolled by an unconscious actor at 0 HP at the start of their turn against DC `10`. `Exhaustion` subtracts `2 × level` from raw d20 faces `2` to `19` (success at `>= 10`, failure at `< 10`), while an unmodified natural `1` (`2` failures) and natural `20` (`1` HP regained) remain invariant. Three successes make the actor Stable (counters reset, no further rolls until damaged); three failures kill it. The server rolls the d20 for players (`RecordDeathSave`).
 - **Allowed Context**: `DeathSavingThrow`, `death saving throw`.
 - **_Avoid_**: `death save`, `dying roll`.
 
@@ -230,6 +230,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Interactive control panel allowing the Game Master to modify token resources, refund actions, teleport tokens, change table modes, and cycle ambient presets.
 - **Allowed Context**: Game Master view HUD.
 - **_Avoid_**: AdminBar, CheatMenu, MasterPanel.
+
+### HudDrawers
+
+- **Definition**: Slide-over live-table drawer container hosting `ActorSheetPanel` and `CompendiumDrawer` with strict single-drawer mutual exclusion and automatic dismissal on `CampaignWorkspace` tab switches so at least 75% of the tactical canvas stays unobstructed.
+- **Allowed Context**: Live `Table` tab overlays, character sheet inspection, compendium drag-and-drop browsing, and `CampaignWorkspace` navigation.
+- **_Avoid_**: `DualDrawerOverlay`, `FloatingSheetModal`, `PersistentSidebars`.
 
 ### InstantDeath
 
@@ -368,6 +374,12 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Non-cumulative temporary hit points acting as a priority absorption buffer before damage is subtracted from current hit points.
 - **Allowed Context**: `TempHP`, `temporary hit points`.
 - **_Avoid_**: `HP shield`, `bonus HP`.
+
+### ThemeModeSignal
+
+- **Definition**: Reactive Preact signal (`themeModeSignal`, paired with `resolvedThemeSignal`) governing the active ATLAS v1.1 interface palette preference (`'dark' | 'light' | 'system'`) synchronized across DOM attributes, `CanvasThemePalette`, and `localStorage`.
+- **Allowed Context**: Reactive theme switching, ATLAS v1.1 palette resolution, and `CanvasThemePalette` synchronization.
+- **_Avoid_**: `DarkModeFlag`, `ThemeContext`, `ColorSchemeStore`.
 
 ### ThreatReach
 
@@ -515,7 +527,7 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 
 ### LinkedActorToken
 
-- **Definition**: Table token bound to a persistent `Actor` (`actor_id` set), whose hit points, temporary hit points, conditions, and death saves stay synchronized in both directions with that `Actor`.
+- **Definition**: Table token bound to a persistent `Actor` (`actor_id` set), whose hit points, temporary hit points, conditions, `DeathSaveCounters`, `isStable`, and `isDead` are bidirectionally synchronized with the persistent `Actor` (ADR-0037).
 - **Allowed Context**: Player character and named NPC tokens, `ApplyDamage` / `HealActor` persistence, and `ActorUpdated` token resynchronization.
 - **_Avoid_**: BoundToken, SheetToken.
 
@@ -584,5 +596,53 @@ All Rust crates (`crates/trame-engine`, `crates/trame-server`, `crates/trame-cli
 - **Definition**: Integer optimistic-concurrency version of a campaign's whole map scene set (`campaigns.scenes_version`, default `0`). `GET .../maps` returns `{ scenes, version }`; `PUT .../maps` must echo it as `expected_version` (missing: `400 MISSING_EXPECTED_VERSION`, stale: `409 VERSION_CONFLICT` with `current_version`). Every scene write, including UVTT import, bumps it by one.
 - **Allowed Context**: `MapsStudioTab` saves, scene REST routes, and concurrent GM editing.
 - **_Avoid_**: MapRevision, SceneEtag, MapsVersion.
+
+### ProjectionHash
+
+- **Definition**: SHA-256 digest of the MessagePack encoding of one recipient's `ProjectedTableState`, kept per session by the `TableRoomActor` for the last state frame sent to it (RT12). After a command, a recipient whose hash is unchanged and who sees no `TrameEvent` gets no frame. A connect or resync always sends a full `StateSnapshot` and records its hash.
+- **Allowed Context**: Room broadcast, frame skipping, and egress budgeting.
+- **_Avoid_**: StateChecksum, DiffHash, FrameEtag.
+
+### FrameEncoding
+
+- **Definition**: Encoding applied to every outbound binary WebSocket frame of one socket, fixed at the upgrade: `Identity` (plain MessagePack) or `Deflate` (one zlib stream per frame) when the client offered and the server selected the `trame.v1+deflate` subprotocol (D24). Client frames are never compressed.
+- **Allowed Context**: WebSocket upgrade, socket writer task, and browser frame decoding (`DecompressionStream`).
+- **_Avoid_**: permessage-deflate (the standard extension TRAME does not use), WsCompression, GzipFrame.
+
+### S3Store
+
+- **Definition**: `AssetStore` backend that keeps asset bytes in an S3-compatible bucket (Cloudflare R2, Silo) under the existing content-addressed keys and their metadata in PostgreSQL `campaign_assets` with `payload` NULL. Selected when `S3_*` is configured; PostgreSQL storage is the fallback otherwise (ADR-0041).
+- **Allowed Context**: Asset uploads and reads, server configuration, hosting docs.
+- **_Avoid_**: BlobBucket, CdnStore, R2Store.
+
+### SignedDirectDownload
+
+- **Definition**: The `307` redirect `GET /assets/download/{key}` answers for an `S3Store` asset once the HMAC-signed URL (minted after the campaign membership check) verifies: a SigV4 presigned `GET` valid 5 minutes, signed for `S3_PUBLIC_ENDPOINT`. Rows not yet migrated are still streamed by the server.
+- **Allowed Context**: Asset downloads, CSP `img-src`, bucket CORS, egress budgeting.
+- **_Avoid_**: PublicAssetUrl, CdnLink, ProxyDownload.
+
+### BlobMigration
+
+- **Definition**: Background startup task (`migrate_inline_assets`) that copies each inline PostgreSQL asset payload to the `S3Store` bucket, reads it back, compares SHA-256 digests, and clears the inline payload only when it still hashes to the copied digest. Idempotent: failed rows stay inline and are retried on the next boot.
+- **Allowed Context**: Switching an existing instance from PostgreSQL to object storage.
+- **_Avoid_**: AssetSync, BlobExport, S3Backfill.
+
+### OwnerBootstrap
+
+- **Definition**: The one-time claim of an instance that has no `Owner`. At each start without an `Owner`, the server mints a single-use token valid for 1 hour, stores only its hash, and logs the setup URL once (`event="owner_bootstrap_url"`, field `setup_url`). Redeeming it creates the `Owner` account; `TRAME_BOOTSTRAP_OWNER_EMAIL` restricts it to one email (ADR-0039).
+- **Allowed Context**: First start of a deployment, operator guides, and the owner setup screen.
+- **_Avoid_**: AdminSetup, FirstRunWizard, Superuser creation.
+
+### HostingTarget
+
+- **Definition**: One of the two documented deployments of TRAME (ADR-0041): the strictly-free target (production Docker Compose behind Caddy on an Oracle Cloud Always Free VM or a home machine behind Cloudflare Tunnel, `deploy/compose`) and the near-free target (Cloud Run `europe-west9` + Neon + Cloudflare R2 provisioned by Terraform, `deploy/terraform`).
+- **Allowed Context**: Operator guides, cost comparisons, and backup and restore procedures.
+- **_Avoid_**: Environment (reserved for `TRAME_ENV` and the GitHub `production` environment), Stage, Tier.
+
+### SpendingCap
+
+- **Definition**: The near-free target's monthly Google Cloud budget control: email warnings at 1 EUR and 5 EUR of actual spend, and at 10 EUR (`budget_amount`) the `trame-budget-cap` Cloud Run function unlinks the project from billing, which stops every Google Cloud service of the project. Budget data lags usage by hours, so a month can end slightly above the cap. Neon and R2 data are billed elsewhere and are untouched.
+- **Allowed Context**: Terraform deployment, budget alerts, and cost documentation.
+- **_Avoid_**: Budget alert (it is only the warning part), Billing kill switch, Quota.
 
 

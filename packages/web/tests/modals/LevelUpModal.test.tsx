@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { LevelUpModal, type LevelUpModalProps } from "../../src/components/modals/LevelUpModal.tsx";
+import { LevelUpModal, getNewSpellsAllowance, type LevelUpModalProps } from "../../src/components/modals/LevelUpModal.tsx";
 import { createDefaultActorData, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
 import { localeSignal } from "../../src/i18n/index.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
@@ -774,3 +774,540 @@ describe("LevelUpModal: Fighting Style feat on the features step", () => {
     });
   }
 });
+
+describe("LevelUpModal: GS10 feat slot filtering, +1 abilityIncrease ceiling, and feat sub-choices", () => {
+  const click = (el: any) => el.dispatchEvent(new (globalThis as any).Event("click"));
+  const change = (el: any) => el.dispatchEvent(new (globalThis as any).Event("change"));
+
+  const SLOT_FILTER_CASES = [
+    {
+      id: "rogue-l4-offers-origin-and-grappler-without-epic-boons-or-fighting-styles",
+      classId: "rogue",
+      currentLevel: 3,
+      subclassId: "srd:subclass:thief",
+      abilities: { str: 10, dex: 16 },
+      heldFeats: ["srd:feat:alert"],
+      mustInclude: ["srd:feat:magic_initiate", "srd:feat:skilled", "srd:feat:savage_attacker", "srd:feat:grappler"],
+      mustExclude: [
+        "srd:feat:alert",
+        "srd:feat:ability_score_improvement",
+        "srd:feat:archery",
+        "srd:feat:boon_of_combat_prowess",
+        "srd:feat:boon_of_spell_recall",
+      ],
+    },
+    {
+      id: "wizard-l4-low-str-dex-excludes-grappler-and-epic-boons",
+      classId: "wizard",
+      currentLevel: 3,
+      subclassId: "srd:subclass:evocation",
+      abilities: { str: 8, dex: 12, int: 16 },
+      heldFeats: [],
+      mustInclude: ["srd:feat:alert", "srd:feat:magic_initiate", "srd:feat:skilled"],
+      mustExclude: [
+        "srd:feat:grappler",
+        "srd:feat:archery",
+        "srd:feat:boon_of_dimensional_travel",
+        "srd:feat:boon_of_spell_recall",
+      ],
+    },
+    {
+      id: "fighter-l19-offers-martial-epic-boons-and-fighting-styles-but-excludes-spell-recall",
+      classId: "fighter",
+      currentLevel: 18,
+      subclassId: "srd:subclass:champion",
+      abilities: { str: 20, dex: 16 },
+      heldFeats: ["srd:feat:defense"],
+      mustInclude: [
+        "srd:feat:archery",
+        "srd:feat:boon_of_combat_prowess",
+        "srd:feat:boon_of_dimensional_travel",
+        "srd:feat:boon_of_fate",
+        "srd:feat:boon_of_irresistible_offense",
+        "srd:feat:boon_of_the_night_spirit",
+        "srd:feat:boon_of_truesight",
+      ],
+      mustExclude: ["srd:feat:defense", "srd:feat:boon_of_spell_recall", "srd:feat:ability_score_improvement"],
+    },
+    {
+      id: "cleric-l19-offers-all-seven-epic-boons-including-spell-recall",
+      classId: "cleric",
+      currentLevel: 18,
+      subclassId: "srd:subclass:life",
+      abilities: { str: 14, dex: 10, wis: 20 },
+      heldFeats: [],
+      mustInclude: [
+        "srd:feat:boon_of_combat_prowess",
+        "srd:feat:boon_of_dimensional_travel",
+        "srd:feat:boon_of_fate",
+        "srd:feat:boon_of_irresistible_offense",
+        "srd:feat:boon_of_spell_recall",
+        "srd:feat:boon_of_the_night_spirit",
+        "srd:feat:boon_of_truesight",
+      ],
+      mustExclude: ["srd:feat:archery", "srd:feat:ability_score_improvement"],
+    },
+  ] as const;
+
+  for (const tc of SLOT_FILTER_CASES) {
+    it(`[${tc.id}] filters Step 3 feat options via getLevelUpFeatOptions`, async () => {
+      const actor = createDefaultActorData(`actor-${tc.id}`, "Probe");
+      actor.classId = tc.classId;
+      actor.attributes.level = tc.currentLevel;
+      actor.subclassId = tc.subclassId;
+      actor.features = [...tc.heldFeats];
+      for (const [ab, score] of Object.entries(tc.abilities)) {
+        actor.abilities[ab as keyof typeof actor.abilities].score = score;
+      }
+
+      const { container, getNextButton, unmount } = await renderModal({
+        isOpen: true,
+        actor,
+        onClose: () => {},
+        onSave: () => {},
+      });
+
+      click(getNextButton());
+      click(getNextButton());
+      click(container.querySelector("#tab-feat"));
+
+      const featSelect = container.querySelector("#asi-feat-select");
+      const offered = featSelect
+        .querySelectorAll("option")
+        .map((o: any) => o.value)
+        .filter(Boolean);
+
+      for (const expected of tc.mustInclude) {
+        assert.equal(offered.includes(expected), true, `Expected ${expected} in [${offered.join(", ")}]`);
+      }
+      for (const forbidden of tc.mustExclude) {
+        assert.equal(offered.includes(forbidden), false, `Expected ${forbidden} NOT in [${offered.join(", ")}]`);
+      }
+
+      unmount();
+    });
+  }
+
+  const ABILITY_INCREASE_CASES = [
+    {
+      id: "grappler-l4-caps-at-20-filters-capped-str-and-raises-dex",
+      classId: "rogue",
+      currentLevel: 3,
+      subclassId: "srd:subclass:thief",
+      featId: "srd:feat:grappler",
+      initialScores: { str: 20, dex: 16 },
+      expectedOptions: ["dex"],
+      pickAbility: "dex" as const,
+      expectedFinalScore: 17,
+      expectedMaxLabel: "max 20",
+    },
+    {
+      id: "epic-boon-combat-prowess-l19-allows-20-to-21-and-filters-30",
+      classId: "fighter",
+      currentLevel: 18,
+      subclassId: "srd:subclass:champion",
+      featId: "srd:feat:boon_of_combat_prowess",
+      initialScores: { str: 20, dex: 18, con: 30, int: 10, wis: 12, cha: 10 },
+      expectedOptions: ["str", "dex", "int", "wis", "cha"],
+      pickAbility: "str" as const,
+      expectedFinalScore: 21,
+      expectedMaxLabel: "max 30",
+    },
+    {
+      id: "epic-boon-spell-recall-l19-restricts-to-mental-abilities-up-to-30",
+      classId: "cleric",
+      currentLevel: 18,
+      subclassId: "srd:subclass:life",
+      featId: "srd:feat:boon_of_spell_recall",
+      initialScores: { str: 14, dex: 10, con: 14, int: 12, wis: 20, cha: 30 },
+      expectedOptions: ["int", "wis"],
+      pickAbility: "wis" as const,
+      expectedFinalScore: 21,
+      expectedMaxLabel: "max 30",
+    },
+  ] as const;
+
+  for (const tc of ABILITY_INCREASE_CASES) {
+    it(`[${tc.id}] renders accessible +1 abilityIncrease selector and applies bonus on confirm`, async () => {
+      const actor = createDefaultActorData(`actor-${tc.id}`, "Probe");
+      actor.classId = tc.classId;
+      actor.attributes.level = tc.currentLevel;
+      actor.subclassId = tc.subclassId;
+      if (tc.classId === "cleric") actor.attributes.casterType = "full";
+      for (const [ab, score] of Object.entries(tc.initialScores)) {
+        actor.abilities[ab as keyof typeof actor.abilities].score = score;
+      }
+
+      let saved: Dnd5eActorData | null = null;
+      const { container, getNextButton, getConfirmButton, unmount } = await renderModal({
+        isOpen: true,
+        actor,
+        onClose: () => {},
+        onSave: (updated) => {
+          saved = updated;
+        },
+      });
+
+      click(getNextButton());
+      click(getNextButton());
+      click(container.querySelector("#tab-feat"));
+
+      const featSelect = container.querySelector("#asi-feat-select");
+      featSelect.value = tc.featId;
+      change(featSelect);
+
+      const abilitySelect = container.querySelector("#feat-ability-increase");
+      assert.ok(abilitySelect, "Feat ability increase select must render");
+      assert.equal(abilitySelect.getAttribute("aria-label"), null, "Select must rely on <label for>, not aria-label");
+      assert.ok(abilitySelect.classList.contains("ds-input"), "Select must use ds-input");
+      assert.ok(abilitySelect.classList.contains("atlas-tabular-nums"), "Select must use atlas-tabular-nums");
+
+      const label = container.querySelector("label[for='feat-ability-increase']");
+      assert.ok(label, "Visible <label for='feat-ability-increase'> must exist");
+      assert.ok(label.textContent.includes(tc.expectedMaxLabel), `Label '${label.textContent}' must state ${tc.expectedMaxLabel}`);
+
+      const offeredAbilities = abilitySelect
+        .querySelectorAll("option")
+        .map((o: any) => o.value)
+        .filter(Boolean);
+      assert.deepEqual(offeredAbilities, [...tc.expectedOptions]);
+
+      assert.equal(getNextButton().getAttribute("aria-disabled"), "true", "Next must stay disabled until +1 ability is chosen");
+
+      abilitySelect.value = tc.pickAbility;
+      change(abilitySelect);
+      assert.equal(getNextButton().getAttribute("aria-disabled"), null, "Next must enable once +1 ability is chosen");
+
+      click(getNextButton());
+      click(getConfirmButton());
+      await new Promise((r) => setTimeout(r, 10));
+
+      assert.ok(saved, "onSave must receive leveled-up actor");
+      assert.equal((saved as Dnd5eActorData).features?.includes(tc.featId), true);
+      assert.equal((saved as Dnd5eActorData).abilities[tc.pickAbility].score, tc.expectedFinalScore);
+
+      unmount();
+    });
+  }
+
+  const SUBCHOICE_CASES = [
+    {
+      id: "magic-initiate-l4-collects-list-ability-cantrips-and-spell",
+      featId: "srd:feat:magic_initiate",
+      existingFeatChoices: [],
+      existingSkills: [] as Array<keyof Dnd5eActorData["skills"]>,
+      existingTools: [] as string[],
+      expectAutoSeededSpellList: null as string | null,
+      picks: [
+        { choiceId: "spell_list", optionId: "cleric" },
+        { choiceId: "spellcasting_ability", optionId: "wis" },
+        { choiceId: "cantrips", optionId: "srd:spell:guidance" },
+        { choiceId: "cantrips", optionId: "srd:spell:sacred_flame" },
+        { choiceId: "level_1_spell", optionId: "srd:spell:bless" },
+      ],
+      verifySaved: (saved: Dnd5eActorData) => {
+        const record = saved.featChoices?.find((r) => r.featId === "srd:feat:magic_initiate");
+        assert.ok(record, "Magic Initiate FeatChoiceRecord must be saved");
+        assert.deepEqual(record.selections, {
+          spell_list: ["cleric"],
+          spellcasting_ability: ["wis"],
+          cantrips: ["srd:spell:guidance", "srd:spell:sacred_flame"],
+          level_1_spell: ["srd:spell:bless"],
+        });
+      },
+    },
+    {
+      id: "magic-initiate-auto-seeds-last-remaining-spell-list",
+      featId: "srd:feat:magic_initiate",
+      existingFeatChoices: [
+        {
+          featId: "srd:feat:magic_initiate",
+          selections: {
+            spell_list: ["cleric"],
+            spellcasting_ability: ["wis"],
+            cantrips: ["srd:spell:guidance", "srd:spell:sacred_flame"],
+            level_1_spell: ["srd:spell:bless"],
+          },
+        },
+        {
+          featId: "srd:feat:magic_initiate",
+          selections: {
+            spell_list: ["druid"],
+            spellcasting_ability: ["wis"],
+            cantrips: ["srd:spell:guidance", "srd:spell:produce_flame"],
+            level_1_spell: ["srd:spell:healing_word"],
+          },
+        },
+      ],
+      existingSkills: [] as Array<keyof Dnd5eActorData["skills"]>,
+      existingTools: [] as string[],
+      expectAutoSeededSpellList: "wizard",
+      picks: [
+        { choiceId: "spellcasting_ability", optionId: "int" },
+        { choiceId: "cantrips", optionId: "srd:spell:fire_bolt" },
+        { choiceId: "cantrips", optionId: "srd:spell:mage_hand" },
+        { choiceId: "level_1_spell", optionId: "srd:spell:magic_missile" },
+      ],
+      verifySaved: (saved: Dnd5eActorData) => {
+        assert.equal(saved.featChoices?.length, 3, "Must append third Magic Initiate record");
+        assert.deepEqual(saved.featChoices?.[2]?.selections, {
+          spell_list: ["wizard"],
+          spellcasting_ability: ["int"],
+          cantrips: ["srd:spell:fire_bolt", "srd:spell:mage_hand"],
+          level_1_spell: ["srd:spell:magic_missile"],
+        });
+      },
+    },
+    {
+      id: "skilled-l4-filters-owned-proficiencies-and-grants-three-picks",
+      featId: "srd:feat:skilled",
+      existingFeatChoices: [],
+      existingSkills: ["stealth"] as Array<keyof Dnd5eActorData["skills"]>,
+      existingTools: ["Thieves' Tools"],
+      expectAutoSeededSpellList: null as string | null,
+      picks: [
+        { choiceId: "proficiencies", optionId: "athletics" },
+        { choiceId: "proficiencies", optionId: "perception" },
+        { choiceId: "proficiencies", optionId: "tool:Herbalism Kit" },
+      ],
+      verifySaved: (saved: Dnd5eActorData) => {
+        assert.equal(saved.skills.athletics.proficiencyRank, 1, "Athletics proficiency must be granted");
+        assert.equal(saved.skills.perception.proficiencyRank, 1, "Perception proficiency must be granted");
+        assert.equal(saved.proficiencies?.tools.includes("Herbalism Kit"), true, "Herbalism Kit proficiency must be granted");
+        const record = saved.featChoices?.find((r) => r.featId === "srd:feat:skilled");
+        assert.ok(record, "Skilled FeatChoiceRecord must be saved");
+        assert.deepEqual(record.selections.proficiencies, ["athletics", "perception", "tool:Herbalism Kit"]);
+      },
+    },
+  ];
+
+  for (const tc of SUBCHOICE_CASES) {
+    it(`[${tc.id}] gates progression until feat sub-choices complete and applies applyFeatChoices`, async () => {
+      const actor = createDefaultActorData(`actor-${tc.id}`, "Probe");
+      actor.classId = "rogue";
+      actor.attributes.level = 3;
+      actor.subclassId = "srd:subclass:thief";
+      actor.features = tc.existingFeatChoices.map((r) => r.featId);
+      actor.featChoices = structuredClone(tc.existingFeatChoices);
+      for (const sk of tc.existingSkills) {
+        actor.skills[sk].proficiencyRank = 1;
+      }
+      if (tc.existingTools.length > 0) {
+        actor.proficiencies = { armor: [], weapons: [], tools: [...tc.existingTools] };
+      }
+
+      let saved: Dnd5eActorData | null = null;
+      const { container, getNextButton, getConfirmButton, unmount } = await renderModal({
+        isOpen: true,
+        actor,
+        onClose: () => {},
+        onSave: (updated) => {
+          saved = updated;
+        },
+      });
+
+      click(getNextButton());
+      click(getNextButton());
+      click(container.querySelector("#tab-feat"));
+
+      const featSelect = container.querySelector("#asi-feat-select");
+      featSelect.value = tc.featId;
+      change(featSelect);
+
+      if (tc.expectAutoSeededSpellList) {
+        const seededRadio = container.querySelector(
+          `[data-testid='levelup-feat-spell_list-${tc.expectAutoSeededSpellList}']`
+        );
+        assert.ok(seededRadio?.checked, `Single-option spell_list '${tc.expectAutoSeededSpellList}' must be auto-seeded`);
+      }
+
+      if (tc.featId === "srd:feat:skilled") {
+        assertAbsent(
+          container.querySelector("[data-testid='levelup-feat-proficiencies-stealth']"),
+          "Already proficient skill must be excluded from Skilled options"
+        );
+        assertAbsent(
+          container.querySelector("[data-testid=\"levelup-feat-proficiencies-tool:Thieves' Tools\"]"),
+          "Already proficient tool must be excluded from Skilled options"
+        );
+      }
+
+      // Every input in sub-choices must adhere to ds-choice primitive
+      for (const input of container.querySelectorAll("input")) {
+        assert.ok(input.closest("label")?.classList.contains("ds-choice"), "Feat sub-choice inputs must use ds-choice labels");
+      }
+
+      for (let i = 0; i < tc.picks.length; i++) {
+        assert.equal(
+          getNextButton().getAttribute("aria-disabled"),
+          "true",
+          `Next must remain disabled before pick ${i + 1}/${tc.picks.length}`
+        );
+        const { choiceId, optionId } = tc.picks[i];
+        const input = container.querySelector(`[data-testid="levelup-feat-${choiceId}-${optionId}"]`);
+        assert.ok(input, `Option control levelup-feat-${choiceId}-${optionId} must render`);
+        change(input);
+      }
+
+      assert.equal(getNextButton().getAttribute("aria-disabled"), null, "Next must become enabled once all sub-choices are complete");
+
+      click(getNextButton());
+      assert.equal(getConfirmButton().getAttribute("aria-disabled"), null, "Confirm must be enabled on Step 4");
+      click(getConfirmButton());
+      await new Promise((r) => setTimeout(r, 10));
+
+      assert.ok(saved, "onSave must receive leveled-up actor with feat choices applied");
+      tc.verifySaved(saved as Dnd5eActorData);
+
+      unmount();
+    });
+  }
+});
+
+describe("LevelUpModal: SRD 5.2.1 prepared-caster spell allowances & described L2 choice reminders (Q7, Q11)", () => {
+  const click = (el: any) => el.dispatchEvent(new (globalThis as any).Event("click"));
+  const change = (el: any) => el.dispatchEvent(new (globalThis as any).Event("change"));
+
+  const ALLOWANCE_CASES = [
+    { id: "sorcerer-1-to-2-grants-2-spells", classId: "sorcerer", currentLevel: 1, subclassId: undefined, expectedAllowance: 2, isWizard: false },
+    { id: "sorcerer-2-to-3-grants-2-spells", classId: "sorcerer", currentLevel: 2, subclassId: "srd:subclass:draconic", expectedAllowance: 2, isWizard: false },
+    { id: "sorcerer-3-to-4-grants-1-spell", classId: "sorcerer", currentLevel: 3, subclassId: "srd:subclass:draconic", expectedAllowance: 1, isWizard: false },
+    { id: "bard-1-to-2-grants-1-spell", classId: "bard", currentLevel: 1, subclassId: undefined, expectedAllowance: 1, isWizard: false },
+    { id: "warlock-1-to-2-grants-1-spell", classId: "warlock", currentLevel: 1, subclassId: undefined, expectedAllowance: 1, isWizard: false },
+    { id: "wizard-1-to-2-grants-2-spellbook-spells", classId: "wizard", currentLevel: 1, subclassId: undefined, expectedAllowance: 2, isWizard: true },
+  ] as const;
+
+  for (const tc of ALLOWANCE_CASES) {
+    it(`[${tc.id}] derives allowance from SRD 5.2.1 prepared spell counts and caps Step 4 checkboxes`, async () => {
+      localeSignal.value = "en";
+      const targetLevel = tc.currentLevel + 1;
+      assert.equal(getNewSpellsAllowance(tc.classId, targetLevel), tc.expectedAllowance);
+
+      const actor = createDefaultActorData(`actor-${tc.id}`, "Caster");
+      actor.classId = tc.classId;
+      actor.attributes.level = tc.currentLevel;
+      actor.attributes.casterType = tc.classId === "warlock" ? "pact" : "full";
+      actor.abilities.dex.score = 14;
+      if (tc.subclassId) actor.subclassId = tc.subclassId;
+
+      const { container, getNextButton, getConfirmButton, unmount } = await renderModal({
+        isOpen: true,
+        actor,
+        onClose: () => {},
+        onSave: () => {},
+      });
+
+      click(getNextButton()); // Step 1 -> 2
+      click(getNextButton()); // Step 2 -> 3
+      click(getNextButton()); // Step 3 -> 4
+
+      const expectedHeading = tc.isWizard
+        ? `Add spells to your spellbook (Required: 0/${tc.expectedAllowance})`
+        : `Add new spells (Limit: 0/${tc.expectedAllowance})`;
+      assert.ok(
+        container.textContent.includes(expectedHeading),
+        `Expected '${expectedHeading}' in Step 4 text: ${container.textContent}`
+      );
+
+      const checkboxes = container.querySelectorAll("input[type='checkbox']");
+      assert.ok(checkboxes.length > tc.expectedAllowance, "Compendium must offer more spells than the cap");
+
+      for (let i = 0; i < tc.expectedAllowance; i++) {
+        change(checkboxes[i]);
+      }
+
+      assert.equal(checkboxes[tc.expectedAllowance].disabled, true, "Unpicked spells must disable once allowance is reached");
+      assert.equal(getConfirmButton().getAttribute("aria-disabled"), null, "Confirm must be enabled at exact allowance");
+
+      unmount();
+    });
+  }
+
+  const REMINDER_CASES = [
+    {
+      id: "wizard-l2-scholar-reminder-en",
+      locale: "en" as const,
+      classId: "wizard",
+      currentLevel: 1,
+      fightingStylePick: null,
+      expectReminder: /Scholar/,
+    },
+    {
+      id: "wizard-l2-scholar-reminder-fr",
+      locale: "fr" as const,
+      classId: "wizard",
+      currentLevel: 1,
+      fightingStylePick: null,
+      expectReminder: /Rappel \(Scholar\)/,
+    },
+    {
+      id: "ranger-l2-deft-explorer-reminder-en",
+      locale: "en" as const,
+      classId: "ranger",
+      currentLevel: 1,
+      fightingStylePick: "srd:feat:archery",
+      expectReminder: /Deft Explorer/,
+    },
+    {
+      id: "sorcerer-l2-metamagic-reminder-en",
+      locale: "en" as const,
+      classId: "sorcerer",
+      currentLevel: 1,
+      fightingStylePick: null,
+      expectReminder: /Metamagic/,
+    },
+    {
+      id: "fighter-l2-no-manual-choice-reminder",
+      locale: "en" as const,
+      classId: "fighter",
+      currentLevel: 1,
+      fightingStylePick: null,
+      expectReminder: null,
+    },
+    {
+      id: "cleric-l2-no-manual-choice-reminder",
+      locale: "en" as const,
+      classId: "cleric",
+      currentLevel: 1,
+      fightingStylePick: null,
+      expectReminder: null,
+    },
+  ];
+
+  for (const tc of REMINDER_CASES) {
+    it(`[${tc.id}] renders levelup-manual-feature-reminder iff targetLevel grants Scholar, Deft Explorer, or Metamagic`, async () => {
+      localeSignal.value = tc.locale;
+      const actor = createDefaultActorData(`actor-${tc.id}`, "Hero");
+      actor.classId = tc.classId;
+      actor.attributes.level = tc.currentLevel;
+
+      const { container, unmount } = await renderModal({
+        isOpen: true,
+        actor,
+        onClose: () => {},
+        onSave: () => {},
+      });
+
+      click(container.querySelector(".ds-btn-primary")); // Step 1 -> 2
+      click(container.querySelector(".ds-btn-primary")); // Step 2 -> 3
+      if (tc.fightingStylePick) {
+        const fsSelect = container.querySelector("#fighting-style-select");
+        fsSelect.value = tc.fightingStylePick;
+        change(fsSelect);
+      }
+      click(container.querySelector(".ds-btn-primary")); // Step 3 -> 4
+
+      const reminder = container.querySelector("[data-testid='levelup-manual-feature-reminder']");
+      if (tc.expectReminder) {
+        assert.ok(reminder, "Expected [data-testid='levelup-manual-feature-reminder'] on Step 4");
+        assert.match(reminder.textContent, tc.expectReminder);
+      } else {
+        assertAbsent(reminder, "Expected no manual feature reminder on Step 4");
+      }
+
+      unmount();
+      localeSignal.value = "en";
+    });
+  }
+});
+

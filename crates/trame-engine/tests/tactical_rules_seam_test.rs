@@ -1093,6 +1093,102 @@ fn condition_override_is_gm_only_wins_over_conditions_and_is_undoable() {
 }
 
 #[test]
+fn set_token_conditions_respects_stat_block_condition_immunities() {
+    use trame_engine::{ConditionOverrideEntry, OverrideMode, OverrideSubject};
+    const LICH_ID: Uuid = Uuid::from_u128(0x30);
+    struct Case {
+        id: &'static str,
+        actor: CommandActor,
+        existing: Vec<&'static str>,
+        force_ruling: Option<&'static str>,
+        conditions: Vec<&'static str>,
+        expect: Result<Vec<&'static str>, &'static str>,
+    }
+    let cases = [
+        Case {
+            id: "gm_cannot_paralyze_a_lich",
+            actor: gm(),
+            existing: vec![],
+            force_ruling: None,
+            conditions: vec!["prone", "Paralyzed"],
+            expect: Err("condition immunity: this creature is immune to paralyzed"),
+        },
+        Case {
+            id: "lich_takes_conditions_it_is_not_immune_to",
+            actor: gm(),
+            existing: vec![],
+            force_ruling: None,
+            conditions: vec!["blinded"],
+            expect: Ok(vec!["blinded"]),
+        },
+        Case {
+            id: "gm_force_ruling_lets_paralyzed_through",
+            actor: gm(),
+            existing: vec![],
+            force_ruling: Some("paralyzed"),
+            conditions: vec!["paralyzed"],
+            expect: Ok(vec!["paralyzed"]),
+        },
+        Case {
+            id: "condition_already_on_the_token_can_stay_while_others_change",
+            actor: gm(),
+            existing: vec!["paralyzed"],
+            force_ruling: None,
+            conditions: vec!["paralyzed", "blinded"],
+            expect: Ok(vec!["paralyzed", "blinded"]),
+        },
+    ];
+    for c in cases {
+        let mut lich = token(LICH_ID, "Lich", 0.0, 0.0, None);
+        lich.stat_block = Some(json!({
+            "conditionImmunities": ["charmed", "exhaustion", "frightened", "paralyzed", "poisoned"]
+        }));
+        lich.conditions = c.existing.iter().map(|s| s.to_string()).collect();
+        if let Some(id) = c.force_ruling {
+            lich.condition_overrides.push(ConditionOverrideEntry {
+                subject: OverrideSubject::Condition,
+                id: id.to_string(),
+                mode: OverrideMode::Force,
+            });
+        }
+        let mut state = table(vec![lich]);
+        let before = state.data.tokens[&LICH_ID].conditions.clone();
+        let result = state.apply_command(
+            &c.actor,
+            TrameCommand::SetTokenConditions {
+                token_id: LICH_ID,
+                conditions: c.conditions.iter().map(|s| s.to_string()).collect(),
+            },
+        );
+        match c.expect {
+            Ok(expected) => {
+                result.unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+                assert_eq!(
+                    state.data.tokens[&LICH_ID].conditions, expected,
+                    "case {} state",
+                    c.id
+                );
+            }
+            Err(message) => {
+                let err = result.unwrap_err();
+                assert!(
+                    matches!(err, CommandError::ConditionImmune(_)),
+                    "case {}: {err}",
+                    c.id
+                );
+                assert_eq!(err.to_string(), message, "case {}", c.id);
+                assert!(state.undo_stack.is_empty(), "case {} no undo entry", c.id);
+                assert_eq!(
+                    state.data.tokens[&LICH_ID].conditions, before,
+                    "case {} unchanged",
+                    c.id
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn condition_rulings_decide_whether_a_reactor_is_incapacitated() {
     use trame_engine::{OverrideMode, OverrideSubject};
     struct Case {
@@ -1552,7 +1648,7 @@ fn vision_request_without_a_range_fails_closed() {
 #[test]
 fn resolve_death_save_follows_srd_counters() {
     use trame_engine::{DeathSaveOutcome, resolve_death_save};
-    // (case_id, successes, failures, d20, expected outcome)
+    // (case_id, successes, failures, d20, exhaustion, expected outcome)
     let outcome = |successes, failures, regains_hp, stable, dead| DeathSaveOutcome {
         successes,
         failures,
@@ -1562,17 +1658,67 @@ fn resolve_death_save_follows_srd_counters() {
     };
     let cases = [
         (
-            "ten_is_a_success",
+            "d20_10_exhaustion_0_is_success",
             0,
             0,
             10,
+            0,
             outcome(1, 0, false, false, false),
+        ),
+        (
+            "d20_10_exhaustion_1_is_failure_8_lt_10",
+            0,
+            0,
+            10,
+            1,
+            outcome(0, 1, false, false, false),
+        ),
+        (
+            "d20_12_exhaustion_1_is_success_10_ge_10",
+            0,
+            0,
+            12,
+            1,
+            outcome(1, 0, false, false, false),
+        ),
+        (
+            "d20_19_exhaustion_5_is_failure_9_lt_10",
+            0,
+            0,
+            19,
+            5,
+            outcome(0, 1, false, false, false),
+        ),
+        (
+            "d20_20_exhaustion_5_nat20_regains_one_hp",
+            2,
+            2,
+            20,
+            5,
+            outcome(0, 0, true, false, false),
+        ),
+        (
+            "d20_1_exhaustion_0_adds_two_failures",
+            0,
+            0,
+            1,
+            0,
+            outcome(0, 2, false, false, false),
+        ),
+        (
+            "d20_1_exhaustion_5_nat1_adds_two_failures",
+            0,
+            0,
+            1,
+            5,
+            outcome(0, 2, false, false, false),
         ),
         (
             "nineteen_is_a_success",
             1,
             1,
             19,
+            0,
             outcome(2, 1, false, false, false),
         ),
         (
@@ -1580,6 +1726,7 @@ fn resolve_death_save_follows_srd_counters() {
             0,
             0,
             9,
+            0,
             outcome(0, 1, false, false, false),
         ),
         (
@@ -1587,20 +1734,15 @@ fn resolve_death_save_follows_srd_counters() {
             2,
             1,
             2,
+            0,
             outcome(2, 2, false, false, false),
-        ),
-        (
-            "natural_one_is_two_failures",
-            0,
-            0,
-            1,
-            outcome(0, 2, false, false, false),
         ),
         (
             "natural_one_at_two_failures_kills_capped_at_three",
             1,
             2,
             1,
+            0,
             outcome(1, 3, false, false, true),
         ),
         (
@@ -1608,6 +1750,15 @@ fn resolve_death_save_follows_srd_counters() {
             2,
             2,
             5,
+            0,
+            outcome(2, 3, false, false, true),
+        ),
+        (
+            "exhaustion_third_failure_kills",
+            2,
+            2,
+            10,
+            1,
             outcome(2, 3, false, false, true),
         ),
         (
@@ -1615,6 +1766,15 @@ fn resolve_death_save_follows_srd_counters() {
             2,
             2,
             15,
+            0,
+            outcome(0, 0, false, true, false),
+        ),
+        (
+            "exhaustion_third_success_stabilizes_and_resets",
+            2,
+            2,
+            14,
+            2,
             outcome(0, 0, false, true, false),
         ),
         (
@@ -1622,10 +1782,12 @@ fn resolve_death_save_follows_srd_counters() {
             2,
             2,
             20,
+            0,
             outcome(0, 0, true, false, false),
         ),
         (
             "out_of_range_low_clamps_to_natural_one",
+            0,
             0,
             0,
             0,
@@ -1636,12 +1798,13 @@ fn resolve_death_save_follows_srd_counters() {
             0,
             1,
             25,
+            5,
             outcome(0, 0, true, false, false),
         ),
     ];
-    for (id, successes, failures, d20, expected) in cases {
+    for (id, successes, failures, d20, exhaustion, expected) in cases {
         assert_eq!(
-            resolve_death_save(successes, failures, d20),
+            resolve_death_save(successes, failures, d20, exhaustion),
             expected,
             "case {id}"
         );
@@ -1717,6 +1880,66 @@ fn record_death_save_updates_the_token_and_is_undoable() {
             hero: dying_hero(0, 2),
             d20: Some(3),
             expected: Some((0, 3, 0, false, true)),
+        },
+        Case {
+            id: "exhaustion_1_turns_raw_10_into_failure",
+            actor: player(),
+            hero: {
+                let mut h = dying_hero(0, 0);
+                h.exhaustion = 1;
+                h
+            },
+            d20: Some(10),
+            expected: Some((0, 1, 0, false, false)),
+        },
+        Case {
+            id: "exhaustion_1_raw_12_is_success",
+            actor: player(),
+            hero: {
+                let mut h = dying_hero(0, 0);
+                h.exhaustion = 1;
+                h
+            },
+            d20: Some(12),
+            expected: Some((1, 0, 0, false, false)),
+        },
+        Case {
+            id: "exhaustion_5_raw_19_is_failure",
+            actor: player(),
+            hero: {
+                let mut h = dying_hero(0, 2);
+                h.exhaustion = 5;
+                h
+            },
+            d20: Some(19),
+            expected: Some((0, 3, 0, false, true)),
+        },
+        Case {
+            id: "exhaustion_5_nat20_still_wakes_at_one_hp",
+            actor: player(),
+            hero: {
+                let mut h = dying_hero(1, 2);
+                h.exhaustion = 5;
+                h
+            },
+            d20: Some(20),
+            expected: Some((0, 0, 1, false, false)),
+        },
+        Case {
+            id: "removed_exhaustion_ruling_restores_raw_10_success",
+            actor: player(),
+            hero: {
+                let mut h = dying_hero(0, 0);
+                h.exhaustion = 2;
+                h.condition_overrides = vec![trame_engine::ConditionOverrideEntry {
+                    subject: trame_engine::OverrideSubject::Condition,
+                    id: "exhaustion".to_string(),
+                    mode: trame_engine::OverrideMode::Remove,
+                }];
+                h
+            },
+            d20: Some(10),
+            expected: Some((1, 0, 0, false, false)),
         },
         Case {
             id: "spectator_is_refused",
@@ -2035,4 +2258,182 @@ fn break_concentration_clears_the_spell_flag() {
         )
         .unwrap();
     assert!(!state.data.tokens[&HERO_ID].concentrating);
+}
+
+#[test]
+fn one_way_walls_block_one_direction_even_without_a_stored_normal() {
+    struct Case {
+        id: &'static str,
+        wall: Value,
+        ray: (f64, f64),
+        blocks: bool,
+    }
+    let editor = json!({ "id": Uuid::from_u128(0x77), "p1": { "x": 0.0, "y": 0.0 }, "p2": { "x": 100.0, "y": 0.0 }, "wallType": "OneWay" });
+    let zero = json!({ "id": Uuid::from_u128(0x78), "a": { "x": 0.0, "y": 0.0 }, "b": { "x": 100.0, "y": 0.0 }, "kind": { "kind": "ONE_WAY", "normal_x": 0.0, "normal_y": 0.0 } });
+    let explicit = json!({ "id": Uuid::from_u128(0x79), "a": { "x": 0.0, "y": 0.0 }, "b": { "x": 100.0, "y": 0.0 }, "kind": { "kind": "ONE_WAY", "normal_x": 0.0, "normal_y": -1.0 } });
+    let cases = [
+        Case {
+            id: "editor_wall_drawn_left_to_right_blocks_sight_going_down",
+            wall: editor.clone(),
+            ray: (0.0, 1.0),
+            blocks: true,
+        },
+        Case {
+            id: "editor_wall_drawn_left_to_right_lets_sight_go_up",
+            wall: editor,
+            ray: (0.0, -1.0),
+            blocks: false,
+        },
+        Case {
+            id: "stored_zero_normal_falls_back_to_the_drawn_direction",
+            wall: zero,
+            ray: (0.0, 1.0),
+            blocks: true,
+        },
+        Case {
+            id: "explicit_normal_wins_over_the_drawn_direction",
+            wall: explicit.clone(),
+            ray: (0.0, 1.0),
+            blocks: false,
+        },
+        Case {
+            id: "explicit_normal_blocks_rays_along_it",
+            wall: explicit,
+            ray: (0.0, -1.0),
+            blocks: true,
+        },
+    ];
+    for c in cases {
+        let wall: WallSegment = serde_json::from_value(c.wall).expect(c.id);
+        assert!(
+            matches!(wall.kind, WallKind::OneWay { .. }),
+            "case {}: kind",
+            c.id
+        );
+        let ray = Point2D {
+            x: c.ray.0,
+            y: c.ray.1,
+        };
+        assert_eq!(
+            wall.effective_blocks_vision(false, ray),
+            (c.blocks, false),
+            "case {}",
+            c.id
+        );
+    }
+}
+
+#[test]
+fn dead_token_with_positive_hp_blocks_non_teleport_moves_and_ends_concentration() {
+    struct MoveCase {
+        id: &'static str,
+        actor: CommandActor,
+        in_combat: bool,
+        gm_teleport: bool,
+        expect_ok: bool,
+    }
+
+    let cases = [
+        MoveCase {
+            id: "player_exploration_move_rejected",
+            actor: player(),
+            in_combat: false,
+            gm_teleport: false,
+            expect_ok: false,
+        },
+        MoveCase {
+            id: "player_turn_by_turn_move_rejected",
+            actor: player(),
+            in_combat: true,
+            gm_teleport: false,
+            expect_ok: false,
+        },
+        MoveCase {
+            id: "gm_normal_move_rejected",
+            actor: gm(),
+            in_combat: false,
+            gm_teleport: false,
+            expect_ok: false,
+        },
+        MoveCase {
+            id: "player_forged_gm_teleport_rejected",
+            actor: player(),
+            in_combat: false,
+            gm_teleport: true,
+            expect_ok: false,
+        },
+        MoveCase {
+            id: "gm_teleport_repositions_corpse",
+            actor: gm(),
+            in_combat: false,
+            gm_teleport: true,
+            expect_ok: true,
+        },
+    ];
+
+    for c in cases {
+        let mut corpse = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+        corpse.hp = 12;
+        corpse.max_hp = 20;
+        corpse.is_dead = true;
+        corpse.exhaustion = 6;
+        let mut state = table(vec![corpse]);
+        if c.in_combat {
+            start_combat(&mut state, vec![HERO_ID]);
+        }
+        let res = state.apply_command(
+            &c.actor,
+            TrameCommand::MoveToken {
+                token_id: HERO_ID,
+                to_top_left: Point2D::new(100.0, 0.0),
+                to_elevation_ft: None,
+                gm_teleport: c.gm_teleport,
+            },
+        );
+        if c.expect_ok {
+            assert!(res.is_ok(), "case {}: {res:?}", c.id);
+            assert_eq!(
+                state.data.tokens[&HERO_ID].top_left,
+                Point2D::new(100.0, 0.0),
+                "case {}",
+                c.id
+            );
+        } else {
+            assert_eq!(res, Err(CommandError::SpeedZero), "case {}", c.id);
+        }
+    }
+
+    // `is_incapacitated` also treats `is_dead` with `hp > 0` as incapacitated, so
+    // `end_incapacitated_concentration` clears concentration and removes any linked AoE.
+    let aoe_id = Uuid::from_u128(0xAA);
+    let mut caster = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+    caster.hp = 12;
+    caster.max_hp = 20;
+    caster.is_dead = true;
+    caster.concentrating = true;
+    caster.concentrating_on_aoe_id = Some(aoe_id);
+    let mut state = table(vec![caster]);
+    state.data.persistent_aoes.insert(
+        aoe_id,
+        trame_engine::aoe::AoeTemplate {
+            id: aoe_id,
+            origin: Point2D::new(200.0, 200.0),
+            origin_elevation_ft: 0.0,
+            shape: trame_engine::aoe::AoeShape::Sphere { radius_ft: 10.0 },
+            stops_at_walls: false,
+            discretization: trame_engine::aoe::GridDiscretizationMode::CenterPoint,
+            concentration_caster_id: Some(HERO_ID),
+        },
+    );
+    let broken = state.end_incapacitated_concentration();
+    assert_eq!(
+        broken,
+        vec![TrameEvent::ConcentrationBroken {
+            caster_token_id: HERO_ID,
+            removed_aoe_id: Some(aoe_id),
+        }],
+        "dead_with_positive_hp_breaks_concentration"
+    );
+    assert!(!state.data.tokens[&HERO_ID].concentrating);
+    assert!(!state.data.persistent_aoes.contains_key(&aoe_id));
 }

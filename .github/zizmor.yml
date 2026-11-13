@@ -5,6 +5,10 @@ rules:
     ignore:
       # EPURE Issue Command Gate enforces write-permission verification before any privileged execution (ADR-0004).
       - epure-issue-command.yml
+      # Runs only after a successful CI run of a push to this repository (job `if`), checks out
+      # that immutable head_sha, downloads no artifact, and its Google credentials are limited
+      # by the Workload Identity provider to this repository on refs/heads/main.
+      - deploy.yml
   ref-version-mismatch:
     ignore:
       - epure-issue-command.yml

@@ -1,0 +1,49 @@
+# ============================================================================
+# TRAME EDGE ROUTES (trame-routes.caddy), imported inside a site block
+# ============================================================================
+#
+# PURPOSE:
+# --------
+# One routing table for both edge variants (`Caddyfile`: public HTTPS;
+# `Caddyfile.tunnel`: plain HTTP behind Cloudflare Tunnel), so the two cannot
+# drift apart.
+#
+# INVARIANTS & SAFETY BOUNDARIES:
+# -------------------------------
+#   1. `Same-Origin Silo Downloads`:
+#      - With the Silo variant, `S3_PUBLIC_ENDPOINT` equals
+#        `TRAME_PUBLIC_ORIGIN`, so presigned URLs look like
+#        `{origin}/{S3_BUCKET}/{key}?X-Amz-...`. Only read methods on that
+#        bucket path reach Silo; writes stay on the internal network.
+#      - Caddy passes the client `Host` through unchanged: SigV4 signs the
+#        public host, so rewriting it would break every signature.
+#      - With R2 (or no object store) nothing listens on `silo:9000` and the
+#        path answers `502`; it is otherwise unused.
+#   2. `No Second Compression Pass`:
+#      - There is deliberately no `encode` directive. `trame-server` already
+#        negotiates gzip/br/zstd and skips images and fonts, and WebSocket
+#        frames are deflated by the `trame.v1+deflate` subprotocol. Caddy
+#        relays bodies and `Content-Encoding` untouched.
+#   3. `Long-Lived WebSockets`:
+#      - Caddy proxies `Upgrade` requests and the `Sec-WebSocket-Protocol`
+#        header as-is. Upgraded streams have no read or idle timeout; the
+#        server's 20 s ping heartbeat keeps intermediaries (Cloudflare drops
+#        idle sockets after 100 s) from closing them.
+#      - `stream_close_delay` keeps open sockets alive for 5 minutes across a
+#        `caddy reload` instead of cutting every table at once.
+# ============================================================================
+
+@silo_download {
+	path /{$S3_BUCKET:trame-assets}/*
+	method GET HEAD OPTIONS
+}
+
+handle @silo_download {
+	reverse_proxy silo:9000
+}
+
+handle {
+	reverse_proxy trame-server:8080 {
+		stream_close_delay 5m
+	}
+}

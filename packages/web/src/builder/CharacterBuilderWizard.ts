@@ -36,27 +36,36 @@
  *      spells are the `getClassChoices` descriptors (SRD 5.2.1 counts and
  *      lists); a step validates only when each of its choices has exactly
  *      `count` distinct allowed picks, and `applyClassChoices` applies them.
- *      Skills the background already grants are not offered. A Fighter also
- *      picks its Fighting Style feat on the skills step.
+ *      Skills the background or Origin feat already grants are not offered.
+ *      A Fighter also picks its Fighting Style feat on the skills step.
+ * 7. `Origin Feat Picks From The System Pack`:
+ *    - Backgrounds granting `Magic Initiate` (Acolyte: Cleric, Sage: Wizard)
+ *      or `Skilled` (Caravan Guide, Artisan, Merchant) expose `getOriginFeatChoices`
+ *      on the background step, auto-seeding fixed single-option picks (`spell_list`),
+ *      gating progression until every sub-choice is complete, and applying
+ *      `applyFeatChoices` inside `originActor` before class choices run.
  *
  * EXECUTION LIFECYCLE:
  * -----
  * `confirm()`
  * ├── 1. Validate every step (review).
  * ├── 2. Default actor + class hit die, saves, HP = die + CON mod (+ species bonus).
- * ├── 3. Species speed; `applyBackground(actor, background, choice)`.
+ * ├── 3. Species speed; `applyBackground` + `applyFeatChoices` (when Origin feat has choices).
  * ├── 4. `applyClassChoices` (skills, tools, gear, cantrips, spells, slots).
  * └── 5. Return the finalized `Dnd5eActorData` (draft kept until persisted).
  * ============================================================================
  */
 import {
+  TOOL_OPTION_PREFIX,
   applyBackground,
   applyClassChoices,
+  applyFeatChoices,
   backgroundAbilityIncreases,
   createDefaultActorData,
   getBackgroundRules,
   getClassChoices,
   getClassProgression,
+  getOriginFeatChoices,
   getSpeciesRules,
   type BuilderChoice,
   type Dnd5eActorData,
@@ -152,12 +161,78 @@ export class CharacterBuilderWizard {
   }
 
   /**
-   * Selecting another background resets the ability split to `+1/+1/+1` and
-   * the class skill picks (the background's skills are no longer offered).
+   * Selecting another background resets the ability split to `+1/+1/+1`,
+   * clears Origin feat picks, and clears the class skill picks (the
+   * background's skills are no longer offered).
    */
   public setBackground(backgroundId: string | null): void {
     const { skills: _skills, ...rest } = this.draftStore.getDraft()?.classSelections ?? {};
-    this.draftStore.updateDraft({ backgroundId, backgroundChoice: backgroundId ? { mode: "plus1_each" } : null, classSelections: rest });
+    this.draftStore.updateDraft({
+      backgroundId,
+      backgroundChoice: backgroundId ? { mode: "plus1_each" } : null,
+      featSelections: {},
+      classSelections: rest,
+    });
+  }
+
+  /**
+   * Choices required by the drafted background's Origin feat (`Magic Initiate`
+   * or `Skilled`), filtered against the background's and class's starting
+   * proficiencies (`[]` when no background is selected or its feat needs none).
+   */
+  public getOriginFeatChoices(): BuilderChoice[] {
+    const draft = this.draftStore.getDraft();
+    if (!draft || !getBackgroundRules(draft.backgroundId ?? undefined)) return [];
+    return getOriginFeatChoices(draft.backgroundId!, {
+      selections: this.effectiveFeatSelections(draft),
+      actor: this.preFeatOriginActor(draft),
+    });
+  }
+
+  /** Current picks of Origin feat choice `choiceId` (including fixed single-option defaults). */
+  public getFeatSelection(choiceId: string): string[] {
+    const draft = this.draftStore.getDraft();
+    if (!draft) return [];
+    return this.effectiveFeatSelections(draft)[choiceId] ?? [];
+  }
+
+  /**
+   * Toggles one option of Origin feat choice `choiceId`: single-pick choices
+   * set `[optionId]`; multi-pick choices add up to `count` and remove when
+   * toggled again. Dependent choices reset when their parent changes, and
+   * skills newly claimed by `Skilled` are pruned from `classSelections.skills`.
+   */
+  public toggleFeatOption(choiceId: string, optionId: string): void {
+    const draft = this.draftStore.getDraft();
+    if (!draft) return;
+    const choices = this.getOriginFeatChoices();
+    const choice = choices.find((c) => c.id === choiceId);
+    if (!choice) return;
+    const current = this.effectiveFeatSelections(draft);
+    const picked = current[choiceId] ?? [];
+    const next =
+      choice.count === 1
+        ? [optionId]
+        : picked.includes(optionId)
+          ? picked.filter((id) => id !== optionId)
+          : picked.length < choice.count
+            ? [...picked, optionId]
+            : picked;
+    const nextFeatSelections: Record<string, string[]> = { ...current, [choiceId]: next };
+    for (const dep of choices) {
+      if (dep.dependsOn === choiceId && next[0] !== picked[0]) {
+        nextFeatSelections[dep.id] = [];
+      }
+    }
+    const classSkills = draft.classSelections?.skills;
+    const nextClassSelections =
+      choice.kind === "skill_or_tool" && !optionId.startsWith(TOOL_OPTION_PREFIX) && next.includes(optionId) && classSkills?.includes(optionId)
+        ? { ...draft.classSelections, skills: classSkills.filter((s) => s !== optionId) }
+        : draft.classSelections;
+    this.draftStore.updateDraft({
+      featSelections: nextFeatSelections,
+      ...(nextClassSelections !== draft.classSelections ? { classSelections: nextClassSelections } : {}),
+    });
   }
 
   /** Class choices of the drafted class, without the skills its background grants (`[]` before a class). */
@@ -258,6 +333,10 @@ export class CharacterBuilderWizard {
         } catch {
           errors.push("builder.error.backgroundChoice");
         }
+        const featChoices = this.getOriginFeatChoices();
+        if (featChoices.some((choice) => !isChoiceComplete(choice, this.getFeatSelection(choice.id)))) {
+          errors.push("builder.error.originFeat");
+        }
         break;
       }
       case "abilityScores":
@@ -346,14 +425,53 @@ export class CharacterBuilderWizard {
   }
 
   /**
+   * Resolves `draft.featSelections`, auto-seeding any unset choice whose
+   * allowed options equal its required `count` (e.g. fixed `spell_list` on
+   * Acolyte or Sage).
+   */
+  private effectiveFeatSelections(draft: CharacterDraft): Record<string, string[]> {
+    const raw = draft.featSelections ?? {};
+    if (!getBackgroundRules(draft.backgroundId ?? undefined)) return { ...raw };
+    const actor = this.preFeatOriginActor(draft);
+    const initial = getOriginFeatChoices(draft.backgroundId!, { selections: raw, actor });
+    const seeded: Record<string, string[]> = { ...raw };
+    for (const choice of initial) {
+      if (seeded[choice.id] === undefined && choice.options.length === choice.count && choice.count > 0) {
+        seeded[choice.id] = choice.options.map((o) => o.id);
+      }
+    }
+    return seeded;
+  }
+
+  /**
+   * Minimal actor with class tool proficiencies and background skills/tools
+   * applied prior to Origin feat selections, so `Skilled` filters out
+   * proficiencies already granted by the background or class.
+   */
+  private preFeatOriginActor(draft: CharacterDraft): Dnd5eActorData | undefined {
+    if (!getBackgroundRules(draft.backgroundId ?? undefined)) return undefined;
+    const actor = createDefaultActorData(draft.id ?? "draft", draft.name.trim() || "Draft");
+    if (getClassProgression(draft.classId ?? undefined)) {
+      actor.classId = draft.classId!;
+    }
+    const choice = draft.backgroundChoice ?? { mode: "plus1_each" };
+    try {
+      return applyBackground(actor, draft.backgroundId!, choice);
+    } catch {
+      return applyBackground(actor, draft.backgroundId!, { mode: "plus1_each" });
+    }
+  }
+
+  /**
    * The draft as an actor before its class picks (species, class basics,
-   * background, background equipment); `null` until species, class and
-   * background are valid.
+   * background, Origin feat choices, background equipment); `null` until
+   * species, class and background are valid.
    */
   private originActor(draft: CharacterDraft): Dnd5eActorData | null {
     if (!["species", "class", "background"].every((s) => this.validateStep(s as BuilderStep).valid)) return null;
     const progression = getClassProgression(draft.classId!)!;
     const species = getSpeciesRules(draft.speciesId!)!;
+    const background = getBackgroundRules(draft.backgroundId!)!;
     const actor = createDefaultActorData(draft.id ?? newActorId(), draft.name.trim());
     actor.classId = draft.classId!;
     actor.speciesId = `srd:species:${draft.speciesId}`;
@@ -368,11 +486,20 @@ export class CharacterBuilderWizard {
     actor.attributes.casterType = progression.casterType;
     if (progression.spellcastingAbility) actor.attributes.spellcastingAbility = progression.spellcastingAbility;
     actor.features = [...species.traits];
-    const finalized: Dnd5eActorData = applyBackground(
+    const afterBackground: Dnd5eActorData = applyBackground(
       actor,
       draft.backgroundId!,
       draft.backgroundChoice!,
     );
+    const finalized: Dnd5eActorData =
+      this.getOriginFeatChoices().length > 0
+        ? applyFeatChoices(
+            afterBackground,
+            background.originFeat,
+            this.effectiveFeatSelections(draft),
+            { fixedSpellList: background.originFeatSpellList },
+          )
+        : afterBackground;
     finalized.items = draft.equipmentIds.map((name, i): SheetInventoryItem => ({
       id: `item-${i + 1}`,
       name,

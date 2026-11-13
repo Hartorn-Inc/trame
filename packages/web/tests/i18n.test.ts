@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { EN } from "../src/i18n/en.ts";
 import { FR } from "../src/i18n/fr.ts";
 import { localeSignal, t, tn, type LocaleCode } from "../src/i18n/index.ts";
@@ -49,10 +52,55 @@ describe("i18n dictionary parity (G3, A39, A40)", () => {
     });
   }
 
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+  const engineCommands = fs.readFileSync(path.join(repoRoot, "crates/trame-engine/src/commands.rs"), "utf8");
+  const rustBlock = (start: RegExp): string => {
+    const from = engineCommands.search(start);
+    assert.ok(from >= 0, `${start} not found in commands.rs`);
+    return engineCommands.slice(from, engineCommands.indexOf("\n}", from) + 2);
+  };
+  const errorCodes = [...engineCommands.slice(engineCommands.indexOf("COMMAND_ERROR_CODES")).split("];")[0].matchAll(/"([A-Z_]+)"/g)].map(
+    (m) => m[1],
+  );
+  const rustCommandTags = [...rustBlock(/pub enum TrameCommand \{/).matchAll(/^ {4}([A-Z][A-Za-z]+)\b/gm)].map((m) =>
+    m[1].replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase(),
+  );
+  const webCommandTags = [
+    ...fs.readFileSync(path.join(repoRoot, "packages/web/src/table/commands.ts"), "utf8").matchAll(/cmd: "([A-Z_]+)"/g),
+  ].map((m) => m[1]);
+
+  const coverage: Array<{ id: string; keys: () => string[]; minimum: number }> = [
+    { id: "every-command-error-code-has-a-reason", keys: () => errorCodes.map((c) => `feedback.reason.${c}`), minimum: 15 },
+    { id: "every-engine-command-has-an-action-label", keys: () => rustCommandTags.map((c) => `command.action.${c}`), minimum: 44 },
+    { id: "every-web-command-builder-has-an-action-label", keys: () => webCommandTags.map((c) => `command.action.${c}`), minimum: 30 },
+  ];
+  for (const tc of coverage) {
+    it(`[${tc.id}] English (and so French) translates each key`, () => {
+      const keys = tc.keys();
+      assert.ok(keys.length >= tc.minimum, `parsed only ${keys.length} keys`);
+      assert.deepEqual(keys.filter((key) => !(key in EN)), []);
+    });
+  }
+
   it("[interpolation] t() substitutes every {{placeholder}} occurrence", () => {
     localeSignal.value = "en";
     assert.equal(t("rest.refill", { current: 1, max: 4 }), "1 / 4 → 4 / 4");
   });
+});
+
+describe("no hard-coded user-facing attribute text in components", () => {
+  const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
+  const components = fs
+    .readdirSync(srcRoot, { recursive: true, encoding: "utf8" })
+    .filter((file) => file.endsWith(".tsx"))
+    .map((file) => ({ file, source: fs.readFileSync(path.join(srcRoot, file), "utf8") }));
+  const attributes = ["aria-label", "aria-description", "title", "placeholder", "alt"];
+  for (const attribute of attributes) {
+    it(`[${attribute}-goes-through-t] no ${attribute} is a literal or template string with words`, () => {
+      const literal = new RegExp(`\\s${attribute}=(?:"[^"$]*[A-Za-z]{2}[^"$]*"|\\{\\s*['"\`][^'"\`$]*[A-Za-z]{2})`);
+      assert.deepEqual(components.filter((c) => literal.test(c.source)).map((c) => c.file), []);
+    });
+  }
 });
 
 describe("platform-neutral copy instructions", () => {
@@ -65,4 +113,27 @@ describe("platform-neutral copy instructions", () => {
       assert.doesNotMatch(c.dict["invites.copyManual"], /ctrl|cmd|⌘|command\+/i);
     });
   }
+});
+
+describe("French tabletop token terminology harmonization (UA #14)", () => {
+  const tokenKeys = [
+    { id: "fr-not-found-uses-jeton", key: "feedback.reason.NOT_FOUND", expected: /jeton/ },
+    { id: "fr-door-reach-uses-jeton", key: "feedback.reason.DOOR_OUT_OF_REACH", expected: /jeton/ },
+    { id: "fr-remove-token-uses-jeton", key: "command.action.REMOVE_TOKEN", expected: /jeton/ },
+    { id: "fr-table-empty-uses-jeton", key: "table.empty", expected: /jeton/ },
+    { id: "fr-vitals-no-selection-uses-jeton", key: "vitals.noSelection", expected: /jeton/ },
+  ] as const;
+
+  for (const tc of tokenKeys) {
+    it(`[${tc.id}] ${tc.key} uses 'jeton'`, () => {
+      assert.match(FR[tc.key], tc.expected);
+    });
+  }
+
+  it("[fr-zero-pion-occurrences] FR dictionary contains zero 'pion' or 'pions' words", () => {
+    const offendingKeys = Object.entries(FR)
+      .filter(([, value]) => /\bpions?\b/i.test(value))
+      .map(([key]) => key);
+    assert.deepEqual(offendingKeys, []);
+  });
 });

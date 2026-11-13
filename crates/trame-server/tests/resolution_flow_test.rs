@@ -635,11 +635,143 @@ fn sheet_save_bonuses_follow_the_sheet_shape() {
             json!({ "name": "Note" }),
             None,
         ),
+        (
+            "level_6_paladin_cha_16_gets_aura_of_protection_from_derived_saves",
+            json!({
+                "attributes": { "level": 6 },
+                "abilities": {
+                    "str": { "score": 10, "saveProficiency": false },
+                    "dex": { "score": 10, "saveProficiency": false },
+                    "con": { "score": 10, "saveProficiency": false },
+                    "cha": { "score": 16, "saveProficiency": true }
+                },
+                "derived": { "savingThrows": { "str": 3, "dex": 3, "con": 3, "cha": 9 } }
+            }),
+            Some([3, 3, 3]),
+        ),
+        (
+            "derived_saves_are_clamped_and_non_numbers_fall_back",
+            json!({
+                "abilities": { "str": { "score": 10 }, "dex": { "score": 14 }, "con": { "score": 10 } },
+                "derived": { "savingThrows": { "str": 99, "dex": "high", "con": -50 } }
+            }),
+            Some([30, 2, -10]),
+        ),
     ];
     for (id, sheet, expected) in cases {
         let bonuses = trame_server::campaigns::tactical_sync_from_sheet(None, &sheet).save_bonuses;
         let got = bonuses.map(|b| [b["str"], b["dex"], b["con"]]);
         assert_eq!(got, expected, "{id}");
+    }
+}
+
+#[test]
+fn feature_roll_advantages_follow_the_derived_feature_rules() {
+    // (case_id, sheet, expected list or None)
+    let rolls =
+        |rolls: serde_json::Value| json!({ "derived": { "featureRules": { "rolls": rolls } } });
+    let cases = [
+        (
+            "feral_instinct_and_survivor_are_kept",
+            rolls(json!([
+                { "kind": "advantage", "on": { "roll": "initiative" }, "featureId": "barbarian:feral_instinct" },
+                { "kind": "advantage", "on": { "roll": "death_save" }, "featureId": "champion:survivor" }
+            ])),
+            Some(vec!["initiative", "death_save"]),
+        ),
+        (
+            "other_scopes_and_kinds_are_dropped",
+            rolls(json!([
+                { "kind": "advantage", "on": { "roll": "attack", "source": "weapon_str" } },
+                { "kind": "minimum_d20", "value": 10, "on": { "roll": "initiative" } },
+                { "kind": "advantage", "on": { "roll": "initiative" } },
+                { "kind": "advantage", "on": { "roll": "initiative" } }
+            ])),
+            Some(vec!["initiative"]),
+        ),
+        (
+            "feature_rules_without_rolls_clear_the_list",
+            json!({ "derived": { "featureRules": { "resistances": [] } } }),
+            Some(vec![]),
+        ),
+        ("no_feature_rules_keeps_the_token_list", json!({}), None),
+    ];
+    for (id, sheet, expected) in cases {
+        let got =
+            trame_server::campaigns::tactical_sync_from_sheet(None, &sheet).feature_roll_advantages;
+        let expected = expected.map(|v| v.into_iter().map(str::to_string).collect::<Vec<_>>());
+        assert_eq!(got, expected, "{id}");
+    }
+}
+
+#[test]
+fn active_feature_resistances_reach_the_token() {
+    // (case_id, sheet, damage type, raw damage, HP lost)
+    let rage =
+        json!({ "featureRules": { "resistances": ["bludgeoning", "piercing", "slashing"] } });
+    let cases = [
+        (
+            "raging_barbarian_halves_slashing",
+            json!({ "derived": rage }),
+            "slashing",
+            11,
+            5,
+        ),
+        (
+            "rage_ended_takes_full_slashing",
+            json!({ "derived": { "featureRules": { "resistances": [] } } }),
+            "slashing",
+            11,
+            11,
+        ),
+        (
+            "rage_does_not_resist_fire",
+            json!({ "derived": rage }),
+            "fire",
+            11,
+            11,
+        ),
+        (
+            "rage_and_sheet_vulnerability_apply_in_order",
+            json!({ "damageMitigations": { "slashing": "VULNERABLE" }, "derived": rage }),
+            "slashing",
+            25,
+            24,
+        ),
+        (
+            "unknown_feature_damage_types_are_ignored",
+            json!({ "derived": { "featureRules": { "resistances": ["laser", "Slashing "] } } }),
+            "slashing",
+            11,
+            5,
+        ),
+    ];
+    for (id, sheet, damage_type, raw, lost) in cases {
+        let gm = actor(CampaignRole::Gm);
+        let mut barbarian =
+            TokenState::new_default(Uuid::new_v4(), "Barbarian", Point2D::new(0.0, 0.0));
+        barbarian.max_hp = 60;
+        barbarian.hp = 60;
+        trame_server::campaigns::tactical_sync_from_sheet(None, &sheet).apply_to_token(
+            &mut barbarian,
+            trame_engine::commands::TableMode::Exploration,
+        );
+        let token_id = barbarian.id;
+        let mut table = TableState::new(100.0, 5.0, Vec::new());
+        table.data.tokens.insert(token_id, barbarian);
+        table
+            .apply_command(
+                &gm,
+                TrameCommand::ApplyDamage {
+                    token_id,
+                    raw_damage: raw,
+                    affinity: DamageAffinity::Normal,
+                    is_critical: false,
+                    damage_type: Some(damage_type.to_string()),
+                },
+            )
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert_eq!(60 - table.data.tokens[&token_id].hp, lost, "{id}");
     }
 }
 
@@ -729,5 +861,79 @@ async fn concentration_check_is_prompted_and_server_rolled() {
         let after = state(&r).await;
         assert_eq!(after.data.tokens[&r.hero].concentrating, holds, "{id}");
         assert!(after.data.pending_concentration_checks.is_empty(), "{id}");
+    }
+}
+
+#[tokio::test]
+async fn hits_within_5_ft_on_a_downed_hero_are_critical_and_add_two_failures() {
+    // (case_id, attacker is adjacent (goblin) or 15 ft away (lurker), outcome, failures added)
+    let cases = [
+        (
+            "adjacent_attacker_scores_a_critical",
+            true,
+            TargetOutcome::Critical,
+            2,
+        ),
+        (
+            "attacker_15_ft_away_only_hits",
+            false,
+            TargetOutcome::Hit,
+            1,
+        ),
+    ];
+    for (id, adjacent, outcome, failures) in cases {
+        let r = room().await;
+        let hp = state(&r).await.data.tokens[&r.hero].hp;
+        r.handle
+            .dispatch_direct_command(
+                r.gm.clone(),
+                TrameCommand::ApplyDamage {
+                    token_id: r.hero,
+                    raw_damage: hp,
+                    affinity: DamageAffinity::Normal,
+                    is_critical: false,
+                    damage_type: None,
+                },
+            )
+            .await
+            .unwrap();
+        let downed = state(&r).await.data.tokens[&r.hero].clone();
+        assert_eq!(
+            (downed.hp, downed.conditions.clone()),
+            (0, vec!["unconscious".to_string()]),
+            "{id}: 0 HP adds unconscious"
+        );
+
+        let attacker = if adjacent { r.goblin } else { r.lurker };
+        // Natural 1 and 20 decide the outcome on their own; reroll until the d20 is 2..=19.
+        let resolution = loop {
+            let resolution = resolve(
+                &r,
+                &r.gm,
+                request(Some(attacker), attack(30), "", 4, &[r.hero]),
+            )
+            .await
+            .unwrap();
+            if (2..=19).contains(&resolution.targets[0].d20_rolls[0]) {
+                break resolution;
+            }
+        };
+        assert_eq!(resolution.targets[0].outcome, outcome, "{id}: outcome");
+        r.handle
+            .dispatch_direct_command(
+                r.gm.clone(),
+                TrameCommand::ApplyResolution {
+                    resolution_id: resolution.id,
+                    token_id: None,
+                    adjustment: None,
+                },
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert_eq!(
+            state(&r).await.data.tokens[&r.hero].death_save_failures,
+            failures,
+            "{id}: death save failures"
+        );
     }
 }

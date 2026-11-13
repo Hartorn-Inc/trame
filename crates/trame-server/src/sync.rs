@@ -53,7 +53,8 @@
 //!        effective list. `DeathSaveRecorded` keeps its counters for the
 //!        controller only; others get the d20 and the Stable / dead flags.
 //!      - The GM's `stat_block` copy never leaves the server for a non-GM: it is
-//!        stripped from controlled tokens in snapshots and in `TokenSpawned`.
+//!        stripped from controlled tokens in snapshots and in `TokenSpawned`, and
+//!        `data["statBlock"]` is stripped from `ActorUpdated` for non-GM recipients.
 //!      - `TokenRemoved` reaches only players who could see the token before the
 //!        command (line of sight in the pre-command state), and a token moving
 //!        into view never reveals where it came from.
@@ -72,6 +73,12 @@
 //!        the same audience.
 //!      - Concentration checks (state, `ConcentrationCheckRequested`,
 //!        `ConcentrationCheckRolled`) reach the token's controller only.
+//!      - The server's Concentration `DiceRolled` has the same audience: it is
+//!        rolled `GmOnly` and fanned out like an initiative roll, so the GM and
+//!        the token's controller get it and every other player gets neither
+//!        the event nor the dice (its timeline record is GM-only). A
+//!        Constitution save total bounds a hidden stat, and the roll would
+//!        otherwise tell bystanders a check the event hides from them.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -252,7 +259,7 @@ pub enum BloodiedState {
     Unhurt,
     /// Current HP at or below half of maximum HP, but above `0`.
     Bloodied,
-    /// Current HP at or below `0`.
+    /// Current HP at or below `0`, or the creature is dead (`is_dead == true`, e.g. Exhaustion 6).
     Down,
 }
 
@@ -299,7 +306,7 @@ pub struct PublicTokenView {
     /// Effective condition ids (`TokenState::effective_conditions`: GM rulings applied, the
     /// rulings themselves withheld).
     pub conditions: Vec<String>,
-    /// Coarse health tier derived from `hp` / `max_hp`.
+    /// Coarse health tier derived from `is_dead` and `hp` / `max_hp`.
     pub bloodied: BloodiedState,
 }
 
@@ -318,7 +325,11 @@ impl From<&TokenState> for PublicTokenView {
             height_ft: t.height_ft,
             invisible: t.invisible,
             conditions: t.effective_conditions(),
-            bloodied: BloodiedState::from_hp(t.hp, t.max_hp),
+            bloodied: if t.is_dead {
+                BloodiedState::Down
+            } else {
+                BloodiedState::from_hp(t.hp, t.max_hp)
+            },
         }
     }
 }
@@ -347,6 +358,10 @@ pub enum ServerEnvelope {
     CommandRejected {
         /// Human-readable rejection reason (never a raw storage error).
         reason: String,
+        /// Stable code and numbers of an engine refusal (`CommandError::rejection_detail`), so
+        /// clients explain it in the reader's language; `None` for server-side refusals.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<trame_engine::commands::RejectionDetail>,
         /// The `correlation_id` the client sent with the rejected envelope; `None` when the
         /// client sent none or the frame could not be decoded.
         #[serde(default, skip_serializing_if = "Option::is_none")]

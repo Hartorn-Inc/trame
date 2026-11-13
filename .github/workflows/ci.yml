@@ -65,9 +65,27 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Rust Lint check (cargo clippy)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Rust Tests (cargo test)
+      - name: Terraform format, validate & tflint (make lint-terraform)
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # tflint --init downloads its pinned ruleset from GitHub releases
+        run: make lint-terraform
+      - name: Budget cap function tests (make test-budget-cap)
+        run: make test-budget-cap
+      # Not a service container: services cannot pass Silo its `server /data` command.
+      - name: Start Silo for the S3 integration tests
+        run: |
+          docker run --detach --name silo --publish 127.0.0.1:9000:9000 \
+            --env MINIO_ROOT_USER=trame_ci_silo --env MINIO_ROOT_PASSWORD=trame_ci_silo_secret \
+            pgsty/silo:RELEASE.2026-10-18T00-00-00Z@sha256:2636fc4155d9a7e41ff58cdb65ddd13ba9304e67184e13c25bc5cb34016269d7 \
+            server /data
+          timeout 60 sh -c 'until curl -sf http://127.0.0.1:9000/minio/health/ready; do sleep 1; done'
+      - name: Rust Tests (cargo test, PostgreSQL + S3 integration)
         env:
           DATABASE_URL: postgresql://trame:trame_ci_password@localhost:5432/trame
+          TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          TEST_S3_BUCKET: trame-test
+          TEST_S3_ACCESS_KEY_ID: trame_ci_silo
+          TEST_S3_SECRET_ACCESS_KEY: trame_ci_silo_secret
         run: cargo test --workspace --all-targets
       # Same outputs as `make wasm`; required by web lint/typecheck/tests/build and the parity test.
       - name: WASM Build (wasm-pack trame-engine, browser + Node)
@@ -108,8 +126,29 @@ jobs:
           retention-days: 1
           overwrite: true # re-running the job reuses the artifact name within the run
 
+  deploy-smoke:
+    name: "Production Compose Smoke (Caddy, Silo, Backup + Restore)"
+    needs: [image]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download production image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: trame-server-image
+          path: ${{ runner.temp }}/trame-server-image
+      - name: Load production image
+        run: docker load --input "${RUNNER_TEMP}/trame-server-image/trame-server-image.tar"
+      - name: Production Compose smoke (make deploy-compose-smoke)
+        env:
+          TRAME_IMAGE: trame-server:ci
+        run: make deploy-compose-smoke
+
   e2e:
-    name: "Browser E2E (GM + Player Journey)"
+    name: "Browser E2E (GM + Three Players Journey)"
     needs: [image]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
@@ -126,7 +165,7 @@ jobs:
         run: |
           docker load --input "${RUNNER_TEMP}/trame-server-image/trame-server-image.tar"
           docker tag trame-server:ci trame-server:e2e
-      - name: GM + player Playwright journey (make e2e)
+      - name: GM + three players Playwright journey (make e2e)
         run: make e2e
       # Recordings exist even when the journey fails part-way; the MP4 is the evidence to review.
       - name: Side-by-side GM/player video (make e2e-video)
@@ -136,14 +175,19 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           results=e2e/artifacts/results.json
+          phases=e2e/artifacts/phases.json
           {
-            echo "### Browser E2E (GM + Player Journey)"
+            echo "### Browser E2E (GM + Three Players Journey)"
             if [ -f "$results" ]; then
               jq -r '.stats | "| Passed | Failed | Flaky | Skipped | Duration |",
                 "|---|---|---|---|---|",
                 "| \(.expected // 0) | \(.unexpected // 0) | \(.flaky // 0) | \(.skipped // 0) | \((.duration // 0) / 1000 | floor)s |"' "$results"
             else
               echo "No \`results.json\`: the Playwright suite did not run (see the job log)."
+            fi
+            if [ -f "$phases" ]; then
+              jq -r '.results | "\nJourney phases: \(map(select(.status == "pass")) | length) passed, \(map(select(.status == "fail")) | length) failed.",
+                (map(select(.status == "fail"))[] | "- FAIL \(.phase)")' "$phases"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload E2E evidence
@@ -155,6 +199,8 @@ jobs:
             e2e/artifacts/gm-player-side-by-side.mp4
             e2e/artifacts/report
             e2e/artifacts/results.json
+            e2e/artifacts/phases.json
+            e2e/artifacts/harness/*.log
             e2e/artifacts/server.log
             e2e/artifacts/postgres.log
           if-no-files-found: warn

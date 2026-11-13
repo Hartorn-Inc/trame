@@ -1,12 +1,67 @@
-import { h, type VNode } from "preact";
+/**
+ * ============================================================================
+ * D&D 5E LEVEL-UP 4-STEP WIZARD MODAL (components/modals/LevelUpModal.tsx)
+ * ============================================================================
+ *
+ * PURPOSE:
+ * --------
+ * Accessible four-step progression dialog (archetype/subclass, hit points,
+ * ASI or feat, spell slots & summary) wrapping `applyLevelUp` and
+ * `applyFeatChoices` so characters advance cleanly under SRD 5.2.1 rules.
+ *
+ * INVARIANTS & SAFETY BOUNDARIES:
+ * -------------------------------
+ *   1. `Slot-Scoped Feat Filtering`:
+ *      - Feat slots filter `getFeats()` against `getLevelUpFeatOptions(actor, targetLevel)`
+ *        so level prerequisites (L4 General vs L19 Epic Boons), ability/spellcasting/
+ *        Fighting Style prerequisites, non-repeatable feats, and the `"asi"` pseudo-feat
+ *        are enforced before selection while preserving custom homebrew entries.
+ *   2. `Feat +1 Ability Increase Ceiling`:
+ *      - Feats with `SRD_FEATS[key].abilityIncrease` (`Grappler` capped at `20`,
+ *        all 7 level-19 Epic Boons capped at `30`) expose `#feat-ability-increase`
+ *        offering only abilities below `max` and pass `abilityIncrease` to `applyLevelUp`.
+ *   3. `Feat Sub-Choices Complete Before Commit`:
+ *      - Feats exposing `getFeatChoices` (`Magic Initiate`, `Skilled`) auto-seed
+ *        single-option `spell_list` picks, gate progression until every choice
+ *        has `count` distinct valid picks, and run `applyFeatChoices` after `applyLevelUp`.
+ *   4. `Accessible Focus, Tablist & Alert Escalation`:
+ *      - Traps focus inside `role="dialog"`, focuses each step heading on step
+ *        transitions, keeps roving tabindex on the ASI/Feat tablist, and escalates
+ *        validation hints to `role="alert"` only after an invalid Next/Confirm attempt.
+ *   5. `Prepared-Caster Spell Allowance & Described Choice Reminders`:
+ *      - `getNewSpellsAllowance` derives Bard, Sorcerer, and Warlock spell gains from
+ *        `getPreparedSpellCount(class, targetLevel) - getPreparedSpellCount(class, targetLevel - 1)`
+ *        (SRD 5.2.1 tables) while keeping Wizard at `2` spellbook spells per level.
+ *      - Step 4 Summary displays a localized reminder when `targetLevel` grants
+ *        `Scholar`, `Deft Explorer`, or `Metamagic` so players record manual picks.
+ *
+ * EXECUTION LIFECYCLE:
+ * --------------------
+ *   `handleConfirmLevelUp()`
+ *     ├── 1. Verify steps 1–4 (`canProceed()`); escalate hint on refusal.
+ *     ├── 2. Compile `LevelUpOptions` (`asiOrFeat` with `abilityIncrease`, spells, HP).
+ *     ├── 3. Run `applyLevelUp(actor, options)`.
+ *     ├── 4. When the chosen feat has sub-choices, run `applyFeatChoices(...)`.
+ *     └── 5. Persist via `onSave(updatedActor)` and close the dialog.
+ * ============================================================================
+ */
+import { h, type ComponentChildren, type VNode } from "preact";
 import { useState, useId, useLayoutEffect, useRef } from "preact/hooks";
 import { localizedName, t, tn, type MessageKey } from "../../i18n/index.ts";
 import { useModalFocusTrap } from "../a11y/useModalFocusTrap.ts";
 import {
+  CompendiumResolver,
+  SRD_FEATS,
+  TOOL_OPTION_PREFIX,
+  applyFeatChoices,
   applyLevelUp,
   calculateProficiencyBonus,
   getCasterTypeForClass,
+  getClassProgression,
+  getFeatChoices,
   getFightingStyleFeatOptions,
+  getLevelUpFeatOptions,
+  getPreparedSpellCount,
   getSubclassUnlockLevel,
   grantsFightingStyleFeat,
   isAsiLevel,
@@ -14,32 +69,50 @@ import {
   getSubclasses,
   getFeats,
   getSpellsByLevel,
+  srdFeatKey,
   type AbilityId,
   type AsiOrFeatSelection,
+  type BuilderChoice,
+  type BuilderChoiceOption,
+  type BuilderSelections,
   type CasterType,
   type Dnd5eActorData,
   type LevelUpOptions,
   type SpellSlotsState,
 } from "../../../../game-systems/dnd5e/src/index.ts";
 
+/** Certified dice roll payload returned by `DiceRollService`. */
 export interface DiceRollResult {
+  /** Final rolled total (`>= 1`). */
   total: number;
+  /** Individual die face outcomes in roll order. */
   rolls: number[];
+  /** Canonical dice notation evaluated by the server (e.g. `"1d10"`). */
   formula: string;
+  /** Optional server-authoritative cryptographic roll signature. */
   signature?: string;
 }
 
+/** Server-backed dice roller used for certified Hit Die advancement rolls. */
 export interface DiceRollService {
   roll(formula: string, options?: { reason?: string; actorId?: string }): Promise<DiceRollResult>;
 }
 
+/** Props controlling `LevelUpModal`. */
 export interface LevelUpModalProps {
+  /** Whether the modal dialog is mounted and open. */
   isOpen: boolean;
+  /** Authoritative D&D 5e actor sheet advancing by one level. */
   actor: Dnd5eActorData;
+  /** Callback invoked when the user cancels or completes level-up. */
   onClose: () => void;
+  /** Callback persisting the newly leveled-up actor data. */
   onSave: (updatedActor: Dnd5eActorData) => void | Promise<void>;
+  /** Optional dice service enabling authoritative Hit Die rolling on Step 2. */
   diceRollService?: DiceRollService;
+  /** Optional lock flag passed through from the parent sheet header. */
   coreStatsLocked?: boolean;
+  /** Optional lock toggle callback passed through from the parent sheet header. */
   onToggleCoreStatsLocked?: (locked: boolean) => void;
 }
 
@@ -54,40 +127,31 @@ const ABILITY_LABEL_KEYS: Record<AbilityId, MessageKey> = {
 
 const ABILITY_KEYS: AbilityId[] = ["str", "dex", "con", "int", "wis", "cha"];
 
-const BARD_SPELLS_KNOWN: Record<number, number> = {
-  1: 4, 2: 5, 3: 6, 4: 7, 5: 8, 6: 9, 7: 10, 8: 11, 9: 12, 10: 14,
-  11: 15, 12: 15, 13: 16, 14: 18, 15: 19, 16: 19, 17: 20, 18: 22, 19: 22, 20: 22,
-};
+const MANUAL_CHOICE_FEATURES = ["Scholar", "Deft Explorer", "Metamagic"] as const;
 
-const SORCERER_SPELLS_KNOWN: Record<number, number> = {
-  1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7, 7: 8, 8: 9, 9: 10, 10: 11,
-  11: 12, 12: 12, 13: 13, 14: 13, 15: 14, 16: 14, 17: 15, 18: 15, 19: 15, 20: 15,
-};
-
-const WARLOCK_SPELLS_KNOWN: Record<number, number> = {
-  1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7, 7: 8, 8: 9, 9: 10, 10: 10,
-  11: 11, 12: 11, 13: 12, 14: 12, 15: 13, 16: 13, 17: 14, 18: 14, 19: 15, 20: 15,
-};
-
-function getNewSpellsAllowance(cleanClass: string, targetLevel: number): number {
-  if (targetLevel < 1 || targetLevel > 20) return 0;
-  if (cleanClass === "wizard") {
+/**
+ * Computes the maximum number of new class spells an actor may add at `targetLevel`:
+ * - Wizard adds `2` spells to its spellbook at each level-up.
+ * - Bard, Sorcerer, and Warlock add the SRD 5.2.1 prepared-spells delta
+ *   `max(0, getPreparedSpellCount(class, targetLevel) - getPreparedSpellCount(class, targetLevel - 1))`.
+ * - Other classes return `0`.
+ */
+export function getNewSpellsAllowance(cleanClass: string, targetLevel: number): number {
+  const normalized = cleanClass.replace(/^srd:class:/, "").toLowerCase();
+  if (targetLevel < 2 || targetLevel > 20) {
+    if (targetLevel === 1) {
+      return normalized === "wizard" ? 2 : getPreparedSpellCount(normalized, 1);
+    }
+    return 0;
+  }
+  if (normalized === "wizard") {
     return 2;
   }
-  if (cleanClass === "bard") {
-    const current = BARD_SPELLS_KNOWN[targetLevel] ?? 0;
-    const previous = BARD_SPELLS_KNOWN[targetLevel - 1] ?? 0;
-    return Math.max(0, current - previous);
-  }
-  if (cleanClass === "sorcerer") {
-    const current = SORCERER_SPELLS_KNOWN[targetLevel] ?? 0;
-    const previous = SORCERER_SPELLS_KNOWN[targetLevel - 1] ?? 0;
-    return Math.max(0, current - previous);
-  }
-  if (cleanClass === "warlock") {
-    const current = WARLOCK_SPELLS_KNOWN[targetLevel] ?? 0;
-    const previous = WARLOCK_SPELLS_KNOWN[targetLevel - 1] ?? 0;
-    return Math.max(0, current - previous);
+  if (normalized === "bard" || normalized === "sorcerer" || normalized === "warlock") {
+    return Math.max(
+      0,
+      getPreparedSpellCount(normalized, targetLevel) - getPreparedSpellCount(normalized, targetLevel - 1)
+    );
   }
   return 0;
 }
@@ -106,6 +170,47 @@ function fightingStyleLabel(featId: string): string {
 
 function formatModifier(mod: number): string {
   return mod >= 0 ? `+${mod}` : `${mod}`;
+}
+
+function isChoiceComplete(choice: BuilderChoice, picked: readonly string[]): boolean {
+  const allowed = new Set(choice.options.map((option) => option.id));
+  return picked.length === choice.count && new Set(picked).size === picked.length && picked.every((id) => allowed.has(id));
+}
+
+/** SRD rules text of a spell option (English, verbatim), `null` when the compendium has none. */
+function spellDescription(spellId: string): string | null {
+  const description = CompendiumResolver.getDefault().get(spellId)?.data.description;
+  return typeof description === "string" && description.trim() ? description : null;
+}
+
+/**
+ * Resolves required sub-choices for `featId` (`Magic Initiate`, `Skilled`),
+ * auto-seeding single-option `spell_list` picks so dependent spell choices
+ * resolve immediately on first render.
+ */
+function resolveFeatSubChoices(
+  featId: string,
+  rawSelections: BuilderSelections,
+  actor: Dnd5eActorData
+): { choices: BuilderChoice[]; selections: Record<string, readonly string[]> } {
+  if (!featId.trim()) return { choices: [], selections: {} };
+  const initial = getFeatChoices(featId, { selections: rawSelections, actor });
+  if (initial.length === 0) return { choices: [], selections: {} };
+  const seeded: Record<string, readonly string[]> = { ...rawSelections };
+  let didSeed = false;
+  for (const choice of initial) {
+    if (
+      choice.kind === "spell_list" &&
+      seeded[choice.id] === undefined &&
+      choice.options.length === choice.count &&
+      choice.count > 0
+    ) {
+      seeded[choice.id] = choice.options.map((option) => option.id);
+      didSeed = true;
+    }
+  }
+  const choices = didSeed ? getFeatChoices(featId, { selections: seeded, actor }) : initial;
+  return { choices, selections: seeded };
 }
 
 export function LevelUpModal(props: LevelUpModalProps): VNode<any> | null {
@@ -165,6 +270,8 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
   const [asiFirstAbility, setAsiFirstAbility] = useState<AbilityId>("str");
   const [asiSecondAbility, setAsiSecondAbility] = useState<AbilityId>("dex");
   const [selectedFeatId, setSelectedFeatId] = useState<string>("");
+  const [featAbilityIncrease, setFeatAbilityIncrease] = useState<AbilityId | "">("");
+  const [featSelections, setFeatSelections] = useState<BuilderSelections>({});
   const [fightingStyleFeatId, setFightingStyleFeatId] = useState<string>("");
 
   // Step 4: Spells State
@@ -179,7 +286,22 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
 
   // Compendium Options
   const availableSubclasses = needsSubclass ? getSubclasses(classId) : [];
-  const availableFeats = isAsi ? getFeats() : [];
+  const allowedSrdFeatKeys = isAsi ? new Set(getLevelUpFeatOptions(actor, targetLevel)) : null;
+  const availableFeats = allowedSrdFeatKeys
+    ? getFeats().filter((feat) => {
+        const key = srdFeatKey(feat.id);
+        return key === undefined || allowedSrdFeatKeys.has(key);
+      })
+    : [];
+  const selectedSrdFeatKey = isAsi && asiOrFeatMode === "feat" && selectedFeatId ? srdFeatKey(selectedFeatId) : undefined;
+  const featIncreaseSpec = selectedSrdFeatKey ? SRD_FEATS[selectedSrdFeatKey].abilityIncrease : undefined;
+  const eligibleIncreaseAbilities: AbilityId[] = featIncreaseSpec
+    ? featIncreaseSpec.abilities.filter((ab) => (actor.abilities[ab]?.score ?? 10) < featIncreaseSpec.max)
+    : [];
+  const { choices: featSubChoices, selections: effectiveFeatSelections } =
+    isAsi && asiOrFeatMode === "feat"
+      ? resolveFeatSubChoices(selectedFeatId, featSelections, actor)
+      : { choices: [] as BuilderChoice[], selections: {} as BuilderSelections };
   const maxSpellCircle = casterType === "pact" ? Math.min(5, Math.ceil(targetLevel / 2)) : casterType === "half" ? Math.ceil(targetLevel / 4) : Math.ceil(targetLevel / 2);
   const availableSpellsForLevel = isSpellcaster && !isDivineCaster
     ? Array.from({ length: Math.min(9, Math.max(1, maxSpellCircle)) }, (_, i) => i + 1)
@@ -192,6 +314,10 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
     ? getFightingStyleFeatOptions(actor.features ?? [])
     : [];
   const needsFightingStyle = fightingStyleOptions.length > 0;
+  const targetLevelFeatures = getClassProgression(classId)?.features[targetLevel] ?? [];
+  const manualChoiceFeatures = targetLevelFeatures.filter((name) =>
+    (MANUAL_CHOICE_FEATURES as readonly string[]).includes(name)
+  );
 
   // Step Validations
   const isStep1Valid = !needsSubclass || Boolean(subclassId.trim());
@@ -199,9 +325,23 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
   
   let isStep3Valid = !needsFightingStyle || Boolean(fightingStyleFeatId);
   let asiErrorMessage: string | null = null;
+  let featErrorMessage: string | null = null;
+  let featErrorTarget: "feat" | "ability" | "choices" | null = null;
   if (isAsi) {
     if (asiOrFeatMode === "feat") {
-      isStep3Valid = Boolean(selectedFeatId.trim());
+      if (!selectedFeatId.trim()) {
+        isStep3Valid = false;
+        featErrorMessage = t("levelUp.feat.required");
+        featErrorTarget = "feat";
+      } else if (featIncreaseSpec && (!featAbilityIncrease || !eligibleIncreaseAbilities.includes(featAbilityIncrease))) {
+        isStep3Valid = false;
+        featErrorMessage = t("levelUp.feat.abilityRequired");
+        featErrorTarget = "ability";
+      } else if (featSubChoices.some((choice) => !isChoiceComplete(choice, effectiveFeatSelections[choice.id] ?? []))) {
+        isStep3Valid = false;
+        featErrorMessage = t("levelUp.feat.choicesRequired");
+        featErrorTarget = "choices";
+      }
     } else {
       if (asiSubMode === "plusTwo") {
         const currentScore = actor.abilities[asiSingleAbility]?.score ?? 10;
@@ -253,7 +393,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
     if (currentStep === 1) return isStep1Valid;
     if (currentStep === 2) return isStep2Valid;
     if (currentStep === 3) return isStep3Valid;
-    return isStep4Valid;
+    return isStep1Valid && isStep2Valid && isStep3Valid && isStep4Valid;
   };
 
   // Handle Server Dice Roll
@@ -297,6 +437,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
           compiledAsiOrFeat = {
             mode: "feat",
             featId: selectedFeatId,
+            ...(featIncreaseSpec && featAbilityIncrease ? { abilityIncrease: featAbilityIncrease } : {}),
           };
         } else {
           if (asiSubMode === "plusTwo") {
@@ -328,7 +469,10 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
         fightingStyleFeatId: needsFightingStyle ? fightingStyleFeatId : undefined,
       };
 
-      const updatedActor = applyLevelUp(actor, options);
+      let updatedActor = applyLevelUp(actor, options);
+      if (isAsi && asiOrFeatMode === "feat" && featSubChoices.length > 0) {
+        updatedActor = applyFeatChoices(updatedActor, selectedFeatId, effectiveFeatSelections);
+      }
       await onSave(updatedActor);
       onClose();
     } catch (err: any) {
@@ -437,7 +581,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
         "select",
         {
           id,
-          class: "ds-input",
+          class: "ds-input atlas-tabular-nums",
           value,
           onChange: (e: any) => onChange(e.target.value as AbilityId),
           ...validationProps(describe),
@@ -447,6 +591,154 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
         )
       )
     );
+
+  const handleSelectFeat = (nextFeatId: string) => {
+    setSelectedFeatId(nextFeatId);
+    setFeatAbilityIncrease("");
+    setFeatSelections({});
+  };
+
+  const toggleFeatChoiceOption = (choiceId: string, optionId: string) => {
+    const choice = featSubChoices.find((c) => c.id === choiceId);
+    if (!choice) return;
+    const picked = effectiveFeatSelections[choiceId] ?? [];
+    const next =
+      choice.count === 1
+        ? [optionId]
+        : picked.includes(optionId)
+          ? picked.filter((id) => id !== optionId)
+          : picked.length < choice.count
+            ? [...picked, optionId]
+            : picked;
+    const nextSelections: Record<string, readonly string[]> = { ...effectiveFeatSelections, [choiceId]: next };
+    for (const dep of featSubChoices) {
+      if (dep.dependsOn === choiceId && next[0] !== picked[0]) {
+        nextSelections[dep.id] = [];
+      }
+    }
+    setFeatSelections(nextSelections);
+  };
+
+  const featChoiceOptionLabel = (choice: BuilderChoice, option: BuilderChoiceOption): string => {
+    switch (choice.kind) {
+      case "ability":
+        return t(ABILITY_LABEL_KEYS[option.id as AbilityId]);
+      case "skill":
+        return t(`skill.${option.id}` as MessageKey);
+      case "skill_or_tool":
+        return option.id.startsWith(TOOL_OPTION_PREFIX)
+          ? option.label
+          : t(`skill.${option.id}` as MessageKey);
+      case "spell_list":
+        return t(`builder.class.${option.id}` as MessageKey);
+      case "feat":
+        return fightingStyleLabel(option.id);
+      case "spell": {
+        const entry = CompendiumResolver.getDefault().get(option.id);
+        return entry ? localizedName(entry) : option.label;
+      }
+      default:
+        return option.label;
+    }
+  };
+
+  const renderSpellDetails = (testPrefix: string, option: BuilderChoiceOption, description: string | null, descriptionId: string) =>
+    description
+      ? h(
+          "details",
+          { class: "ds-meta", "data-testid": `${testPrefix}-details` },
+          h("summary", null, t("builder.spells.details", { name: option.label })),
+          h("p", { id: descriptionId, lang: "en", "data-testid": descriptionId }, description)
+        )
+      : null;
+
+  const fieldset = (key: string, legend: string, children: ComponentChildren) =>
+    h("fieldset", { key, class: "ds-stack-sm" }, h("legend", { class: "ds-section-title" }, legend), children);
+
+  const renderFeatSubChoice = (choice: BuilderChoice) => {
+    const picked = effectiveFeatSelections[choice.id] ?? [];
+    const full = picked.length >= choice.count;
+    const legend = t(`builder.choice.${choice.id}` as MessageKey, { count: choice.count });
+    const radioGroup = `feat-${choice.id}`;
+    if (choice.count === 1) {
+      return fieldset(
+        choice.id,
+        legend,
+        choice.options.length > 0
+          ? choice.options.map((option) => {
+              const checked = picked.includes(option.id);
+              const description = choice.kind === "spell" ? spellDescription(option.id) : null;
+              const testPrefix = `levelup-feat-${choice.id}-${option.id}`;
+              const descriptionId = `${testPrefix}-description`;
+              const choiceRadio = h(
+                "label",
+                { key: option.id, class: cx("ds-choice ds-choice-stacked", checked && "is-selected") },
+                h(
+                  "span",
+                  { class: "ds-cluster" },
+                  h("input", {
+                    type: "radio",
+                    name: radioGroup,
+                    value: option.id,
+                    checked,
+                    "data-testid": testPrefix,
+                    "aria-describedby": description ? descriptionId : undefined,
+                    onChange: () => toggleFeatChoiceOption(choice.id, option.id),
+                  }),
+                  h("span", { class: "ds-value" }, featChoiceOptionLabel(choice, option))
+                )
+              );
+              return description
+                ? h("div", { key: option.id, class: "ds-stack-sm" }, choiceRadio, renderSpellDetails(testPrefix, option, description, descriptionId))
+                : choiceRadio;
+            })
+          : h("p", { class: "ds-hint" }, t("levelUp.feat.chooseSpellListFirst"))
+      );
+    }
+    return fieldset(choice.id, legend, [
+      h(
+        "p",
+        {
+          key: "count",
+          class: "ds-meta atlas-tabular-nums",
+          "aria-live": "polite",
+          "data-testid": `levelup-feat-${choice.id}-count`,
+        },
+        t("builder.choice.picked", { picked: picked.length, count: choice.count })
+      ),
+      choice.options.length > 0
+        ? h(
+            "div",
+            { key: "options", class: "ds-scroll-list ds-stack-sm" },
+            choice.options.map((option) => {
+              const checked = picked.includes(option.id);
+              const disabled = !checked && full;
+              const description = choice.kind === "spell" ? spellDescription(option.id) : null;
+              const testPrefix = `levelup-feat-${choice.id}-${option.id}`;
+              const descriptionId = `${testPrefix}-description`;
+              return h(
+                "div",
+                { key: option.id, class: "ds-stack-sm" },
+                h(
+                  "label",
+                  { class: cx("ds-choice", checked && "is-selected", disabled && "is-disabled") },
+                  h("input", {
+                    type: "checkbox",
+                    checked,
+                    disabled,
+                    "data-testid": testPrefix,
+                    "aria-describedby": description ? descriptionId : undefined,
+                    onChange: () => toggleFeatChoiceOption(choice.id, option.id),
+                  }),
+                  h("span", { class: "ds-value" }, featChoiceOptionLabel(choice, option))
+                ),
+                renderSpellDetails(testPrefix, option, description, descriptionId)
+              );
+            })
+          )
+        : h("p", { key: "empty", class: "ds-hint" }, t("levelUp.feat.chooseSpellListFirst")),
+    ]);
+  };
 
   const hpChoice = (mode: "fixed" | "rolled", label: string, detail: VNode<any> | string) =>
     h(
@@ -470,7 +762,9 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
     );
 
   const step3AsiError = asiOrFeatMode === "asi" ? asiErrorMessage : null;
-  const step3FeatError = asiOrFeatMode === "feat" && !selectedFeatId ? t("levelUp.feat.required") : null;
+  const step3FeatError = asiOrFeatMode === "feat" ? featErrorMessage : null;
+  const selectedFeatEntry = selectedFeatId ? availableFeats.find((f) => f.id === selectedFeatId) : undefined;
+  const selectedFeatLabel = selectedFeatEntry ? localizedName(selectedFeatEntry) : selectedFeatId;
   const stepRefusing = !canProceed() || isSubmitting;
 
   return h(
@@ -495,10 +789,10 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
         h(
           "div",
           null,
-          h("h2", { id: titleId, class: "ds-modal-title" }, t("levelUp.title", { from: currentLevel, to: targetLevel })),
+          h("h2", { id: titleId, class: "ds-modal-title atlas-tabular-nums" }, t("levelUp.title", { from: currentLevel, to: targetLevel })),
           h(
             "p",
-            { id: descId, class: "ds-modal-subtitle" },
+            { id: descId, class: "ds-modal-subtitle atlas-tabular-nums" },
             t("levelUp.subtitle", { className: classId || t("levelUp.unknownClass"), bonus: calculateProficiencyBonus(targetLevel) })
           )
         ),
@@ -585,7 +879,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
             "div",
             { class: "ds-stack" },
             stepHeading(t("levelUp.step2.heading")),
-            h("p", { class: "ds-hint" }, t("levelUp.hp.dieInfo", { die: hitDieSize, mod: formatModifier(conModifier) })),
+            h("p", { class: "ds-hint atlas-tabular-nums" }, t("levelUp.hp.dieInfo", { die: hitDieSize, mod: formatModifier(conModifier) })),
             h(
               "div",
               { class: "ds-grid-2" },
@@ -594,12 +888,16 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
                 t("levelUp.hp.fixed"),
                 h(
                   "span",
-                  null,
+                  { class: "atlas-tabular-nums" },
                   `floor(${hitDieSize}/2) + 1 + (${conModifier}) = `,
                   h("strong", { class: "atlas-tabular-nums" }, t("hp.gain", { value: fixedHpGain }))
                 )
               ),
-              hpChoice("rolled", t("levelUp.hp.rolled"), t("levelUp.hp.rolledHint", { die: hitDieSize, mod: formatModifier(conModifier) }))
+              hpChoice(
+                "rolled",
+                t("levelUp.hp.rolled"),
+                h("span", { class: "atlas-tabular-nums" }, t("levelUp.hp.rolledHint", { die: hitDieSize, mod: formatModifier(conModifier) }))
+              )
             ),
             hpMode === "rolled" &&
               h(
@@ -624,7 +922,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
                     h(
                       "div",
                       null,
-                      h("span", { class: "ds-meta" }, t("levelUp.hp.dieResult", { value: rolledValue })),
+                      h("span", { class: "ds-meta atlas-tabular-nums" }, t("levelUp.hp.dieResult", { value: rolledValue })),
                       h("span", { class: "ds-value-lg atlas-tabular-nums" }, t("hp.gain", { value: Math.max(1, rolledValue + conModifier) }))
                     )
                 ),
@@ -633,7 +931,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
               ),
             h(
               "p",
-              { class: "ds-inset ds-hint" },
+              { class: "ds-inset ds-hint atlas-tabular-nums" },
               t("levelUp.hp.projected", { current: actor.attributes.hp.max }),
               h("strong", { class: "atlas-tabular-nums" }, actor.attributes.hp.max + currentHpGain)
             )
@@ -684,20 +982,53 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
                       ]
                     : h(
                         "div",
-                        { class: "ds-field" },
-                        h("label", { for: "asi-feat-select", class: "ds-field-label" }, t("levelUp.feat.label")),
+                        { class: "ds-stack" },
                         h(
-                          "select",
-                          {
-                            id: "asi-feat-select",
-                            class: "ds-input",
-                            value: selectedFeatId,
-                            onChange: (e: any) => setSelectedFeatId(e.target.value),
-                            ...validationProps(Boolean(step3FeatError)),
-                          },
-                          h("option", { value: "" }, t("levelUp.feat.placeholder")),
-                          availableFeats.map((feat) => h("option", { key: feat.id, value: feat.id }, localizedName(feat)))
+                          "div",
+                          { class: "ds-field" },
+                          h("label", { for: "asi-feat-select", class: "ds-field-label" }, t("levelUp.feat.label")),
+                          h(
+                            "select",
+                            {
+                              id: "asi-feat-select",
+                              class: "ds-input",
+                              value: selectedFeatId,
+                              onChange: (e: Event) => handleSelectFeat((e.target as HTMLSelectElement).value),
+                              ...validationProps(featErrorTarget === "feat"),
+                            },
+                            h("option", { value: "" }, t("levelUp.feat.placeholder")),
+                            availableFeats.map((feat) => h("option", { key: feat.id, value: feat.id }, localizedName(feat)))
+                          )
                         ),
+                        featIncreaseSpec &&
+                          h(
+                            "div",
+                            { class: "ds-field" },
+                            h(
+                              "label",
+                              { for: "feat-ability-increase", class: "ds-field-label" },
+                              t("levelUp.feat.abilityLabel", { max: featIncreaseSpec.max })
+                            ),
+                            h(
+                              "select",
+                              {
+                                id: "feat-ability-increase",
+                                class: "ds-input atlas-tabular-nums",
+                                value: featAbilityIncrease,
+                                onChange: (e: Event) => setFeatAbilityIncrease((e.target as HTMLSelectElement).value as AbilityId | ""),
+                                ...validationProps(featErrorTarget === "ability"),
+                              },
+                              h("option", { value: "" }, t("levelUp.feat.abilityPlaceholder")),
+                              eligibleIncreaseAbilities.map((ab) =>
+                                h(
+                                  "option",
+                                  { key: ab, value: ab },
+                                  t("levelUp.asi.option", { ability: t(ABILITY_LABEL_KEYS[ab]), score: actor.abilities[ab].score })
+                                )
+                              )
+                            )
+                          ),
+                        ...featSubChoices.map((choice) => renderFeatSubChoice(choice)),
                         validationHint(step3FeatError)
                       )
                 )
@@ -771,7 +1102,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
                     { class: "ds-stack-sm" },
                     h(
                       "h4",
-                      { id: `${hintId}-spells`, class: "ds-subheading" },
+                      { id: `${hintId}-spells`, class: "ds-subheading atlas-tabular-nums" },
                       isWizard
                         ? t("levelUp.spells.wizardHeading", { selected: selectedSpellIds.length, required: requiredWizardCount })
                         : isKnownCaster
@@ -808,7 +1139,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
                             }),
                             h("span", null, localizedName(spell))
                           ),
-                          h("span", { class: "ds-meta" }, t("levelUp.spells.level", { level: String(spell.data.level) }))
+                          h("span", { class: "ds-meta atlas-tabular-nums" }, t("levelUp.spells.level", { level: String(spell.data.level) }))
                         );
                       })
                     ),
@@ -819,14 +1150,28 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
               "div",
               { class: "ds-inset" },
               h("strong", null, t("levelUp.summary.title")),
-              h("div", null, t("levelUp.summary.level", { from: currentLevel, to: targetLevel })),
-              h("div", null, t("levelUp.summary.hp", { from: actor.attributes.hp.max, to: actor.attributes.hp.max + currentHpGain, gain: currentHpGain })),
+              h("div", { class: "atlas-tabular-nums" }, t("levelUp.summary.level", { from: currentLevel, to: targetLevel })),
+              h("div", { class: "atlas-tabular-nums" }, t("levelUp.summary.hp", { from: actor.attributes.hp.max, to: actor.attributes.hp.max + currentHpGain, gain: currentHpGain })),
               subclassId && needsSubclass && h("div", null, t("levelUp.summary.subclass", { subclass: subclassId })),
-              isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusTwo" && h("div", null, t("levelUp.summary.asiTwo", { ability: asiSingleAbility.toUpperCase() })),
-              isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusOneOne" && h("div", null, t("levelUp.summary.asiOneOne", { first: asiFirstAbility.toUpperCase(), second: asiSecondAbility.toUpperCase() })),
-              isAsi && asiOrFeatMode === "feat" && h("div", null, t("levelUp.summary.feat", { feat: selectedFeatId })),
+              isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusTwo" && h("div", { class: "atlas-tabular-nums" }, t("levelUp.summary.asiTwo", { ability: asiSingleAbility.toUpperCase() })),
+              isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusOneOne" && h("div", { class: "atlas-tabular-nums" }, t("levelUp.summary.asiOneOne", { first: asiFirstAbility.toUpperCase(), second: asiSecondAbility.toUpperCase() })),
+              isAsi &&
+                asiOrFeatMode === "feat" &&
+                h(
+                  "div",
+                  { class: featAbilityIncrease ? "atlas-tabular-nums" : undefined },
+                  featAbilityIncrease
+                    ? t("levelUp.summary.featWithAbility", { feat: selectedFeatLabel, ability: featAbilityIncrease.toUpperCase() })
+                    : t("levelUp.summary.feat", { feat: selectedFeatLabel })
+                ),
               needsFightingStyle && fightingStyleFeatId && h("div", null, t("levelUp.summary.fightingStyle", { feat: fightingStyleLabel(fightingStyleFeatId) })),
-              selectedSpellIds.length > 0 && h("div", null, t("levelUp.summary.spells", { count: selectedSpellIds.length }))
+              selectedSpellIds.length > 0 && h("div", { class: "atlas-tabular-nums" }, t("levelUp.summary.spells", { count: selectedSpellIds.length })),
+              manualChoiceFeatures.length > 0 &&
+                h(
+                  "p",
+                  { class: "ds-hint", "data-testid": "levelup-manual-feature-reminder" },
+                  t("levelUp.summary.manualFeatureReminder", { features: manualChoiceFeatures.join(", ") })
+                )
             ),
             saveError && h("p", { role: "alert", class: "ds-field-error" }, saveError)
           )

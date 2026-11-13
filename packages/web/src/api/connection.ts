@@ -53,6 +53,14 @@
  *      (close, missing `Pong`, browser offline), before it is detached, so
  *      the client can report actions that may not have been applied. A
  *      deliberate `stop()` or `start()` never reports a loss.
+ * 7. `Compressed Frames (D24)`:
+ *    - When the runtime has `DecompressionStream`, every socket offers the
+ *      `trame.v1+deflate` subprotocol. If the server selects it, each binary
+ *      frame is one zlib stream, inflated before `onFrame`.
+ *    - Inflation is asynchronous, so frames are chained on one promise per
+ *      socket: they reach `onFrame` in arrival order. A frame that fails to
+ *      inflate drops the socket and reconnects; the next `StateSnapshot`
+ *      resyncs the table.
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -95,10 +103,21 @@ export const HEARTBEAT_INTERVAL_MS = 20_000;
 /** Time a heartbeat `Ping` may wait for its `Pong` before the socket is dead, in milliseconds (`ms`). */
 export const PONG_TIMEOUT_MS = 10_000;
 
+/** Subprotocol asking the server to zlib-compress every binary frame it sends (invariant 7). */
+export const WS_SUBPROTOCOL_DEFLATE = "trame.v1+deflate";
+
+/** Inflates one zlib (RFC 1950) frame with `DecompressionStream`. */
+export async function inflateFrame(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
 /** Minimal socket surface used by the client (satisfied by `WebSocket`). */
 export interface SocketLike {
   binaryType: string;
   readonly readyState: number;
+  /** Subprotocol the server selected (`""` or absent when none). */
+  readonly protocol?: string;
   send(data: Uint8Array): void;
   close(): void;
   onopen: ((ev: unknown) => void) | null;
@@ -129,8 +148,13 @@ export interface NetworkWatcher {
 export interface ConnectionManagerOptions {
   /** Signals the manager writes (`connection`, `reconnect`). */
   state: Pick<SessionState, "connection" | "reconnect">;
-  /** Opens a socket to `url` (the transport seam). */
-  openSocket(url: string): SocketLike;
+  /** Opens a socket to `url` offering the subprotocols `protocols` (the transport seam). */
+  openSocket(url: string, protocols: string[]): SocketLike;
+  /**
+   * Inflates `trame.v1+deflate` frames; `null` stops offering the subprotocol.
+   * Defaults to `inflateFrame` when `DecompressionStream` exists, else `null`.
+   */
+  inflate?: ((bytes: Uint8Array) => Promise<Uint8Array>) | null;
   /** Receives every inbound frame of the current socket. */
   onFrame(data: unknown): void;
   /** Runs when a new socket opens, before any of its frames (resync preparation). */
@@ -197,9 +221,12 @@ export class ConnectionManager {
   private readonly options: ConnectionManagerOptions;
   private readonly network: NetworkWatcher;
   private readonly random: () => number;
+  private readonly inflate: ((bytes: Uint8Array) => Promise<Uint8Array>) | null;
   private url: string | null = null;
   private socket: SocketLike | null = null;
   private opened = false;
+  /** Tail of the current socket's inflate chain (invariant 7). */
+  private inbound: Promise<void> = Promise.resolve();
   /** Failed attempts since the last healthy room; drives the backoff. */
   private attempt = 0;
   /** Bumped on every open/stop so a late access probe cannot act on a newer socket. */
@@ -213,6 +240,8 @@ export class ConnectionManager {
     this.options = options;
     this.network = options.network ?? browserNetworkWatcher();
     this.random = options.random ?? Math.random;
+    this.inflate =
+      options.inflate !== undefined ? options.inflate : typeof DecompressionStream === "function" ? inflateFrame : null;
   }
 
   private get status(): ConnectionStatus {
@@ -286,8 +315,9 @@ export class ConnectionManager {
     this.generation += 1;
     this.opened = false;
     if (this.status === "reconnecting" || this.status === "offline") this.setStatus("reconnecting");
-    const socket = this.options.openSocket(url);
+    const socket = this.options.openSocket(url, this.inflate ? [WS_SUBPROTOCOL_DEFLATE] : []);
     socket.binaryType = "arraybuffer";
+    this.inbound = Promise.resolve();
     socket.onopen = () => {
       if (this.socket !== socket) return;
       this.opened = true;
@@ -299,7 +329,24 @@ export class ConnectionManager {
       if (this.socket === socket) this.handleClose((ev as { code?: number } | null)?.code ?? CLOSE_ABNORMAL);
     };
     socket.onmessage = (ev) => {
-      if (this.socket === socket) this.options.onFrame(ev.data);
+      if (this.socket !== socket) return;
+      const inflate = this.inflate;
+      if (!inflate || socket.protocol !== WS_SUBPROTOCOL_DEFLATE) {
+        this.options.onFrame(ev.data);
+        return;
+      }
+      this.inbound = this.inbound
+        .then(() => inflate(new Uint8Array(ev.data as ArrayBuffer)))
+        .then(
+          (frame) => {
+            if (this.socket === socket) this.options.onFrame(frame);
+          },
+          () => {
+            if (this.socket !== socket) return;
+            this.loseSocket();
+            this.scheduleRetry();
+          },
+        );
     };
     this.socket = socket;
   }

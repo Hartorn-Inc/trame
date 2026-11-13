@@ -38,18 +38,34 @@
  *    - A widget save that leaves the sheet at 0 Hit Points also switches off
  *      the toggles that end there (Rage, `activeFeatureIdsAfterHpChange`),
  *      as the server does for token damage.
- * 5. `Casts Spend Before They Resolve`:
- *    - `CAST_SPELL` saves the spent slot first; the table resolution it may
- *      open (`table/actionResolution.ts`) never touches the sheet, so a
- *      cancelled resolution does not refund the slot, as at a real table.
+ * 5. `Casts Spend On Cast And Refund On Unrolled Cancel`:
+ *    - `CAST_SPELL` saves the spent slot immediately; when the cast opens
+ *      `ActionResolutionCard` on the table (`table/actionResolution.ts`),
+ *      cancelling or replacing that card before rolling or projecting chains
+ *      a versioned refund save onto the spend request and reverts any newly
+ *      started concentration to the caster token's prior state. Once rolled
+ *      or projected (`commitAction`), closing the card keeps both.
+ * 6. `Derived Is Recomputed On Every Write`:
+ *    - `saveActorSheet` refreshes a D&D 5e sheet's `derived` snapshot
+ *      (`withRecomputedDerived`) before the PUT. The server reads the token's
+ *      speed, AC, saves and Rage resistances from it, so an exhaustion step,
+ *      a rest or a feature toggle saved without it left the token stale.
  * ============================================================================
  */
-import { CompendiumResolver, activeFeatureIdsAfterHpChange, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
+import {
+  CompendiumResolver,
+  activeFeatureIdsAfterHpChange,
+  spellDamageResolution,
+  withRecomputedDerived,
+  type Dnd5eActorData,
+  type SpellDamageResolution,
+} from "../../../game-systems/dnd5e/src/index.ts";
 import { ApiError, VERSION_CONFLICT, type ApiClient, type CampaignActor } from "../api/client.ts";
 import { describeActionError } from "../api/errorMessages.ts";
 import type { Uuid, WireRollVisibility } from "../api/wire.ts";
 import type { DiceRollResult, DiceRollService } from "../components/modals/LevelUpModal.tsx";
-import { casterTokenId, startAction } from "../table/actionResolution.ts";
+import { t } from "../i18n/index.ts";
+import { casterTokenId, startAction, type PendingAction } from "../table/actionResolution.ts";
 import { setConcentration } from "../table/commands.ts";
 import type { SpentSlot } from "./types.ts";
 
@@ -68,7 +84,7 @@ export interface SaveSheetOptions {
   expectedVersion?: number;
 }
 
-/** Saves a full sheet with `{ expected_version, data }` (see invariants 1 and 2). */
+/** Saves a full sheet with `{ expected_version, data }` and a fresh `derived` (see invariants 1, 2 and 6). */
 export async function saveActorSheet(
   client: ApiClient,
   campaignId: Uuid,
@@ -78,7 +94,7 @@ export async function saveActorSheet(
 ): Promise<SaveSheetOutcome> {
   const expectedVersion = options.expectedVersion ?? client.state.actors.value[actorId]?.version ?? 0;
   try {
-    const actor = await client.updateActor(campaignId, actorId, { expectedVersion, name: options.name, data });
+    const actor = await client.updateActor(campaignId, actorId, { expectedVersion, name: options.name, data: withRecomputedDerived(data) });
     return { status: "saved", actor };
   } catch (err) {
     if (err instanceof ApiError && err.code === VERSION_CONFLICT) {
@@ -138,6 +154,27 @@ export interface SheetDispatcherOptions {
   onConflict?: (currentVersion: number | null) => void;
   /** Called when a roll or save fails for another reason. */
   onError?: (message: string) => void;
+  /** Called after a widget sheet save succeeds, e.g. to clear a prior error or conflict alert. */
+  onSaved?: (actor: CampaignActor) => void;
+}
+
+/**
+ * Re-reads the stored actor sheet from the server after a `409 VERSION_CONFLICT`
+ * so `client.state.actors[actorId]` reflects the authoritative version and data,
+ * and returns the localized conflict alert text.
+ */
+export function syncConflictedActorSheet(
+  client: ApiClient,
+  campaignId: Uuid,
+  actorId: Uuid,
+  currentVersion: number | null,
+): string {
+  void client.getActor(campaignId, actorId).catch(() => {
+    // Preserve the conflict alert even if the background re-sync fails.
+  });
+  return currentVersion === null
+    ? t('sheet.persistence.conflictSynced')
+    : t('sheet.persistence.conflictSyncedVersion', { version: currentVersion });
 }
 
 /** `data` with the class feature toggles that end at 0 Hit Points switched off (invariant 4). */
@@ -154,22 +191,31 @@ function withZeroHpTogglesEnded(data: unknown): unknown {
  *   one versioned sheet save (several paths at once, so a toggle and the pool
  *   use it spends cannot race each other's version).
  * - `CAST_SPELL` saves the spent slot, starts concentration on the caster's
- *   token for a concentration spell, and on the table opens
- *   the resolution card (area, attack or save spells).
+ *   token for a concentration spell when not already concentrating, and on the
+ *   table opens the resolution card (area, attack or save spells) with a
+ *   rollback that refunds the slot and reverts concentration if cancelled
+ *   before rolling or projecting.
  * - `RESOLVE_ATTACK` opens the resolution card for a sheet attack.
  * Other widget commands (compendium drops, notices) are ignored here.
  */
 export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (command: unknown) => void {
   const { client, campaignId, actorId } = options;
   const fail = (err: unknown) => options.onError?.(describeActionError(err, String(err)));
-  const save = (changes: Record<string, unknown>) => {
-    let next: unknown = client.state.actors.value[actorId]?.data ?? {};
+  const save = (changes: Record<string, unknown>, fallbackBase?: unknown): Promise<SaveSheetOutcome | null> => {
+    const stored = client.state.actors.value[actorId]?.data;
+    const hasStoredKeys = stored !== null && typeof stored === 'object' && Object.keys(stored as object).length > 0;
+    let next: unknown = hasStoredKeys ? stored : (fallbackBase ?? stored ?? {});
     for (const [path, value] of Object.entries(changes)) next = setAtPath(next, path, value);
-    saveActorSheet(client, campaignId, actorId, withZeroHpTogglesEnded(next))
+    return saveActorSheet(client, campaignId, actorId, withZeroHpTogglesEnded(next))
       .then((outcome) => {
         if (outcome.status === 'conflict') options.onConflict?.(outcome.currentVersion);
+        else options.onSaved?.(outcome.actor);
+        return outcome;
       })
-      .catch(fail);
+      .catch((err) => {
+        fail(err);
+        return null;
+      });
   };
   return (command) => {
     const cmd = (command ?? {}) as Record<string, unknown>;
@@ -186,14 +232,28 @@ export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (
       return;
     }
     if (cmd.cmd === 'UPDATE_ACTOR_SHEET') {
-      if (typeof cmd.path === 'string' && 'value' in cmd) save({ [cmd.path]: cmd.value });
-      else if (cmd.changes && typeof cmd.changes === 'object') save(cmd.changes as Record<string, unknown>);
+      if (typeof cmd.path === 'string' && 'value' in cmd) void save({ [cmd.path]: cmd.value });
+      else if (cmd.changes && typeof cmd.changes === 'object') void save(cmd.changes as Record<string, unknown>);
       return;
     }
     if (cmd.cmd === 'CAST_SPELL' && typeof cmd.spellId === 'string') {
       const slot = cmd.slot as SpentSlot | null;
-      if (slot) save({ [`spellSlots.${slot.key}`]: slot.tier });
-      castOnTable(client, actorId, cmd.spellId, cmd.onTable === true, slot?.castLevel);
+      const preCastSheet = structuredClone(client.state.actors.value[actorId]?.data ?? {});
+      const spendPromise = slot ? save({ [`spellSlots.${slot.key}`]: slot.tier }) : null;
+      const refundSlot =
+        slot && spendPromise
+          ? () => {
+              void spendPromise.then((outcome) => {
+                if (outcome?.status !== 'saved') return;
+                const latest = client.state.actors.value[actorId]?.data as Record<string, Record<string, unknown>> | undefined;
+                const currentTier = latest?.spellSlots?.[slot.key] as SpentSlot['tier'] | undefined;
+                const baseCurrent = typeof currentTier?.current === 'number' ? currentTier.current : slot.tier.current;
+                const restored = { ...slot.tier, current: Math.min(slot.tier.max, baseCurrent + 1) };
+                void save({ [`spellSlots.${slot.key}`]: restored }, preCastSheet);
+              });
+            }
+          : null;
+      castOnTable(client, actorId, cmd.spellId, cmd.onTable === true, slot?.castLevel, refundSlot);
       return;
     }
     if (cmd.cmd === 'RESOLVE_ATTACK' && typeof cmd.attackId === 'string') {
@@ -202,20 +262,47 @@ export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (
   };
 }
 
+/** Spell damage resolutions a cast opens on the table (`castOnTable`). */
+const CAST_RESOLUTIONS: ReadonlySet<SpellDamageResolution | null> = new Set(['attack', 'save', 'automatic']);
+
 /**
  * Table side of a cast: a concentration spell starts concentration on the
- * caster's token (an area also binds its persistent zone when projected);
- * on the table an area spell opens area placement and a damaging spell opens
- * the attack / save resolution, scaled to `castLevel` when upcast.
+ * caster's token when not already concentrating (an area also binds its
+ * persistent zone when projected); on the table an area spell opens area
+ * placement and a damaging spell opens the attack / save / automatic
+ * resolution, scaled to `castLevel` when upcast, with a rollback that restores
+ * the spent slot and prior concentration if cancelled before rolling. A rider
+ * (Hex) deals its damage on later weapon hits, from the attacks table, and a
+ * described non-area spell (Teleport's mishap) is resolved by the table:
+ * neither opens a resolution when cast.
  */
-function castOnTable(client: ApiClient, actorId: Uuid, spellId: string, onTable: boolean, castLevel?: number): void {
+function castOnTable(
+  client: ApiClient,
+  actorId: Uuid,
+  spellId: string,
+  onTable: boolean,
+  castLevel?: number,
+  refundSlot?: (() => void) | null,
+): void {
   const data = CompendiumResolver.getDefault().get(spellId)?.data;
   if (!data) return;
-  const caster = casterTokenId(client.state.table.value, actorId);
-  if (data.concentration === true && caster) client.submitCommand(setConcentration(caster, true));
+  const table = client.state.table.value;
+  const caster = casterTokenId(table, actorId);
+  const casterToken = caster ? (table?.tokens[caster] ?? table?.public_tokens?.[caster]) : undefined;
+  const wasConcentrating = casterToken?.concentrating === true;
+  const startedConcentration =
+    data.concentration === true && caster !== null && !wasConcentrating && client.submitCommand(setConcentration(caster, true));
   if (!onTable) return;
-  if (data.area) startAction({ kind: 'area', actorId, spellId, castLevel });
-  else if (typeof data.damageDice === 'string') startAction({ kind: 'attack', actorId, attackId: spellId, castLevel });
+  const action: PendingAction | null = data.area
+    ? { kind: 'area', actorId, spellId, castLevel }
+    : CAST_RESOLUTIONS.has(spellDamageResolution(data))
+      ? { kind: 'attack', actorId, attackId: spellId, castLevel }
+      : null;
+  if (!action) return;
+  startAction(action, () => {
+    refundSlot?.();
+    if (startedConcentration && caster !== null) client.submitCommand(setConcentration(caster, false));
+  });
 }
 
 /** Adapts `ApiClient.rollDiceRest` to the modal `DiceRollService` (invariant 3). */

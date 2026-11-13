@@ -39,10 +39,18 @@ describe("CSP-safe source", () => {
 
 describe("PixiJS stays CSP-safe and lazy", () => {
   const PIXI_ADAPTER = join("table", "scene", "pixiTableRenderer.ts");
+  const PIXI_LAYERS = join("table", "scene", "pixiSceneLayers.ts");
   const pixiImport = /from\s+["']pixi\.js["']|import\s+["']pixi\.js/;
 
-  it("only the lazily loaded table adapter imports pixi.js", () => {
-    assert.deepEqual(files.filter((f) => pixiImport.test(f.text)).map((f) => f.path), [PIXI_ADAPTER]);
+  it("only the lazily loaded table adapter and its retained layers import pixi.js", () => {
+    assert.deepEqual(files.filter((f) => pixiImport.test(f.text)).map((f) => f.path).sort(), [PIXI_LAYERS, PIXI_ADAPTER].sort());
+  });
+
+  it("the retained layers load only through the adapter, after its no-eval polyfills", () => {
+    const layersImport = /\bfrom\s+["'][^"']*pixiSceneLayers\.ts["']/;
+    assert.deepEqual(files.filter((f) => layersImport.test(f.text)).map((f) => f.path), [PIXI_ADAPTER]);
+    const adapter = files.find((f) => f.path === PIXI_ADAPTER)!.text;
+    assert.ok(adapter.indexOf('import "pixi.js/unsafe-eval";') < adapter.search(layersImport), "polyfill import comes first");
   });
 
   it("the adapter installs the no-eval polyfills before using PixiJS", () => {

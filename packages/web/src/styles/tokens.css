@@ -98,6 +98,7 @@
   --atlas-radius-lg: 8px;
 
   /* 4px Spatial Rhythm */
+  --atlas-space-2xs: 2px;
   --atlas-space-xs: 4px;
   --atlas-space-sm: 8px;
   --atlas-space-md: 16px;
@@ -291,6 +292,7 @@ body {
 }
 
 .ds-btn:focus-visible,
+label.ds-btn:focus-within,
 .ds-input:focus-visible {
   outline: 2px solid var(--atlas-focus);
   outline-offset: 2px;
@@ -349,6 +351,12 @@ body {
 
 select.ds-input {
   width: 100%;
+}
+
+.ds-studio-num-input {
+  width: 4.75rem;
+  padding: var(--atlas-space-2xs) var(--atlas-space-xs);
+  font-size: var(--atlas-font-size-xs);
 }
 
 /* Button reset: strips UA chrome so composite controls (icon buttons, sheet rows) start clean */
@@ -676,6 +684,7 @@ select.ds-input {
 
 .ds-tablist {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--atlas-space-sm);
   border-bottom: 1px solid var(--atlas-border);
 }
@@ -984,6 +993,43 @@ button.ds-prof-pip {
   pointer-events: none;
 }
 
+/*
+ * Move preview on the destination cell; an unreachable cell adds a cross glyph and a
+ * dashed outline (shape, not colour alone). The speed chip sits under the selected token.
+ */
+.ds-board-move-preview {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  border: 2px solid var(--atlas-action);
+  pointer-events: none;
+}
+
+.ds-board-move-preview.is-unreachable {
+  border-style: dashed;
+  border-color: var(--atlas-danger);
+}
+
+.ds-board-chip {
+  padding: 0 var(--atlas-space-xs);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-sm);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  font-size: var(--atlas-font-size-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ds-token-speed {
+  position: absolute;
+  z-index: 2;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
 .ds-board-map {
   position: absolute;
   inset: 0;
@@ -1123,6 +1169,15 @@ button.ds-prof-pip {
   position: relative;
 }
 
+.ds-hud-drawers-container > [role="alert"] {
+  position: fixed;
+  top: var(--atlas-space-md);
+  right: var(--atlas-space-md);
+  z-index: 30;
+  width: min(24rem, calc(100vw - 2 * var(--atlas-space-md)));
+  box-shadow: var(--atlas-elevation-overlay);
+}
+
 .ds-hud-sheet-drawer {
   position: fixed;
   top: 0;
@@ -1146,6 +1201,14 @@ button.ds-prof-pip {
   margin-bottom: var(--atlas-space-md);
 }
 
+.ds-drawer-header h2,
+.ds-drawer-header h3 {
+  margin: 0;
+  font-family: var(--atlas-font-display);
+  font-size: var(--atlas-font-size-lg);
+  font-weight: 600;
+}
+
 .ds-btn-sm {
   min-height: var(--atlas-hit-desktop);
   padding: var(--atlas-space-xs) var(--atlas-space-sm);
@@ -1155,6 +1218,731 @@ button.ds-prof-pip {
   background-color: transparent;
   color: var(--atlas-text);
   border: 1px solid var(--atlas-border-control);
+}
+
+/* Compendium drawer, search bar, category filter tabs, entry list & detail cards */
+.ds-compendium-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-md);
+  padding: var(--atlas-space-md);
+  background-color: var(--atlas-surface);
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-lg);
+}
+
+.ds-hud-drawers-container > .ds-compendium-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(24rem, 100vw);
+  overflow-y: auto;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 1px solid var(--atlas-border);
+  border-radius: 0;
+  box-shadow: var(--atlas-elevation-overlay);
+  z-index: 20;
+}
+
+.ds-compendium-search-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-xs);
+}
+
+.ds-input-search {
+  width: 100%;
+  min-height: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-sm) var(--atlas-space-md);
+  border-radius: var(--atlas-radius-md);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border-control);
+  font-family: var(--atlas-font-sans);
+  font-size: var(--atlas-font-size-sm);
+}
+
+.ds-input-search:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+.ds-compendium-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--atlas-space-xs);
+  padding-bottom: var(--atlas-space-xs);
+  border-bottom: 1px solid var(--atlas-border);
+}
+
+.ds-tab-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-xs) var(--atlas-space-sm);
+  border-radius: var(--atlas-radius-sm);
+  border: 1px solid var(--atlas-border-control);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text-muted);
+  font-family: var(--atlas-font-sans);
+  font-size: var(--atlas-font-size-xs);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--atlas-transition-fast), border-color var(--atlas-transition-fast);
+}
+
+.ds-tab-btn:hover {
+  color: var(--atlas-text);
+}
+
+.ds-tab-btn.is-active,
+.ds-tab-btn[aria-selected="true"] {
+  color: var(--atlas-text);
+  border-color: var(--atlas-action);
+  background-color: var(--atlas-accent-primary-subtle);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--atlas-action);
+}
+
+.ds-tab-btn:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+.ds-compendium-tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-sm);
+  min-height: 0;
+}
+
+.ds-compendium-entry-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ds-compendium-entry-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--atlas-space-sm);
+  padding: var(--atlas-space-sm);
+  border-bottom: 1px solid var(--atlas-border);
+}
+
+.ds-compendium-entry-card:hover {
+  background-color: var(--atlas-surface-raised);
+}
+
+.ds-compendium-entry-card > .ds-panel,
+.ds-character-sheet-header > .ds-panel {
+  flex-basis: 100%;
+  margin-top: var(--atlas-space-xs);
+  background-color: var(--atlas-surface-raised);
+  border: 0;
+  border-top: 1px solid var(--atlas-border);
+  border-radius: 0;
+}
+
+.ds-entry-name {
+  font-weight: 600;
+  color: var(--atlas-text);
+}
+
+.ds-entry-type,
+.ds-entry-tier {
+  font-size: var(--atlas-font-size-xs);
+  color: var(--atlas-text-muted);
+}
+
+.ds-btn-add-entry {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  min-height: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-xs) var(--atlas-space-sm);
+  border-radius: var(--atlas-radius-sm);
+  border: 1px solid var(--atlas-border-control);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  font-family: var(--atlas-font-sans);
+  font-size: var(--atlas-font-size-xs);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.ds-btn-add-entry:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+/* Character sheet header, declarative layout & 12-widget primitives */
+.ds-character-sheet-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--atlas-space-md);
+  padding: var(--atlas-space-md);
+  background-color: var(--atlas-surface);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-lg);
+}
+
+.ds-sheet-header-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-xs);
+}
+
+.ds-sheet-character-name {
+  margin: 0;
+  font-family: var(--atlas-font-display);
+  font-size: var(--atlas-font-size-xl);
+  font-weight: 600;
+}
+
+.ds-sheet-character-summary {
+  color: var(--atlas-text-muted);
+  font-size: var(--atlas-font-size-sm);
+}
+
+.ds-sheet-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-btn-level-up {
+  background-color: var(--atlas-action);
+  color: var(--atlas-on-action);
+  border: 1px solid transparent;
+}
+
+.ds-btn-short-rest,
+.ds-btn-long-rest {
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border-control);
+}
+
+.ds-declarative-sheet-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-md);
+}
+
+.ds-sheet-view-toolbar,
+.ds-sheet-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--atlas-space-sm);
+  padding-bottom: var(--atlas-space-sm);
+  border-bottom: 1px solid var(--atlas-border);
+}
+
+.ds-lock-toggle {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--atlas-space-xs);
+  min-height: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-xs) var(--atlas-space-md);
+  border-radius: var(--atlas-radius-sm);
+  border: 1px solid var(--atlas-border-control);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  font-family: var(--atlas-font-sans);
+  font-size: var(--atlas-font-size-sm);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.ds-lock-toggle.is-unlocked {
+  border-color: var(--atlas-action);
+  background-color: var(--atlas-accent-primary-subtle);
+  font-weight: 600;
+}
+
+.ds-lock-toggle-label {
+  font-weight: inherit;
+}
+
+.ds-layout-section,
+.ds-layout-column,
+.ds-layout-tabs,
+.ds-tabs-body,
+.ds-widget-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-md);
+  min-width: 0;
+}
+
+.ds-layout-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--atlas-space-md);
+}
+
+.ds-layout-row > * {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.ds-statblock-6 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-statblock-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr));
+  gap: var(--atlas-space-sm);
+}
+
+.ds-ability-card {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--atlas-space-xs);
+  padding: var(--atlas-space-sm);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border-control);
+  border-radius: var(--atlas-radius-md);
+  font: inherit;
+}
+
+button.ds-ability-card {
+  cursor: pointer;
+}
+
+.ds-ability-name {
+  font-size: var(--atlas-font-size-xs);
+  font-weight: 600;
+  color: var(--atlas-text-muted);
+}
+
+.ds-ability-mod {
+  font-family: var(--atlas-font-display);
+  font-size: var(--atlas-font-size-lg);
+  font-weight: 600;
+}
+
+.ds-ability-score,
+.ds-ability-score-val {
+  font-size: var(--atlas-font-size-sm);
+  color: var(--atlas-text-muted);
+}
+
+.ds-ability-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--atlas-space-xs);
+}
+
+.ds-stepper-btn,
+.ds-stepper-dec,
+.ds-stepper-inc {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--atlas-hit-desktop);
+  min-height: var(--atlas-hit-desktop);
+  padding: 0 var(--atlas-space-xs);
+  border-radius: var(--atlas-radius-sm);
+  border: 1px solid var(--atlas-border-control);
+  background-color: var(--atlas-surface);
+  color: var(--atlas-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ds-ais-widget {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--atlas-space-sm);
+}
+
+.ds-ais-tile {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--atlas-space-xs);
+  min-height: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-sm);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-md);
+  font: inherit;
+}
+
+.ds-ais-tile.is-clickable {
+  border-color: var(--atlas-border-control);
+  cursor: pointer;
+}
+
+.ds-tile-title {
+  font-size: var(--atlas-font-size-xs);
+  color: var(--atlas-text-muted);
+}
+
+.ds-tile-val {
+  font-family: var(--atlas-font-display);
+  font-size: var(--atlas-font-size-lg);
+  font-weight: 600;
+}
+
+.ds-resource-bar-widget,
+.ds-hdds-widget,
+.ds-spellbook-widget,
+.ds-inventory-widget,
+.ds-features-widget,
+.ds-notes-widget {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-attack-table-widget {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-sm);
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.ds-resource-header,
+.ds-encumbrance-labels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-resource-label,
+.ds-pane-label {
+  font-size: var(--atlas-font-size-sm);
+  font-weight: 600;
+}
+
+.ds-resource-values {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--atlas-space-xs);
+}
+
+.ds-resource-input-current,
+.ds-resource-input-max,
+.ds-resource-input-temp,
+.ds-currency-input {
+  width: 4.5rem;
+  min-height: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-xs) var(--atlas-space-sm);
+  border-radius: var(--atlas-radius-sm);
+  border: 1px solid var(--atlas-border-control);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  font-family: var(--atlas-font-sans);
+  font-size: var(--atlas-font-size-sm);
+  text-align: right;
+}
+
+.ds-resource-separator,
+.ds-resource-max-locked,
+.ds-resource-temp,
+.ds-attunement-label {
+  font-size: var(--atlas-font-size-sm);
+  color: var(--atlas-text-muted);
+}
+
+.ds-resource-track,
+.ds-encumbrance-track {
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: var(--atlas-radius-sm);
+  background-color: var(--atlas-surface-raised);
+  border: 1px solid var(--atlas-border);
+}
+
+.ds-resource-fill,
+.ds-encumbrance-fill {
+  height: 100%;
+  background-color: var(--atlas-action);
+  transition: width var(--atlas-transition-fast);
+}
+
+.ds-hitdice-pane,
+.ds-deathsaves-pane,
+.ds-encumbrance-bar-container,
+.ds-pact-magic-section,
+.ds-bio-section,
+.ds-notes-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-xs);
+}
+
+.ds-hitdice-val {
+  font-weight: 600;
+}
+
+.ds-deathsave-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--atlas-space-xs);
+}
+
+.ds-label-success,
+.ds-label-failure {
+  min-width: 5rem;
+  font-size: var(--atlas-font-size-xs);
+  color: var(--atlas-text-muted);
+}
+
+.ds-pip,
+.ds-pip-btn,
+.ds-slot-pip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--atlas-hit-desktop);
+  min-height: var(--atlas-hit-desktop);
+  padding: 0 var(--atlas-space-xs);
+  border-radius: var(--atlas-radius-sm);
+  border: 1px solid var(--atlas-border-control);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ds-pip.is-filled,
+.ds-slot-pip.is-filled {
+  border-color: var(--atlas-action);
+  background-color: var(--atlas-accent-primary-subtle);
+  font-weight: 600;
+}
+
+.ds-btn-spend-hitdie,
+.ds-btn-death-save,
+.ds-btn-unpack-item,
+.ds-btn-attune,
+.ds-btn-del-item,
+.ds-btn-remove-cond,
+.ds-btn-cast-spell {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--atlas-hit-desktop);
+  min-width: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-xs) var(--atlas-space-sm);
+  border-radius: var(--atlas-radius-sm);
+  border: 1px solid var(--atlas-border-control);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  font-family: var(--atlas-font-sans);
+  font-size: var(--atlas-font-size-xs);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.ds-btn-attune.is-attuned {
+  border-color: var(--atlas-action);
+  font-weight: 600;
+}
+
+.ds-btn-del-item,
+.ds-btn-remove-cond {
+  color: var(--atlas-danger);
+  border-color: var(--atlas-danger);
+}
+
+.ds-condition-strip,
+.ds-currency-strip,
+.ds-slot-pips-container,
+.ds-spellcasting-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-no-conditions,
+.ds-no-spells {
+  font-size: var(--atlas-font-size-sm);
+  color: var(--atlas-text-muted);
+}
+
+.ds-condition-badge,
+.ds-currency-item,
+.ds-spell-save-dc,
+.ds-spell-attack-bonus {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--atlas-space-xs);
+  padding: var(--atlas-space-xs) var(--atlas-space-sm);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-sm);
+  background-color: var(--atlas-surface-raised);
+  font-size: var(--atlas-font-size-xs);
+}
+
+.ds-condition-text,
+.ds-currency-label,
+.ds-pact-magic-label {
+  font-weight: 500;
+}
+
+.ds-attack-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--atlas-font-size-sm);
+}
+
+.ds-attack-table th,
+.ds-attack-table td {
+  padding: var(--atlas-space-sm);
+  border-bottom: 1px solid var(--atlas-border);
+  text-align: left;
+}
+
+.ds-attack-row:hover {
+  background-color: var(--atlas-surface-raised);
+}
+
+.ds-atk-name,
+.ds-item-name,
+.ds-spell-title,
+.ds-level-title {
+  font-weight: 500;
+}
+
+.ds-depleted-badge {
+  font-size: var(--atlas-font-size-xs);
+  color: var(--atlas-danger);
+}
+
+.ds-spell-levels-accordion,
+.ds-inventory-list,
+.ds-container-children-list,
+.ds-features-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-xs);
+}
+
+.ds-container-children-list {
+  padding-left: var(--atlas-space-md);
+}
+
+.ds-spell-level-group,
+.ds-feature-item,
+.ds-inv-item-row,
+.ds-spell-item {
+  padding: var(--atlas-space-sm);
+  border-bottom: 1px solid var(--atlas-border);
+}
+
+.ds-inv-item-row,
+.ds-spell-item,
+.ds-spell-level-header-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-spell-level-header {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--atlas-space-xs);
+  min-height: var(--atlas-hit-desktop);
+  padding: var(--atlas-space-xs) var(--atlas-space-sm);
+  border: 0;
+  background: transparent;
+  color: var(--atlas-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ds-spell-level-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-xs);
+  padding-top: var(--atlas-space-xs);
+}
+
+.ds-inventory-root-dropzone {
+  padding: var(--atlas-space-xs);
+  border: 1px dashed var(--atlas-border);
+  border-radius: var(--atlas-radius-md);
+}
+
+.ds-features-widget.is-drag-over {
+  outline: 2px dashed var(--atlas-action);
+  outline-offset: 2px;
+}
+
+.ds-feature-header {
+  font-weight: 600;
+}
+
+.ds-feature-source {
+  margin-left: var(--atlas-space-xs);
+}
+
+.ds-feature-desc {
+  margin: 0;
+  color: var(--atlas-text-muted);
+  font-size: var(--atlas-font-size-sm);
+}
+
+.ds-bio-textarea,
+.ds-notes-textarea {
+  width: 100%;
+  min-height: 6rem;
+  padding: var(--atlas-space-sm);
+  border-radius: var(--atlas-radius-md);
+  border: 1px solid var(--atlas-border-control);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  font-family: var(--atlas-font-sans);
+  font-size: var(--atlas-font-size-sm);
+  resize: vertical;
 }
 
 /* Room connection banner: Level 2 strip under the top bar (RoomConnectionFeedback.tsx) */
@@ -1243,9 +2031,23 @@ button.ds-prof-pip {
 @media (max-width: 767px) {
   .ds-btn,
   .ds-input,
+  .ds-input-search,
   .ds-icon-btn,
   .ds-tab,
+  .ds-tab-btn,
+  .ds-btn-add-entry,
+  .ds-lock-toggle,
+  .ds-stepper-btn,
+  .ds-pip-btn,
+  .ds-slot-pip,
   button.ds-prof-pip,
+  .ds-btn-spend-hitdie,
+  .ds-btn-death-save,
+  .ds-btn-unpack-item,
+  .ds-btn-attune,
+  .ds-btn-del-item,
+  .ds-btn-remove-cond,
+  .ds-spell-level-header,
   .nav-tab-btn {
     min-height: var(--atlas-hit-touch);
     min-width: var(--atlas-hit-touch);
@@ -1253,7 +2055,11 @@ button.ds-prof-pip {
 
   .ds-choice,
   .ds-save-roll,
-  .ds-skill-roll {
+  .ds-skill-roll,
+  .ds-resource-input-current,
+  .ds-resource-input-max,
+  .ds-resource-input-temp,
+  .ds-currency-input {
     min-height: var(--atlas-hit-touch);
   }
 

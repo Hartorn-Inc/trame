@@ -38,7 +38,7 @@
  */
 import { useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, INVALID_TOTP_CODE, MFA_REQUIRED, type ApiClient } from "../api/client.ts";
-import { LocaleToggle } from "../components/ShellToggles.tsx";
+import { LocaleToggle, ThemeToggle } from "../components/ShellToggles.tsx";
 import { useFocusOnMount } from "../components/a11y/useFocusOnMount.ts";
 import { t, type MessageKey } from "../i18n/index.ts";
 
@@ -159,7 +159,10 @@ export function AuthScreen({ client }: AuthScreenProps) {
           <h1 id="auth-title" ref={titleRef} tabIndex={-1} class="ds-brand-title" style={{ margin: 0 }}>
             {t("auth.title")}
           </h1>
-          <LocaleToggle />
+          <div class="ds-cluster">
+            <ThemeToggle />
+            <LocaleToggle />
+          </div>
         </div>
 
         {registrationOpen ? (

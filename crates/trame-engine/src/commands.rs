@@ -80,6 +80,9 @@
 //!      - `SetTokenConditions` follows token control (GM: any token; player:
 //!        owned tokens); `ConditionOverride` is GM-only. Both validate ids
 //!        (`1..=64` bytes, at most 32 per token) before pushing an `UndoEntry`.
+//!      - `SetTokenConditions` cannot add a condition listed in the token's
+//!        stat block `conditionImmunities` (`CommandError::ConditionImmune`)
+//!        unless a GM `ConditionOverride` forces it.
 //!      - `TokenState::effective_conditions` applies the rulings (`Remove`
 //!        wins over the token's own conditions, `Force` adds); engine checks
 //!        read effective conditions only.
@@ -318,6 +321,15 @@ pub struct SceneActivation {
     /// heroes beyond the list keep their current position.
     #[serde(default)]
     pub hero_spawn_points: Vec<Point2D>,
+    /// Difficult-terrain cells saved with the scene, replacing the table's set. Cells off the
+    /// scene's grid are dropped.
+    #[serde(default)]
+    pub difficult_terrain: Vec<GridCell>,
+    /// GM fog rulings (`Reveal` / `Hide`) saved with the scene, replacing the table's rulings.
+    /// Cells off the scene's grid and `Clear` entries are dropped; the last ruling on a cell
+    /// wins.
+    #[serde(default)]
+    pub fog_overrides: Vec<FogOverrideCell>,
 }
 
 /// Action-economy resource restored by `TrameCommand::RefundAction`.
@@ -408,8 +420,12 @@ fn is_zero_i32(value: &i32) -> bool {
     *value == 0
 }
 
+fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
+}
+
 /// SRD condition IDs that include Incapacitated (no actions or reactions).
-const INCAPACITATING_CONDITIONS: [&str; 5] = [
+pub(crate) const INCAPACITATING_CONDITIONS: [&str; 5] = [
     "incapacitated",
     "paralyzed",
     "petrified",
@@ -426,6 +442,10 @@ pub const SPEED_ZERO_CONDITIONS: [&str; 5] = [
     "unconscious",
 ];
 
+/// Condition the engine adds to a non-dead token at 0 HP and removes when it is healed above
+/// 0 HP (`TableState::sync_zero_hp_unconscious`).
+pub const UNCONSCIOUS_CONDITION: &str = "unconscious";
+
 /// SRD 5.2.1 condition IDs granting resistance to all damage.
 pub const RESIST_ALL_DAMAGE_CONDITIONS: [&str; 1] = ["petrified"];
 
@@ -437,9 +457,9 @@ pub const EFFECT_SPEED_ZERO: &str = "speed_zero";
 /// (`"<condition>.resistance_all_damage"`).
 pub const EFFECT_RESISTANCE_ALL_DAMAGE: &str = "resistance_all_damage";
 
-/// `true` when `token` is Incapacitated after the `ConditionOverride` rulings.
+/// `true` when `token` is dead or Incapacitated after the `ConditionOverride` rulings.
 fn is_incapacitated(token: &TokenState) -> bool {
-    token.condition_effects().incapacitated
+    token.is_dead || token.condition_effects().incapacitated
 }
 
 /// Condition effects the engine enforces itself, after the `ConditionOverride` rulings. The
@@ -454,8 +474,19 @@ pub struct ConditionEffects {
     pub incapacitated: bool,
     /// Speed 0: `MoveToken` is rejected unless it is a Game Master teleport.
     pub speed_zero: bool,
-    /// Resistance to every damage type (`damage_affinity_for`).
+    /// Resistance to every damage type (`typed_damage_input`).
     pub resists_all_damage: bool,
+}
+
+/// `(columns, rows)` of the grid covering a `width_px` x `height_px` map with `cell_px` cells
+/// (partial cells count). `SetDifficultTerrain` rejects and `ActivateScene` drops cells
+/// outside `0..columns` x `0..rows`.
+fn map_grid_dims(width_px: u32, height_px: u32, cell_px: f64) -> (i32, i32) {
+    let cell_px = cell_px.max(1e-9);
+    (
+        (f64::from(width_px) / cell_px).ceil() as i32,
+        (f64::from(height_px) / cell_px).ceil() as i32,
+    )
 }
 
 /// Conditions in force after the rulings: `conditions` (lowercased, compendium prefix
@@ -708,6 +739,17 @@ pub struct TokenState {
     /// without a linked sheet (stat block tokens read their copy); omitted when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub save_bonuses: BTreeMap<String, i32>,
+    /// Server-rolled d20s the linked sheet's class features give Advantage on
+    /// (`resolution::FEATURE_ROLL_INITIATIVE`: Feral Instinct;
+    /// `resolution::FEATURE_ROLL_DEATH_SAVE`: Champion Survivor), synchronized from
+    /// `derived.featureRules.rolls`. Read by `resolution::initiative_roll_mode` and
+    /// `resolution::death_save_roll_mode`; omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feature_roll_advantages: Vec<String>,
+    /// SRD 5.2.1 Exhaustion level (`0..=6`), synchronized from the linked actor sheet
+    /// (`ADR-0037`); default `0`. Omitted from the wire when `0`.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub exhaustion: u8,
 }
 
 impl TokenState {
@@ -754,6 +796,8 @@ impl TokenState {
             condition_overrides: Vec::new(),
             stat_block: None,
             save_bonuses: BTreeMap::new(),
+            feature_roll_advantages: Vec::new(),
+            exhaustion: 0,
         }
     }
 
@@ -770,29 +814,72 @@ impl TokenState {
         condition_effects(&self.conditions, &self.condition_overrides)
     }
 
+    /// `true` when the stat block lists `condition_id` (lowercase) in `conditionImmunities`
+    /// and no GM `ConditionOverride` forces it. `SetTokenConditions` rejects adding such a
+    /// condition (`CommandError::ConditionImmune`); a GM ruling is the only way past it.
+    pub fn is_immune_to_condition(&self, condition_id: &str) -> bool {
+        let forced = self.condition_overrides.iter().any(|o| {
+            o.subject == OverrideSubject::Condition
+                && o.mode == OverrideMode::Force
+                && o.id == condition_id
+        });
+        !forced
+            && self
+                .stat_block
+                .as_ref()
+                .and_then(|block| block.get("conditionImmunities"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|list| {
+                    list.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .any(|id| id.trim().eq_ignore_ascii_case(condition_id))
+                })
+    }
+
     /// Modifier added to the server's `1d20` initiative roll (`AuthoritativeInitiativeRoll`).
     pub fn initiative_modifier(&self) -> i32 {
         self.dex_mod.saturating_add(self.initiative_extra)
     }
 
-    /// Derives this token's `DamageAffinity` toward `damage_type` (case-insensitive) from its
-    /// own damage lists (G6), so clients never choose the affinity for typed damage.
+    /// Effective SRD 5.2.1 Exhaustion level (`0..=6`) after Game Master `ConditionOverride`
+    /// rulings and stat-block `conditionImmunities`: `0` when a `Remove` ruling on the
+    /// `"exhaustion"` condition suspends it or the token is immune to `"exhaustion"`,
+    /// otherwise `self.exhaustion` clamped to `0..=MAX_EXHAUSTION_LEVEL` (`6`).
+    pub fn effective_exhaustion(&self) -> u8 {
+        let removed = self.condition_overrides.iter().any(|o| {
+            o.subject == OverrideSubject::Condition
+                && o.mode == OverrideMode::Remove
+                && o.id == "exhaustion"
+        });
+        if removed || self.is_immune_to_condition("exhaustion") {
+            0
+        } else {
+            self.exhaustion.min(crate::rules::MAX_EXHAUSTION_LEVEL)
+        }
+    }
+
+    /// Derives the `(raw_damage, DamageAffinity)` pair to mitigate typed damage with, from this
+    /// token's own damage lists (G6), so clients never choose the affinity for typed damage.
+    /// `damage_type` matches case-insensitively.
     ///
-    /// Resolution order: immunity wins; resistance and vulnerability to the same type cancel
-    /// out (SRD: halve, then double) to `Normal`; otherwise the single matching list applies.
-    /// A condition granting resistance to all damage (Petrified) counts as a resistance.
-    pub fn damage_affinity_for(&self, damage_type: &str) -> DamageAffinity {
+    /// Resolution order: immunity wins; resistance and vulnerability to the same type both
+    /// apply in SRD 5.2.1 order, resistance then vulnerability: the raw amount is halved
+    /// (rounded down) here and `Vulnerable` doubles it (25 -> 12 -> 24); otherwise the single
+    /// matching list applies. A condition granting resistance to all damage (Petrified)
+    /// counts as a resistance.
+    pub fn typed_damage_input(&self, raw_damage: i32, damage_type: &str) -> (i32, DamageAffinity) {
         let has = |list: &[String]| list.iter().any(|t| t.eq_ignore_ascii_case(damage_type));
         if has(&self.damage_immunities) {
-            return DamageAffinity::Immune;
+            return (raw_damage, DamageAffinity::Immune);
         }
         match (
             has(&self.damage_resistances) || self.condition_effects().resists_all_damage,
             has(&self.damage_vulnerabilities),
         ) {
-            (true, false) => DamageAffinity::Resistant,
-            (false, true) => DamageAffinity::Vulnerable,
-            _ => DamageAffinity::Normal,
+            (true, true) => (raw_damage.max(0) / 2, DamageAffinity::Vulnerable),
+            (true, false) => (raw_damage, DamageAffinity::Resistant),
+            (false, true) => (raw_damage, DamageAffinity::Vulnerable),
+            (false, false) => (raw_damage, DamageAffinity::Normal),
         }
     }
 
@@ -948,7 +1035,7 @@ pub enum TrameCommand {
         #[serde(default)]
         is_critical: bool,
         /// Typed damage (lowercase SRD id, e.g. `"fire"`). When set, the affinity is derived from
-        /// the target's `damage_*` lists (`TokenState::damage_affinity_for`) instead of `affinity`.
+        /// the target's `damage_*` lists (`TokenState::typed_damage_input`) instead of `affinity`.
         #[serde(default)]
         damage_type: Option<String>,
     },
@@ -1025,8 +1112,8 @@ pub enum TrameCommand {
     },
     /// Activates a persisted map scene (GM only): replaces walls, lights, map, and grid; keeps
     /// `HeroToken`s (moved onto spawn points); removes every other token; spawns the scene's
-    /// `StagedToken`s; clears AoEs, fog overrides, difficult terrain, reaction prompts; and
-    /// returns to `Exploration`.
+    /// `StagedToken`s; replaces fog overrides and difficult terrain with the scene's saved
+    /// ones; clears AoEs and reaction prompts; and returns to `Exploration`.
     ActivateScene {
         /// Unique identifier of the persisted scene.
         scene_id: Uuid,
@@ -1679,7 +1766,8 @@ pub enum CommandError {
     #[error("speed is 0: a condition prevents this token from moving")]
     SpeedZero,
     /// The movement path intersected a movement-blocking `WallSegment` at `(x, y)` in pixels (`px`).
-    #[error("movement blocked by wall at ({x:.1}, {y:.1})")]
+    /// The message carries no coordinates: clients explain it from `RejectionDetail::code`.
+    #[error("movement blocked by a wall")]
     WallCollision {
         /// Horizontal collision coordinate in canvas pixels (`px`).
         x: f64,
@@ -1693,6 +1781,17 @@ pub enum CommandError {
     /// sight to it. The `door is out of reach` prefix is matched by the client.
     #[error("door is out of reach: none of your tokens is within 5 ft and can see it")]
     DoorOutOfReach,
+    /// The session submitted commands or dice rolls faster than the room's per-socket token
+    /// bucket refills (burst 20, 10 per second on the server). Raised by the room, never by
+    /// `apply_command`. The `rate limited` prefix is matched by the client.
+    #[error("rate limited: too many table actions, wait a moment")]
+    RateLimited,
+    /// `SetTokenConditions` added a condition listed in the token's stat block
+    /// `conditionImmunities` (for example a Lich and `paralyzed`). Only a GM `ConditionOverride`
+    /// ruling forcing that condition lets it through. The `condition immunity` prefix is
+    /// matched by the client.
+    #[error("condition immunity: this creature is immune to {0}")]
+    ConditionImmune(String),
     /// A scene, map, or door configuration parameter was out of valid bounds.
     #[error("invalid configuration: {0}")]
     InvalidConfiguration(String),
@@ -1713,6 +1812,92 @@ pub enum CommandError {
         /// Error returned by the failing sub-command.
         source: Box<CommandError>,
     },
+}
+
+/// Every stable `RejectionDetail::code`, one per `CommandError` variant except
+/// `BatchCommandFailed`, which reports the code of the sub-command that failed. Clients key
+/// their localized explanations on these (`feedback.reason.<CODE>`).
+pub const COMMAND_ERROR_CODES: [&str; 15] = [
+    "PERMISSION_DENIED",
+    "NOT_FOUND",
+    "EXPLORATION_PAUSED",
+    "NOT_ACTIVE_TURN",
+    "INSUFFICIENT_MOVEMENT",
+    "SPEED_ZERO",
+    "WALL_COLLISION",
+    "DOOR_LOCKED",
+    "DOOR_OUT_OF_REACH",
+    "RATE_LIMITED",
+    "CONDITION_IMMUNE",
+    "INVALID_CONFIGURATION",
+    "NOTHING_TO_UNDO",
+    "REACTION_PENDING",
+    "REACTION_UNAVAILABLE",
+];
+
+/// Machine-readable form of a `CommandError` sent next to its English message in
+/// `CommandRejected`, so clients explain a refusal in the reader's language with real
+/// numbers instead of parsing (or showing) the message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RejectionDetail {
+    /// One of `COMMAND_ERROR_CODES`.
+    pub code: String,
+    /// `INSUFFICIENT_MOVEMENT`: movement the move needed, in feet (`ft`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needed_ft: Option<f64>,
+    /// `INSUFFICIENT_MOVEMENT`: movement left this turn, in feet (`ft`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_ft: Option<f64>,
+    /// `CONDITION_IMMUNE`: SRD condition id the creature is immune to (`paralyzed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
+
+impl CommandError {
+    /// Stable code of this error; a batch failure reports its failing sub-command's code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::PermissionDenied(_) => "PERMISSION_DENIED",
+            Self::NotFound(_) => "NOT_FOUND",
+            Self::ExplorationPaused => "EXPLORATION_PAUSED",
+            Self::NotActiveTurn => "NOT_ACTIVE_TURN",
+            Self::InsufficientMovement { .. } => "INSUFFICIENT_MOVEMENT",
+            Self::SpeedZero => "SPEED_ZERO",
+            Self::WallCollision { .. } => "WALL_COLLISION",
+            Self::DoorLocked => "DOOR_LOCKED",
+            Self::DoorOutOfReach => "DOOR_OUT_OF_REACH",
+            Self::RateLimited => "RATE_LIMITED",
+            Self::ConditionImmune(_) => "CONDITION_IMMUNE",
+            Self::InvalidConfiguration(_) => "INVALID_CONFIGURATION",
+            Self::NothingToUndo => "NOTHING_TO_UNDO",
+            Self::ReactionPending => "REACTION_PENDING",
+            Self::ReactionUnavailable => "REACTION_UNAVAILABLE",
+            Self::BatchCommandFailed { source, .. } => source.code(),
+        }
+    }
+
+    /// The structured `CommandRejected` detail of this error (see `RejectionDetail`).
+    pub fn rejection_detail(&self) -> RejectionDetail {
+        let mut detail = RejectionDetail {
+            code: self.code().to_string(),
+            needed_ft: None,
+            remaining_ft: None,
+            condition: None,
+        };
+        match self {
+            Self::InsufficientMovement {
+                needed_ft,
+                remaining_ft,
+            } => {
+                detail.needed_ft = Some(*needed_ft);
+                detail.remaining_ft = Some(*remaining_ft);
+            }
+            Self::ConditionImmune(condition) => detail.condition = Some(condition.clone()),
+            Self::BatchCommandFailed { source, .. } => return source.rejection_detail(),
+            _ => {}
+        }
+        detail
+    }
 }
 
 impl Default for TableState {
@@ -2433,7 +2618,7 @@ impl TableState {
     }
 
     /// Applies `damage` to `token_id` (which must exist) without an undo entry: typed damage
-    /// derives the affinity from the token (`damage_affinity_for`), otherwise `affinity` is
+    /// derives the affinity from the token (`typed_damage_input`), otherwise `affinity` is
     /// used. Shared by `ApplyDamage` and `ApplyResolution`; queues a `ConcentrationCheckPrompt` when a
     /// concentrating token keeps HP, and ends concentration at 0 HP.
     pub(crate) fn apply_damage_to_token(
@@ -2445,7 +2630,9 @@ impl TableState {
         damage_type: Option<&str>,
     ) -> Vec<TrameEvent> {
         let token = self.data.tokens[&token_id].clone();
-        let affinity = damage_type.map_or(affinity, |t| token.damage_affinity_for(t));
+        let (raw_damage, affinity) = damage_type.map_or((raw_damage, affinity), |t| {
+            token.typed_damage_input(raw_damage, t)
+        });
         let is_concentrating = token.concentrating_on_aoe_id.is_some() || token.concentrating;
         let mut resolution = resolve_damage_application(
             raw_damage,
@@ -2501,7 +2688,30 @@ impl TableState {
                 .push(dc);
             events.push(TrameEvent::ConcentrationCheckRequested { token_id, dc });
         }
+        events.extend(self.sync_zero_hp_unconscious(token_id, token.hp));
         events
+    }
+
+    /// Keeps the `unconscious` condition in step with 0 HP (SRD 5.2.1) after an HP change on
+    /// `token_id` from `hp_before`, inside the caller's undo entry: a token that is at 0 HP and
+    /// not dead gains `unconscious`; a token brought from 0 HP back above 0 loses it. Only the
+    /// token's own conditions change, so a GM `ConditionOverride` still wins, and condition
+    /// immunities do not apply. Returns the `TokenConditionsChanged` event when it changed.
+    fn sync_zero_hp_unconscious(&mut self, token_id: Uuid, hp_before: i32) -> Option<TrameEvent> {
+        let tok = self.data.tokens.get_mut(&token_id)?;
+        let has = tok.conditions.iter().any(|c| c == UNCONSCIOUS_CONDITION);
+        if tok.hp == 0 && !tok.is_dead && !has && tok.conditions.len() < MAX_TOKEN_CONDITIONS {
+            tok.conditions.push(UNCONSCIOUS_CONDITION.to_string());
+        } else if tok.hp > 0 && hp_before == 0 && has {
+            tok.conditions.retain(|c| c != UNCONSCIOUS_CONDITION);
+        } else {
+            return None;
+        }
+        Some(TrameEvent::TokenConditionsChanged {
+            token_id,
+            conditions: tok.conditions.clone(),
+            effective_conditions: tok.effective_conditions(),
+        })
     }
 
     fn apply_command_unpruned(
@@ -2546,7 +2756,7 @@ impl TableState {
                 let new_elev = to_elevation_ft.unwrap_or(token.elevation_ft);
                 let in_combat = self.data.mode == TableMode::TurnByTurn;
                 if !is_gm_teleport {
-                    if token.condition_effects().speed_zero {
+                    if token.is_dead || token.condition_effects().speed_zero {
                         return Err(CommandError::SpeedZero);
                     }
                     self.check_wall_collision(&token, to_top_left, new_elev)?;
@@ -2619,8 +2829,12 @@ impl TableState {
                             .to_string(),
                     ));
                 }
-                let outcome =
-                    resolve_death_save(token.death_save_successes, token.death_save_failures, d20);
+                let outcome = resolve_death_save(
+                    token.death_save_successes,
+                    token.death_save_failures,
+                    d20,
+                    token.effective_exhaustion(),
+                );
                 self.push_undo(format!("Death saving throw for {}", token.name));
                 let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
                 tok_mut.death_save_successes = outcome.successes;
@@ -2630,11 +2844,16 @@ impl TableState {
                 if outcome.regains_hp {
                     tok_mut.hp = 1;
                 }
-                Ok(vec![TrameEvent::DeathSaveRecorded {
+                let regains_hp = outcome.regains_hp;
+                let mut events = vec![TrameEvent::DeathSaveRecorded {
                     token_id,
                     d20,
                     outcome,
-                }])
+                }];
+                if regains_hp {
+                    events.extend(self.sync_zero_hp_unconscious(token_id, token.hp));
+                }
+                Ok(events)
             }
 
             TrameCommand::SetTokenConditions {
@@ -2653,6 +2872,13 @@ impl TableState {
                     if !normalized.contains(&id) {
                         normalized.push(id);
                     }
+                }
+                let token = &self.data.tokens[&token_id];
+                if let Some(immune) = normalized
+                    .iter()
+                    .find(|id| !token.conditions.contains(id) && token.is_immune_to_condition(id))
+                {
+                    return Err(CommandError::ConditionImmune(immune.clone()));
                 }
                 self.push_undo(format!("Set conditions for {name}"));
                 let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
@@ -2935,11 +3161,13 @@ impl TableState {
                     tok.death_save_failures = 0;
                     tok.is_stable = false;
                 }
-                Ok(vec![TrameEvent::TokenHealed {
+                let mut events = vec![TrameEvent::TokenHealed {
                     token_id,
                     hp_restored,
                     new_hp: tok.hp,
-                }])
+                }];
+                events.extend(self.sync_zero_hp_unconscious(token_id, token.hp));
+                Ok(events)
             }
 
             TrameCommand::ClearAoe { aoe_id } => {
@@ -3006,6 +3234,7 @@ impl TableState {
                     .clone();
                 self.push_undo(format!("GM override resources for {token_name}"));
                 let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
+                let hp_before = tok.hp;
                 if let Some(v) = hp {
                     tok.hp = v.clamp(0, tok.max_hp);
                     if tok.hp > 0 {
@@ -3030,7 +3259,7 @@ impl TableState {
                 if let Some(v) = has_reaction {
                     tok.has_reaction = v;
                 }
-                Ok(vec![TrameEvent::TokenResourcesOverridden {
+                let mut events = vec![TrameEvent::TokenResourcesOverridden {
                     token_id,
                     hp: tok.hp,
                     temp_hp: tok.temp_hp,
@@ -3039,7 +3268,11 @@ impl TableState {
                     has_bonus_action: tok.has_bonus_action,
                     has_reaction: tok.has_reaction,
                     is_dead: tok.is_dead,
-                }])
+                }];
+                if hp.is_some() {
+                    events.extend(self.sync_zero_hp_unconscious(token_id, hp_before));
+                }
+                Ok(events)
             }
 
             TrameCommand::ProjectAoe {
@@ -3204,8 +3437,23 @@ impl TableState {
                 self.data.map_height_px = scene.height_px;
                 self.data.walls = scene.walls;
                 self.data.lights = scene.lights;
-                self.data.fog_overrides.clear();
-                self.data.difficult_terrain.clear();
+                let (cols, rows) =
+                    map_grid_dims(scene.width_px, scene.height_px, scene.pixels_per_grid);
+                let on_map =
+                    |col: i32, row: i32| (0..cols).contains(&col) && (0..rows).contains(&row);
+                self.data.difficult_terrain = scene
+                    .difficult_terrain
+                    .into_iter()
+                    .filter(|c| on_map(c.col, c.row))
+                    .collect();
+                let mut fog: BTreeMap<(i32, i32), FogOverrideCell> = BTreeMap::new();
+                for ruling in scene.fog_overrides {
+                    if ruling.mode != FogOverrideMode::Clear && on_map(ruling.cell_x, ruling.cell_y)
+                    {
+                        fog.insert((ruling.cell_x, ruling.cell_y), ruling);
+                    }
+                }
+                self.data.fog_overrides = fog.into_values().collect();
                 self.data.persistent_aoes.clear();
                 self.data.active_reaction_prompts.clear();
                 self.data.pending_resolutions.clear();
@@ -3367,9 +3615,11 @@ impl TableState {
                         "difficult terrain cells must not be empty".to_string(),
                     ));
                 }
-                let cell_px = self.cell_size_px.max(1e-9);
-                let cols = (f64::from(self.data.map_width_px) / cell_px).ceil() as i32;
-                let rows = (f64::from(self.data.map_height_px) / cell_px).ceil() as i32;
+                let (cols, rows) = map_grid_dims(
+                    self.data.map_width_px,
+                    self.data.map_height_px,
+                    self.cell_size_px,
+                );
                 if let Some(off_map) = cells
                     .iter()
                     .find(|c| !(0..cols).contains(&c.col) || !(0..rows).contains(&c.row))

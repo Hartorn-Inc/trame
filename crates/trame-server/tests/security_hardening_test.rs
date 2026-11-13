@@ -394,6 +394,132 @@ async fn sec3_player_initiative_ignores_the_client_expression() {
 }
 
 #[tokio::test]
+async fn sec3_initiative_and_death_save_modes_are_derived_server_side() {
+    struct Case {
+        id: &'static str,
+        conditions: &'static [&'static str],
+        features: &'static [&'static str],
+        death_save: bool,
+        expected: &'static str,
+    }
+    let initiative = |id, conditions, features, expected| Case {
+        id,
+        conditions,
+        features,
+        death_save: false,
+        expected,
+    };
+    let cases = [
+        initiative("poisoned_has_disadvantage", &["poisoned"], &[], "2d20kl1+2"),
+        initiative(
+            "frightened_has_disadvantage",
+            &["frightened"],
+            &[],
+            "2d20kl1+2",
+        ),
+        initiative(
+            "incapacitated_has_disadvantage",
+            &["incapacitated"],
+            &[],
+            "2d20kl1+2",
+        ),
+        initiative(
+            "stunned_includes_incapacitated",
+            &["stunned"],
+            &[],
+            "2d20kl1+2",
+        ),
+        initiative("invisible_has_advantage", &["invisible"], &[], "2d20kh1+2"),
+        initiative(
+            "feral_instinct_has_advantage",
+            &[],
+            &["initiative"],
+            "2d20kh1+2",
+        ),
+        initiative(
+            "invisible_and_poisoned_cancel",
+            &["invisible", "poisoned"],
+            &[],
+            "1d20+2",
+        ),
+        initiative(
+            "feral_instinct_and_poisoned_cancel",
+            &["poisoned"],
+            &["initiative"],
+            "1d20+2",
+        ),
+        initiative("prone_changes_nothing", &["prone"], &[], "1d20+2"),
+        initiative(
+            "survivor_does_not_touch_initiative",
+            &[],
+            &["death_save"],
+            "1d20+2",
+        ),
+        Case {
+            id: "survivor_death_save_has_advantage",
+            conditions: &[],
+            features: &["death_save"],
+            death_save: true,
+            expected: "2d20kh1",
+        },
+        Case {
+            id: "feral_instinct_does_not_touch_death_saves",
+            conditions: &[],
+            features: &["initiative"],
+            death_save: true,
+            expected: "1d20",
+        },
+    ];
+    for c in cases {
+        let player_user = Uuid::new_v4();
+        let hero = Uuid::new_v4();
+        let mut t = token(hero, "Hero", Some(player_user));
+        t.dex_mod = 2;
+        t.conditions = c.conditions.iter().map(|s| s.to_string()).collect();
+        t.feature_roll_advantages = c.features.iter().map(|s| s.to_string()).collect();
+        if c.death_save {
+            t.hp = 0;
+        }
+        let mut state = TableState::new(100.0, 5.0, Vec::new());
+        state.data.tokens.insert(hero, t);
+        let mut table = Table::open(state, player_user).await;
+
+        if c.death_save {
+            table
+                .submit(
+                    false,
+                    ClientEnvelope::SubmitCommand(Box::new(CommandSubmission {
+                        command: TrameCommand::RecordDeathSave {
+                            token_id: hero,
+                            d20: Some(20),
+                        },
+                        correlation_id: None,
+                    })),
+                )
+                .await;
+        } else {
+            table.roll(false, "1d20", "Initiative").await;
+        }
+        let frames = Table::drain(&mut table.player.1);
+        let got = rolls(&frames);
+        assert_eq!(got.len(), 1, "case {}: {got:?}", c.id);
+        assert_eq!(got[0].1, c.expected, "case {}", c.id);
+        if c.death_save {
+            let kept = frames.iter().find_map(|e| match e {
+                ServerEnvelope::CommandAccepted { events, .. } => {
+                    events.iter().find_map(|ev| match ev {
+                        TrameEvent::DeathSaveRecorded { d20, .. } => Some(i32::from(*d20)),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            });
+            assert_eq!(kept, got[0].2, "case {}: the kept die is the d20", c.id);
+        }
+    }
+}
+
+#[tokio::test]
 async fn sec3_only_the_first_player_roll_per_encounter_counts() {
     let player_user = Uuid::new_v4();
     let (hero, npc) = (Uuid::new_v4(), Uuid::new_v4());
@@ -2019,6 +2145,9 @@ async fn ua8_death_save_d20_is_rolled_by_the_server_for_players() {
         submitted_d20: Option<u8>,
         /// `Some(d20)` when the submitted value must be used as-is (GM physical die).
         kept_d20: Option<u8>,
+        exhaustion: u8,
+        suspend_exhaustion: bool,
+        expected_expr: &'static str,
     }
     let cases = [
         Case {
@@ -2026,24 +2155,72 @@ async fn ua8_death_save_d20_is_rolled_by_the_server_for_players() {
             as_gm: false,
             submitted_d20: Some(20),
             kept_d20: None,
+            exhaustion: 0,
+            suspend_exhaustion: false,
+            expected_expr: "1d20",
         },
         Case {
             id: "player_without_value_gets_a_roll",
             as_gm: false,
             submitted_d20: None,
             kept_d20: None,
+            exhaustion: 0,
+            suspend_exhaustion: false,
+            expected_expr: "1d20",
         },
         Case {
             id: "gm_without_value_gets_a_roll",
             as_gm: true,
             submitted_d20: None,
             kept_d20: None,
+            exhaustion: 0,
+            suspend_exhaustion: false,
+            expected_expr: "1d20",
         },
         Case {
             id: "gm_physical_die_is_kept",
             as_gm: true,
             submitted_d20: Some(7),
             kept_d20: Some(7),
+            exhaustion: 0,
+            suspend_exhaustion: false,
+            expected_expr: "1d20",
+        },
+        Case {
+            id: "exhaustion_2_rolls_1d20_minus_4_and_records_raw_face",
+            as_gm: false,
+            submitted_d20: None,
+            kept_d20: None,
+            exhaustion: 2,
+            suspend_exhaustion: false,
+            expected_expr: "1d20-4",
+        },
+        Case {
+            id: "exhaustion_5_rolls_1d20_minus_10_even_when_total_goes_negative",
+            as_gm: false,
+            submitted_d20: None,
+            kept_d20: None,
+            exhaustion: 5,
+            suspend_exhaustion: false,
+            expected_expr: "1d20-10",
+        },
+        Case {
+            id: "suspended_exhaustion_ruling_rolls_plain_1d20",
+            as_gm: false,
+            submitted_d20: None,
+            kept_d20: None,
+            exhaustion: 3,
+            suspend_exhaustion: true,
+            expected_expr: "1d20",
+        },
+        Case {
+            id: "gm_physical_10_with_exhaustion_1_fails_against_dc_10",
+            as_gm: true,
+            submitted_d20: Some(10),
+            kept_d20: Some(10),
+            exhaustion: 1,
+            suspend_exhaustion: false,
+            expected_expr: "1d20-2",
         },
     ];
     for c in cases {
@@ -2051,6 +2228,15 @@ async fn ua8_death_save_d20_is_rolled_by_the_server_for_players() {
         let hero = Uuid::new_v4();
         let mut t = token(hero, "Hero", Some(player_user));
         t.hp = 0;
+        t.exhaustion = c.exhaustion;
+        if c.suspend_exhaustion {
+            t.condition_overrides = vec![trame_engine::ConditionOverrideEntry {
+                subject: trame_engine::OverrideSubject::Condition,
+                id: "exhaustion".to_string(),
+                mode: trame_engine::OverrideMode::Remove,
+            }];
+        }
+        let effective_exhaustion = t.effective_exhaustion();
         let mut state = TableState::new(100.0, 5.0, Vec::new());
         state.data.tokens.insert(hero, t);
         let mut table = Table::open(state, player_user).await;
@@ -2093,12 +2279,17 @@ async fn ua8_death_save_d20_is_rolled_by_the_server_for_players() {
                 assert_eq!(server_rolls.len(), 1, "case {}: {server_rolls:?}", c.id);
                 let (reason, expression, total) = &server_rolls[0];
                 assert_eq!(reason, "Death Saving Throw: Hero", "case {}", c.id);
-                assert_eq!(expression, "1d20", "case {}", c.id);
-                assert_eq!(*total, Some(i32::from(recorded.0)), "case {}", c.id);
+                assert_eq!(expression, c.expected_expr, "case {}", c.id);
+                assert_eq!(
+                    *total,
+                    Some(i32::from(recorded.0) - 2 * i32::from(effective_exhaustion)),
+                    "case {}",
+                    c.id
+                );
             }
         }
         let projected = &accepted_state(&frames).tokens[&hero];
-        let expected = trame_engine::resolve_death_save(0, 0, recorded.0);
+        let expected = trame_engine::resolve_death_save(0, 0, recorded.0, effective_exhaustion);
         assert_eq!(
             (
                 projected.death_save_successes,

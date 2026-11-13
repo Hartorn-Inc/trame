@@ -45,8 +45,8 @@
  *      heartbeat. Across a reconnect the stale `table` stays visible under
  *      the connection banner; the first `StateSnapshot` on the new socket
  *      replaces it and resets every derived signal (initiative totals,
- *      events, prompt closures, pings), so nothing from before the drop is
- *      merged into the fresh state.
+ *      events, prompt closures, last undoable action, pings), so nothing from
+ *      before the drop is merged into the fresh state.
  * 8. `Every Failed Action Is Reported (RT10 / UA16)`:
  *    - Each `SubmitCommand` / `RollDice` carries a fresh `correlation_id`;
  *      `CommandRejected` is matched back to the action (`PendingCommands`)
@@ -109,7 +109,8 @@ export const ROLL_DICE_ACTION = "ROLL_DICE";
 /** Network seam: REST `fetch` and the WebSocket factory. */
 export interface Transport {
   fetch(url: string, init: RequestInit): Promise<Response>;
-  openSocket(url: string): SocketLike;
+  /** Opens a WebSocket offering the subprotocols `protocols` (`trame.v1+deflate`, D24). */
+  openSocket(url: string, protocols: string[]): SocketLike;
 }
 
 /** Construction options for `ApiClient`. */
@@ -286,6 +287,29 @@ export interface OwnerBootstrapInput {
   password: string;
   /** 2-100 characters; ignored when the email already has an account. */
   displayName: string;
+}
+
+/** Result of `POST /api/v1/auth/password-reset/status`; `invalid` covers unknown, used, and replaced links. */
+export interface PasswordResetCheck {
+  status: SetupTokenStatus;
+  /** Email of the account the link resets; only present while `valid`. */
+  email: string | null;
+}
+
+/** One-time password reset link minted by the `Owner` (`POST /api/v1/instance/users/{id}/password-reset`). */
+export interface PasswordResetLink {
+  /** `{TRAME_PUBLIC_ORIGIN}/reset-password?token={token}`; shown once, never stored in clear. */
+  resetUrl: string;
+  /** UNIX epoch seconds (24 h after minting). */
+  expiresAt: number;
+}
+
+/** Body of `POST /api/v1/auth/password` (signed-in password change). */
+export interface ChangePasswordInput {
+  currentPassword: string;
+  newPassword: string;
+  /** 6-digit code; required when the account has TOTP enabled. */
+  totpCode?: string;
 }
 
 /** One account in the Owner-only list (`GET /api/v1/instance/users`). */
@@ -482,7 +506,7 @@ function campaignPath(campaignId: Uuid, suffix = ""): string {
 function browserTransport(): Transport {
   return {
     fetch: (url, init) => fetch(url, init),
-    openSocket: (url) => new WebSocket(url) as unknown as SocketLike,
+    openSocket: (url, protocols) => new WebSocket(url, protocols) as unknown as SocketLike,
   };
 }
 
@@ -523,7 +547,7 @@ export class ApiClient {
     this.wsOrigin = options.wsOrigin ?? defaultWsOrigin();
     this.room = new ConnectionManager({
       state: this.state,
-      openSocket: (url) => this.transport.openSocket(url),
+      openSocket: (url, protocols) => this.transport.openSocket(url, protocols),
       onFrame: (data) => {
         const bytes = frameBytes(data);
         const envelope = bytes ? decodeServerEnvelope(bytes) : null;
@@ -721,6 +745,46 @@ export class ApiClient {
       instance_role: role,
     });
     return toInstanceUser(res.user as Json);
+  }
+
+  /**
+   * Mints a one-time password reset link for an account
+   * (`POST /api/v1/instance/users/{id}/password-reset`, Owner only; `409 GUEST_ACCOUNT` for guests).
+   * Minting again replaces the previous link.
+   */
+  async mintPasswordReset(userId: Uuid): Promise<PasswordResetLink> {
+    const res = await this.request("POST", `/api/v1/instance/users/${encodeURIComponent(userId)}/password-reset`);
+    return { resetUrl: String(res.reset_url ?? ""), expiresAt: Number(res.expires_at ?? 0) };
+  }
+
+  /** Checks a reset token before showing the new-password form (`POST /api/v1/auth/password-reset/status`). */
+  async getPasswordResetStatus(token: string): Promise<PasswordResetCheck> {
+    const res = await this.request("POST", "/api/v1/auth/password-reset/status", { token });
+    const status = String(res.status);
+    return {
+      status: status === "valid" || status === "expired" ? status : "invalid",
+      email: typeof res.email === "string" ? res.email : null,
+    };
+  }
+
+  /**
+   * Sets a new password from a reset link (`POST /api/v1/auth/password-reset`). Every session of the
+   * account is revoked and none is issued: the caller signs in with the new password.
+   */
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    await this.request("POST", "/api/v1/auth/password-reset", { token, new_password: newPassword });
+  }
+
+  /**
+   * Changes the signed-in user's password (`POST /api/v1/auth/password`). Other sessions are
+   * revoked; this one stays signed in.
+   */
+  async changePassword(input: ChangePasswordInput): Promise<void> {
+    await this.request("POST", "/api/v1/auth/password", {
+      current_password: input.currentPassword,
+      new_password: input.newPassword,
+      ...(input.totpCode ? { totp_code: input.totpCode } : {}),
+    });
   }
 
   /** Shows where an invite leads before any credential is asked (`POST /api/v1/invites/preview`). */
@@ -944,6 +1008,17 @@ export class ApiClient {
     return Number(res.version);
   }
 
+  /**
+   * Copies the live table's difficult terrain and fog rulings into the stored scene
+   * `sceneId` (`POST .../maps/{sceneId}/table-rulings`, GM only), so the next activation
+   * loads them, and returns the new scene-list version. Rejects with `ApiError` code
+   * `SCENE_NOT_ACTIVE` when `sceneId` is no longer the table's active scene.
+   */
+  async saveTableRulings(campaignId: Uuid, sceneId: Uuid): Promise<number> {
+    const res = await this.request("POST", campaignPath(campaignId, `/maps/${encodeURIComponent(sceneId)}/table-rulings`));
+    return Number(res.version);
+  }
+
   /** Lists the notes the caller may read, content already role-filtered (`GET .../notes`). */
   async listNotes(campaignId: Uuid): Promise<CampaignNote[]> {
     const res = await this.request("GET", campaignPath(campaignId, "/notes"));
@@ -1007,6 +1082,7 @@ export class ApiClient {
     s.mcpProposals.value = {};
     s.initiativeTotals.value = {};
     s.lastClosedPrompt.value = null;
+    s.lastUndoableAction.value = null;
     s.commandFeedback.value = [];
     s.walQuarantine.value = [];
     this.roomCampaignId = campaignId;
@@ -1128,6 +1204,7 @@ export class ApiClient {
           s.initiativeTotals.value = {};
           s.lastEvents.value = [];
           s.lastClosedPrompt.value = null;
+          s.lastUndoableAction.value = null;
           s.pointerPings.value = [];
           s.lastRejection.value = null;
           this.room.markHealthy();
@@ -1153,6 +1230,7 @@ export class ApiClient {
           kind: "rejected",
           action: this.pending.take(envelope.correlationId, nowMs),
           reason: envelope.reason,
+          detail: envelope.detail,
         });
         return;
       case "WalEntriesQuarantined":
@@ -1223,9 +1301,12 @@ export class ApiClient {
       state.mode === "TURN_BY_TURN" ? { ...s.initiativeTotals.value, ...(state.initiative_totals ?? {}) } : {};
   }
 
-  /** Folds the event-only facts (initiative totals, prompt closures) into session signals. */
+  /** Folds the event-only facts (initiative totals, prompt closures, last undoable action) into session signals. */
   private applyEvents(events: WireTrameEvent[]): void {
     const s = this.state;
+    const undoAction = undoableActionFromEvents(events);
+    if (undoAction === "CLEAR") s.lastUndoableAction.value = null;
+    else if (undoAction !== null) s.lastUndoableAction.value = undoAction;
     for (const ev of events) {
       if (ev.event === "INITIATIVE_UPDATED") {
         s.initiativeTotals.value = { ...((ev.initiative_totals as Record<Uuid, number>) ?? {}) };
@@ -1237,6 +1318,62 @@ export class ApiClient {
       }
     }
   }
+}
+
+const SINGLE_EVENT_COMMAND_TAGS: Readonly<Record<string, string>> = {
+  TOKEN_MOVED: "MOVE_TOKEN",
+  TOKEN_DISENGAGED: "SET_DISENGAGED",
+  CONCENTRATION_CHANGED: "SET_CONCENTRATION",
+  DEATH_SAVE_RECORDED: "RECORD_DEATH_SAVE",
+  TOKEN_CONDITIONS_CHANGED: "SET_TOKEN_CONDITIONS",
+  CONDITION_OVERRIDE_CHANGED: "CONDITION_OVERRIDE",
+  TOKEN_SQUEEZE_TOGGLED: "TOGGLE_SQUEEZE",
+  DOOR_TOGGLED: "TOGGLE_DOOR",
+  INITIATIVE_UPDATED: "SET_INITIATIVE_TOTAL",
+  TURN_ADVANCED: "ADVANCE_TURN",
+  AOE_CLEARED: "CLEAR_AOE",
+  ACTION_REFUNDED: "REFUND_ACTION",
+  CONCENTRATION_BROKEN: "BREAK_CONCENTRATION",
+  AMBIENT_LIGHTING_CHANGED: "SET_AMBIENT_LIGHTING",
+  SCENE_LOADED: "LOAD_SCENE",
+  TOKEN_SPAWNED: "SPAWN_TOKEN",
+  TOKEN_REMOVED: "REMOVE_TOKEN",
+  WALL_ADDED: "ADD_WALL",
+  LIGHT_ADDED: "ADD_LIGHT",
+  DIFFICULT_TERRAIN_CHANGED: "SET_DIFFICULT_TERRAIN",
+  MAP_CONFIG_CHANGED: "SET_MAP_CONFIG",
+  TOKEN_VISIBILITY_CHANGED: "SET_TOKEN_VISIBILITY",
+  TOKEN_OWNER_ASSIGNED: "ASSIGN_TOKEN_OWNER",
+  DOOR_CONFIGURED: "CONFIGURE_DOOR",
+  REACTION_DECIDED: "DECIDE_REACTION",
+  MCP_STAGING_REJECTED: "REJECT_MCP_STAGING",
+  ACTION_RESOLVED: "RESOLVE_ACTION",
+  RESOLUTION_DISMISSED: "DISMISS_RESOLUTION",
+};
+
+/**
+ * Derives the `command.action.<TAG>` identifier of an accepted command from its
+ * `TrameEvent` batch. Returns `"CLEAR"` for `UNDO_LAST_ACTION` and
+ * `ACTIVATE_SCENE`, and `null` for non-undoable commands (`REVEAL_HANDOUT`).
+ */
+export function undoableActionFromEvents(events: readonly WireTrameEvent[]): string | "CLEAR" | null {
+  if (events.length === 0) return null;
+  if (events.some((e) => e.event === "ACTION_UNDONE" || e.event === "SCENE_ACTIVATED")) return "CLEAR";
+  if (events.some((e) => e.event === "MCP_STAGING_COMMITTED")) return "COMMIT_MCP_STAGING";
+  if (events.some((e) => e.event === "RESOLUTION_APPLIED")) return "APPLY_RESOLUTION";
+  if (events.some((e) => e.event === "AOE_PROJECTED")) return "PROJECT_AOE";
+  if (events.some((e) => e.event === "CONCENTRATION_CHECK_ROLLED")) return "ROLL_CONCENTRATION_CHECK";
+  const first = events[0];
+  if (first.event === "REACTION_PROMPT_CLOSED" && first.reason === "RESOLVED") return "RESOLVE_REACTION";
+  if (first.event === "DAMAGE_APPLIED") return "APPLY_DAMAGE";
+  if (first.event === "TOKEN_HEALED") return "HEAL_ACTOR";
+  if (first.event === "TOKEN_RESOURCES_OVERRIDDEN") return "GM_OVERRIDE_TOKEN_RESOURCES";
+  if (first.event === "FOG_OVERRIDE_CHANGED") return events.length > 1 ? "SET_FOG_OVERRIDES" : "SET_FOG_OVERRIDE";
+  if (first.event === "TABLE_MODE_CHANGED") {
+    if (first.mode === "TURN_BY_TURN") return "START_TURN_BY_TURN";
+    return first.exploration_paused === true ? "SET_TABLE_MODE" : "END_TURN_BY_TURN";
+  }
+  return typeof first.event === "string" ? (SINGLE_EVENT_COMMAND_TAGS[first.event] ?? null) : null;
 }
 
 /** Application-wide client bound to the browser transport and `session`. */
