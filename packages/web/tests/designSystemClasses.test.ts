@@ -76,6 +76,7 @@ describe("ds-* modal and hit-target primitives are wired to ATLAS tokens", () =>
     { id: "modal panel uses the raised surface and overlay elevation", selector: ".ds-modal", expects: ["var(--atlas-surface", "var(--atlas-elevation-overlay)"] },
     { id: "button reset strips native button chrome", selector: ".ds-btn-reset", expects: ["appearance: none", "border: 0", "font: inherit"] },
     { id: "choice rows keep the desktop hit target", selector: ".ds-choice", expects: ["min-height: var(--atlas-hit-desktop)"] },
+    { id: "tablist lays out tabs on a structural bottom border", selector: ".ds-tablist", expects: ["display: flex", "border-bottom: 1px solid var(--atlas-border)"] },
     { id: "tabs keep the desktop hit target", selector: ".ds-tab", expects: ["min-height: var(--atlas-hit-desktop)"] },
     { id: "button reset draws a visible focus ring", selector: ".ds-btn-reset:focus-visible", expects: ["var(--atlas-focus)"] },
     { id: "icon button keeps the desktop hit target both ways", selector: ".ds-icon-btn", expects: ["min-width: var(--atlas-hit-desktop)", "min-height: var(--atlas-hit-desktop)"] },

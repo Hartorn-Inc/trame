@@ -19,7 +19,10 @@
  *      "no sheet" state instead of leaking data.
  * 2. `REST Persistence Only`:
  *    - Header saves and widget edits go through `sheetPersistence.ts`
- *      (versioned PUT); rolls use REST `POST .../dice/roll`.
+ *      (versioned PUT); rolls use REST `POST .../dice/roll`. Version conflicts
+ *      (`409 VERSION_CONFLICT`) re-sync the stored actor sheet from the server
+ *      and surface an accessible `role="alert"` banner alongside save/roll
+ *      errors.
  * 3. `Escape Closes`:
  *    - Escape inside the sheet drawer closes it without bubbling to the
  *      canvas shortcuts.
@@ -30,7 +33,8 @@ import { signal } from '@preact/signals';
 import { apiClient, type ApiClient } from '../api/client.ts';
 import { selectedActorIdSignal } from '../api/session.ts';
 import { ActorSheetPanel } from '../sheet/ActorSheetPanel.tsx';
-import { createSheetCommandDispatcher } from '../sheet/sheetPersistence.ts';
+import { useSafeState } from '../sheet/safeHooks.ts';
+import { createSheetCommandDispatcher, syncConflictedActorSheet } from '../sheet/sheetPersistence.ts';
 import { CompendiumDrawer, type CompendiumEntry } from '../compendium/CompendiumDrawer.tsx';
 import { t } from '../i18n/index.ts';
 
@@ -60,6 +64,8 @@ export interface HudDrawersProps {
 export function HudDrawers(props: HudDrawersProps): VNode<any> {
   const client = props.client ?? apiClient;
   const actorId = props.actorId === undefined ? selectedActorIdSignal.value : props.actorId;
+  const [alertState, setAlertState] = useSafeState<{ actorId: string; message: string } | null>(null);
+  const activeAlert = actorId && alertState?.actorId === actorId ? alertState.message : null;
 
   const closeSheet = () => {
     isSheetDrawerOpenSignal.value = false;
@@ -73,12 +79,49 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
   };
 
   const dispatchCommand = actorId
-    ? createSheetCommandDispatcher({ client, campaignId: props.campaignId, actorId })
+    ? createSheetCommandDispatcher({
+        client,
+        campaignId: props.campaignId,
+        actorId,
+        onConflict: (currentVersion) => {
+          setAlertState({
+            actorId,
+            message: syncConflictedActorSheet(client, props.campaignId, actorId, currentVersion),
+          });
+        },
+        onError: (message) => {
+          setAlertState({
+            actorId,
+            message: message || t('sheet.persistence.saveFailed'),
+          });
+        },
+        onSaved: () => {
+          setAlertState(null);
+        },
+      })
     : undefined;
 
   return h(
     'div',
     { class: 'ds-hud-drawers-container', 'data-testid': 'hud-drawers-container' },
+    activeAlert
+      ? h(
+          'div',
+          { class: 'ds-panel ds-cluster', role: 'alert', 'data-testid': 'hud-persistence-alert' },
+          h('span', null, activeAlert),
+          h(
+            'button',
+            {
+              type: 'button',
+              class: 'ds-btn ds-btn-sm ds-btn-secondary',
+              'data-testid': 'btn-dismiss-hud-alert',
+              'aria-label': t('sheet.persistence.dismissAlert'),
+              onClick: () => setAlertState(null),
+            },
+            t('action.close'),
+          ),
+        )
+      : null,
     isSheetDrawerOpenSignal.value
       ? h(
           'aside',

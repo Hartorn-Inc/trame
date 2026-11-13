@@ -64,6 +64,7 @@ import { ApiError, VERSION_CONFLICT, type ApiClient, type CampaignActor } from "
 import { describeActionError } from "../api/errorMessages.ts";
 import type { Uuid, WireRollVisibility } from "../api/wire.ts";
 import type { DiceRollResult, DiceRollService } from "../components/modals/LevelUpModal.tsx";
+import { t } from "../i18n/index.ts";
 import { casterTokenId, startAction, type PendingAction } from "../table/actionResolution.ts";
 import { setConcentration } from "../table/commands.ts";
 import type { SpentSlot } from "./types.ts";
@@ -153,6 +154,27 @@ export interface SheetDispatcherOptions {
   onConflict?: (currentVersion: number | null) => void;
   /** Called when a roll or save fails for another reason. */
   onError?: (message: string) => void;
+  /** Called after a widget sheet save succeeds, e.g. to clear a prior error or conflict alert. */
+  onSaved?: (actor: CampaignActor) => void;
+}
+
+/**
+ * Re-reads the stored actor sheet from the server after a `409 VERSION_CONFLICT`
+ * so `client.state.actors[actorId]` reflects the authoritative version and data,
+ * and returns the localized conflict alert text.
+ */
+export function syncConflictedActorSheet(
+  client: ApiClient,
+  campaignId: Uuid,
+  actorId: Uuid,
+  currentVersion: number | null,
+): string {
+  void client.getActor(campaignId, actorId).catch(() => {
+    // Preserve the conflict alert even if the background re-sync fails.
+  });
+  return currentVersion === null
+    ? t('sheet.persistence.conflictSynced')
+    : t('sheet.persistence.conflictSyncedVersion', { version: currentVersion });
 }
 
 /** `data` with the class feature toggles that end at 0 Hit Points switched off (invariant 4). */
@@ -187,6 +209,7 @@ export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (
     return saveActorSheet(client, campaignId, actorId, withZeroHpTogglesEnded(next))
       .then((outcome) => {
         if (outcome.status === 'conflict') options.onConflict?.(outcome.currentVersion);
+        else options.onSaved?.(outcome.actor);
         return outcome;
       })
       .catch((err) => {

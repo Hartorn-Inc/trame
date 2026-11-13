@@ -1,3 +1,31 @@
+/**
+ * ============================================================================
+ * DECLARATIVE CHARACTER SHEET VIEW (sheet/DeclarativeSheetView.tsx)
+ * ============================================================================
+ *
+ * PURPOSE:
+ * -----
+ * Renders a declarative `SheetLayoutTree` (defaulting to the 12-widget D&D 5e
+ * layout) by resolving `sheet.*` and `derived.*` bindings against `actorState`,
+ * enforcing node-level `VisibilityTier` authorization, and managing the
+ * play/edit padlock and accessible section tabs.
+ *
+ * INVARIANTS & SAFETY BOUNDARIES:
+ * -----
+ * 1. `GM Lock Precedence`:
+ *    - When `gm_core_locked` is `true`, `effectiveLocked` is forced to `true`
+ *      and the padlock toggle is disabled regardless of local edit state.
+ * 2. `Complete Feature Toggle State`:
+ *    - `FeatureTraitList` binds both `derived.features` and
+ *      `sheet.activeFeatureIds` so activating a second toggle preserves all
+ *      currently active class features (such as `Rage`).
+ * 3. `WAI-ARIA Roving Tablist`:
+ *    - Section tabs expose `role="tablist"` / `role="tab"` / `role="tabpanel"`
+ *      with ATLAS `.ds-tablist` / `.ds-tab` primitives, single-stop roving
+ *      `tabIndex` (`0` active, `-1` inactive), and wrapping `ArrowLeft`,
+ *      `ArrowRight`, `Home`, and `End` keyboard navigation.
+ * ============================================================================
+ */
 import { h, type VNode } from 'preact';
 import { t, translateLayoutText } from '../i18n/index.ts';
 import { PadlockLockedIcon, PadlockUnlockedIcon } from './PadlockIcons.tsx';
@@ -189,7 +217,10 @@ const DEFAULT_DND5E_SHEET_LAYOUT: SheetLayoutTree = {
                         kind: 'widget',
                         widgetType: 'FeatureTraitList',
                         visibilityTier: 'PUBLIC',
-                        bindings: { features: 'derived.features' },
+                        bindings: {
+                          features: 'derived.features',
+                          activeFeatureIds: 'sheet.activeFeatureIds',
+                        },
                       },
                     ],
                   },
@@ -257,6 +288,27 @@ export interface DeclarativeSheetViewProps {
   onToggleCoreStatsLocked?: () => void;
 }
 
+/**
+ * Computes the next tab index for WAI-ARIA horizontal `tablist` keyboard
+ * navigation (`ArrowRight`, `ArrowLeft`, `Home`, `End`) with wraparound, or
+ * returns `null` for unrelated keys or empty tab lists.
+ */
+export function nextSheetTabIndex(index: number, key: string, count: number): number | null {
+  if (count <= 0) return null;
+  switch (key) {
+    case 'ArrowRight':
+      return (index + 1) % count;
+    case 'ArrowLeft':
+      return (index - 1 + count) % count;
+    case 'Home':
+      return 0;
+    case 'End':
+      return count - 1;
+    default:
+      return null;
+  }
+}
+
 export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<any> {
   const layout: SheetLayoutTree = props.sheetLayout ?? DEFAULT_DND5E_SHEET_LAYOUT;
   const [localLocked, setLocalLocked] = useSafeState<boolean>(props.coreStatsLocked ?? true);
@@ -299,30 +351,57 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
 
     if (node.kind === 'tabs') {
       const tabs = (node.tabs || []).filter((tab) => isNodeAuthorized(tab.visibilityTier, props.viewer));
-      const currentTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
+      const currentTab =
+        tabs.find((tab) => tab.id === activeTabId) ??
+        (node.defaultTabId ? tabs.find((tab) => tab.id === node.defaultTabId) : undefined) ??
+        tabs[0];
+      const currentIndex = currentTab ? tabs.indexOf(currentTab) : 0;
+      const onTabKeyDown = (e: KeyboardEvent) => {
+        const next = nextSheetTabIndex(currentIndex, e.key, tabs.length);
+        if (next === null) return;
+        e.preventDefault?.();
+        e.stopPropagation?.();
+        const nextTab = tabs[next];
+        if (!nextTab) return;
+        setActiveTabId(nextTab.id);
+        const tabEl =
+          (e.currentTarget as HTMLElement | null | undefined)?.querySelector?.(`#tab-btn-${nextTab.id}`) ??
+          (typeof document !== 'undefined' && typeof document.getElementById === 'function'
+            ? document.getElementById(`tab-btn-${nextTab.id}`)
+            : null);
+        (tabEl as HTMLElement | null | undefined)?.focus?.();
+      };
       return h(
         'div',
         { key: node.id, id: node.id, class: 'ds-layout-tabs' },
         h(
           'div',
-          { class: 'ds-tabs-header', role: 'tablist', 'aria-label': t('sheet.tabsAria') },
-          tabs.map((tab) =>
-            h(
+          {
+            class: 'ds-tablist',
+            role: 'tablist',
+            'aria-label': t('sheet.tabsAria'),
+            'data-testid': 'sheet-tablist',
+            onKeyDown: onTabKeyDown,
+          },
+          tabs.map((tab) => {
+            const isActive = tab.id === currentTab?.id;
+            return h(
               'button',
               {
                 key: tab.id,
                 id: `tab-btn-${tab.id}`,
                 type: 'button',
                 role: 'tab',
-                class: `ds-tab-button ${tab.id === currentTab?.id ? 'is-active' : ''}`,
+                class: `ds-btn-reset ds-tab${isActive ? ' is-active' : ''}`,
                 'data-testid': `tab-btn-${tab.id}`,
-                'aria-selected': tab.id === currentTab?.id ? 'true' : 'false',
+                'aria-selected': isActive ? 'true' : 'false',
                 'aria-controls': `tab-body-${tab.id}`,
+                tabIndex: isActive ? 0 : -1,
                 onClick: () => setActiveTabId(tab.id),
               },
               translateLayoutText(tab.label),
-            ),
-          ),
+            );
+          }),
         ),
         h(
           'div',
