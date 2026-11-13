@@ -733,8 +733,75 @@ describe("PendingResolutionsPanel: the GM's list", () => {
   it("is absent when nothing is pending", () => {
     const { ui } = table("GM");
     assertAbsent(ui.byTestId("pending-resolutions"), "pending-resolutions");
+    const countLive = ui.byTestId("pending-resolutions-count");
+    assertPresent(countLive, "pending-resolutions-count stays mounted");
+    assert.equal(countLive.getAttribute("aria-live"), "polite");
+    assert.equal(countLive.textContent, "");
     ui.unmount();
   });
+
+  const attributionCases = [
+    { id: "en-known-attacker", locale: "en" as const, attackerId: HERO, expected: "Mira: Fire Bolt" },
+    { id: "fr-known-attacker", locale: "fr" as const, attackerId: HERO, expected: "Mira : Fire Bolt" },
+    { id: "en-missing-attacker-falls-back-to-action", locale: "en" as const, attackerId: null, expected: "Fire Bolt" },
+    { id: "fr-unknown-attacker-falls-back-to-action", locale: "fr" as const, attackerId: "ffffffff-0000-4000-8000-000000000099", expected: "Fire Bolt" },
+  ];
+  for (const tc of attributionCases) {
+    it(`[${tc.id}] displays attacker attribution with graceful fallback`, () => {
+      localeSignal.value = tc.locale;
+      const state = gmView({
+        pending_resolutions: { [ID]: pendingResolution(ID, [resolvedTarget()], { attacker_token_id: tc.attackerId }) },
+      });
+      const { ui } = table("GM", state);
+      const entry = ui.byTestId(`pending-${ID}`);
+      assertPresent(entry, "pending entry");
+      assert.equal(entry.getAttribute("aria-label"), tc.expected);
+      assert.equal(ui.byTestId(`pending-${ID}-heading`).textContent, tc.expected);
+      ui.unmount();
+      localeSignal.value = "en";
+    });
+  }
+
+  for (const tc of [
+    { id: "en-count-live-transitions", locale: "en" as const, one: "Pending resolutions: 1", zero: "Pending resolutions: 0" },
+    { id: "fr-count-live-transitions", locale: "fr" as const, one: "Résolutions en attente : 1", zero: "Résolutions en attente : 0" },
+  ]) {
+    it(`[${tc.id}] keeps polite count announcer mounted across 0 -> 1 -> 0 transitions`, () => {
+      localeSignal.value = tc.locale;
+      const { live, ui } = table("GM");
+      const before = ui.byTestId("pending-resolutions-count");
+      assertPresent(before, "mounted when empty");
+      assertAbsent(ui.byTestId("pending-resolutions"), "panel hidden when empty");
+      assert.equal(before.textContent, "");
+
+      live.client.applyServerEnvelope({
+        type: "CommandAccepted",
+        seqId: seq++,
+        state: withPending([resolvedTarget()]),
+        events: [],
+      } as any);
+      const during = ui.byTestId("pending-resolutions-count");
+      assertPresent(during, "mounted with 1 entry");
+      assertSameNode(during, before, "same live region node on 0 -> 1");
+      assert.equal(during.textContent, tc.one);
+      assertPresent(ui.byTestId("pending-resolutions"), "panel visible with 1 entry");
+
+      live.client.applyServerEnvelope({
+        type: "CommandAccepted",
+        seqId: seq++,
+        state: gmView(),
+        events: [],
+      } as any);
+      const after = ui.byTestId("pending-resolutions-count");
+      assertPresent(after, "mounted after clearing");
+      assertSameNode(after, before, "same live region node on 1 -> 0");
+      assert.equal(after.textContent, tc.zero);
+      assertAbsent(ui.byTestId("pending-resolutions"), "panel hidden again when empty");
+
+      ui.unmount();
+      localeSignal.value = "en";
+    });
+  }
 });
 
 describe("MonsterTurnPanel: the GM runs a monster's attack", () => {
@@ -913,6 +980,64 @@ describe("ConcentrationCheckPrompt", () => {
   it("stays hidden without a check", () => {
     const { ui } = table("player");
     assertAbsent(ui.byTestId("concentration-prompt"), "concentration-prompt");
+    const liveRegion = ui.byTestId("concentration-check-live");
+    assertPresent(liveRegion, "concentration-check-live stays mounted");
+    assert.equal(liveRegion.getAttribute("aria-live"), "polite");
+    assert.equal(liveRegion.textContent, "");
     ui.unmount();
   });
+
+  const announceCases = [
+    {
+      id: "en-pending-check-appears-for-controlled-token",
+      locale: "en" as const,
+      initialChecks: {} as Record<string, number[]>,
+      nextChecks: { [HERO]: [14] } as Record<string, number[]>,
+      expected: "Concentration check DC 14 for Mira",
+    },
+    {
+      id: "fr-pending-check-appears-for-controlled-token",
+      locale: "fr" as const,
+      initialChecks: {} as Record<string, number[]>,
+      nextChecks: { [HERO]: [12] } as Record<string, number[]>,
+      expected: "Jet de concentration DD 12 pour Mira",
+    },
+    {
+      id: "en-additional-queued-check-announces-new-dc",
+      locale: "en" as const,
+      initialChecks: { [HERO]: [10] } as Record<string, number[]>,
+      nextChecks: { [HERO]: [10, 16] } as Record<string, number[]>,
+      expected: "Concentration check DC 16 for Mira",
+    },
+    {
+      id: "en-uncontrolled-token-check-stays-silent",
+      locale: "en" as const,
+      initialChecks: {} as Record<string, number[]>,
+      nextChecks: { [GOBLIN]: [13] } as Record<string, number[]>,
+      expected: "",
+    },
+  ];
+  for (const tc of announceCases) {
+    it(`[${tc.id}] polite concentration check announcement fires only on transition`, () => {
+      localeSignal.value = tc.locale;
+      const { live, ui } = table("player", playerView({ pending_concentration_checks: tc.initialChecks }));
+      const before = ui.byTestId("concentration-check-live");
+      assertPresent(before, "mounted initially");
+      assert.equal(before.textContent, "", "silent on initial mount");
+
+      live.client.applyServerEnvelope({
+        type: "CommandAccepted",
+        seqId: seq++,
+        state: playerView({ pending_concentration_checks: tc.nextChecks }),
+        events: [],
+      } as any);
+      const after = ui.byTestId("concentration-check-live");
+      assertPresent(after, "mounted after transition");
+      assertSameNode(after, before, "same live region DOM node");
+      assert.equal(after.textContent, tc.expected);
+
+      ui.unmount();
+      localeSignal.value = "en";
+    });
+  }
 });

@@ -5,11 +5,13 @@ import { selectedActorIdSignal, selectedCellSignal, selectedTokenIdSignal } from
 import type { WireWallSegment } from "../../src/api/wire.ts";
 import { CommandFeedbackToasts, rejectionReason } from "../../src/components/RoomConnectionFeedback.tsx";
 import { localeSignal } from "../../src/i18n/index.ts";
+import { CombatTrackerBar } from "../../src/table/CombatTrackerBar.tsx";
 import { CoverSuggestionPanel } from "../../src/table/CoverSuggestionPanel.tsx";
 import { acceptedCoverSignal, targetTokenIdSignal } from "../../src/table/coverState.ts";
 import { DeathSaveAnnouncement } from "../../src/table/DeathSaveAnnouncement.tsx";
 import { ReactionBanner } from "../../src/table/ReactionBanner.tsx";
 import { TableCanvas } from "../../src/table/TableCanvas.tsx";
+import { TableTab } from "../../src/table/TableTab.tsx";
 import { MAX_STROKE_CELLS } from "../../src/table/tableTools.ts";
 import { deathSavePhase, doorDistanceFt, doorHandles, listTableTokens } from "../../src/table/tableView.ts";
 import { TokenConditionsPanel } from "../../src/table/TokenConditionsPanel.tsx";
@@ -1486,4 +1488,153 @@ describe("Rejections and redacted wire fields", () => {
     assert.match(ui.byTestId(`reaction-${PROMPT}`).textContent, /Brakka can make an opportunity attack against Goblin/);
     ui.unmount();
   });
+});
+
+describe("CombatTrackerBar: action-required polite announcements & direct death-save reachability (UA #10)", () => {
+  const turnCases = [
+    {
+      id: "en-combat-starts-on-controlled-token",
+      locale: "en" as const,
+      role: "player" as const,
+      initial: () => playerView(),
+      next: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [HERO, GOBLIN], active_turn_index: 0 }),
+      expectedTurn: "Your turn: Brakka",
+      expectedDying: "",
+    },
+    {
+      id: "fr-turn-advances-to-controlled-token",
+      locale: "fr" as const,
+      role: "player" as const,
+      initial: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [GOBLIN, HERO], active_turn_index: 0 }),
+      next: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [GOBLIN, HERO], active_turn_index: 1 }),
+      expectedTurn: "Votre tour : Brakka",
+      expectedDying: "",
+    },
+    {
+      id: "en-turn-advances-to-uncontrolled-token-clears-notice",
+      locale: "en" as const,
+      role: "player" as const,
+      initial: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [HERO, GOBLIN], active_turn_index: 0 }),
+      next: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [HERO, GOBLIN], active_turn_index: 1 }),
+      expectedTurn: "",
+      expectedDying: "",
+    },
+    {
+      id: "en-gm-hears-monster-turn-not-player-turn",
+      locale: "en" as const,
+      role: "GM" as const,
+      initial: () => gmView({ mode: "TURN_BY_TURN", initiative_order: [HERO, GOBLIN], active_turn_index: 0 }),
+      next: () => gmView({ mode: "TURN_BY_TURN", initiative_order: [HERO, GOBLIN], active_turn_index: 1 }),
+      expectedTurn: "Your turn: Goblin",
+      expectedDying: "",
+    },
+    {
+      id: "en-gm-silent-when-advancing-to-player-owned-hero",
+      locale: "en" as const,
+      role: "GM" as const,
+      initial: () => gmView({ mode: "TURN_BY_TURN", initiative_order: [GOBLIN, HERO], active_turn_index: 0 }),
+      next: () => gmView({ mode: "TURN_BY_TURN", initiative_order: [GOBLIN, HERO], active_turn_index: 1 }),
+      expectedTurn: "",
+      expectedDying: "",
+    },
+    {
+      id: "en-dying-controlled-token-on-turn-advance",
+      locale: "en" as const,
+      role: "player" as const,
+      initial: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [GOBLIN, HERO], active_turn_index: 0 }, { hp: 0 }),
+      next: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [GOBLIN, HERO], active_turn_index: 1 }, { hp: 0 }),
+      expectedTurn: "Your turn: Brakka",
+      expectedDying: "Brakka is dying: roll a death save",
+    },
+    {
+      id: "fr-dying-controlled-token-on-turn-advance",
+      locale: "fr" as const,
+      role: "player" as const,
+      initial: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [GOBLIN, HERO], active_turn_index: 0 }, { hp: 0 }),
+      next: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [GOBLIN, HERO], active_turn_index: 1 }, { hp: 0 }),
+      expectedTurn: "Votre tour : Brakka",
+      expectedDying: "Brakka est mourant : lancez un jet de sauvegarde contre la mort",
+    },
+    {
+      id: "en-controlled-token-drops-to-zero-hp-during-own-turn",
+      locale: "en" as const,
+      role: "player" as const,
+      initial: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [HERO, GOBLIN], active_turn_index: 0 }, { hp: 5 }),
+      next: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [HERO, GOBLIN], active_turn_index: 0 }, { hp: 0 }),
+      expectedTurn: "",
+      expectedDying: "Brakka is dying: roll a death save",
+    },
+    {
+      id: "en-stable-controlled-token-on-turn-does-not-prompt-death-save",
+      locale: "en" as const,
+      role: "player" as const,
+      initial: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [GOBLIN, HERO], active_turn_index: 0 }, { hp: 0, is_stable: true }),
+      next: () => playerView({ mode: "TURN_BY_TURN", initiative_order: [GOBLIN, HERO], active_turn_index: 1 }, { hp: 0, is_stable: true }),
+      expectedTurn: "Your turn: Brakka",
+      expectedDying: "",
+    },
+  ];
+
+  for (const tc of turnCases) {
+    it(`[${tc.id}] announces only on transition in an always-mounted polite live region`, () => {
+      localeSignal.value = tc.locale;
+      const isGm = tc.role === "GM";
+      const live = liveTable(isGm ? GM_ID : PLAYER_ID, tc.initial());
+      const ui = mount(h(CombatTrackerBar, { client: live.client, isGm }));
+
+      const turnLiveBefore = ui.byTestId("combat-turn-live");
+      const dyingLiveBefore = ui.byTestId("combat-dying-live");
+      assertPresent(turnLiveBefore, "combat-turn-live mounted initially");
+      assertPresent(dyingLiveBefore, "combat-dying-live mounted initially");
+      assert.equal(turnLiveBefore.getAttribute("aria-live"), "polite");
+      assert.equal(dyingLiveBefore.getAttribute("aria-live"), "polite");
+      assert.equal(turnLiveBefore.textContent, "", "silent on initial mount");
+      assert.equal(dyingLiveBefore.textContent, "", "silent on initial mount");
+
+      live.client.applyServerEnvelope({ type: "CommandAccepted", seqId: 20, state: tc.next(), events: [] } as any);
+
+      const turnLiveAfter = ui.byTestId("combat-turn-live");
+      const dyingLiveAfter = ui.byTestId("combat-dying-live");
+      assertPresent(turnLiveAfter, "combat-turn-live after transition");
+      assertPresent(dyingLiveAfter, "combat-dying-live after transition");
+      assertSameNode(turnLiveAfter, turnLiveBefore, "combat-turn-live stays mounted");
+      assertSameNode(dyingLiveAfter, dyingLiveBefore, "combat-dying-live stays mounted");
+      assert.equal(turnLiveAfter.textContent, tc.expectedTurn);
+      assert.equal(dyingLiveAfter.textContent, tc.expectedDying);
+
+      ui.unmount();
+      localeSignal.value = "en";
+    });
+  }
+
+  const reachabilityCases = [
+    { id: "dying-controlled-token-shows-hud-button", hero: { hp: 0 }, visible: true },
+    { id: "conscious-token-hides-hud-button", hero: { hp: 4 }, visible: false },
+    { id: "stable-token-hides-hud-button", hero: { hp: 0, is_stable: true }, visible: false },
+    { id: "dead-token-hides-hud-button", hero: { hp: 0, is_dead: true }, visible: false },
+  ] as const;
+
+  for (const tc of reachabilityCases) {
+    it(`[${tc.id}] direct HUD death-save prompt without canvas token selection`, () => {
+      selectedTokenIdSignal.value = null;
+      const live = liveTable(PLAYER_ID, playerView({ mode: "TURN_BY_TURN", initiative_order: [HERO, GOBLIN], active_turn_index: 0 }, tc.hero));
+      const ui = mount(h(TableTab, { campaignId: CAMPAIGN, client: live.client, isGm: false }));
+      assertAbsent(ui.byTestId("vitals-death-roll"), "vitals-death-roll absent while no token is selected");
+
+      if (!tc.visible) {
+        assertAbsent(ui.byTestId("death-save-prompt"), "death-save-prompt");
+      } else {
+        assertPresent(ui.byTestId("death-save-prompt"), "death-save-prompt");
+        const rollBtn = ui.byTestId(`death-save-roll-${HERO}`);
+        assertPresent(rollBtn, "direct HUD roll button");
+        assert.equal(rollBtn.getAttribute("aria-label"), "Roll death saving throw for Brakka");
+        ui.click(`death-save-roll-${HERO}`);
+        assert.deepEqual(live.commands(), [{ cmd: "RECORD_DEATH_SAVE", token_id: HERO, d20: null }]);
+
+        selectedTokenIdSignal.value = HERO;
+        assertPresent(ui.byTestId("vitals-death-roll"), "TokenVitalsPanel death-save button still works when selected");
+      }
+      ui.unmount();
+    });
+  }
 });
