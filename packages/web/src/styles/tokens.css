@@ -984,6 +984,43 @@ button.ds-prof-pip {
   pointer-events: none;
 }
 
+/*
+ * Move preview on the destination cell; an unreachable cell adds a cross glyph and a
+ * dashed outline (shape, not colour alone). The speed chip sits under the selected token.
+ */
+.ds-board-move-preview {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  border: 2px solid var(--atlas-action);
+  pointer-events: none;
+}
+
+.ds-board-move-preview.is-unreachable {
+  border-style: dashed;
+  border-color: var(--atlas-danger);
+}
+
+.ds-board-chip {
+  padding: 0 var(--atlas-space-xs);
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-sm);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  font-size: var(--atlas-font-size-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ds-token-speed {
+  position: absolute;
+  z-index: 2;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
 .ds-board-map {
   position: absolute;
   inset: 0;

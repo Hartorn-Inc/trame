@@ -575,6 +575,174 @@ describe("TableCanvas: zoom, pan and pings", () => {
   }
 });
 
+describe("TableCanvas: remaining speed and move cost preview", () => {
+  const combat = (hero = {}, overrides = {}) =>
+    playerView({ mode: "TURN_BY_TURN", initiative_order: [HERO], active_turn_index: 0, ...overrides }, { speed_remaining_ft: 10, ...hero });
+  const hover = (ui: ReturnType<typeof mount>, col: number, row: number) =>
+    ui.byTestId("table-board").dispatchEvent({ type: "pointermove", clientX: 10 + col * 50 + 25, clientY: 20 + row * 50 + 25, pointerType: "mouse" });
+
+  const previews = [
+    {
+      id: "exploring: three squares east cost 15 ft with no budget",
+      state: playerView(),
+      cell: [5, 1],
+      reachable: "true",
+      chip: /^15 ft$/,
+      text: /^Moving here costs 15 ft\.$/,
+    },
+    {
+      id: "a diagonal square costs one square (Chebyshev)",
+      state: playerView(),
+      cell: [4, 3],
+      reachable: "true",
+      chip: /^10 ft$/,
+      text: /^Moving here costs 10 ft\.$/,
+    },
+    {
+      id: "entering difficult terrain costs double",
+      state: playerView({ difficult_terrain: [{ col: 3, row: 1 }] }),
+      cell: [3, 1],
+      reachable: "true",
+      chip: /^10 ft$/,
+      text: /^Moving here costs 10 ft\.$/,
+    },
+    {
+      id: "in combat a move within the budget says what is left",
+      state: combat(),
+      cell: [3, 1],
+      reachable: "true",
+      chip: /^5 ft$/,
+      text: /^Moving here costs 5 ft, leaving 5 ft\.$/,
+    },
+    {
+      id: "in combat a move over the budget is marked out of reach",
+      state: combat(),
+      cell: [5, 1],
+      reachable: "false",
+      chip: /^✕ 15 ft$/,
+      text: /^Out of reach: moving here costs 15 ft but only 10 ft is left this turn\.$/,
+    },
+    {
+      id: "a wall across the path is marked blocked",
+      state: playerView({ walls: [wallBetween] }),
+      cell: [2, 5],
+      reachable: "false",
+      chip: /^✕ 20 ft$/,
+      text: /^Blocked: a wall stands in the way/,
+    },
+  ] as const;
+  for (const c of previews) {
+    it(`hover preview: ${c.id}`, () => {
+      selectedTokenIdSignal.value = HERO;
+      const live = liveTable(PLAYER_ID, c.state);
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+      pinBoard(ui);
+      hover(ui, c.cell[0], c.cell[1]);
+      const cell = ui.byTestId("table-move-preview");
+      assert.equal(cell.getAttribute("data-reachable"), c.reachable);
+      assert.equal(cell.getAttribute("aria-hidden"), "true");
+      assert.match(cell.textContent, c.chip);
+      assert.match(ui.byTestId("table-move-preview-text").textContent, c.text);
+      assert.equal(live.commands().length, 0, "previewing sends nothing");
+      ui.unmount();
+    });
+  }
+
+  const hidden = [
+    { id: "no token selected", select: null, cell: [5, 1] },
+    { id: "hovering the token's own cell", select: HERO, cell: [2, 1] },
+    { id: "a selected public token cannot be moved", select: GOBLIN, cell: [5, 1] },
+  ] as const;
+  for (const c of hidden) {
+    it(`no hover preview: ${c.id}`, () => {
+      selectedTokenIdSignal.value = c.select;
+      const live = liveTable(PLAYER_ID, playerView());
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+      pinBoard(ui);
+      hover(ui, c.cell[0], c.cell[1]);
+      assertAbsent(ui.byTestId("table-move-preview"), "table-move-preview");
+      assertAbsent(ui.byTestId("table-move-preview-text"), "table-move-preview-text");
+      ui.unmount();
+    });
+  }
+
+  it("leaving the board clears the hover preview", () => {
+    selectedTokenIdSignal.value = HERO;
+    const live = liveTable(PLAYER_ID, playerView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+    pinBoard(ui);
+    hover(ui, 5, 1);
+    assertPresent(ui.byTestId("table-move-preview"), "table-move-preview");
+    ui.byTestId("table-board").dispatchEvent({ type: "pointerleave" });
+    assertAbsent(ui.byTestId("table-move-preview"), "table-move-preview");
+    ui.unmount();
+  });
+
+  it("M plans a move with a cursor that announces the cost, and Enter sends it", () => {
+    const live = liveTable(PLAYER_ID, combat());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+    ui.key(`token-${HERO}`, "m");
+    const cursor = ui.byTestId("table-cell-cursor");
+    assert.match(cursor.getAttribute("aria-label"), /^Move destination for Brakka\. Arrow keys move it, Enter moves there/);
+    ui.key("table-cell-cursor", "ArrowRight");
+    assert.equal(ui.byTestId("table-cursor-status").textContent, "Column 4, row 2. Moving here costs 5 ft, leaving 5 ft.");
+    ui.key("table-cell-cursor", "ArrowRight");
+    ui.key("table-cell-cursor", "ArrowRight");
+    assert.match(ui.byTestId("table-cursor-status").textContent, /Out of reach: moving here costs 15 ft but only 10 ft is left/);
+    assert.equal(ui.byTestId("table-move-preview").getAttribute("data-reachable"), "false");
+    assertAbsent(ui.byTestId("table-move-preview-text"), "keyboard users hear the cost in the cursor status instead");
+    ui.key("table-cell-cursor", "ArrowLeft");
+    ui.key("table-cell-cursor", "Enter");
+    assert.deepEqual(live.commands(), [{ cmd: "MOVE_TOKEN", token_id: HERO, to_top_left: { x: 200, y: 50 }, to_elevation_ft: null, gm_teleport: false }]);
+    assertAbsent(ui.byTestId("table-cell-cursor"), "the cursor closes after the move");
+    ui.unmount();
+  });
+
+  it("Escape cancels a planned move without sending anything", () => {
+    const live = liveTable(PLAYER_ID, playerView());
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+    ui.key(`token-${HERO}`, "M");
+    ui.key("table-cell-cursor", "ArrowDown");
+    ui.key("table-cell-cursor", "Escape");
+    assertAbsent(ui.byTestId("table-cell-cursor"), "table-cell-cursor");
+    assert.equal(live.commands().length, 0);
+    ui.unmount();
+  });
+
+  const speeds = [
+    { id: "in combat the selected controlled token shows its remaining feet", state: combat({ speed_remaining_ft: 25 }), select: HERO, shown: true },
+    { id: "exploring there is no turn budget to show", state: playerView({}, { speed_remaining_ft: 25 }), select: HERO, shown: false },
+    { id: "an unselected token shows no speed", state: combat({ speed_remaining_ft: 25 }), select: null, shown: false },
+  ] as const;
+  for (const c of speeds) {
+    it(`remaining speed: ${c.id}`, () => {
+      selectedTokenIdSignal.value = c.select;
+      const live = liveTable(PLAYER_ID, c.state);
+      const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+      const label = ui.byTestId(`token-${HERO}`).getAttribute("aria-label");
+      if (c.shown) {
+        assert.equal(ui.byTestId(`token-speed-${HERO}`).textContent, "25 ft");
+        assert.match(label, /, 25 ft of movement left$/);
+      } else {
+        assertAbsent(ui.byTestId(`token-speed-${HERO}`), `token-speed-${HERO}`);
+        assert.doesNotMatch(label, /movement left/);
+      }
+      ui.unmount();
+    });
+  }
+
+  it("the remaining speed reads in French", () => {
+    localeSignal.value = "fr";
+    selectedTokenIdSignal.value = HERO;
+    const live = liveTable(PLAYER_ID, combat({ speed_remaining_ft: 12.5 }));
+    const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
+    const label = ui.byTestId(`token-${HERO}`).getAttribute("aria-label");
+    localeSignal.value = "en";
+    assert.match(label, /12,5 ft de mouvement restant$/);
+    ui.unmount();
+  });
+});
+
 describe("Selected token panels: no local state carries over between tokens", () => {
   const cases = [
     {
