@@ -40,9 +40,19 @@ test: test-rust wasm test-game-systems test-web ## Run all tests in order (Rust,
 # Empty by default so PostgreSQL integration tests skip under `--no-deps`; after `make up`,
 # pass TEST_DATABASE_URL=postgresql://trame:trame_dev_password@postgres:5432/trame to run them.
 TEST_DATABASE_URL ?=
+# S3 integration tests also need TEST_DATABASE_URL; after `make up`, pass
+# TEST_S3_ENDPOINT=http://minio:9000 to run them against the dev Silo service.
+TEST_S3_ENDPOINT ?=
+TEST_S3_BUCKET ?= trame-test
+TEST_S3_ACCESS_KEY_ID ?= trame_minio
+TEST_S3_SECRET_ACCESS_KEY ?= trame_minio_secret_key
 
 test-rust: ## Run Cargo workspace tests inside the Rust Docker container
-	$(DEV_COMPOSE) run --rm --no-deps -e DATABASE_URL="$(TEST_DATABASE_URL)" rust-dev cargo test --workspace --all-targets
+	$(DEV_COMPOSE) run --rm --no-deps -e DATABASE_URL="$(TEST_DATABASE_URL)" \
+		-e TEST_S3_ENDPOINT="$(TEST_S3_ENDPOINT)" -e TEST_S3_BUCKET="$(TEST_S3_BUCKET)" \
+		-e TEST_S3_ACCESS_KEY_ID="$(TEST_S3_ACCESS_KEY_ID)" \
+		-e TEST_S3_SECRET_ACCESS_KEY="$(TEST_S3_SECRET_ACCESS_KEY)" \
+		rust-dev cargo test --workspace --all-targets
 
 test-web: wasm test-game-systems ## Run Web frontend (incl. WASM parity) and game-system tests inside the Node Docker container
 	$(DEV_COMPOSE) run --rm --no-deps web-dev npm test

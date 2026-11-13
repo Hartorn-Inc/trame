@@ -78,7 +78,9 @@
 //!        - `img-src 'self'` / `font-src 'self'`: `/brand/*`, self-hosted
 //!          `/fonts/*.woff2`, and battlemaps through relative presigned
 //!          `/assets/download/...` URLs. The bundle builds no `data:` or
-//!          `blob:` URLs, so neither is allowed.
+//!          `blob:` URLs, so neither is allowed. With an object store
+//!          configured, `img-src` also lists its public origin
+//!          (`SecurityPolicy::asset_origin`): downloads redirect there.
 //!        - `connect-src 'self' ws://{host} wss://{host}`: REST, the WASM
 //!          fetch, and the same-origin table WebSocket. The explicit WebSocket
 //!          sources come from a validated `Host` and cover browsers that do not
@@ -100,7 +102,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Json, Response};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Default WebSocket message and frame size cap in bytes (1 MiB).
@@ -366,6 +368,9 @@ pub struct SecurityPolicy {
     /// `DEFAULT_WS_PONG_TIMEOUT`, the client's `Pong` window). A socket that receives no
     /// frame at all for `ws_ping_interval + ws_pong_timeout` is closed.
     pub ws_pong_timeout: Duration,
+    /// Origin of the object store asset downloads redirect to (`S3_PUBLIC_ENDPOINT`), added
+    /// to the SPA's `img-src`; `None` when assets are served by the server itself.
+    pub asset_origin: Option<String>,
 }
 
 /// Default `SecurityPolicy::ws_ping_interval` (20 s), matching the web client's `Ping`
@@ -399,6 +404,7 @@ impl Default for SecurityPolicy {
             ws_room_call_timeout: DEFAULT_WS_ROOM_CALL_TIMEOUT,
             ws_ping_interval: DEFAULT_WS_PING_INTERVAL,
             ws_pong_timeout: DEFAULT_WS_PONG_TIMEOUT,
+            asset_origin: None,
         }
     }
 }
@@ -664,8 +670,9 @@ pub const API_CSP: &str = "default-src 'none'; frame-ancestors 'none'; base-uri 
 /// CSP for `text/html` responses (the SPA shell). See the module banner for why each
 /// source is allowed. `host` is the request `Host`; when it is a plain `host[:port]`, the
 /// same-origin `ws://` / `wss://` sources are added for browsers whose `'self'` predates
-/// CSP3 WebSocket matching.
-pub fn spa_csp(host: Option<&str>) -> String {
+/// CSP3 WebSocket matching. `asset_origin` (a validated `scheme://host[:port]`) is added to
+/// `img-src`.
+pub fn spa_csp(host: Option<&str>, asset_origin: Option<&str>) -> String {
     let ws = host
         .filter(|h| {
             !h.is_empty()
@@ -674,16 +681,21 @@ pub fn spa_csp(host: Option<&str>) -> String {
         })
         .map(|h| format!(" ws://{h} wss://{h}"))
         .unwrap_or_default();
+    let img = asset_origin.map(|o| format!(" {o}")).unwrap_or_default();
     format!(
         "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; \
-         img-src 'self'; font-src 'self'; connect-src 'self'{ws}; form-action 'self'; \
+         img-src 'self'{img}; font-src 'self'; connect-src 'self'{ws}; form-action 'self'; \
          object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
     )
 }
 
 /// Adds CSP, `nosniff`, `X-Frame-Options`, and `Referrer-Policy` headers to every response.
 /// HTML documents get `spa_csp`; everything else gets `API_CSP`.
-pub async fn security_headers_middleware(request: Request, next: Next) -> Response {
+pub async fn security_headers_middleware(
+    State(policy): State<Arc<SecurityPolicy>>,
+    request: Request,
+    next: Next,
+) -> Response {
     let host = request
         .headers()
         .get(axum::http::header::HOST)
@@ -698,7 +710,7 @@ pub async fn security_headers_middleware(request: Request, next: Next) -> Respon
     let csp_name = HeaderName::from_static("content-security-policy");
     if !headers.contains_key(&csp_name) {
         let csp = if is_html {
-            HeaderValue::from_str(&spa_csp(host.as_deref()))
+            HeaderValue::from_str(&spa_csp(host.as_deref(), policy.asset_origin.as_deref()))
                 .unwrap_or_else(|_| HeaderValue::from_static(API_CSP))
         } else {
             HeaderValue::from_static(API_CSP)

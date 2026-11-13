@@ -35,6 +35,7 @@
 //!     ├── 1. Resolve port; open PostgreSQL (or the dev in-memory store).
 //!     ├── 2. `prepare_instance`: persisted instance id + owner setup URL log line when no `Owner`.
 //!     ├── 3. Build `RoomLeaseManager` over the PostgreSQL or in-memory WAL.
+//!     ├── 3b. With `S3_*`: `S3Store` serves assets; spawn the inline blob migration.
 //!     ├── 4. Construct the Axum `Router` and bind `0.0.0.0:{port}`.
 //!     ├── 5. Spawn the `Idle-Lease` sweeper (`tokio::time::interval`, 1 min).
 //!     └── 6. Serve with `with_graceful_shutdown(shutdown_handler)`.
@@ -44,17 +45,18 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use trame_server::assets::store::InMemoryAssetStore;
+use trame_server::assets::store::{AssetStore, InMemoryAssetStore};
 use trame_server::auth::magic_link::now_epoch_seconds;
 use trame_server::auth::session::{FullAuthStore, InMemorySessionStore};
 use trame_server::config::{LogFormat, RuntimeEnv, ServerConfig, TRAME_ENV_VAR};
 use trame_server::http::{
     InMemoryMembershipValidator, build_in_memory_router_with_store,
-    build_router_with_postgres_store,
+    build_router_with_postgres_and_asset_store,
 };
 use trame_server::instance::{log_owner_bootstrap, prepare_owner_bootstrap, resolve_instance_id};
 use trame_server::room::{IS_SHUTTING_DOWN, RoomLeaseManager};
 use trame_server::storage::SqlxPostgresStore;
+use trame_server::storage::s3::{S3Client, S3Store, migrate_inline_assets};
 use trame_server::timeline::InMemoryTimelineStorage;
 use trame_server::wal::InMemoryWalStorage;
 use uuid::Uuid;
@@ -129,6 +131,24 @@ pub async fn shutdown_handler(lease_manager: Arc<RoomLeaseManager>) {
     }
 }
 
+/// Copies asset payloads still inline in PostgreSQL to the object store in the background
+/// (ADR-0041). Idempotent: each boot only touches rows that still hold a payload.
+fn spawn_blob_migration(store: Arc<SqlxPostgresStore>, client: S3Client) {
+    tokio::spawn(async move {
+        match migrate_inline_assets(&store, &client).await {
+            Ok(report) if report.copied == 0 && report.failed == 0 => {}
+            Ok(report) => tracing::info!(
+                copied = report.copied,
+                failed = report.failed,
+                "asset blob migration to the object store finished"
+            ),
+            Err(err) => {
+                tracing::warn!(error = %err, "asset blob migration aborted; retried on next boot")
+            }
+        }
+    });
+}
+
 /// Awaits either SIGTERM (Cloud Run scale-to-zero / container stop) or SIGINT (Ctrl+C).
 async fn wait_for_signal() {
     #[cfg(unix)]
@@ -190,11 +210,29 @@ async fn main() {
             SNAPSHOT_INTERVAL_COMMANDS,
             IDLE_LEASE_MS,
         ));
-        let app =
-            build_router_with_postgres_store(store, lease_manager.clone(), instance_id, &config);
+        let asset_store: Arc<dyn AssetStore> = match &config.s3 {
+            Some(s3) => {
+                let s3_store = S3Store::new(store.clone(), s3.clone())
+                    .expect("Failed to set up the S3 asset store");
+                spawn_blob_migration(store.clone(), s3_store.client().clone());
+                tracing::info!(bucket = %s3.bucket, endpoint = %s3.endpoint.origin(), "assets stored in the object store");
+                Arc::new(s3_store)
+            }
+            None => store.clone(),
+        };
+        let app = build_router_with_postgres_and_asset_store(
+            store,
+            asset_store,
+            lease_manager.clone(),
+            instance_id,
+            &config,
+        );
         (app, lease_manager)
     } else {
         tracing::warn!("TRAME_ENV=dev without DATABASE_URL: in-memory store, lost on restart");
+        if config.s3.is_some() {
+            tracing::warn!("S3_* ignored without DATABASE_URL: asset metadata needs PostgreSQL");
+        }
         let session_store = Arc::new(InMemorySessionStore::new());
         let instance_id = prepare_instance(session_store.as_ref(), &config).await;
         let wal = Arc::new(InMemoryWalStorage::new());

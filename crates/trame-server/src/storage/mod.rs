@@ -1,4 +1,4 @@
-//! Storage abstraction and backends (Local filesystem & S3/R2).
+//! Storage abstraction and backends (local filesystem, PostgreSQL, S3-compatible assets).
 
 pub mod blob;
 pub mod local;
@@ -187,54 +187,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn s3_store_put_stream_streams_chunks_to_target_bucket() {
-        let config = S3Config {
-            endpoint: "https://r2.cloudflarestorage.com".to_string(),
-            bucket: "trame-campaign-prod".to_string(),
-            access_key_id: "test-key".to_string(),
-            secret_access_key: "test-secret".to_string(),
-            region: "auto".to_string(),
-            prefix: Some("assets".to_string()),
-        };
-        let store = S3Store::new(config.clone());
-
-        let data: Vec<u8> = (0..140 * 1024).map(|i| (i % 256) as u8).collect();
-        let asset_id = "s3-dungeon-layer";
-
-        let desc = store
-            .put_stream(asset_id, slice_to_stream(&data))
-            .await
-            .unwrap();
-
-        assert_eq!(desc.id, asset_id);
-        assert_eq!(desc.byte_size, data.len() as u64);
-        assert_eq!(desc.sha256_hex, Sha256Hasher::digest(&data));
-
-        let chunk_sizes = store.streamed_chunk_sizes(asset_id).await.unwrap();
-        assert_eq!(chunk_sizes.len(), 3);
-        assert_eq!(chunk_sizes[0], 64 * 1024);
-        assert_eq!(chunk_sizes[1], 64 * 1024);
-        assert_eq!(chunk_sizes[2], 12 * 1024);
-
-        let read_stream = store.open_read_stream(asset_id).await.unwrap();
-        let recovered = stream_to_bytes(read_stream).await.unwrap();
-        assert_eq!(recovered.as_ref(), data.as_slice());
-    }
-
-    #[tokio::test]
-    async fn list_descriptors_returns_all_stored_items_for_local_and_s3() {
+    async fn list_descriptors_returns_all_stored_items() {
         let temp_dir = make_test_temp_dir();
         let local_store = LocalFsStore::new(&temp_dir);
-        let s3_store = S3Store::new(S3Config::default());
 
         let asset_ids = ["asset-c", "asset-a", "asset-b"];
         for id in asset_ids {
             let payload = format!("content-for-{id}").into_bytes();
             local_store
-                .put_stream(id, slice_to_stream(&payload))
-                .await
-                .unwrap();
-            s3_store
                 .put_stream(id, slice_to_stream(&payload))
                 .await
                 .unwrap();
@@ -245,12 +205,6 @@ mod tests {
         assert_eq!(local_list[0].id, "asset-a");
         assert_eq!(local_list[1].id, "asset-b");
         assert_eq!(local_list[2].id, "asset-c");
-
-        let s3_list = s3_store.list_descriptors().await.unwrap();
-        assert_eq!(s3_list.len(), 3);
-        assert_eq!(s3_list[0].id, "asset-a");
-        assert_eq!(s3_list[1].id, "asset-b");
-        assert_eq!(s3_list[2].id, "asset-c");
 
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }

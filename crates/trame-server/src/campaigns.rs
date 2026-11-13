@@ -1776,6 +1776,8 @@ async fn ensure_asset_quota(
 
 /// `GET /assets/download/{*key}?exp=&sig=` -> asset bytes when the HMAC signature is valid
 /// and unexpired (`403` otherwise). The signature is the credential: no cookie required.
+/// When the asset lives in the object store, the answer is a `307` to a short-lived signed
+/// object-store URL instead, so the bytes never pass through the server.
 pub async fn download_asset_handler(
     State(state): State<AppState>,
     Path(key): Path<String>,
@@ -1786,6 +1788,11 @@ pub async fn download_asset_handler(
         .verify_presigned_get(&key, query.exp, &query.sig)
     {
         return forbidden("invalid or expired asset signature");
+    }
+    match state.asset_store.direct_download_url(&key).await {
+        Ok(Some(url)) => return axum::response::Redirect::temporary(&url).into_response(),
+        Ok(None) => {}
+        Err(err) => return storage_error(err),
     }
     match state.asset_store.get_asset(&key).await {
         Ok(Some(bytes)) => {

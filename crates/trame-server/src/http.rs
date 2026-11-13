@@ -548,10 +548,28 @@ pub fn build_router_with_postgres_store(
     instance_id: Uuid,
     config: &ServerConfig,
 ) -> Router {
+    build_router_with_postgres_and_asset_store(
+        store.clone(),
+        store,
+        lease_manager,
+        instance_id,
+        config,
+    )
+}
+
+/// Same as `build_router_with_postgres_store` with assets in `asset_store` (`S3Store` when
+/// `S3_*` is configured) instead of PostgreSQL.
+pub fn build_router_with_postgres_and_asset_store(
+    store: Arc<SqlxPostgresStore>,
+    asset_store: Arc<dyn AssetStore>,
+    lease_manager: Arc<RoomLeaseManager>,
+    instance_id: Uuid,
+    config: &ServerConfig,
+) -> Router {
     let auth_state = auth_state_from_config(store.clone(), config);
     let state = AppState {
         lease_manager,
-        asset_store: store.clone(),
+        asset_store,
         membership: store.clone(),
         instance_id,
         timeline_storage: store.clone(),
@@ -643,6 +661,7 @@ pub fn build_router_with_state(state: AppState) -> Router {
     let auth_router = build_auth_router(state.auth_state.clone());
     crate::campaigns::install_room_sinks(&state);
     let static_dir = state.static_dir.clone();
+    let policy = state.auth_state.security.clone();
 
     let router = Router::new()
         .route("/healthz", get(healthz_handler))
@@ -680,7 +699,10 @@ pub fn build_router_with_state(state: AppState) -> Router {
     };
     router
         .layer(axum::middleware::from_fn(opaque_server_errors_middleware))
-        .layer(axum::middleware::from_fn(security_headers_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            policy,
+            security_headers_middleware,
+        ))
         .layer(crate::compression::http_compression_layer())
 }
 

@@ -306,6 +306,8 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
     if (!renderer || !mapUrl) return;
     let live = true;
     const image = new Image();
+    // Downloads may redirect to the S3 origin; a non-CORS image would taint the WebGL texture.
+    image.crossOrigin = "anonymous";
     image.src = mapUrl;
     image
       .decode()

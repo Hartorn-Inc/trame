@@ -2400,10 +2400,15 @@ impl AssetStore for SqlxPostgresStore {
             let Some(row) = row_opt else {
                 return Ok(None);
             };
-            let bytes: Vec<u8> = row
+            let bytes: Option<Vec<u8>> = row
                 .try_get("payload")
                 .map_err(|e| AssetStoreError::Io(e.to_string()))?;
-            Ok(Some(Bytes::from(bytes)))
+            match bytes {
+                Some(bytes) => Ok(Some(Bytes::from(bytes))),
+                None => Err(AssetStoreError::Io(format!(
+                    "asset {key} is in the object store but S3_* is not configured"
+                ))),
+            }
         })
     }
 
@@ -2462,6 +2467,110 @@ impl AssetStore for SqlxPostgresStore {
 
     fn verify_presigned_get(&self, key: &str, exp: u64, sig_hex: &str) -> bool {
         crate::assets::store::verify_asset_signature(&self.signing_secret, key, exp, sig_hex)
+    }
+}
+
+/// Where the bytes of a `campaign_assets` row live (migration `0007`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssetPayload {
+    /// Bytes stored in the `payload` column.
+    Inline(Bytes),
+    /// `payload IS NULL`: bytes stored in the object store under the same key (`S3Store`).
+    External,
+}
+
+/// Asset metadata and object-store bookkeeping used by `S3Store`.
+impl SqlxPostgresStore {
+    /// Payload location of `key`; `None` when no row exists.
+    pub async fn asset_payload(&self, key: &str) -> Result<Option<AssetPayload>, AssetStoreError> {
+        let payload: Option<Option<Vec<u8>>> =
+            sqlx::query_scalar("SELECT payload FROM campaign_assets WHERE asset_key = $1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| AssetStoreError::Io(e.to_string()))?;
+        Ok(payload.map(|p| match p {
+            Some(bytes) => AssetPayload::Inline(Bytes::from(bytes)),
+            None => AssetPayload::External,
+        }))
+    }
+
+    /// `Some(true)` when `key` is stored in the object store, `Some(false)` when inline,
+    /// `None` when no row exists. Reads no payload bytes.
+    pub async fn asset_is_external(&self, key: &str) -> Result<Option<bool>, AssetStoreError> {
+        sqlx::query_scalar("SELECT payload IS NULL FROM campaign_assets WHERE asset_key = $1")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| AssetStoreError::Io(e.to_string()))
+    }
+
+    /// Records (or turns into) an object-store row: metadata only, `payload` NULL.
+    pub async fn record_external_asset(
+        &self,
+        key: &str,
+        content_type: &str,
+        byte_size: usize,
+    ) -> Result<(), AssetStoreError> {
+        let campaign_id =
+            extract_campaign_id_from_asset_key(key).unwrap_or_else(|| Uuid::from_u128(1));
+        self.ensure_campaign_row(campaign_id)
+            .await
+            .map_err(AssetStoreError::Io)?;
+        sqlx::query(
+            "INSERT INTO campaign_assets (asset_key, campaign_id, content_type, byte_size, payload)
+             VALUES ($1, $2, $3, $4, NULL)
+             ON CONFLICT (asset_key) DO UPDATE SET
+               content_type = EXCLUDED.content_type,
+               byte_size = EXCLUDED.byte_size,
+               payload = NULL",
+        )
+        .bind(key)
+        .bind(campaign_id)
+        .bind(content_type)
+        .bind(byte_size as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AssetStoreError::Io(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Up to `limit` `(key, content_type)` pairs of inline rows with a key after `after`,
+    /// in key order (keyset pagination for the blob migration).
+    pub async fn inline_asset_keys_after(
+        &self,
+        after: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, String)>, AssetStoreError> {
+        sqlx::query_as(
+            "SELECT asset_key, content_type FROM campaign_assets
+             WHERE payload IS NOT NULL AND asset_key > $1
+             ORDER BY asset_key LIMIT $2",
+        )
+        .bind(after)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AssetStoreError::Io(e.to_string()))
+    }
+
+    /// Clears the inline payload of `key` only if it still hashes to `sha256`, so bytes that
+    /// changed after the copy are never dropped. Returns whether a row was released.
+    pub async fn release_inline_payload(
+        &self,
+        key: &str,
+        sha256: &[u8; 32],
+    ) -> Result<bool, AssetStoreError> {
+        let done = sqlx::query(
+            "UPDATE campaign_assets SET payload = NULL
+             WHERE asset_key = $1 AND payload IS NOT NULL AND sha256(payload) = $2",
+        )
+        .bind(key)
+        .bind(sha256.as_slice())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AssetStoreError::Io(e.to_string()))?;
+        Ok(done.rows_affected() == 1)
     }
 }
 
