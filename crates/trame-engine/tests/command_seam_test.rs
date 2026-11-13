@@ -1321,7 +1321,7 @@ fn typed_damage_derives_affinity_from_the_target_token() {
             expected_hp: 10,
         },
         Case {
-            id: "resistance_and_vulnerability_cancel_out",
+            id: "resistance_then_vulnerability_on_even_damage",
             resist: &["fire"],
             immune: &[],
             vulnerable: &["fire"],
@@ -1351,7 +1351,7 @@ fn typed_damage_derives_affinity_from_the_target_token() {
             expected_hp: 15,
         },
         Case {
-            id: "petrified_resistance_cancels_a_vulnerability",
+            id: "petrified_resistance_then_vulnerability_on_even_damage",
             resist: &[],
             immune: &[],
             vulnerable: &["bludgeoning"],
@@ -1386,6 +1386,42 @@ fn typed_damage_derives_affinity_from_the_target_token() {
             "case {}",
             c.id
         );
+    }
+}
+
+#[test]
+fn resistance_applies_before_vulnerability_to_the_same_type() {
+    // (case_id, resistances, vulnerabilities, conditions, raw damage, hp lost)
+    let cases: [(&str, &[&str], &[&str], &[&str], i32, i32); 6] = [
+        ("resistance_then_vulnerability_25_to_24", &["fire"], &["fire"], &[], 25, 24),
+        ("resistance_then_vulnerability_1_to_0", &["fire"], &["fire"], &[], 1, 0),
+        ("petrified_then_vulnerability_25_to_24", &[], &["fire"], &["petrified"], 25, 24),
+        ("resistance_alone_25_to_12", &["fire"], &[], &[], 25, 12),
+        ("vulnerability_alone_25_to_50", &[], &["fire"], &[], 25, 50),
+        ("other_type_unmitigated", &["cold"], &["cold"], &[], 25, 25),
+    ];
+    let to_vec = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    for (case, resist, vulnerable, conditions, raw, lost) in cases {
+        let mut target = token(HERO_ID, "Kyra", 0.0, 0.0, Some(PLAYER_ID));
+        target.max_hp = 100;
+        target.hp = 100;
+        target.damage_resistances = to_vec(resist);
+        target.damage_vulnerabilities = to_vec(vulnerable);
+        target.conditions = to_vec(conditions);
+        let mut state = table(vec![target], vec![]);
+        state
+            .apply_command(
+                &gm(),
+                TrameCommand::ApplyDamage {
+                    token_id: HERO_ID,
+                    raw_damage: raw,
+                    affinity: trame_engine::DamageAffinity::Normal,
+                    is_critical: false,
+                    damage_type: Some("fire".to_string()),
+                },
+            )
+            .unwrap_or_else(|e| panic!("case {case}: {e}"));
+        assert_eq!(state.data.tokens[&HERO_ID].hp, 100 - lost, "case {case}");
     }
 }
 

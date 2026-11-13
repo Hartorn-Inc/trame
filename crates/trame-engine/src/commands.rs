@@ -454,7 +454,7 @@ pub struct ConditionEffects {
     pub incapacitated: bool,
     /// Speed 0: `MoveToken` is rejected unless it is a Game Master teleport.
     pub speed_zero: bool,
-    /// Resistance to every damage type (`damage_affinity_for`).
+    /// Resistance to every damage type (`typed_damage_input`).
     pub resists_all_damage: bool,
 }
 
@@ -775,24 +775,28 @@ impl TokenState {
         self.dex_mod.saturating_add(self.initiative_extra)
     }
 
-    /// Derives this token's `DamageAffinity` toward `damage_type` (case-insensitive) from its
-    /// own damage lists (G6), so clients never choose the affinity for typed damage.
+    /// Derives the `(raw_damage, DamageAffinity)` pair to mitigate typed damage with, from this
+    /// token's own damage lists (G6), so clients never choose the affinity for typed damage.
+    /// `damage_type` matches case-insensitively.
     ///
-    /// Resolution order: immunity wins; resistance and vulnerability to the same type cancel
-    /// out (SRD: halve, then double) to `Normal`; otherwise the single matching list applies.
-    /// A condition granting resistance to all damage (Petrified) counts as a resistance.
-    pub fn damage_affinity_for(&self, damage_type: &str) -> DamageAffinity {
+    /// Resolution order: immunity wins; resistance and vulnerability to the same type both
+    /// apply in SRD 5.2.1 order, resistance then vulnerability: the raw amount is halved
+    /// (rounded down) here and `Vulnerable` doubles it (25 -> 12 -> 24); otherwise the single
+    /// matching list applies. A condition granting resistance to all damage (Petrified)
+    /// counts as a resistance.
+    pub fn typed_damage_input(&self, raw_damage: i32, damage_type: &str) -> (i32, DamageAffinity) {
         let has = |list: &[String]| list.iter().any(|t| t.eq_ignore_ascii_case(damage_type));
         if has(&self.damage_immunities) {
-            return DamageAffinity::Immune;
+            return (raw_damage, DamageAffinity::Immune);
         }
         match (
             has(&self.damage_resistances) || self.condition_effects().resists_all_damage,
             has(&self.damage_vulnerabilities),
         ) {
-            (true, false) => DamageAffinity::Resistant,
-            (false, true) => DamageAffinity::Vulnerable,
-            _ => DamageAffinity::Normal,
+            (true, true) => (raw_damage.max(0) / 2, DamageAffinity::Vulnerable),
+            (true, false) => (raw_damage, DamageAffinity::Resistant),
+            (false, true) => (raw_damage, DamageAffinity::Vulnerable),
+            (false, false) => (raw_damage, DamageAffinity::Normal),
         }
     }
 
@@ -948,7 +952,7 @@ pub enum TrameCommand {
         #[serde(default)]
         is_critical: bool,
         /// Typed damage (lowercase SRD id, e.g. `"fire"`). When set, the affinity is derived from
-        /// the target's `damage_*` lists (`TokenState::damage_affinity_for`) instead of `affinity`.
+        /// the target's `damage_*` lists (`TokenState::typed_damage_input`) instead of `affinity`.
         #[serde(default)]
         damage_type: Option<String>,
     },
@@ -2444,7 +2448,7 @@ impl TableState {
     }
 
     /// Applies `damage` to `token_id` (which must exist) without an undo entry: typed damage
-    /// derives the affinity from the token (`damage_affinity_for`), otherwise `affinity` is
+    /// derives the affinity from the token (`typed_damage_input`), otherwise `affinity` is
     /// used. Shared by `ApplyDamage` and `ApplyResolution`; queues a `ConcentrationCheckPrompt` when a
     /// concentrating token keeps HP, and ends concentration at 0 HP.
     pub(crate) fn apply_damage_to_token(
@@ -2456,7 +2460,9 @@ impl TableState {
         damage_type: Option<&str>,
     ) -> Vec<TrameEvent> {
         let token = self.data.tokens[&token_id].clone();
-        let affinity = damage_type.map_or(affinity, |t| token.damage_affinity_for(t));
+        let (raw_damage, affinity) = damage_type.map_or((raw_damage, affinity), |t| {
+            token.typed_damage_input(raw_damage, t)
+        });
         let is_concentrating = token.concentrating_on_aoe_id.is_some() || token.concentrating;
         let mut resolution = resolve_damage_application(
             raw_damage,

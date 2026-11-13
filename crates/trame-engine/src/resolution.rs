@@ -728,8 +728,9 @@ fn mitigated_parts<'a>(
 ) -> i32 {
     parts
         .map(|(amount, damage_type)| {
-            let affinity =
-                damage_type.map_or(DamageAffinity::Normal, |t| token.damage_affinity_for(t));
+            let (amount, affinity) = damage_type.map_or((amount, DamageAffinity::Normal), |t| {
+                token.typed_damage_input(amount, t)
+            });
             mitigate_damage(amount, affinity)
         })
         .fold(0, i32::saturating_add)
