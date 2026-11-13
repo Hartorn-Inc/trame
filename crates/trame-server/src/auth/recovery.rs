@@ -242,20 +242,22 @@ fn storage_error(err: impl std::fmt::Display) -> Response {
 }
 
 /// Hashes `password` or answers `400 WEAK_PASSWORD` / `500 HASHING_ERROR`.
-async fn hash_new_password(password: String) -> Result<String, Response> {
+async fn hash_new_password(password: String) -> Result<String, Box<Response>> {
     match PasswordService::new()
         .hash_password_blocking(password)
         .await
     {
         Ok(hash) => Ok(hash),
-        Err(PasswordError::WeakPassword(msg)) => {
-            Err(error(StatusCode::BAD_REQUEST, "WEAK_PASSWORD", &msg))
-        }
-        Err(err) => Err(error(
+        Err(PasswordError::WeakPassword(msg)) => Err(Box::new(error(
+            StatusCode::BAD_REQUEST,
+            "WEAK_PASSWORD",
+            &msg,
+        ))),
+        Err(err) => Err(Box::new(error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "HASHING_ERROR",
             &err.to_string(),
-        )),
+        ))),
     }
 }
 
@@ -408,7 +410,7 @@ pub async fn password_reset_handler(
     }
     let password_hash = match hash_new_password(req.new_password).await {
         Ok(hash) => hash,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     match state
         .session_store
@@ -489,7 +491,7 @@ pub async fn change_password_handler(
     }
     let password_hash = match hash_new_password(req.new_password).await {
         Ok(hash) => hash,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let keep = extract_session_token(&headers).map(|t| hash_session_token(&t));
     match state
