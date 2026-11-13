@@ -36,7 +36,9 @@
  *      focused controlled token one cell, `P` pings its centre, Shift+F10 /
  *      ContextMenu opens its action menu, Escape clears the selection or
  *      cancels a pending teleport. The canvas itself is a labelled
- *      `role="img"`. Door state is told by text and border style, not colour.
+ *      `role="img"`. A door handle is named by its action ("Open door" /
+ *      "Close door", plus "locked" or "secret"), never by `aria-pressed`;
+ *      its border style repeats the state without colour.
  *    - While a GM brush or a teleport is active, a focusable cell cursor is
  *      the keyboard twin of the pointer: arrow keys move it (Shift+arrows
  *      mark a rectangle for brushes), Enter paints the brush or rectangle or
@@ -169,10 +171,15 @@ function tokenLabel(token: TableToken): string {
   return label;
 }
 
-/** Name of a door handle; open / closed is its `aria-pressed` state, never part of the name. */
+/**
+ * Name of a door handle: the action it performs ("Open door" on a closed door,
+ * "Close door" on an open one), plus the lock or secret state in words. The
+ * handle is a plain button, so no `aria-pressed` competes with the name.
+ */
 function doorLabel(door: DoorHandle): string {
-  const extra = door.isSecret ? t('table.door.secret') : door.isLocked ? t('table.door.locked') : null;
-  return extra ? t('table.door.labelWith', { extra }) : t('table.door.label');
+  const action = t(door.isOpen ? 'table.door.close' : 'table.door.open');
+  const state = door.isSecret ? t('table.door.secret') : door.isLocked ? t('table.door.locked') : null;
+  return state ? t('table.door.withState', { action, state }) : action;
 }
 
 function initials(name: string): string {
@@ -651,7 +658,6 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
                   class={`ds-door-handle${door.isOpen ? ' is-open' : ''}${door.isLocked || door.isSecret ? ' is-locked' : ''}`}
                   data-testid={`door-${door.wallId}`}
                   aria-label={doorLabel(door)}
-                  aria-pressed={door.isOpen ? 'true' : 'false'}
                   aria-disabled={door.canToggle ? undefined : 'true'}
                   style={{ left: `${door.pos.x - DOOR_HANDLE_PX / 2}px`, top: `${door.pos.y - DOOR_HANDLE_PX / 2}px` }}
                   onClick={(e) => {
@@ -667,8 +673,7 @@ export function TableCanvas({ campaignId, client, isGm = false }: TableCanvasPro
                     type="button"
                     class={`ds-door-handle${door.isLocked ? ' is-locked' : ''}`}
                     data-testid={`door-lock-${door.wallId}`}
-                    aria-label={t('table.door.lock')}
-                    aria-pressed={door.isLocked ? 'true' : 'false'}
+                    aria-label={t(door.isLocked ? 'table.door.unlockAction' : 'table.door.lockAction')}
                     style={{ left: `${door.pos.x + DOOR_HANDLE_PX / 2 + 4}px`, top: `${door.pos.y - DOOR_HANDLE_PX / 2}px` }}
                     onClick={(e) => {
                       e.stopPropagation();

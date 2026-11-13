@@ -1077,11 +1077,11 @@ test('GM and three players play one campaign session end to end, across a SIGKIL
     expect(playerSeesOpen(), 'the crypt door starts closed for the player').toBe(false);
     const before = meanLuma(await board(pl), PROBE_BEYOND_DOOR);
     const handle = gm.getByTestId(`door-${crypt.id}`);
-    await expect(handle).toHaveAttribute('aria-pressed', 'false');
+    await expect(handle).toHaveAttribute('aria-label', /^Open door/);
     await handle.click();
-    await expect(handle).toHaveAttribute('aria-pressed', 'true');
+    await expect(handle).toHaveAttribute('aria-label', /^Close door/);
     await expect.poll(playerSeesOpen).toBe(true);
-    await expect(pl.getByTestId(`door-${crypt.id}`)).toHaveAttribute('aria-pressed', 'true');
+    await expect(pl.getByTestId(`door-${crypt.id}`)).toHaveAttribute('aria-label', /^Close door/);
     const after = meanLuma(await board(pl), PROBE_BEYOND_DOOR);
     await shot(both, 'door-open-player-vision');
     expect(after, `player sees the floor beyond the open door (luma ${before} -> ${after})`).toBeGreaterThan(before + 15);
@@ -1116,7 +1116,7 @@ test('GM and three players play one campaign session end to end, across a SIGKIL
     await expect.poll(() => topLeftOf(plFrames, pcTokenId)).toEqual(DOOR_REACH_CELL);
     await handle.click();
     await expect.poll(playerSeesOpen).toBe(true);
-    await expect(handle).toHaveAttribute('aria-pressed', 'true');
+    await expect(handle).toHaveAttribute('aria-label', /^Close door/);
     await shot(both, 'door-opened-by-player');
     await handle.click();
     await expect.poll(playerSeesOpen).toBe(false);

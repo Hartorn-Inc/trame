@@ -96,7 +96,7 @@ describe("TableCanvas: door handles", () => {
       const handle = ui.byTestId(`door-${DOOR}`);
       assert.equal(handle.getAttribute("aria-disabled"), c.enabled ? null : "true");
       assert.equal(handle.disabled, false, "a refused handle stays focusable");
-      assert.equal(handle.getAttribute("aria-pressed"), String(c.open));
+      assert.equal(handle.getAttribute("aria-pressed"), null, "the handle is a plain button named by its action");
       ui.click(`door-${DOOR}`);
       assert.deepEqual(live.commands(), c.expected);
       ui.unmount();
@@ -130,15 +130,15 @@ describe("TableCanvas: door handles", () => {
   }
 
   const locks = [
-    { id: "GM locks an unlocked door", locked: false, expected: true },
-    { id: "GM unlocks a locked door", locked: true, expected: false },
+    { id: "GM locks an unlocked door", locked: false, label: "Lock door", expected: true },
+    { id: "GM unlocks a locked door", locked: true, label: "Unlock door", expected: false },
   ];
   for (const c of locks) {
     it(c.id, () => {
       const live = liveTable(GM_ID, gmView({ walls: [door(false, c.locked)] }));
       const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client, isGm: true }));
-      assert.equal(ui.byTestId(`door-lock-${DOOR}`).getAttribute("aria-pressed"), String(c.locked));
-      assert.equal(ui.byTestId(`door-lock-${DOOR}`).getAttribute("aria-label"), "Door locked");
+      assert.equal(ui.byTestId(`door-lock-${DOOR}`).getAttribute("aria-pressed"), null);
+      assert.equal(ui.byTestId(`door-lock-${DOOR}`).getAttribute("aria-label"), c.label);
       ui.click(`door-lock-${DOOR}`);
       assert.deepEqual(live.commands(), [{ cmd: "CONFIGURE_DOOR", wall_id: DOOR, is_open: null, is_locked: c.expected, is_secret: null }]);
       ui.unmount();
@@ -153,17 +153,22 @@ describe("TableCanvas: door handles", () => {
   });
 
   const doorNames = [
-    { id: "a closed door keeps the same name as an open one", open: false, locked: false, label: "Door open" },
-    { id: "an open door is named the same, its state is aria-pressed", open: true, locked: false, label: "Door open" },
-    { id: "a locked door names the lock in words", open: false, locked: true, label: "Door open (locked)" },
-  ];
+    { id: "a closed door is named by the action that opens it", locale: "en", open: false, locked: false, label: "Open door" },
+    { id: "an open door is named by the action that closes it", locale: "en", open: true, locked: false, label: "Close door" },
+    { id: "a locked door names the lock in words", locale: "en", open: false, locked: true, label: "Open door (locked)" },
+    { id: "the French name is the French action", locale: "fr", open: false, locked: true, label: "Ouvrir la porte (verrouillée)" },
+  ] as const;
   for (const c of doorNames) {
     it(`door label: ${c.id}`, () => {
+      localeSignal.value = c.locale;
       const live = liveTable(PLAYER_ID, playerView({ walls: [door(c.open, c.locked)] }));
       const ui = mount(h(TableCanvas, { campaignId: CAMPAIGN, client: live.client }));
-      assert.equal(ui.byTestId(`door-${DOOR}`).getAttribute("aria-label"), c.label);
-      assert.equal(ui.byTestId(`door-${DOOR}`).getAttribute("aria-pressed"), String(c.open));
+      const label = ui.byTestId(`door-${DOOR}`).getAttribute("aria-label");
+      const pressed = ui.byTestId(`door-${DOOR}`).getAttribute("aria-pressed");
       ui.unmount();
+      localeSignal.value = "en";
+      assert.equal(label, c.label);
+      assert.equal(pressed, null, "no aria-pressed state competes with the action name");
     });
   }
 });
