@@ -36,6 +36,14 @@
  *      "centre on token" select); the heading takes focus when the card
  *      opens and again when the result arrives, and the outcome summary is a
  *      polite live region.
+ * 5. `Beams, Darts And Chosen Types`:
+ *    - An action with several beams, darts or rays shows a count per checked
+ *      target (all on the first one by default); Roll waits until every
+ *      instance is aimed, then sends one request per beam or ray, or one per
+ *      target for darts (`buildActionRequests`). The first result stays on
+ *      the card, the others join the pending list.
+ *    - A spell with alternative damage types (Spirit Guardians) shows a type
+ *      picker; the picked type is the only type sent.
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -50,6 +58,7 @@
  * ============================================================================
  */
 import { useEffect, useRef, useState } from 'preact/hooks';
+import type { DamageType } from '../../../game-systems/dnd5e/src/index.ts';
 import type { ApiClient } from '../api/client.ts';
 import type { Uuid, WirePendingResolution } from '../api/wire.ts';
 import { t, type MessageKey } from '../i18n/index.ts';
@@ -60,7 +69,7 @@ import {
   areaProjectedSignal,
   areaTemplateIdSignal,
   attackerContext,
-  buildActionRequest,
+  buildActionRequests,
   cancelAction,
   isAreaAction,
   newUuid,
@@ -115,7 +124,12 @@ function extraPartLabel(part: ExtraDamagePart): string {
 function actionSummary(action: ResolvableAction): string {
   if (action.attackBonus !== null) return t('resolution.attackBonus', { bonus: signed(action.attackBonus) });
   if (action.save) return t('resolution.save', { ability: action.save.ability.toUpperCase(), dc: action.save.dc });
-  return t('resolution.autoHit');
+  return t(action.rider ? 'resolution.rider' : 'resolution.autoHit');
+}
+
+/** Instances aimed at each checked target: the edited count, else all on the first target (invariant 5). */
+function instanceCounts(targetIds: readonly Uuid[], edited: Readonly<Record<Uuid, number>>, total: number): Record<Uuid, number> {
+  return Object.fromEntries(targetIds.map((id, i) => [id, edited[id] ?? (i === 0 ? total : 0)]));
 }
 
 /** One sentence for the live region: "Goblin: hit. Orc: miss." */
@@ -129,7 +143,10 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
   const state = client.state.table.value;
   const tokens = listTableTokens(state);
   const sources = { state, tokens, sheets: client.state.actors.value };
-  const action = pendingResolvable(sources, pending);
+  const [damageType, setDamageType] = useState<DamageType | null>(null);
+  const [editedCounts, setEditedCounts] = useState<Record<Uuid, number>>({});
+  const resolvable = pendingResolvable(sources, pending);
+  const action = resolvable && damageType ? { ...resolvable, damageType } : resolvable;
   const attacker = attackerContext(sources, pending);
   const { cellPx } = boardMetrics(state);
   const names = new Map(tokens.map((tok) => [tok.id, tok.name]));
@@ -177,7 +194,8 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
     setError(t('resolution.rejected'));
   }, [feedback]);
 
-  const resolveFor = (targets: TableToken[]) => {
+  /** Rolls `targets`; `counts` aims beams, darts or rays per target (invariant 5). */
+  const resolveFor = (targets: TableToken[], counts?: Readonly<Record<Uuid, number>>) => {
     if (!action) return;
     setSent(true);
     if (targets.length === 0) {
@@ -185,7 +203,6 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
       return;
     }
     const contexts = targets.map((tok) => targetContext(sources, tok, attacker.tokenId));
-    const id = newUuid();
     setModeSources(
       Object.fromEntries(
         contexts.map((target) => {
@@ -194,13 +211,17 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
         }),
       ),
     );
-    if (!client.submitCommand(resolveAction(buildActionRequest(action, attacker, contexts, id)))) {
+    const allocations = contexts
+      .map((target) => ({ target, count: counts?.[target.tokenId] ?? 1 }))
+      .filter((allocation) => allocation.count > 0);
+    const requests = buildActionRequests(action, attacker, allocations, newUuid);
+    if (!requests.every((request) => client.submitCommand(resolveAction(request)))) {
       setSent(false);
       setError(t('resolution.offline'));
       return;
     }
     setError(null);
-    activeResolutionIdSignal.value = id;
+    activeResolutionIdSignal.value = requests[0].resolution_id;
   };
 
   useEffect(() => {
@@ -249,6 +270,9 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
   };
   const picking = !sent && !isArea;
   const retryArea = !sent && isArea && areaTargetIds !== null;
+  const instances = action.instances && action.instances.count > 1 ? action.instances : null;
+  const counts = instances ? instanceCounts(targetIds, editedCounts, instances.count) : undefined;
+  const aimed = counts ? Object.values(counts).reduce((sum, n) => sum + n, 0) : 0;
 
   return (
     <section class="ds-panel ds-stack-sm" aria-label={t('resolution.region')} data-testid="action-card" aria-busy={sent && !resolved ? 'true' : 'false'}>
@@ -266,6 +290,27 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
           {t('resolution.extraDamage', { parts: action.extraDamage.map(extraPartLabel).join(', ') })}
         </p>
       ) : null}
+      {instances ? (
+        <p class="ds-hint" data-testid="action-instances">
+          {t(`resolution.instances.${instances.unit}` as MessageKey, { count: instances.count })}
+        </p>
+      ) : null}
+      {action.damageTypeOptions?.length && !sent ? (
+        <div class="ds-stack-sm">
+          <label class="ds-field-label" for="action-damage-type">{t('resolution.damageType')}</label>
+          <select
+            id="action-damage-type"
+            class="ds-input"
+            data-testid="action-damage-type"
+            value={action.damageType ?? ''}
+            onChange={(e) => setDamageType((e.target as HTMLSelectElement).value as DamageType)}
+          >
+            {action.damageTypeOptions.map((type) => (
+              <option key={type} value={type}>{t(`damage.type.${type}` as MessageKey)}</option>
+            ))}
+          </select>
+        </div>
+      ) : null}
 
       {picking ? (
         <fieldset class="ds-stack-sm">
@@ -274,22 +319,44 @@ function PendingActionCard({ client, isGm, pending }: ActionResolutionCardProps 
           {tokens
             .filter((tok) => tok.id !== attacker.tokenId)
             .map((tok) => (
-              <label key={tok.id} class="ds-cluster">
-                <input
-                  type="checkbox"
-                  data-testid={`action-target-${tok.id}`}
-                  checked={targetIds.includes(tok.id)}
-                  onChange={() => toggleActionTarget(tok.id)}
-                />
-                {tok.name}
-              </label>
+              <div key={tok.id} class="ds-cluster">
+                <label class="ds-cluster">
+                  <input
+                    type="checkbox"
+                    data-testid={`action-target-${tok.id}`}
+                    checked={targetIds.includes(tok.id)}
+                    onChange={() => toggleActionTarget(tok.id)}
+                  />
+                  {tok.name}
+                </label>
+                {instances && counts && targetIds.includes(tok.id) ? (
+                  <input
+                    type="number"
+                    class="ds-input"
+                    min={0}
+                    max={instances.count}
+                    data-testid={`action-instances-${tok.id}`}
+                    aria-label={t(`resolution.instancesAt.${instances.unit}` as MessageKey, { name: tok.name })}
+                    value={counts[tok.id]}
+                    onInput={(e) => {
+                      const value = Math.max(0, Math.min(instances.count, Math.trunc(Number((e.target as HTMLInputElement).value) || 0)));
+                      setEditedCounts({ ...editedCounts, [tok.id]: value });
+                    }}
+                  />
+                ) : null}
+              </div>
             ))}
+          {instances && targetIds.length > 0 && aimed !== instances.count ? (
+            <p class="ds-hint" role="status" data-testid="action-instances-left">
+              {t(`resolution.instancesLeft.${instances.unit}` as MessageKey, { aimed, count: instances.count })}
+            </p>
+          ) : null}
           <button
             type="button"
             class="ds-btn ds-btn-primary"
             data-testid="action-roll"
-            disabled={targetIds.length === 0}
-            onClick={() => resolveFor(tokens.filter((tok) => targetIds.includes(tok.id)))}
+            disabled={targetIds.length === 0 || (instances !== null && aimed !== instances.count)}
+            onClick={() => resolveFor(tokens.filter((tok) => targetIds.includes(tok.id)), counts)}
           >
             {t('resolution.roll')}
           </button>

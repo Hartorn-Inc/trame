@@ -443,6 +443,110 @@ describe("ActionResolutionCard: a player attacks a monster", () => {
   });
 });
 
+/** `HERO_ACTOR` as a `classId` caster of `level` knowing `spellId`, its casting ability at 16. */
+function casterKnowing(classId: string, level: number, spellId: string): Dnd5eActorData {
+  const actor = createDefaultActorData(HERO_ACTOR, "Mira");
+  actor.classId = classId;
+  actor.attributes.level = level;
+  for (const ab of ["int", "wis", "cha"] as const) actor.abilities[ab].score = 16;
+  actor.spellIds = [spellId];
+  return actor;
+}
+
+/** Player table whose hero is `actor`, with a second monster (`ORC`) to split instances on. */
+const ORC = "eeeeeeee-0000-4000-8000-000000000001";
+function casterTable(actor: Dnd5eActorData) {
+  const view = (over: Partial<ProjectedTableState> = {}) =>
+    playerView({
+      public_tokens: {
+        [GOBLIN]: publicToken(GOBLIN, "Goblin", { top_left: { x: 300, y: 300 } }),
+        [ORC]: publicToken(ORC, "Orc", { top_left: { x: 400, y: 300 } }),
+      },
+      ...over,
+    });
+  const { live, ui } = table("player", view());
+  live.client.state.actors.value = { [HERO_ACTOR]: { version: 1, data: actor } as any };
+  return { live, ui, view };
+}
+
+describe("ActionResolutionCard: beams, darts and chosen damage types", () => {
+  const beamCases = [
+    { id: "a level 5 warlock's Eldritch Blast rolls two 1d10 beams at one target", level: 5, aims: { [GOBLIN]: 2 }, perTarget: [GOBLIN, GOBLIN] },
+    { id: "a level 11 warlock splits three beams, each with its own attack roll", level: 11, aims: { [GOBLIN]: 1, [ORC]: 2 }, perTarget: [GOBLIN, ORC, ORC] },
+  ];
+  for (const c of beamCases) {
+    it(c.id, () => {
+      const { live, ui } = casterTable(casterKnowing("warlock", c.level, "srd:spell:eldritch_blast"));
+      startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:eldritch_blast" });
+      for (const id of Object.keys(c.aims)) ui.input(`action-target-${id}`, "on", "change");
+      for (const [id, count] of Object.entries(c.aims)) ui.input(`action-instances-${id}`, String(count), "input");
+      ui.click("action-roll");
+      const sent = live.commands().filter((cmd) => cmd.cmd === "RESOLVE_ACTION").map((cmd) => cmd.request);
+      assert.deepEqual(
+        sent.map((r) => [r.check.kind, r.damage_dice, r.targets.map((t: { token_id: string }) => t.token_id)]),
+        c.perTarget.map((id) => ["ATTACK", "1d10", [id]])
+      );
+      assert.equal(new Set(sent.map((r) => r.resolution_id)).size, sent.length);
+      ui.unmount();
+    });
+  }
+
+  it("Roll waits until every beam is aimed", () => {
+    const { ui } = casterTable(casterKnowing("warlock", 5, "srd:spell:eldritch_blast"));
+    startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:eldritch_blast" });
+    ui.input(`action-target-${GOBLIN}`, "on", "change");
+    ui.input(`action-instances-${GOBLIN}`, "1", "input");
+    assert.equal(ui.byTestId("action-roll").disabled, true);
+    assert.equal(ui.byTestId("action-instances-left").textContent, "Aimed: 1 of 2 beams.");
+    ui.unmount();
+  });
+
+  const dartCases = [
+    { id: "Magic Missile at level 1 sends three automatic darts as one 3d4 + 3 hit", castLevel: undefined, aims: { [GOBLIN]: 3 }, expected: [[GOBLIN, "3d4", 3]] },
+    { id: "Magic Missile split between two targets adds up the darts per target", castLevel: undefined, aims: { [GOBLIN]: 2, [ORC]: 1 }, expected: [[GOBLIN, "2d4", 2], [ORC, "1d4", 1]] },
+    { id: "Magic Missile cast at level 2 adds a fourth dart", castLevel: 2, aims: { [GOBLIN]: 4 }, expected: [[GOBLIN, "4d4", 4]] },
+  ];
+  for (const c of dartCases) {
+    it(c.id, () => {
+      const { live, ui } = casterTable(casterKnowing("wizard", 3, "srd:spell:magic_missile"));
+      startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:magic_missile", castLevel: c.castLevel });
+      for (const id of Object.keys(c.aims)) ui.input(`action-target-${id}`, "on", "change");
+      for (const [id, count] of Object.entries(c.aims)) ui.input(`action-instances-${id}`, String(count), "input");
+      ui.click("action-roll");
+      const sent = live.commands().filter((cmd) => cmd.cmd === "RESOLVE_ACTION").map((cmd) => cmd.request);
+      assert.deepEqual(
+        sent.map((r) => [r.check.kind, r.targets[0].token_id, r.damage_dice, r.damage_modifier, r.damage_type]),
+        c.expected.map(([id, dice, modifier]) => ["AUTOMATIC", id, dice, modifier, "force"])
+      );
+      ui.unmount();
+    });
+  }
+
+  it("Spirit Guardians sends the picked damage type, never both", async () => {
+    const { live, ui, view } = casterTable(casterKnowing("cleric", 5, "srd:spell:spirit_guardians"));
+    startAction({ kind: "area", actorId: HERO_ACTOR, spellId: "srd:spell:spirit_guardians" });
+    const picker = ui.byTestId("action-damage-type");
+    assert.deepEqual(
+      Array.from(picker.querySelectorAll("option") as ArrayLike<{ value: string }>).map((o) => o.value),
+      ["radiant", "necrotic"]
+    );
+    ui.input("action-damage-type", "necrotic", "change");
+    ui.input("action-area-token", HERO, "change");
+    ui.click("action-area-project");
+    const projected = live.commands().find((cmd) => cmd.cmd === "PROJECT_AOE")!;
+    live.client.applyServerEnvelope({
+      type: "CommandAccepted",
+      seqId: seq++,
+      state: view(),
+      events: [{ event: "AOE_PROJECTED", template: projected.template, affected_cells: [], affected_token_ids: [GOBLIN], persisted: true }],
+    } as any);
+    await flush(6);
+    const request = live.commands().filter((cmd) => cmd.cmd === "RESOLVE_ACTION").at(-1)!.request;
+    assert.deepEqual([request.check.kind, request.damage_type, request.extra_damage], ["SAVE", "necrotic", []]);
+    ui.unmount();
+  });
+});
+
 describe("ActionResolutionCard: a player's area against monsters", () => {
   it("the server rolls each monster's save; the player sees success and half damage", async () => {
     const { live, ui } = table("player");

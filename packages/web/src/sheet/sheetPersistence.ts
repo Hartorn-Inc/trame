@@ -52,8 +52,10 @@
 import {
   CompendiumResolver,
   activeFeatureIdsAfterHpChange,
+  spellDamageResolution,
   withRecomputedDerived,
   type Dnd5eActorData,
+  type SpellDamageResolution,
 } from "../../../game-systems/dnd5e/src/index.ts";
 import { ApiError, VERSION_CONFLICT, type ApiClient, type CampaignActor } from "../api/client.ts";
 import { describeActionError } from "../api/errorMessages.ts";
@@ -212,11 +214,17 @@ export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (
   };
 }
 
+/** Spell damage resolutions a cast opens on the table (`castOnTable`). */
+const CAST_RESOLUTIONS: ReadonlySet<SpellDamageResolution | null> = new Set(['attack', 'save', 'automatic']);
+
 /**
  * Table side of a cast: a concentration spell starts concentration on the
  * caster's token (an area also binds its persistent zone when projected);
  * on the table an area spell opens area placement and a damaging spell opens
- * the attack / save resolution, scaled to `castLevel` when upcast.
+ * the attack / save / automatic resolution, scaled to `castLevel` when
+ * upcast. A rider (Hex) deals its damage on later weapon hits, from the
+ * attacks table, and a described spell (Spike Growth, Teleport's mishap) is
+ * resolved by the table: neither opens a resolution when cast.
  */
 function castOnTable(client: ApiClient, actorId: Uuid, spellId: string, onTable: boolean, castLevel?: number): void {
   const data = CompendiumResolver.getDefault().get(spellId)?.data;
@@ -225,7 +233,7 @@ function castOnTable(client: ApiClient, actorId: Uuid, spellId: string, onTable:
   if (data.concentration === true && caster) client.submitCommand(setConcentration(caster, true));
   if (!onTable) return;
   if (data.area) startAction({ kind: 'area', actorId, spellId, castLevel });
-  else if (typeof data.damageDice === 'string') startAction({ kind: 'attack', actorId, attackId: spellId, castLevel });
+  else if (CAST_RESOLUTIONS.has(spellDamageResolution(data))) startAction({ kind: 'attack', actorId, attackId: spellId, castLevel });
 }
 
 /** Adapts `ApiClient.rollDiceRest` to the modal `DiceRollService` (invariant 3). */

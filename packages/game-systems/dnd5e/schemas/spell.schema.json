@@ -51,6 +51,26 @@
         }
       }
     },
+    "damageResolution": {
+      "enum": ["automatic", "rider", "described"],
+      "description": "Present only on damaging spells with neither attack roll nor saving throw: automatic hits (Magic Missile), riders added to a weapon hit (Hex, Divine Smite), or damage from a later trigger or to the caster, resolved by the table (Spike Growth, Teleport)."
+    },
+    "damageCombination": {
+      "enum": ["all", "choice"],
+      "description": "How several damage parts combine at once: all of them (Flame Strike) or one chosen type (Spirit Guardians). Absent: only the first part is dealt at once, later parts are timed or conditional (Acid Arrow)."
+    },
+    "instances": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "count"],
+      "description": "Repeated beams, darts or rays, each resolved on its own (Eldritch Blast, Magic Missile, Scorching Ray).",
+      "properties": {
+        "unit": { "enum": ["beam", "dart", "ray"] },
+        "count": { "type": "integer", "minimum": 1, "maximum": 10, "description": "Instances at the spell's level (character level 1 for a cantrip)." },
+        "perSlotLevel": { "type": "integer", "minimum": 1, "maximum": 3, "description": "Extra instances per slot level above the spell's level." },
+        "cantripScaling": { "type": "boolean", "description": "Multiply count by the cantrip damage tier (x2 at character level 5, x3 at 11, x4 at 17)." }
+      }
+    },
     "healDice": { "$ref": "#/$defs/dice" },
     "area": {
       "type": "object",

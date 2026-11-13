@@ -266,6 +266,83 @@ describe("Pack-only spells derive once the full SRD is installed", () => {
   });
 });
 
+describe("Spells without an attack roll or a save never borrow the spell attack bonus", () => {
+  after(() => CompendiumResolver.setDefault(null));
+
+  function casterOf(classId: string, spellId: string, level: number): Dnd5eActorData {
+    const actor = actorWith(classId, { int: 16, wis: 16, cha: 16 });
+    actor.attributes.level = level;
+    actor.spellIds = [spellId];
+    return actor;
+  }
+
+  type Expected = { listed: false } | { listed: true; delivery: DerivedAttack["delivery"]; damageDice: string; instances?: DerivedAttack["instances"] };
+  const cases: [string, string, string, number, Expected][] = [
+    ["magic_missile_hits_automatically_with_three_darts", "wizard", "srd:spell:magic_missile", 1, { listed: true, delivery: "automatic", damageDice: "1d4 + 1", instances: { unit: "dart", count: 3 } }],
+    ["hex_is_a_rider_on_a_weapon_hit", "warlock", "srd:spell:hex", 1, { listed: true, delivery: "rider", damageDice: "1d6" }],
+    ["hunters_mark_is_a_rider_on_a_weapon_hit", "ranger", "srd:spell:hunters_mark", 1, { listed: true, delivery: "rider", damageDice: "1d6" }],
+    ["divine_favor_is_a_rider_on_a_weapon_hit", "paladin", "srd:spell:divine_favor", 1, { listed: true, delivery: "rider", damageDice: "1d4" }],
+    ["divine_smite_is_a_rider_on_a_weapon_hit", "paladin", "srd:spell:divine_smite", 2, { listed: true, delivery: "rider", damageDice: "2d8" }],
+    ["shining_smite_is_a_rider_on_a_weapon_hit", "paladin", "srd:spell:shining_smite", 5, { listed: true, delivery: "rider", damageDice: "2d6" }],
+    ["power_word_kill_rolls_nothing", "wizard", "srd:spell:power_word_kill", 17, { listed: false }],
+    ["spike_growth_damages_on_later_movement", "druid", "srd:spell:spike_growth", 3, { listed: false }],
+    ["fire_shield_damages_attackers_later", "wizard", "srd:spell:fire_shield", 7, { listed: false }],
+    ["dimension_door_damage_is_self_damage", "wizard", "srd:spell:dimension_door", 7, { listed: false }],
+    ["meld_into_stone_damage_is_self_damage", "cleric", "srd:spell:meld_into_stone", 5, { listed: false }],
+    ["teleport_mishap_is_self_damage", "wizard", "srd:spell:teleport", 13, { listed: false }],
+    ["wish_stress_is_self_damage", "wizard", "srd:spell:wish", 17, { listed: false }],
+  ];
+  for (const [id, classId, spellId, level, expected] of cases) {
+    it(id, async () => {
+      await installFullSystemSrd();
+      const attack = computeDnd5eSheetDerived(casterOf(classId, spellId, level)).attacks?.find((a) => a.id === spellId);
+      if (!expected.listed) {
+        assert.equal(attack, undefined);
+        return;
+      }
+      assert.deepEqual(
+        [attack?.delivery, attack?.attackBonus, attack?.save, attack?.damageDice, attack?.instances],
+        [expected.delivery, null, undefined, expected.damageDice, expected.instances]
+      );
+    });
+  }
+
+  const beamCases: [string, number, number][] = [
+    ["eldritch_blast_one_beam_at_level_1", 1, 1],
+    ["eldritch_blast_two_beams_at_level_5", 5, 2],
+    ["eldritch_blast_three_beams_at_level_11", 11, 3],
+    ["eldritch_blast_four_beams_at_level_17", 17, 4],
+  ];
+  for (const [id, level, beams] of beamCases) {
+    it(id, async () => {
+      await installFullSystemSrd();
+      const derived = computeDnd5eSheetDerived(casterOf("warlock", "srd:spell:eldritch_blast", level));
+      const attack = derived.attacks?.find((a) => a.id === "srd:spell:eldritch_blast");
+      assert.deepEqual(
+        [attack?.delivery, attack?.attackBonus, attack?.damageDice, attack?.instances],
+        ["ranged", derived.spellAttackBonus, "1d10", { unit: "beam", count: beams }]
+      );
+    });
+  }
+
+  type Parts = { extraDamage?: DerivedAttack["extraDamage"]; damageTypeOptions?: DerivedAttack["damageTypeOptions"] };
+  const partCases: [string, string, string, number, Parts][] = [
+    ["flame_strike_deals_fire_and_radiant", "cleric", "srd:spell:flame_strike", 9, { extraDamage: [{ dice: "5d6", type: "radiant" }] }],
+    ["ice_storm_deals_bludgeoning_and_cold", "druid", "srd:spell:ice_storm", 7, { extraDamage: [{ dice: "4d6", type: "cold" }] }],
+    ["spirit_guardians_offers_radiant_or_necrotic", "cleric", "srd:spell:spirit_guardians", 5, { damageTypeOptions: ["radiant", "necrotic"] }],
+    ["vitriolic_sphere_later_acid_stays_described", "wizard", "srd:spell:vitriolic_sphere", 7, {}],
+  ];
+  for (const [id, classId, spellId, level, expected] of partCases) {
+    it(id, async () => {
+      await installFullSystemSrd();
+      const attack = computeDnd5eSheetDerived(casterOf(classId, spellId, level)).attacks?.find((a) => a.id === spellId);
+      assert.ok(attack);
+      assert.deepEqual([attack.extraDamage, attack.damageTypeOptions], [expected.extraDamage, expected.damageTypeOptions]);
+    });
+  }
+});
+
+
 describe("UA4: features with level", () => {
   it("class_subclass_species_background_and_feat_features", () => {
     let actor = createDefaultActorData("feat-hero", "Feat Hero");
