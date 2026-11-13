@@ -3,6 +3,8 @@ import { useEffect, useRef } from 'preact/hooks';
 import type { CampaignMapScene, StudioLightSource, AudioEmitterConfig, UserRole, WallType } from './types.ts';
 import { CompendiumDrawer, type CompendiumEntry } from '../compendium/CompendiumDrawer.tsx';
 import { QUICK_PICK_MONSTERS, SRD_MONSTER_PREFIX, srdMonsterEntries, stageSrdMonster } from './monsterStaging.ts';
+import { applyTerrainBrush, cellAtPoint, hasCell, moveTerrainCursor, sceneGridSize } from './terrainBrush.ts';
+import type { GridCell } from '../engine/wasmBridge.ts';
 import { createStarterDungeonScene, generateEntityUuid, mapBackendSceneToFrontend, toggleDoorState } from './domain.ts';
 import { SceneAtlas } from './SceneAtlas.tsx';
 import { DARK_CANVAS_PALETTE, SHARED_WALL_KINDS, type CanonicalWallKind } from '../canvas/CanvasThemePalette.ts';
@@ -15,6 +17,18 @@ import { glyphPath, wallGlyphs } from '../canvas/wallGlyphs.ts';
 const STUDIO_MIN_ZOOM = 1;
 const STUDIO_MAX_ZOOM = 6;
 const STUDIO_ZOOM_STEP = 1.5;
+
+/**
+ * Canvas tool: `walls` draws walls by dragging; `paint` / `erase` mark or clear
+ * difficult-terrain cells (mouse drag, or arrow keys + Space on the focused canvas).
+ */
+export type StudioTool = 'walls' | 'paint' | 'erase';
+
+const STUDIO_TOOL_LABEL_KEYS: Record<StudioTool, MessageKey> = {
+  walls: 'maps.tool.walls',
+  paint: 'maps.tool.paintTerrain',
+  erase: 'maps.tool.eraseTerrain',
+};
 
 /** Wall being drawn by a canvas drag, in scene pixels. */
 interface WallDrag {
@@ -78,8 +92,14 @@ export function MapsStudioTab({
   let stagingStatusSignal: { value: string };
   /** Picker toggle, where focus returns when the picker closes. */
   let pickerToggleRef: { current: HTMLButtonElement | null };
+  let studioToolSignal: { value: StudioTool };
+  let terrainCursorSignal: { value: GridCell };
+  let terrainPaintingSignal: { value: boolean };
 
   try {
+    studioToolSignal = useSignal<StudioTool>('walls');
+    terrainCursorSignal = useSignal<GridCell>({ col: 0, row: 0 });
+    terrainPaintingSignal = useSignal<boolean>(false);
     pickerToggleRef = useRef<HTMLButtonElement | null>(null);
     monsterPickerOpenSignal = useSignal<boolean>(false);
     stagingStatusSignal = useSignal<string>('');
@@ -103,6 +123,9 @@ export function MapsStudioTab({
     audioClipUrlSignal = useSignal<string>('ambience.ogg');
     doorFeedbackSignal = useSignal<Record<string, string>>({});
   } catch {
+    studioToolSignal = { value: 'walls' };
+    terrainCursorSignal = { value: { col: 0, row: 0 } };
+    terrainPaintingSignal = { value: false };
     pickerToggleRef = { current: null };
     monsterPickerOpenSignal = { value: false };
     stagingStatusSignal = { value: '' };
@@ -332,31 +355,86 @@ export function MapsStudioTab({
 
   const snapped = (e: PointerEvent, point: Point2D) => (e.altKey ? point : snapToGridCorner(point, selectedScene?.gridCellSizePx ?? 0));
 
-  /** Captures the pointer so a drag ending outside the canvas still ends (or cancels) the wall. */
+  const terrainTool = studioToolSignal.value !== 'walls';
+  const grid = selectedScene ? sceneGridSize(selectedScene.widthPx, selectedScene.heightPx, selectedScene.gridCellSizePx) : { cols: 1, rows: 1 };
+
+  /** Paints or erases `cell` with the active terrain tool (`erase` forces erasing). */
+  const brushCell = (cell: GridCell, erase = false) => {
+    if (!selectedScene) return;
+    const cells = selectedScene.difficultTerrain ?? [];
+    const next = applyTerrainBrush(cells, cell, erase || studioToolSignal.value === 'erase' ? 'erase' : 'paint');
+    if (next === cells) return;
+    const updatedScene: CampaignMapScene = { ...selectedScene, difficultTerrain: next };
+    scenesSignal.value = scenesSignal.value.map((s) => (s.id === updatedScene.id ? updatedScene : s));
+  };
+
+  const brushAtPointer = (e: PointerEvent) => {
+    const point = pointerScenePoint(e);
+    const cell = point && selectedScene ? cellAtPoint(point, selectedScene.gridCellSizePx, grid.cols, grid.rows) : null;
+    if (!cell) return;
+    terrainCursorSignal.value = cell;
+    brushCell(cell);
+  };
+
+  const handleClearTerrain = () => {
+    if (!selectedScene) return;
+    const updatedScene: CampaignMapScene = { ...selectedScene, difficultTerrain: [] };
+    scenesSignal.value = scenesSignal.value.map((s) => (s.id === updatedScene.id ? updatedScene : s));
+  };
+
+  /** Captures the pointer so a drag ending outside the canvas still ends (or cancels) the wall or brush stroke. */
   const handleCanvasPointerDown = (e: PointerEvent) => {
     const point = pointerScenePoint(e);
     if (!point) return;
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+    if (terrainTool) {
+      terrainPaintingSignal.value = true;
+      brushAtPointer(e);
+      return;
+    }
     wallDragSignal.value = { start: snapped(e, point), end: snapped(e, point) };
   };
 
   const handleCanvasPointerCancel = () => {
     wallDragSignal.value = null;
+    terrainPaintingSignal.value = false;
   };
 
   const handleCanvasPointerMove = (e: PointerEvent) => {
+    if (terrainPaintingSignal.value) {
+      brushAtPointer(e);
+      return;
+    }
     const drag = wallDragSignal.value;
     const point = drag ? pointerScenePoint(e) : null;
     if (drag && point) wallDragSignal.value = { start: drag.start, end: snapped(e, point) };
   };
 
   const handleCanvasPointerUp = () => {
+    terrainPaintingSignal.value = false;
     const drag = wallDragSignal.value;
     wallDragSignal.value = null;
     if (drag) addWall(drag.start, drag.end);
   };
 
+  /** Terrain tools only: arrows move the cursor cell, Space / Enter brush it, Delete / Backspace erase it. */
+  const handleCanvasKeyDown = (e: KeyboardEvent) => {
+    if (!terrainTool) return;
+    const moved = moveTerrainCursor(terrainCursorSignal.value, e.key, grid.cols, grid.rows);
+    if (moved) {
+      e.preventDefault?.();
+      terrainCursorSignal.value = moved;
+    } else if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault?.();
+      brushCell(terrainCursorSignal.value);
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault?.();
+      brushCell(terrainCursorSignal.value, true);
+    }
+  };
+
   const handleCanvasClick = (e: MouseEvent) => {
+    if (terrainTool) return;
     const point = pointerScenePoint(e);
     if (!point) return;
     wallP1XSignal.value = point.x;
@@ -590,6 +668,40 @@ export function MapsStudioTab({
                 <span class="ds-hint">{t('maps.drawWallHint')}</span>
                 <span class="ds-hint" data-testid="studio-wall-glyph-hint">{t('maps.wallGlyphHint')}</span>
               </div>
+              <fieldset class="ds-cluster" data-testid="studio-tool-picker" style={{ border: 'none', padding: 0, margin: 0 }}>
+                <legend class="ds-field-label">{t('maps.tool.legend')}</legend>
+                {(Object.keys(STUDIO_TOOL_LABEL_KEYS) as StudioTool[]).map((tool) => (
+                  <label key={tool} class="ds-cluster" style={{ minHeight: '40px', alignItems: 'center' }}>
+                    <input
+                      type="radio"
+                      name="studio-tool"
+                      value={tool}
+                      data-testid={`studio-tool-${tool}`}
+                      checked={studioToolSignal.value === tool}
+                      onChange={() => { studioToolSignal.value = tool; }}
+                    />
+                    {t(STUDIO_TOOL_LABEL_KEYS[tool])}
+                  </label>
+                ))}
+                <button
+                  type="button"
+                  class="ds-btn ds-btn-ghost ds-btn-sm"
+                  data-testid="studio-clear-terrain"
+                  disabled={(selectedScene.difficultTerrain ?? []).length === 0}
+                  onClick={handleClearTerrain}
+                >
+                  {t('maps.terrain.clearAll')}
+                </button>
+              </fieldset>
+              <p class="ds-meta" role="status" data-testid="studio-terrain-status">
+                {terrainTool
+                  ? t(hasCell(selectedScene.difficultTerrain ?? [], terrainCursorSignal.value) ? 'maps.terrain.cursorDifficult' : 'maps.terrain.cursorClear', {
+                      col: terrainCursorSignal.value.col + 1,
+                      row: terrainCursorSignal.value.row + 1,
+                      count: (selectedScene.difficultTerrain ?? []).length,
+                    })
+                  : t('maps.terrain.count', { count: (selectedScene.difficultTerrain ?? []).length })}
+              </p>
               <div
                 data-testid="canvas-viewport"
                 style={{
@@ -603,19 +715,52 @@ export function MapsStudioTab({
                 }}
               >
                 <svg
-                  role="img"
-                  aria-label={t('maps.canvasLabel')}
+                  role={terrainTool ? 'application' : 'img'}
+                  aria-label={terrainTool ? t('maps.terrain.canvasLabel') : t('maps.canvasLabel')}
+                  tabIndex={terrainTool ? 0 : undefined}
                   data-testid="studio-canvas"
                   width={`${studioZoomSignal.value * 100}%`}
                   height={`${studioZoomSignal.value * 100}%`}
                   viewBox={`0 0 ${selectedScene.widthPx} ${selectedScene.heightPx}`}
                   onClick={handleCanvasClick}
+                  onKeyDown={handleCanvasKeyDown}
                   onPointerDown={handleCanvasPointerDown}
                   onPointerMove={handleCanvasPointerMove}
                   onPointerUp={handleCanvasPointerUp}
                   onPointerCancel={handleCanvasPointerCancel}
                   style={{ display: 'block', cursor: 'crosshair', touchAction: 'none' }}
                 >
+                  <defs>
+                    <pattern id="studio-terrain-hatch" width="14" height="14" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                      <line x1="0" y1="0" x2="0" y2="14" stroke="var(--atlas-text-muted)" strokeWidth={3} />
+                    </pattern>
+                  </defs>
+                  {(selectedScene.difficultTerrain ?? []).map((cell) => (
+                    <rect
+                      key={`${cell.col}:${cell.row}`}
+                      data-testid={`canvas-terrain-${cell.col}-${cell.row}`}
+                      x={cell.col * selectedScene.gridCellSizePx}
+                      y={cell.row * selectedScene.gridCellSizePx}
+                      width={selectedScene.gridCellSizePx}
+                      height={selectedScene.gridCellSizePx}
+                      fill="url(#studio-terrain-hatch)"
+                      stroke="var(--atlas-text-muted)"
+                      strokeWidth={1}
+                    />
+                  ))}
+                  {terrainTool ? (
+                    <rect
+                      data-testid="canvas-terrain-cursor"
+                      x={terrainCursorSignal.value.col * selectedScene.gridCellSizePx}
+                      y={terrainCursorSignal.value.row * selectedScene.gridCellSizePx}
+                      width={selectedScene.gridCellSizePx}
+                      height={selectedScene.gridCellSizePx}
+                      fill="none"
+                      stroke="var(--atlas-focus)"
+                      strokeWidth={4}
+                      strokeDasharray="8 4"
+                    />
+                  ) : null}
                   {wallDragSignal.value ? (
                     <line
                       data-testid="canvas-wall-preview"
