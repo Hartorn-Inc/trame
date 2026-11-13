@@ -36,14 +36,20 @@
 //!        never inside the room actor, so a slow compression delays only the
 //!        socket it belongs to.
 //!   5. `BREACH Exposure`:
-//!      - Frames carry no credential: the session cookie travels only in the
-//!        upgrade request, so the classic BREACH target (a secret token) is
-//!        never compressed.
-//!      - Residual risk, accepted: a GM frame mixes GM-only text (hidden token
-//!        names) with text a player can write (their own token name). A player
-//!        who can also watch the GM's encrypted traffic could compare frame
-//!        sizes over many guesses. That needs a campaign member on the GM's
-//!        network path, and the reward is table secrets, not credentials.
+//!      - Frames carry no credentials or signed URLs: the session cookie
+//!        travels only in the upgrade request, so high-value secrets are never
+//!        compressed in WebSocket frames.
+//!      - Per-recipient redaction strips hidden tokens and unrevealed fog
+//!        before serialization, preventing a player from measuring hidden
+//!        table state on their own socket.
+//!      - Residual risk, accepted: an outbound frame for the GM (or another
+//!        player with differing fog of war) mixes recipient-visible table
+//!        strings with player-controlled strings (such as a player's own token
+//!        name). An attacker able to observe another recipient's encrypted
+//!        frame lengths — including on shared in-person Wi-Fi via 802.11 frame
+//!        sizes, not solely on the GM's WAN path, and between players with
+//!        differing fog — has a bounded compression-length side channel
+//!        limited to table strings, never credentials or signed URLs.
 //! ============================================================================
 
 use std::io::Write;

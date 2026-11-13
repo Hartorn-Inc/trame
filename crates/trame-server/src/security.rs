@@ -42,6 +42,10 @@
 //!        `trusted_proxy_hops = N > 0`, in which case the `N`-th
 //!        `X-Forwarded-For` entry from the right (the one appended by the
 //!        outermost trusted proxy) is used. IPv6 clients bucket by /64.
+//!      - Emits a structured `tracing::debug!` event (`client_bucket`,
+//!        `trusted_proxy_hops`, `source`) without credentials or raw headers so
+//!        operators can verify hop extraction with
+//!        `RUST_LOG=trame_server::security=debug`.
 //!   2b. `No Fallback Keys (SEC5)`:
 //!      - Production stores take their keys explicitly from `ServerSecrets`
 //!        (`InMemoryAssetStore::with_base_url_and_secret`,
@@ -425,6 +429,9 @@ impl SecurityPolicy {
     /// Rate-limit bucket of the client address: the socket peer, or the `X-Forwarded-For` entry
     /// appended by the outermost trusted proxy. A header shorter than the hop count, or an
     /// entry that is not an IP, falls back to the peer so spoofed headers cannot pick a bucket.
+    ///
+    /// Logs the resolved `client_bucket`, `trusted_proxy_hops`, and `source` at `DEBUG` level
+    /// (never credentials or raw headers) for `RUST_LOG=trame_server::security=debug` checks.
     fn client_ip(&self, request: &Request) -> String {
         let forwarded = (self.trusted_proxy_hops > 0)
             .then(|| request.headers().get("x-forwarded-for"))
@@ -435,14 +442,20 @@ impl SecurityPolicy {
                     .nth(self.trusted_proxy_hops - 1)
                     .and_then(|hop| hop.trim().parse::<IpAddr>().ok())
             });
-        forwarded
-            .or_else(|| {
-                request
-                    .extensions()
-                    .get::<ConnectInfo<SocketAddr>>()
-                    .map(|ci| ci.0.ip())
-            })
-            .map_or_else(|| "unknown".to_string(), ip_bucket)
+        let (bucket, source) = if let Some(ip) = forwarded {
+            (ip_bucket(ip), "x_forwarded_for")
+        } else if let Some(ci) = request.extensions().get::<ConnectInfo<SocketAddr>>() {
+            (ip_bucket(ci.0.ip()), "connect_info")
+        } else {
+            ("unknown".to_string(), "unknown")
+        };
+        tracing::debug!(
+            client_bucket = %bucket,
+            trusted_proxy_hops = self.trusted_proxy_hops,
+            source = %source,
+            "resolved rate-limit client bucket"
+        );
+        bucket
     }
 }
 
@@ -756,4 +769,241 @@ pub async fn security_headers_middleware(
         }
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header::{AUTHORIZATION, COOKIE};
+
+    #[derive(Default)]
+    struct FieldRecorder(Vec<(String, String)>);
+
+    impl tracing::field::Visit for FieldRecorder {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.push((field.name().to_string(), value.to_string()));
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .push((field.name().to_string(), format!("{value:?}")));
+        }
+    }
+
+    type CapturedEvent = (tracing::Level, String, Vec<(String, String)>);
+
+    #[derive(Clone, Default)]
+    struct DebugCapture(Arc<Mutex<Vec<CapturedEvent>>>);
+
+    impl tracing::Subscriber for DebugCapture {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.level() <= &tracing::Level::DEBUG
+        }
+
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut recorder = FieldRecorder::default();
+            event.record(&mut recorder);
+            self.0.lock().expect("capture mutex").push((
+                *event.metadata().level(),
+                event.metadata().target().to_string(),
+                recorder.0,
+            ));
+        }
+
+        fn enter(&self, _: &tracing::span::Id) {}
+
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    struct ClientIpCase {
+        id: &'static str,
+        trusted_proxy_hops: usize,
+        xff: Option<&'static str>,
+        peer: Option<&'static str>,
+        expected_bucket: &'static str,
+        expected_source: &'static str,
+    }
+
+    #[test]
+    fn client_ip_resolves_trusted_proxy_hops_and_logs_safe_debug_fields() {
+        let cases = [
+            ClientIpCase {
+                id: "hops_0_ignores_xff_and_uses_socket_peer",
+                trusted_proxy_hops: 0,
+                xff: Some("198.51.100.99"),
+                peer: Some("10.0.0.5:4321"),
+                expected_bucket: "10.0.0.5",
+                expected_source: "connect_info",
+            },
+            ClientIpCase {
+                id: "hops_1_uses_rightmost_xff_ignoring_spoofed_prefix",
+                trusted_proxy_hops: 1,
+                xff: Some("198.51.100.77, 203.0.113.42"),
+                peer: Some("169.254.1.1:8080"),
+                expected_bucket: "203.0.113.42",
+                expected_source: "x_forwarded_for",
+            },
+            ClientIpCase {
+                id: "hops_2_selects_second_entry_from_right",
+                trusted_proxy_hops: 2,
+                xff: Some("198.51.100.77, 203.0.113.42, 10.10.0.1"),
+                peer: Some("127.0.0.1:8080"),
+                expected_bucket: "203.0.113.42",
+                expected_source: "x_forwarded_for",
+            },
+            ClientIpCase {
+                id: "hops_exceeding_xff_length_falls_back_to_peer",
+                trusted_proxy_hops: 2,
+                xff: Some("203.0.113.42"),
+                peer: Some("10.0.0.5:4321"),
+                expected_bucket: "10.0.0.5",
+                expected_source: "connect_info",
+            },
+            ClientIpCase {
+                id: "malformed_xff_hop_falls_back_to_peer",
+                trusted_proxy_hops: 1,
+                xff: Some("203.0.113.42, not-an-ip"),
+                peer: Some("10.0.0.5:4321"),
+                expected_bucket: "10.0.0.5",
+                expected_source: "connect_info",
+            },
+            ClientIpCase {
+                id: "ipv6_xff_buckets_by_64_prefix",
+                trusted_proxy_hops: 1,
+                xff: Some("2001:db8:1:2:aaaa:bbbb:cccc:dddd"),
+                peer: Some("10.0.0.5:4321"),
+                expected_bucket: "2001:db8:1:2::/64",
+                expected_source: "x_forwarded_for",
+            },
+            ClientIpCase {
+                id: "missing_xff_and_missing_peer_returns_unknown",
+                trusted_proxy_hops: 1,
+                xff: None,
+                peer: None,
+                expected_bucket: "unknown",
+                expected_source: "unknown",
+            },
+        ];
+
+        for case in cases {
+            let policy = SecurityPolicy {
+                trusted_proxy_hops: case.trusted_proxy_hops,
+                ..SecurityPolicy::default()
+            };
+            let mut builder = Request::builder()
+                .uri("/api/v1/auth/login")
+                .header(AUTHORIZATION, "Bearer secret-bearer-token")
+                .header(COOKIE, "trame_session=secret-cookie-token");
+            if let Some(xff) = case.xff {
+                builder = builder.header("x-forwarded-for", xff);
+            }
+            let mut request = builder.body(Body::empty()).expect("valid test request");
+            if let Some(peer) = case.peer {
+                let addr: SocketAddr = peer.parse().expect("valid peer socket addr");
+                request.extensions_mut().insert(ConnectInfo(addr));
+            }
+
+            let capture = DebugCapture::default();
+            let resolved =
+                tracing::subscriber::with_default(capture.clone(), || policy.client_ip(&request));
+            assert_eq!(resolved, case.expected_bucket, "case {}", case.id);
+
+            let events = capture.0.lock().expect("capture mutex");
+            assert_eq!(events.len(), 1, "case {}", case.id);
+            let (level, target, fields) = &events[0];
+            assert_eq!(*level, tracing::Level::DEBUG, "case {}", case.id);
+            assert_eq!(target, "trame_server::security", "case {}", case.id);
+
+            let find_field = |name: &str| {
+                fields
+                    .iter()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| v.as_str())
+            };
+            let expected_hops = case.trusted_proxy_hops.to_string();
+            assert_eq!(
+                find_field("client_bucket"),
+                Some(case.expected_bucket),
+                "case {}",
+                case.id
+            );
+            assert_eq!(
+                find_field("trusted_proxy_hops"),
+                Some(expected_hops.as_str()),
+                "case {}",
+                case.id
+            );
+            assert_eq!(
+                find_field("source"),
+                Some(case.expected_source),
+                "case {}",
+                case.id
+            );
+            for (_, value) in fields {
+                assert!(
+                    !value.contains("secret-bearer-token")
+                        && !value.contains("secret-cookie-token")
+                        && !value.contains("198.51.100."),
+                    "case {} leaked untrusted or credential header into debug log: {value}",
+                    case.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rotating_spoofed_xff_hits_per_ip_limit_while_second_real_ip_stays_unblocked() {
+        let policy = SecurityPolicy {
+            trusted_proxy_hops: 1,
+            ..SecurityPolicy::default()
+        };
+        let limiter = &policy.rate_limiter;
+        let max_per_ip = limiter.per_ip.max_attempts;
+
+        for attempt in 1..=max_per_ip {
+            let req = Request::builder()
+                .uri("/api/v1/auth/login")
+                .header(
+                    "x-forwarded-for",
+                    format!("198.51.100.{attempt}, 203.0.113.10"),
+                )
+                .body(Body::empty())
+                .expect("valid request");
+            let key = format!("ip:login:{}", policy.client_ip(&req));
+            assert!(
+                limiter.try_reserve(&key, limiter.per_ip).is_ok(),
+                "attempt {attempt} within per_ip should pass"
+            );
+        }
+
+        let blocked_req = Request::builder()
+            .uri("/api/v1/auth/login")
+            .header("x-forwarded-for", "198.51.100.250, 203.0.113.10")
+            .body(Body::empty())
+            .expect("valid request");
+        let blocked_key = format!("ip:login:{}", policy.client_ip(&blocked_req));
+        assert!(
+            limiter.try_reserve(&blocked_key, limiter.per_ip).is_err(),
+            "attempt above per_ip from first real IP must be rate-limited despite spoofed XFF"
+        );
+
+        let second_ip_req = Request::builder()
+            .uri("/api/v1/auth/login")
+            .header("x-forwarded-for", "198.51.100.250, 203.0.113.99")
+            .body(Body::empty())
+            .expect("valid request");
+        let second_key = format!("ip:login:{}", policy.client_ip(&second_ip_req));
+        assert!(
+            limiter.try_reserve(&second_key, limiter.per_ip).is_ok(),
+            "second real client IP must remain unblocked"
+        );
+    }
 }

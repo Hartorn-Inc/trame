@@ -29,8 +29,13 @@
 //!        on-the-fly compression).
 //!   4. `BREACH Exposure`:
 //!      - Session tokens travel in `Set-Cookie` headers, which HTTP/1.1 never
-//!        compresses. Cookies are `SameSite=Lax`, so a cross-site page cannot
-//!        make a credentialed `fetch` and measure compressed response sizes.
+//!        compresses.
+//!      - Session cookies are `SameSite=Lax`: cross-site subrequests (`fetch`,
+//!        XHR) omit them, while top-level cross-site `GET` navigations *do*
+//!        send session cookies. HTTP compression remains safe because
+//!        authenticated JSON API responses are non-navigational (the SPA shell
+//!        itself is static and unauthenticated) and no authenticated `GET`
+//!        endpoint mixes secrets with attacker-reflected input.
 //! ============================================================================
 
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};

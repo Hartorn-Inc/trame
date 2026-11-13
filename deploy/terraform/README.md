@@ -83,6 +83,32 @@ If nothing is printed, or the link expired, open the public URL once to start a 
 
 Then run a backup once to check the job and the R2 token: `eval "$(terraform output -raw backup_now_command)"`.
 
+Finally, verify client-IP rate-limit extraction (`TRAME_TRUSTED_PROXY_HOPS = 1`) so a spoofed `X-Forwarded-For` cannot evade per-IP limits and Cloud Run is not collapsing callers onto one internal peer IP:
+
+1. Enable debug logging for the security module:
+   ```sh
+   gcloud run services update trame-server --region=europe-west9 \
+     --update-env-vars=RUST_LOG=trame_server::security=debug
+   ```
+2. From one client IP, send 31 failed logins within 60 seconds with a rotating spoofed `X-Forwarded-For` and a distinct email per attempt (isolating the 30/min `per_ip` threshold from the 10/min `per_account` threshold):
+   ```sh
+   ORIGIN="$(terraform output -raw public_origin)"
+   for i in $(seq 1 31); do
+     code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$ORIGIN/api/v1/auth/login" \
+       -H 'Content-Type: application/json' \
+       -H "X-Forwarded-For: 198.51.100.$i" \
+       -d "{\"email\":\"probe-$i@example.invalid\",\"password\":\"wrong-password\"}")"
+     printf '%02d:%s ' "$i" "$code"
+   done; echo
+   ```
+   Confirm attempts `01`–`30` return `401` and attempt `31` returns `429`.
+3. Within the same 60-second window, send one failed login from a second real IP (for example a phone on mobile data, off Wi-Fi) and confirm it returns `401` rather than `429` (stays unblocked).
+4. Inspect the debug log to confirm `client_bucket` resolves to your real public IP (or IPv6 `/64`) with `trusted_proxy_hops=1` and `source=x_forwarded_for`, then restore `RUST_LOG=info`:
+   ```sh
+   gcloud logging read 'resource.type="cloud_run_revision" "resolved rate-limit client bucket"' --limit=5
+   gcloud run services update trame-server --region=europe-west9 --update-env-vars=RUST_LOG=info
+   ```
+
 ## Account recovery
 
 - **A player forgot their password.** The Owner opens **Accounts** in the lobby and selects **Create reset link** on that account, then sends the link privately. It works once, for 24 hours, and signs the account out on every device. Creating a new link cancels the previous one.
@@ -255,7 +281,7 @@ To change the amounts, set `budget_amount` and `budget_warning_amounts` (each wa
 - **CPU only during requests.** With request-based billing, work outside requests is throttled, for example the background copy of old PostgreSQL assets to R2. It resumes during the next session.
 - **Neon quotas.** When a project runs out of CU-hours or transfer, Neon suspends it until next month: `/healthz` fails and TRAME is down. Watch usage in the Neon console.
 - **Custom domains.** Cloud Run domain mapping is not offered in `europe-west9`, and a global load balancer costs far more than this target's budget, so this setup uses the `run.app` URL. If you put another proxy in front, set `public_origin` and add one to `trusted_proxy_hops`.
-- **Client IP.** Cloud Run's front end appends the address it received the connection from to `X-Forwarded-For`, after anything the client sent. The container itself only sees an internal peer address. `TRAME_TRUSTED_PROXY_HOPS = 1` therefore keys rate limits on the rightmost entry, which a client cannot forge. Cloud Run's documentation does not describe the header; this behavior comes from public reports and has not been checked on a live deployment of this configuration.
+- **Client IP.** Cloud Run's front end appends the address it received the connection from to `X-Forwarded-For`, after anything the client sent. The container itself only sees an internal peer address. `TRAME_TRUSTED_PROXY_HOPS = 1` therefore keys rate limits on the rightmost entry, which a client cannot forge. Cloud Run's documentation does not describe the header; this behavior comes from public reports and has not been checked on a live deployment of this configuration. Run the client-IP verification steps in [First start](#first-start) (including `RUST_LOG=trame_server::security=debug`) right after the first deploy.
 - **Every green push to `main` deploys.** A merge during a game night restarts the server and drops the sockets. Add required reviewers to the `production` environment (recommended) so each deploy waits for an approval.
 - **First function deploy.** In a project that never used Eventarc or Cloud Build, the first apply can fail on `google_cloudfunctions2_function.budget_cap` while Google creates their service agents; run `terraform apply` again after a few minutes. In projects created before 8 April 2021, also grant `roles/iam.serviceAccountTokenCreator` on the project to the Pub/Sub service agent (`service-<project number>@gcp-sa-pubsub.iam.gserviceaccount.com`), or Eventarc cannot deliver the budget messages.
 - **Not tested against real accounts.** `make lint-terraform` checks formatting, schema validity and lint rules, and `make test-budget-cap` tests the cap function's decision. Nothing here, including the spending cap and the deploy workflow, has been applied to a real project or run against Google Cloud; review the first `terraform plan` carefully, and watch the first deploy. If `gcloud` reports a missing permission there, the deployer's per-resource roles were not enough for that call: grant the named role on the resource, or `roles/run.developer` on the project.
