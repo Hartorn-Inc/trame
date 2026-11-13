@@ -83,6 +83,25 @@ If nothing is printed, or the link expired, open the public URL once to start a 
 
 Then run a backup once to check the job and the R2 token: `eval "$(terraform output -raw backup_now_command)"`.
 
+## Account recovery
+
+- **A player forgot their password.** The Owner opens **Accounts** in the lobby and selects **Create reset link** on that account, then sends the link privately. It works once, for 24 hours, and signs the account out on every device. Creating a new link cancels the previous one.
+- **Changing a password.** Any signed-in user can change their password under **Account** (current password, plus a two-factor code when it is on). Their other devices are signed out.
+- **The Owner is locked out.** Cloud Run cannot run a command inside the service, so run the deployed image once on your machine against the same database. `trame-server owner-reset-link` mints the Owner's reset link, logs it, and exits without opening a port. It needs Docker, `gcloud` signed in as a project Owner, and read access to the images (`gcloud auth configure-docker europe-west9-docker.pkg.dev` once):
+  ```sh
+  IMAGE="$(gcloud run services describe trame-server --region=europe-west9 --format='value(spec.template.spec.containers[0].image)')"
+  secret() { gcloud secrets versions access latest --secret="$1"; }
+  docker run --rm \
+    -e TRAME_ENV=production \
+    -e TRAME_PUBLIC_ORIGIN="$(terraform output -raw public_origin)" \
+    -e DATABASE_URL="$(secret trame-database-url)" \
+    -e MASTER_ENCRYPTION_KEY="$(secret trame-master-encryption-key)" \
+    -e TRAME_JWT_SECRET="$(secret trame-jwt-secret)" \
+    -e TRAME_INVITE_JWT_SECRET="$(secret trame-invite-jwt-secret)" \
+    "$IMAGE" owner-reset-link | grep owner_password_reset_url
+  ```
+  Open the `reset_url` value and choose a new password: one use, 24 hours, every session signed out. Two-factor authentication stays on. The `S3_*` variables are left out on purpose: the command never touches assets, and an empty set is valid.
+
 ## Continuous deployment
 
 `.github/workflows/deploy.yml` runs after each CI run on `main`. It deploys only when CI succeeded for a push to this repository, and it builds the exact commit CI tested:

@@ -8,8 +8,10 @@
  * The `Owner`'s view of every account on the instance (ADR-0039): who has
  * access, with which `InstanceRole`, and whether two-factor authentication is
  * on. The `Owner` promotes trusted `Member`s to `Host` (allowed to create
- * campaigns) and demotes them back. Without it the Owner could not curate who
- * creates campaigns short of editing the database.
+ * campaigns) and demotes them back, and mints one-time password reset links
+ * for locked-out players (spec story 15). Without it the Owner could not
+ * curate who creates campaigns, or recover an account, short of editing the
+ * database.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
@@ -28,19 +30,25 @@
  *      badges carry the role so it is never conveyed by color.
  *    - Load and per-row errors fill `role="alert"` regions that are mounted
  *      before their text, so screen readers announce them.
+ * 5. `Reset Link Shown Once`:
+ *    - The server stores only the token hash, so the minted URL lives in
+ *      component state for the row until the panel closes; minting again
+ *      replaces (and invalidates) the previous link. Guest rows have no
+ *      email to sign in with and offer no reset.
  *
  * EXECUTION LIFECYCLE:
  * -----
  * mount -> `listInstanceUsers()` -> rows
  * promote/demote -> `setInstanceRole(id, HOST|MEMBER)` -> row replaced + announced.
+ * reset link -> `mintPasswordReset(id)` -> copyable URL + expiry on the row + announced.
  * ============================================================================
  */
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { ApiClient, InstanceUser } from "../api/client.ts";
+import type { ApiClient, InstanceUser, PasswordResetLink } from "../api/client.ts";
 import { INSTANCE_ROLE_KEYS } from "../auth/AccountSettingsDialog.tsx";
 import { apiErrorKey } from "../auth/accountForm.tsx";
 import { useFocusOnMount } from "../components/a11y/useFocusOnMount.ts";
-import { t, type MessageKey } from "../i18n/index.ts";
+import { formatEpochSeconds, t, type MessageKey } from "../i18n/index.ts";
 
 /** Props for `InstanceAdminPanel`. */
 export interface InstanceAdminPanelProps {
@@ -57,6 +65,12 @@ const ROLE_ERRORS: Record<string, MessageKey> = {
   USER_NOT_FOUND: "admin.error.notFound",
 };
 
+const RESET_ERRORS: Record<string, MessageKey> = {
+  OWNER_REQUIRED: "admin.error.notOwner",
+  USER_NOT_FOUND: "admin.error.notFound",
+  GUEST_ACCOUNT: "admin.reset.error.guest",
+};
+
 /** Owner-only account list with Host promotion and demotion. */
 export function InstanceAdminPanel({ client, onBack }: InstanceAdminPanelProps) {
   const [users, setUsers] = useState<InstanceUser[]>([]);
@@ -64,8 +78,10 @@ export function InstanceAdminPanel({ client, onBack }: InstanceAdminPanelProps) 
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<{ userId: string; key: MessageKey } | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const [resetLink, setResetLink] = useState<{ userId: string; link: PasswordResetLink } | null>(null);
   const titleRef = useRef<HTMLHeadingElement | null>(null);
   const pending = useRef(false);
+  const resetUrlRef = useRef<HTMLInputElement | null>(null);
 
   useFocusOnMount(titleRef);
 
@@ -98,6 +114,70 @@ export function InstanceAdminPanel({ client, onBack }: InstanceAdminPanelProps) 
     }
     pending.current = false;
     setPendingId(null);
+  };
+
+  const mintReset = async (user: InstanceUser) => {
+    if (pending.current) return;
+    pending.current = true;
+    setPendingId(user.id);
+    setError(null);
+    try {
+      setResetLink({ userId: user.id, link: await client.mintPasswordReset(user.id) });
+      setAnnouncement(t("admin.reset.minted", { name: user.displayName || user.email }));
+    } catch (err) {
+      setError({ userId: user.id, key: apiErrorKey(err, RESET_ERRORS, "admin.reset.error.generic") });
+    }
+    pending.current = false;
+    setPendingId(null);
+  };
+
+  const copyReset = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setAnnouncement(t("admin.reset.copied"));
+    } catch {
+      resetUrlRef.current?.select?.();
+      setAnnouncement(t("invites.copyManual"));
+    }
+  };
+
+  const renderReset = (user: InstanceUser) => {
+    if (user.isGuest) return null;
+    const busy = pendingId === user.id;
+    const minted = resetLink?.userId === user.id ? resetLink.link : null;
+    return (
+      <div class="ds-stack-sm">
+        <div>
+          <button
+            type="button"
+            class="ds-btn ds-btn-secondary"
+            data-testid={`admin-reset-${user.id}`}
+            aria-label={t("admin.reset.mintAria", { name: user.displayName || user.email })}
+            aria-busy={busy ? "true" : undefined}
+            aria-disabled={busy ? "true" : undefined}
+            onClick={() => mintReset(user)}
+          >
+            {t(minted ? "admin.reset.mintAgain" : "admin.reset.mint")}
+          </button>
+        </div>
+        {minted && (
+          <div class="ds-stack-sm" data-testid={`admin-reset-link-${user.id}`}>
+            <div class="ds-cluster" style={{ alignItems: "flex-end" }}>
+              <label class="ds-field" for="admin-reset-url" style={{ flex: "1 1 16rem" }}>
+                <span class="ds-field-label">{t("admin.reset.linkLabel", { name: user.displayName || user.email })}</span>
+                <input id="admin-reset-url" ref={resetUrlRef} data-testid="admin-reset-url" class="ds-input" type="text" readOnly value={minted.resetUrl} />
+              </label>
+              <button type="button" class="ds-btn ds-btn-secondary" data-testid="admin-reset-copy" onClick={() => copyReset(minted.resetUrl)}>
+                {t("invites.copy")}
+              </button>
+            </div>
+            <p class="ds-hint" data-testid="admin-reset-expiry">
+              {t("admin.reset.hint", { date: formatEpochSeconds(minted.expiresAt) })}
+            </p>
+          </div>
+        )}
+      </div>
+    );
   };
 
   const renderAction = (user: InstanceUser) => {
@@ -170,6 +250,7 @@ export function InstanceAdminPanel({ client, onBack }: InstanceAdminPanelProps) 
                   </div>
                   {renderAction(user)}
                 </div>
+                {renderReset(user)}
                 <div role="alert" data-testid={`admin-error-region-${user.id}`}>
                   {error?.userId === user.id && (
                     <p class="ds-field-error" data-testid={`admin-error-${user.id}`}>

@@ -44,6 +44,16 @@ Every container has a read-only root filesystem, `no-new-privileges` and dropped
    ```
    Open the `setup_url` value in a browser and create the Owner account. If it expired, run `docker compose restart trame-server` to get a new one. Set `TRAME_BOOTSTRAP_OWNER_EMAIL` to restrict who can claim it.
 
+## Account recovery
+
+- **A player forgot their password.** The Owner opens **Accounts** in the lobby and selects **Create reset link** on that account, then sends the link privately. It works once, for 24 hours, and signs the account out on every device. Creating a new link cancels the previous one. Guest accounts have no password and offer no link.
+- **Changing a password.** Any signed-in user can change their password under **Account**: the current password is required, plus a two-factor code when two-factor authentication is on. Their other devices are signed out.
+- **The Owner is locked out.** Mint a reset link for the Owner from the server itself. The command uses the running server's configuration and database, prints one log line, and exits without touching the running server:
+  ```sh
+  docker compose exec trame-server /app/trame-server owner-reset-link | grep owner_password_reset_url
+  ```
+  Open the `reset_url` value and choose a new password. The same rules apply: one use, 24 hours, every session signed out. Two-factor authentication stays on, so keep access to the authenticator app.
+
 ## Variants
 
 - **Bundled Silo (default)**: keep `COMPOSE_PROFILES=silo`. Map images are downloaded by the browser through Caddy on your own domain (`https://<domain>/<S3_BUCKET>/...`, presigned for 5 minutes). `storage-init` creates the bucket and its CORS rule at every start.

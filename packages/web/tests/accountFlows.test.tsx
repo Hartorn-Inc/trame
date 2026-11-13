@@ -4,7 +4,7 @@ import { afterEach, describe, it } from "node:test";
 import { h, options, render } from "preact";
 import { ApiClient } from "../src/api/client.ts";
 import { createSessionState } from "../src/api/session.ts";
-import { localeSignal, t } from "../src/i18n/index.ts";
+import { localeSignal, t, type MessageKey } from "../src/i18n/index.ts";
 import { setupMockDom } from "./helpers/mockDom.ts";
 import { authUserDto, campaignDto, createMockTransport, flush, type RouteReply } from "./helpers/mockTransport.ts";
 import { assertAbsent } from "./helpers/domAssert.ts";
@@ -690,6 +690,166 @@ describe("TOTP code step on sign-in", () => {
       assert.deepEqual(logins[0].body, { email: "pc@example.test", password: "correct horse battery" });
       assert.deepEqual(logins.at(-1)?.body, { email: "pc@example.test", password: "correct horse battery", totp_code: "123456" });
       assert.equal(state.user.value?.id, PLAYER_ID);
+    });
+  }
+});
+
+describe("PasswordResetScreen (/reset-password?token=)", () => {
+  const OK: RouteReply = { status: 200, body: { ok: true } };
+  const VALID: RouteReply = { status: 200, body: { status: "valid", email: "pc@example.test" } };
+  const cases: Array<{
+    id: string;
+    search: string;
+    status: RouteReply | null;
+    reset: RouteReply | null;
+    visible: string;
+    hidden: string;
+    resetCalls: number;
+  }> = [
+    { id: "reset_valid_link_sets_password_then_offers_sign_in", search: "?token=c0ffee", status: VALID, reset: OK, visible: "reset-done", hidden: "reset-form", resetCalls: 1 },
+    { id: "reset_expired_link_explains_how_to_get_a_new_one", search: "?token=c0ffee", status: { status: 200, body: { status: "expired" } }, reset: null, visible: "reset-expired", hidden: "reset-form", resetCalls: 0 },
+    { id: "reset_used_link_shows_invalid", search: "?token=c0ffee", status: { status: 200, body: { status: "invalid" } }, reset: null, visible: "reset-invalid", hidden: "reset-form", resetCalls: 0 },
+    { id: "reset_missing_token_shows_invalid_without_a_request", search: "", status: null, reset: null, visible: "reset-invalid", hidden: "reset-form", resetCalls: 0 },
+    { id: "reset_status_check_failure_offers_explanation", search: "?token=c0ffee", status: { status: 500, body: { error: "boom" } }, reset: null, visible: "reset-checkFailed", hidden: "reset-form", resetCalls: 0 },
+    { id: "reset_link_used_elsewhere_during_submit_ends_the_form", search: "?token=c0ffee", status: VALID, reset: err(401, "INVALID_RESET_TOKEN"), visible: "reset-invalid", hidden: "reset-form", resetCalls: 1 },
+    { id: "reset_link_expiring_during_submit_shows_expired", search: "?token=c0ffee", status: VALID, reset: err(401, "RESET_TOKEN_EXPIRED"), visible: "reset-expired", hidden: "reset-form", resetCalls: 1 },
+    { id: "reset_weak_password_keeps_the_form_with_a_field_alert", search: "?token=c0ffee", status: VALID, reset: err(400, "WEAK_PASSWORD"), visible: "reset-error", hidden: "reset-done", resetCalls: 1 },
+  ];
+
+  for (const c of cases) {
+    it(c.id, async () => {
+      const routes: Record<string, RouteReply> = { "GET /api/v1/auth/me": ME_401, "GET /api/v1/campaigns": NO_CAMPAIGNS };
+      if (c.status) routes["POST /api/v1/auth/password-reset/status"] = c.status;
+      if (c.reset) routes["POST /api/v1/auth/password-reset"] = c.reset;
+      const { transport } = await mount(routes, { pathname: "/reset-password", search: c.search });
+      if (byTestId("reset-form")) {
+        assert.equal(byTestId("reset-error-region").getAttribute("role"), "alert", "the alert region exists before its message");
+        assert.ok(byTestId("reset-account").textContent.includes("pc@example.test"), "the account being reset is named");
+        typeInto("reset-password", "correct horse battery");
+        await act("reset-form", "submit");
+      }
+      assert.ok(byTestId(c.visible), `expected ${c.visible}`);
+      assertAbsent(byTestId(c.hidden), c.hidden);
+      assert.equal(callsTo(transport, "POST /api/v1/auth/password-reset").length, c.resetCalls);
+      if (c.visible === "reset-error") {
+        assert.equal(byTestId("reset-error").textContent, t("auth.error.weakPassword"));
+        assert.equal(byTestId("reset-password").getAttribute("aria-invalid"), "true");
+      }
+    });
+  }
+
+  it("reset_signs_out_this_browser_then_lands_on_sign_in", async () => {
+    const { transport, state } = await mount(
+      {
+        "GET /api/v1/auth/me": me({ id: PLAYER_ID }),
+        "GET /api/v1/campaigns": NO_CAMPAIGNS,
+        "POST /api/v1/auth/password-reset/status": VALID,
+        "POST /api/v1/auth/password-reset": OK,
+      },
+      { pathname: "/reset-password", search: "?token=c0ffee" },
+    );
+    assert.equal(state.status.value, "authenticated");
+    transport.routes["GET /api/v1/auth/me"] = ME_401;
+    typeInto("reset-password", "correct horse battery");
+    await act("reset-form", "submit");
+    assert.deepEqual(callsTo(transport, "POST /api/v1/auth/password-reset")[0].body, { token: "c0ffee", new_password: "correct horse battery" });
+    assert.equal(byTestId("reset-done").textContent, t("reset.done"));
+    assert.equal(state.status.value, "anonymous", "the revoked session is dropped");
+    assert.ok(doc.activeElement === byTestId("reset-sign-in"), "focus moves to the next step");
+    await act("reset-sign-in");
+    assert.ok(byTestId("auth-screen"));
+    assertAbsent(byTestId("password-reset-screen"), "password-reset-screen");
+  });
+});
+
+describe("AccountSettingsDialog password change", () => {
+  const BODY = { current_password: "old horse battery", new_password: "new horse battery staple" };
+  const cases: Array<{
+    id: string;
+    totp: boolean;
+    reply: RouteReply;
+    code: string;
+    body: Record<string, unknown>;
+    error: MessageKey | null;
+    invalidField: string | null;
+  }> = [
+    { id: "change_without_totp_sends_current_and_new_password", totp: false, reply: { status: 200, body: { ok: true } }, code: "", body: BODY, error: null, invalidField: null },
+    { id: "change_with_totp_sends_the_trimmed_code", totp: true, reply: { status: 200, body: { ok: true } }, code: " 123456 ", body: { ...BODY, totp_code: "123456" }, error: null, invalidField: null },
+    { id: "wrong_current_password_flags_the_current_field", totp: false, reply: err(401, "INVALID_CREDENTIALS"), code: "", body: BODY, error: "account.password.error.current", invalidField: "account-password-current" },
+    { id: "wrong_totp_code_flags_the_code_field", totp: true, reply: err(401, "INVALID_TOTP_CODE"), code: "000000", body: { ...BODY, totp_code: "000000" }, error: "auth.error.invalidTotp", invalidField: "account-password-code" },
+    { id: "weak_new_password_flags_the_new_field", totp: false, reply: err(400, "WEAK_PASSWORD"), code: "", body: BODY, error: "auth.error.weakPassword", invalidField: "account-password-new" },
+  ];
+
+  for (const c of cases) {
+    it(c.id, async () => {
+      const { transport } = await mount({
+        "GET /api/v1/auth/me": me({ totp_enabled: c.totp }),
+        "GET /api/v1/campaigns": NO_CAMPAIGNS,
+        "POST /api/v1/auth/password": c.reply,
+      });
+      await act("header-account");
+      assert.equal(Boolean(byTestId("account-password-code")), c.totp, "the code field exists only with TOTP");
+      assert.equal(byTestId("account-password-alert-region").getAttribute("role"), "alert");
+      typeInto("account-password-current", "old horse battery");
+      typeInto("account-password-new", "new horse battery staple");
+      if (c.totp) typeInto("account-password-code", c.code);
+      await act("account-password-form", "submit");
+      assert.deepEqual(callsTo(transport, "POST /api/v1/auth/password")[0].body, c.body);
+      if (c.error && c.invalidField) {
+        assert.equal(byTestId("account-password-error").textContent, t(c.error));
+        assert.equal(byTestId(c.invalidField).getAttribute("aria-invalid"), "true");
+        assert.equal(byTestId("account-password-status").textContent, "");
+      } else {
+        assertAbsent(byTestId("account-password-error"), "account-password-error");
+        assert.equal(byTestId("account-password-status").textContent, t("account.password.changed"));
+        assert.equal(byTestId("account-password-current").value, "", "the fields are cleared");
+      }
+    });
+  }
+
+  it("guest_account_has_no_password_to_change", async () => {
+    await mount({ "GET /api/v1/auth/me": me({ is_guest: true }), "GET /api/v1/campaigns": NO_CAMPAIGNS });
+    await act("header-account");
+    assertAbsent(byTestId("account-password"), "account-password");
+  });
+});
+
+describe("InstanceAdminPanel password reset links", () => {
+  const GUEST_ID = "55555555-5555-4555-8555-555555555555";
+  const users = [
+    { id: OWNER_ID, email: "owner@example.test", display_name: "Morgan", instance_role: "OWNER", is_guest: false, totp_enabled: true, created_at: 1 },
+    { id: PLAYER_ID, email: "pc@example.test", display_name: "Lyra", instance_role: "MEMBER", is_guest: false, totp_enabled: false, created_at: 2 },
+    { id: GUEST_ID, email: "", display_name: "Wanderer", instance_role: "MEMBER", is_guest: true, totp_enabled: false, created_at: 3 },
+  ];
+  const RESET_URL = "https://trame.example.test/reset-password?token=c0ffee";
+  const cases: Array<{ id: string; reply: RouteReply; alert: MessageKey | null }> = [
+    { id: "owner_mints_a_copyable_reset_link", reply: { status: 201, body: { reset_url: RESET_URL, expires_at: 1_900_000_000 } }, alert: null },
+    { id: "mint_failure_shows_row_alert_without_a_link", reply: err(500, "STORAGE_ERROR"), alert: "admin.reset.error.generic" },
+    { id: "mint_rate_limited_is_explained", reply: err(429, "RATE_LIMITED"), alert: "auth.error.rateLimited" },
+  ];
+
+  for (const c of cases) {
+    it(c.id, async () => {
+      const { transport } = await mount({
+        "GET /api/v1/auth/me": me({ id: OWNER_ID, instance_role: "OWNER" }),
+        "GET /api/v1/campaigns": NO_CAMPAIGNS,
+        "GET /api/v1/instance/users": { status: 200, body: { users } },
+        [`POST /api/v1/instance/users/${PLAYER_ID}/password-reset`]: c.reply,
+      });
+      await act("header-instance-admin");
+      assertAbsent(byTestId(`admin-reset-${GUEST_ID}`), "guests have no password to reset");
+      assert.ok(byTestId(`admin-reset-${OWNER_ID}`), "the Owner can reset their own password too");
+      await act(`admin-reset-${PLAYER_ID}`);
+      assert.equal(callsTo(transport, `POST /api/v1/instance/users/${PLAYER_ID}/password-reset`).length, 1);
+      if (c.alert) {
+        assertAbsent(byTestId(`admin-reset-link-${PLAYER_ID}`), "no link after a failure");
+        assert.equal(byTestId(`admin-error-${PLAYER_ID}`).textContent, t(c.alert));
+      } else {
+        assert.equal(byTestId("admin-reset-url").value, RESET_URL);
+        assert.ok(byTestId("admin-reset-expiry").textContent.length > 0);
+        assert.equal(byTestId("admin-status").textContent, t("admin.reset.minted", { name: "Lyra" }));
+        assert.equal(byTestId(`admin-reset-${PLAYER_ID}`).textContent, t("admin.reset.mintAgain"));
+      }
     });
   }
 });

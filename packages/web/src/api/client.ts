@@ -289,6 +289,29 @@ export interface OwnerBootstrapInput {
   displayName: string;
 }
 
+/** Result of `POST /api/v1/auth/password-reset/status`; `invalid` covers unknown, used, and replaced links. */
+export interface PasswordResetCheck {
+  status: SetupTokenStatus;
+  /** Email of the account the link resets; only present while `valid`. */
+  email: string | null;
+}
+
+/** One-time password reset link minted by the `Owner` (`POST /api/v1/instance/users/{id}/password-reset`). */
+export interface PasswordResetLink {
+  /** `{TRAME_PUBLIC_ORIGIN}/reset-password?token={token}`; shown once, never stored in clear. */
+  resetUrl: string;
+  /** UNIX epoch seconds (24 h after minting). */
+  expiresAt: number;
+}
+
+/** Body of `POST /api/v1/auth/password` (signed-in password change). */
+export interface ChangePasswordInput {
+  currentPassword: string;
+  newPassword: string;
+  /** 6-digit code; required when the account has TOTP enabled. */
+  totpCode?: string;
+}
+
 /** One account in the Owner-only list (`GET /api/v1/instance/users`). */
 export interface InstanceUser {
   id: Uuid;
@@ -722,6 +745,46 @@ export class ApiClient {
       instance_role: role,
     });
     return toInstanceUser(res.user as Json);
+  }
+
+  /**
+   * Mints a one-time password reset link for an account
+   * (`POST /api/v1/instance/users/{id}/password-reset`, Owner only; `409 GUEST_ACCOUNT` for guests).
+   * Minting again replaces the previous link.
+   */
+  async mintPasswordReset(userId: Uuid): Promise<PasswordResetLink> {
+    const res = await this.request("POST", `/api/v1/instance/users/${encodeURIComponent(userId)}/password-reset`);
+    return { resetUrl: String(res.reset_url ?? ""), expiresAt: Number(res.expires_at ?? 0) };
+  }
+
+  /** Checks a reset token before showing the new-password form (`POST /api/v1/auth/password-reset/status`). */
+  async getPasswordResetStatus(token: string): Promise<PasswordResetCheck> {
+    const res = await this.request("POST", "/api/v1/auth/password-reset/status", { token });
+    const status = String(res.status);
+    return {
+      status: status === "valid" || status === "expired" ? status : "invalid",
+      email: typeof res.email === "string" ? res.email : null,
+    };
+  }
+
+  /**
+   * Sets a new password from a reset link (`POST /api/v1/auth/password-reset`). Every session of the
+   * account is revoked and none is issued: the caller signs in with the new password.
+   */
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    await this.request("POST", "/api/v1/auth/password-reset", { token, new_password: newPassword });
+  }
+
+  /**
+   * Changes the signed-in user's password (`POST /api/v1/auth/password`). Other sessions are
+   * revoked; this one stays signed in.
+   */
+  async changePassword(input: ChangePasswordInput): Promise<void> {
+    await this.request("POST", "/api/v1/auth/password", {
+      current_password: input.currentPassword,
+      new_password: input.newPassword,
+      ...(input.totpCode ? { totp_code: input.totpCode } : {}),
+    });
   }
 
   /** Shows where an invite leads before any credential is asked (`POST /api/v1/invites/preview`). */
