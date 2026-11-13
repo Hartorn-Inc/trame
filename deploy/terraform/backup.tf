@@ -113,6 +113,13 @@ resource "google_cloud_run_v2_job" "backup" {
     }
   }
 
+  lifecycle {
+    precondition {
+      condition     = try(length(var.backup_s3_access_key_id) > 0, false)
+      error_message = "Set backup_s3_access_key_id (R2 token of the backups bucket) before deploying the backup job."
+    }
+  }
+
   depends_on = [
     google_project_service.enabled,
     google_secret_manager_secret_iam_member.backup,

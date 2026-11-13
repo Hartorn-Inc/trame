@@ -28,8 +28,9 @@ cloudflare_account_id = "0123456789abcdef0123456789abcdef"
 # assets_bucket_name  = "trame-assets"
 # backups_bucket_name = "trame-backups"
 # Access Key IDs of two R2 API tokens (Object Read & Write), one per bucket.
-s3_access_key_id        = "r2-assets-token-access-key-id"
-backup_s3_access_key_id = "r2-backups-token-access-key-id"
+# Created after bootstrap step 1 (the buckets must exist to scope the tokens).
+# s3_access_key_id        = "r2-assets-token-access-key-id"
+# backup_s3_access_key_id = "r2-backups-token-access-key-id"
 
 # --- Backups --------------------------------------------------------------------
 # backup_schedule       = "0 3 * * *"

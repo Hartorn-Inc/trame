@@ -64,7 +64,7 @@ locals {
     S3_BUCKET                   = cloudflare_r2_bucket.assets.name
     S3_REGION                   = "auto"
     S3_ACCESS_KEY_ID            = var.s3_access_key_id
-  } : name => value if value != "" }
+  } : name => value if value != null && value != "" }
 }
 
 resource "google_cloud_run_v2_service" "trame" {
@@ -148,6 +148,13 @@ resource "google_cloud_run_v2_service" "trame" {
         timeout_seconds   = 5
         failure_threshold = 3
       }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = try(length(var.s3_access_key_id) > 0, false)
+      error_message = "Set s3_access_key_id (R2 token of the assets bucket) before deploying the service: without it the server refuses to start."
     }
   }
 

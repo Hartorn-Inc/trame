@@ -122,7 +122,8 @@ variable "assets_bucket_name" {
 
 variable "s3_access_key_id" {
   type        = string
-  description = "Access Key ID of the R2 API token used by `trame-server` (Object Read & Write on the assets bucket only). It is not secret: every presigned URL carries it. The matching secret goes to Secret Manager."
+  description = "Access Key ID of the R2 API token used by `trame-server` (Object Read & Write on the assets bucket only). It is not secret: every presigned URL carries it. The matching secret goes to Secret Manager. Null is only accepted until the buckets exist (bootstrap step 1); the service refuses to deploy without it."
+  default     = null
 }
 
 variable "backups_bucket_name" {
@@ -133,7 +134,8 @@ variable "backups_bucket_name" {
 
 variable "backup_s3_access_key_id" {
   type        = string
-  description = "Access Key ID of the R2 API token used by the backup job (Object Read & Write on the backups bucket only)."
+  description = "Access Key ID of the R2 API token used by the backup job (Object Read & Write on the backups bucket only). Null is only accepted until the buckets exist; the backup job refuses to deploy without it."
+  default     = null
 }
 
 variable "backup_s3_prefix" {
