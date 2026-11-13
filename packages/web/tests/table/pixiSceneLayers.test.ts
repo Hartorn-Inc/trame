@@ -92,7 +92,7 @@ describe("pixiSceneLayers: a scripted session stays incremental and never leaves
       id: "first scene draws every layer, both tokens and the torch",
       state: base(),
       texture: mapA,
-      layers: ["grid", "terrain", "walls", "aoes", "darkness", "fog"],
+      layers: ["grid", "terrain", "walls", "aoes", "darkness", "darkvision", "fog"],
       tokens: { added: [HERO, GOBLIN], changed: [], removed: [] },
       lights: { added: [TORCH], changed: [], removed: [] },
       mapChanged: true,
@@ -172,6 +172,48 @@ describe("pixiSceneLayers: a scripted session stays incremental and never leaves
   });
 });
 
+describe("pixiSceneLayers: darkvision greyscale follows the viewing token's scene", () => {
+  const darkvision = { normal_range_ft: 120, darkvision_range_ft: 60, blindsight_range_ft: 0, tremorsense_range_ft: 0, truesight_range_ft: 0, devils_sight: false, see_invisibility: false };
+  const withDarkvision = (ambient: string, lights: unknown[] = []) =>
+    base({ ambient_lighting: ambient, lights, tokens: { [HERO]: fullToken(HERO, "Brakka", { owner_user_id: PLAYER_ID, top_left: { x: 100, y: 100 }, senses: darkvision }) } } as Partial<ProjectedTableState>);
+  const stage = new Container({ label: "stage" });
+  const map = solidTexture();
+  let layers: SceneLayers;
+  let warnings: ReturnType<typeof captureWarnings>;
+  const sprite = (label: string) => stage.getChildByLabel(label, true)!;
+
+  before(() => {
+    warnings = captureWarnings();
+    layers = createSceneLayers(stage, "sans-serif");
+  });
+
+  after(() => {
+    layers.destroy();
+    map.destroy(true);
+  });
+
+  const steps = [
+    { id: "pitch darkness shows the battlemap in grey inside darkvision", state: withDarkvision("PITCH_DARKNESS"), redrawn: true, grey: true, lit: false },
+    { id: "a torch inside darkvision restores colour where it shines", state: withDarkvision("PITCH_DARKNESS", [torch]), redrawn: true, grey: true, lit: true },
+    { id: "an unchanged scene leaves the darkvision layer alone", state: withDarkvision("PITCH_DARKNESS", [torch]), redrawn: false, grey: true, lit: true },
+    { id: "moonlight is dim light seen in colour, so the grey copy hides", state: withDarkvision("NIGHT_MOONLIGHT", [torch]), redrawn: true, grey: false, lit: false },
+  ];
+  for (const step of steps) {
+    it(step.id, () => {
+      const report = layers.sync(scene(step.state), map);
+      assert.deepEqual(
+        [report.layers.includes("darkvision"), sprite("darkvisionGrey").visible, sprite("darkvisionLit").visible],
+        [step.redrawn, step.grey, step.lit],
+      );
+      assert.deepEqual(danglingResources(stage), []);
+    });
+  }
+
+  it("PixiJS logged no warning while toggling darkvision", () => {
+    assert.deepEqual(warnings.stop(), []);
+  });
+});
+
 describe("headless harness: it catches the bug the old adapter had", () => {
   it("destroying the battlemap texture while the sprite still shows it is reported", () => {
     installHeadlessPixi();
@@ -180,7 +222,11 @@ describe("headless harness: it catches the bug the old adapter had", () => {
     const texture = solidTexture();
     layers.sync(scene(base()), texture);
     texture.destroy(true);
-    assert.deepEqual(danglingResources(stage), ["stage/backgroundMap/battlemap: sprite texture destroyed"]);
+    assert.deepEqual(danglingResources(stage), [
+      "stage/backgroundMap/battlemap: sprite texture destroyed",
+      "stage/backgroundMap/darkvisionGrey: sprite texture destroyed",
+      "stage/backgroundMap/darkvisionLit: sprite texture destroyed",
+    ]);
     layers.sync(scene(base()), null);
     assert.deepEqual(danglingResources(stage), []);
     layers.destroy();

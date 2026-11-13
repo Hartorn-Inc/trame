@@ -31,12 +31,6 @@
  *      normally with no darkvision.
  *    - Without the engine (still loading or failed) a viewer sees only its
  *      own footprint: fog fails closed instead of revealing the map.
- * 2c. `Fog Memory Shows Terrain, Never Live Tokens`:
- *    - A player's explored cells (`exploredCells`, `fogMemory.ts`) that are
- *      out of sight become `fog.memory`: drawn dimmed instead of opaque.
- *    - A non-controlled token is dropped from a player's scene unless part
- *      of its footprint is in current sight (`isRectSeen`), so it can never
- *      show through the dimmed memory.
  * 2b. `Wall Kinds Resolved By The Engine`:
  *    - Every wall reaches the raycaster with its `kind` (`engineWalls`);
  *      windows, open doors, terrain two-hit and one-way normals are decided
@@ -44,6 +38,19 @@
  *    - The GM additionally gets a one-way arrow (the way sight passes) and
  *      terrain two-hit ticks on those walls (`wallGlyphs`), so the kinds
  *      read without colour. Players see the styled stroke only.
+ * 2c. `Fog Memory Shows Terrain, Never Live Tokens`:
+ *    - A player's explored cells (`exploredCells`, `fogMemory.ts`) that are
+ *      out of sight become `fog.memory`: drawn dimmed instead of opaque.
+ *    - A non-controlled token is dropped from a player's scene unless part
+ *      of its footprint is in current sight (`isRectSeen`), so it can never
+ *      show through the dimmed memory.
+ * 2d. `Darkvision Per Viewing Token`:
+ *    - In `PITCH_DARKNESS` the viewing token (`viewingTokenId`: a player's
+ *      selected or first controlled token, never a global flag) with
+ *      darkvision and no Devil's Sight gets `darkvision`: its engine-clipped
+ *      darkvision area, shown in greyscale outside lit areas with the
+ *      darkness thinned to dim light (SRD 5.2.1). Dusk and moonlight are dim
+ *      light, which darkvision sees in colour, so they get none.
  * 3. `Theme Palette Only`:
  *    - Every colour comes from `CanvasThemePaletteSpec` (or from the data
  *      itself: light `color_hex`, the ping sender's colour); health tiers pair
@@ -268,6 +275,23 @@ export interface SceneFog {
   memoryAlpha: number;
 }
 
+/**
+ * Area the viewing token sees only through darkvision (SRD 5.2.1: darkness
+ * seen as dim light, in shades of grey). The renderer shows the battlemap in
+ * greyscale inside `polygon`, except where a light falls (`lit`), and thins
+ * the darkness there to dim-light level.
+ */
+export interface SceneDarkvision {
+  /** Token whose darkvision this is. */
+  tokenId: Uuid;
+  /** Wall-clipped darkvision area (`px`), from the engine raycaster. */
+  polygon: Point2D[];
+  /** Lit areas (`SceneLight.polygon`) where colours are seen normally. */
+  lit: Point2D[][];
+  /** Share of the darkness overlay removed inside `polygon` (`0..=1`). */
+  thinDarkness: number;
+}
+
 export interface ScenePing {
   key: string;
   pos: Point2D;
@@ -288,6 +312,8 @@ export interface TableScene extends BoardMetrics {
   lights: SceneLight[];
   /** `null` when the recipient sees the whole map (GM without preview). */
   fog: SceneFog | null;
+  /** Greyscale darkvision of the viewing token; `null` outside pitch darkness or without one. */
+  darkvision: SceneDarkvision | null;
   pings: ScenePing[];
   reducedMotion: boolean;
 }
@@ -463,6 +489,50 @@ function buildTerrain(state: ProjectedTableState, input: TableSceneInput, cellPx
   };
 }
 
+/** Footprint corners, centre and eye height (`ft`) of a projected token. */
+function tokenEye(raw: ProjectedTableState["tokens"][string], cellPx: number): { footprint: Point2D[]; origin: Point2D; eyeFt: number } {
+  const topLeft = raw.top_left ?? { x: 0, y: 0 };
+  const w = Math.max(1, raw.grid_w ?? 1) * cellPx;
+  const h = Math.max(1, raw.grid_h ?? 1) * cellPx;
+  return {
+    footprint: [topLeft, { x: topLeft.x + w, y: topLeft.y }, { x: topLeft.x + w, y: topLeft.y + h }, { x: topLeft.x, y: topLeft.y + h }],
+    origin: { x: topLeft.x + w / 2, y: topLeft.y + h / 2 },
+    eyeFt: (raw.elevation_ft ?? 0) + (raw.height_ft ?? DEFAULT_HEIGHT_FT),
+  };
+}
+
+/**
+ * Token whose eyes the darkvision rendering uses (invariant 2d): for a
+ * player the selected token when they control it, else their first
+ * controlled token; for the GM the selected token, only while previewing
+ * the player view. `null` when there is none.
+ */
+export function viewingTokenId(state: ProjectedTableState, input: Pick<TableSceneInput, "isGm" | "previewPlayerView" | "selectedTokenId">): Uuid | null {
+  const selected = input.selectedTokenId && state.tokens[input.selectedTokenId] ? input.selectedTokenId : null;
+  if (input.isGm) return input.previewPlayerView ? selected : null;
+  return selected ?? Object.keys(state.tokens)[0] ?? null;
+}
+
+function buildDarkvision(state: ProjectedTableState, input: TableSceneInput, cellPx: number, lights: SceneLight[]): SceneDarkvision | null {
+  if (ambientPreset(state.ambient_lighting) !== "PITCH_DARKNESS" || !input.geometry) return null;
+  const tokenId = viewingTokenId(state, input);
+  if (!tokenId) return null;
+  const raw = state.tokens[tokenId];
+  const senses = { ...PLAIN_SENSES, ...raw.senses };
+  if (senses.darkvision_range_ft <= 0 || senses.devils_sight) return null;
+  const { origin, eyeFt } = tokenEye(raw, cellPx);
+  const rangePx = senses.darkvision_range_ft * (cellPx / (state.feet_per_cell || 5));
+  const walls = engineWalls(state.walls ?? [], "vision");
+  const polygon = safely(() => input.geometry!.visibilityPolygon(walls, origin, eyeFt, rangePx, senses.truesight_range_ft > 0), [] as Point2D[]);
+  if (polygon.length < 3) return null;
+  return {
+    tokenId,
+    polygon,
+    lit: lights.map((light) => light.polygon ?? circlePoints(light.origin, light.dimPx)),
+    thinDarkness: 1 - AMBIENT_DARKNESS_ALPHA.NIGHT_MOONLIGHT / AMBIENT_DARKNESS_ALPHA.PITCH_DARKNESS,
+  };
+}
+
 function buildFog(state: ProjectedTableState, input: TableSceneInput, metrics: BoardMetrics): SceneFog | null {
   if (input.isGm && !input.previewPlayerView) return null;
   const { cellPx } = metrics;
@@ -471,13 +541,8 @@ function buildFog(state: ProjectedTableState, input: TableSceneInput, metrics: B
   const ambient = ambientPreset(state.ambient_lighting);
   const walls = engineWalls(state.walls ?? [], "vision");
   const vision = viewers.map((raw) => {
-    const topLeft = raw.top_left ?? { x: 0, y: 0 };
-    const w = Math.max(1, raw.grid_w ?? 1) * cellPx;
-    const h = Math.max(1, raw.grid_h ?? 1) * cellPx;
-    const footprint = [topLeft, { x: topLeft.x + w, y: topLeft.y }, { x: topLeft.x + w, y: topLeft.y + h }, { x: topLeft.x, y: topLeft.y + h }];
+    const { footprint, origin, eyeFt } = tokenEye(raw, cellPx);
     if (!input.geometry) return footprint;
-    const origin = { x: topLeft.x + w / 2, y: topLeft.y + h / 2 };
-    const eyeFt = (raw.elevation_ft ?? 0) + (raw.height_ft ?? DEFAULT_HEIGHT_FT);
     const senses = { ...PLAIN_SENSES, ...raw.senses };
     return safely(() => input.geometry!.tokenVisionPolygon(walls, origin, eyeFt, senses, ambient, pxPerFt), footprint);
   });
@@ -573,6 +638,7 @@ export function buildTableScene(input: TableSceneInput): TableScene {
   const ambient = { tint: parseHexColor(CANVAS_AMBIENT_TINTS[preset]) ?? palette.fogUnexploredHex, alpha: AMBIENT_DARKNESS_ALPHA[preset] };
   const fog = state ? buildFog(state, input, metrics) : null;
   const tokens = state ? buildTokens(state, input, metrics.cellPx) : [];
+  const lights = state && ambient.alpha > 0 ? buildLights(state, input, metrics.cellPx) : [];
   return {
     ...metrics,
     voidColor: palette.canvasVoidHex,
@@ -583,8 +649,9 @@ export function buildTableScene(input: TableSceneInput): TableScene {
     aoes: state ? buildAoes(state, input, metrics.cellPx) : [],
     tokens: input.isGm ? tokens : tokens.filter((token) => token.controlled || isRectSeen(fog, token.rect)),
     ambient,
-    lights: state && ambient.alpha > 0 ? buildLights(state, input, metrics.cellPx) : [],
+    lights,
     fog,
+    darkvision: state ? buildDarkvision(state, input, metrics.cellPx, lights) : null,
     pings: buildPings(input),
     reducedMotion: input.reducedMotion,
   };

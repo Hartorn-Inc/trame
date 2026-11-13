@@ -40,6 +40,12 @@
  *    - The fog shroud uses its holes `Graphics` as an inverse stencil mask
  *      only while there are holes; with none the mask is removed so PixiJS
  *      never clips the shroud against empty bounds.
+ * 5. `Darkvision Is Per Viewer`:
+ *    - `scene.darkvision` (null unless the viewing token has darkvision in
+ *      pitch darkness) masks a desaturated copy of the battlemap to the
+ *      darkvision area and a full-colour copy to the lit parts of it, and
+ *      erases `thinDarkness` of the darkness overlay there so the area reads
+ *      as dim light in shades of grey (SRD 5.2.1).
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -52,7 +58,7 @@
  * `drawPings(scene, nowMs)` -> redraw the ping `Graphics` (animation frames).
  * ============================================================================
  */
-import { AlphaFilter, Container, Graphics, Mesh, MeshGeometry, Shader, Sprite, Text, Texture } from "pixi.js";
+import { AlphaFilter, ColorMatrixFilter, Container, Graphics, Mesh, MeshGeometry, Shader, Sprite, Text, Texture } from "pixi.js";
 import { RADIAL_LIGHT_GLSL_FRAG } from "../../canvas/LightingShader.ts";
 import { TACTICAL_SCENE_LAYERS, type TacticalSceneLayerId } from "../../canvas/SceneGraph.ts";
 import type { Point2D } from "../../engine/wasmBridge.ts";
@@ -219,7 +225,24 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
 
   const mapSprite = new Sprite({ texture: Texture.EMPTY, label: "battlemap" });
   mapSprite.visible = false;
-  layers.backgroundMap.addChild(mapSprite);
+  /** Darkvision: the battlemap again in greyscale inside the darkvision area, then in colour where lights fall. */
+  const greyscale = new ColorMatrixFilter();
+  greyscale.desaturate();
+  const dvMask = new Graphics();
+  const litMask = new Graphics();
+  const greyMap = new Sprite({ texture: Texture.EMPTY, label: "darkvisionGrey" });
+  greyMap.filters = [greyscale];
+  greyMap.mask = dvMask;
+  const litMap = new Sprite({ texture: Texture.EMPTY, label: "darkvisionLit" });
+  litMap.mask = litMask;
+  layers.backgroundMap.addChild(mapSprite, greyMap, litMap, dvMask, litMask);
+  const mapSprites = [mapSprite, greyMap, litMap];
+  let darkvisionShown = false;
+  let darkvisionLit = false;
+  const showDarkvisionMaps = () => {
+    greyMap.visible = darkvisionShown && mapTexture !== null;
+    litMap.visible = greyMap.visible && darkvisionLit;
+  };
 
   const grid = new Graphics();
   const terrain = new Graphics();
@@ -236,7 +259,10 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
   const shade = new Container({ label: "darkness" });
   shade.filters = [offscreen];
   const darkness = new Graphics();
-  shade.addChild(darkness);
+  /** Erases part of the darkness inside the darkvision area (darkness seen as dim light). */
+  const dvThin = new Graphics();
+  dvThin.blendMode = "erase";
+  shade.addChild(darkness, dvThin);
   const glow = new Container({ label: "lightGlow" });
   layers.lightingAndVisionMask.addChild(shade, glow);
   const lights = new Map<string, LightView>();
@@ -309,6 +335,27 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
       glow.visible = dark;
       if (dark) darkness.rect(0, 0, scene.widthPx, scene.heightPx).fill({ color: scene.ambient.tint, alpha: scene.ambient.alpha });
     },
+    darkvision(scene) {
+      dvMask.clear();
+      litMask.clear();
+      dvThin.clear();
+      const dv = scene.darkvision;
+      darkvisionShown = dv !== null;
+      darkvisionLit = false;
+      if (dv) {
+        const flat = dv.polygon.flatMap((p) => [p.x, p.y]);
+        dvMask.poly(flat).fill(0xffffff);
+        dvThin.poly(flat).fill(0xffffff);
+        dvThin.alpha = dv.thinDarkness;
+        for (const area of dv.lit) {
+          if (area.length < 3) continue;
+          litMask.poly(area.flatMap((p) => [p.x, p.y]));
+          darkvisionLit = true;
+        }
+        if (darkvisionLit) litMask.fill(0xffffff);
+      }
+      showDarkvisionMaps();
+    },
     fog(scene) {
       holes.clear();
       shroud.clear();
@@ -345,10 +392,13 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
     const swapped = texture !== mapTexture;
     mapTexture = texture;
     mapSize = size;
-    mapSprite.texture = texture ?? Texture.EMPTY;
+    for (const sprite of mapSprites) {
+      sprite.texture = texture ?? Texture.EMPTY;
+      sprite.width = scene.widthPx;
+      sprite.height = scene.heightPx;
+    }
     mapSprite.visible = texture !== null;
-    mapSprite.width = scene.widthPx;
-    mapSprite.height = scene.heightPx;
+    showDarkvisionMaps();
     return swapped;
   };
 
@@ -427,11 +477,15 @@ export function createSceneLayers(stage: Container, fontFamily: string): SceneLa
       }
       lights.clear();
       tokens.clear();
-      mapSprite.texture = Texture.EMPTY;
+      for (const sprite of mapSprites) sprite.texture = Texture.EMPTY;
       shroud.mask = null;
+      greyMap.mask = null;
+      litMap.mask = null;
+      greyMap.filters = [];
       shade.filters = [];
       for (const layer of Object.values(layers)) layer.destroy({ children: true });
       offscreen.destroy();
+      greyscale.destroy();
     },
   };
 }

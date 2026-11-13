@@ -30,7 +30,7 @@
 import type { SceneLight, SceneToken, TableScene } from "./tableScene.ts";
 
 /** Board-wide layers the retained renderer redraws as a whole when their signature changes. */
-export const SCENE_LAYER_KEYS = ["grid", "terrain", "walls", "aoes", "darkness", "fog"] as const;
+export const SCENE_LAYER_KEYS = ["grid", "terrain", "walls", "aoes", "darkness", "darkvision", "fog"] as const;
 
 export type SceneLayerKey = (typeof SCENE_LAYER_KEYS)[number];
 
@@ -53,6 +53,7 @@ export function layerSignatures(scene: TableScene): LayerSignatures {
     walls: JSON.stringify(scene.walls),
     aoes: JSON.stringify([scene.cellPx, scene.aoes]),
     darkness: JSON.stringify([size, scene.ambient, scene.lights.length > 0]),
+    darkvision: JSON.stringify(scene.darkvision),
     fog: JSON.stringify([size, scene.fog]),
   };
 }
