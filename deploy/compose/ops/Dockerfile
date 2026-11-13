@@ -6,7 +6,8 @@
 # --------
 # One small image for the Compose `backup` service (nightly `pg_dump`, local
 # retention, S3 upload, `restore.sh`) and the one-shot `storage-init` job
-# (bucket creation and CORS rule).
+# (bucket creation and CORS rule). The Cloud Run backup job of
+# `deploy/terraform` runs the same image (`backup.sh now`, `restore.sh`).
 #
 # INVARIANTS & SAFETY BOUNDARIES:
 # -------------------------------

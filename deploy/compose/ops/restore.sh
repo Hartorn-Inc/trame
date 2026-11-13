@@ -28,6 +28,10 @@
 #   4. `Plain File Names Only`:
 #      - The argument is a file name in `BACKUP_DIR` (no `/`). When it is not
 #        there and `BACKUP_S3_*` is set, it is first downloaded from the bucket.
+#   5. `Connection From PG* Or DATABASE_URL`:
+#      - Compose sets the libpq `PG*` variables. The Cloud Run job only has
+#        `DATABASE_URL` (Neon): its `/dbname` path is the target database and
+#        the same URL on `/postgres` is the maintenance connection.
 #
 # EXECUTION LIFECYCLE:
 # --------------------
@@ -46,6 +50,25 @@ BACKUP_S3_PREFIX=${BACKUP_S3_PREFIX:-trame/postgres}
 log() {
 	printf '%s restore: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
 }
+
+# `target` is the database to restore into, `maintenance` the connection used to drop
+# and recreate it: plain database names for PG*, URIs for DATABASE_URL.
+if [ -n "${DATABASE_URL:-}" ]; then
+	url_without_params=${DATABASE_URL%%\?*}
+	case "$url_without_params" in
+	*://*/?*) ;;
+	*)
+		log "DATABASE_URL must end with /<database>"
+		exit 2
+		;;
+	esac
+	PGDATABASE=${url_without_params##*/}
+	target=$DATABASE_URL
+	maintenance="${url_without_params%/*}/postgres${DATABASE_URL#"$url_without_params"}"
+else
+	target=$PGDATABASE
+	maintenance=postgres
+fi
 
 remote_enabled() {
 	[ -n "${BACKUP_S3_ENDPOINT:-}" ] && [ -n "${BACKUP_S3_BUCKET:-}" ]
@@ -102,17 +125,17 @@ pg_restore --list "$dump" >/dev/null || {
 }
 
 others=$(printf "SELECT count(*) FROM pg_stat_activity WHERE datname = :'db' AND pid <> pg_backend_pid();\n" |
-	psql --no-psqlrc -At -v db="$PGDATABASE" -d postgres)
+	psql --no-psqlrc -At -v db="$PGDATABASE" -d "$maintenance")
 if [ "$others" != 0 ]; then
-	log "$others other session(s) use database $PGDATABASE; stop trame-server first (docker compose stop trame-server)"
+	log "$others other session(s) use database $PGDATABASE; stop trame-server first (Compose: docker compose stop trame-server; Cloud Run: --scaling=0)"
 	exit 1
 fi
 
 log "recreating database $PGDATABASE"
-dropdb --if-exists --maintenance-db=postgres "$PGDATABASE"
-createdb --maintenance-db=postgres "$PGDATABASE"
+dropdb --if-exists --maintenance-db="$maintenance" "$PGDATABASE"
+createdb --maintenance-db="$maintenance" "$PGDATABASE"
 
 log "restoring $name"
 pg_restore --single-transaction --exit-on-error --no-owner --no-privileges \
-	--dbname="$PGDATABASE" "$dump"
-log "restored $name into $PGDATABASE; start trame-server again (docker compose start trame-server)"
+	--dbname="$target" "$dump"
+log "restored $name into $PGDATABASE; start trame-server again"

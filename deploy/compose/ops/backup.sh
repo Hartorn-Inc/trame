@@ -40,6 +40,9 @@
 # ENVIRONMENT:
 # ------------
 #   PGHOST, PGUSER, PGPASSWORD, PGDATABASE   libpq connection (set by Compose).
+#   DATABASE_URL            `postgresql://user:password@host[:port]/db[?params]`;
+#                           when set it replaces the PG* variables (Cloud Run job
+#                           against Neon, which only receives the server's URL).
 #   BACKUP_DIR              Dump directory (default `/backups`).
 #   BACKUP_TIME             Daily run time, `HH:MM` UTC (default `03:00`).
 #   BACKUP_RETENTION_DAYS   Days to keep, locally and in the bucket (default 14).
@@ -59,6 +62,19 @@ log() {
 	printf '%s backup: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
 }
 
+# The URL's database name labels the dump files (libpq takes the rest from the URL).
+# Without a `/dbname` path the label would be the user:password@host part.
+if [ -n "${DATABASE_URL:-}" ]; then
+	url_without_params=${DATABASE_URL%%\?*}
+	case "$url_without_params" in
+	*://*/?*) PGDATABASE=${url_without_params##*/} ;;
+	*)
+		log "DATABASE_URL must end with /<database>"
+		exit 2
+		;;
+	esac
+fi
+
 remote_enabled() {
 	[ -n "${BACKUP_S3_ENDPOINT:-}" ] && [ -n "${BACKUP_S3_BUCKET:-}" ]
 }
@@ -77,7 +93,7 @@ remote_prefix() {
 backup_now() {
 	name="trame-${PGDATABASE}-$(date -u +%Y%m%dT%H%M%SZ).dump"
 	partial="$BACKUP_DIR/.$name.partial"
-	if ! pg_dump --format=custom --file="$partial"; then
+	if ! pg_dump --format=custom --file="$partial" ${DATABASE_URL:+"--dbname=$DATABASE_URL"}; then
 		rm -f "$partial"
 		log "pg_dump failed"
 		return 1
