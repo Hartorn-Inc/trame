@@ -123,7 +123,7 @@ describe("maps studio: one-way walls keep the direction the GM sees", () => {
     const ui = mount(h(MapsStudioTab, { campaignId: "c1", userRole: "GM", initialScenes: [scene({ x: 0, y: 1 })] }));
     const before = ui.byTestId(`canvas-wall-glyph-${WALL_ID}`).getAttribute("d");
     assert.equal(before, glyphPath(wallGlyphs("OneWay", { x: 0, y: 70 }, { x: 140, y: 70 }, { x: 0, y: 1 })));
-    assert.equal(ui.byTestId(`flip-wall-${WALL_ID}`).getAttribute("aria-label"), `Flip the direction of one-way wall ${WALL_ID}`);
+    assert.equal(ui.byTestId(`flip-wall-${WALL_ID}`).getAttribute("aria-label"), "Flip the direction of one-way wall #1");
     ui.click(`flip-wall-${WALL_ID}`);
     assert.equal(ui.byTestId(`canvas-wall-glyph-${WALL_ID}`).getAttribute("d"), glyphPath(wallGlyphs("OneWay", { x: 0, y: 70 }, { x: 140, y: 70 }, { x: 0, y: -1 })));
     assertPresent(ui.byTestId("studio-wall-glyph-hint"), "glyph legend");
@@ -137,5 +137,104 @@ describe("maps studio: one-way walls keep the direction the GM sees", () => {
     assertAbsent(ui.byTestId(`canvas-wall-glyph-${WALL_ID}`), "glyph");
     assertAbsent(ui.byTestId(`flip-wall-${WALL_ID}`), "flip button");
     ui.unmount();
+  });
+
+  describe("UUID-free studio & atlas labels (UA #14)", () => {
+    const CAMPAIGN_UUID = "11111111-2222-4333-8444-555555555555";
+    const DOOR_UUID = "88888888-0000-4000-8000-000000000002";
+
+    const studioScene = (): CampaignMapScene => ({
+      ...scene({ x: 0, y: 1 }),
+      campaignId: CAMPAIGN_UUID,
+      revealedToPlayers: true,
+      walls: [
+        ...scene({ x: 0, y: 1 }).walls,
+        {
+          id: DOOR_UUID,
+          a: { x: 140, y: 70 },
+          b: { x: 210, y: 70 },
+          wallType: "Door",
+          blocksMovement: true,
+          blocksVision: true,
+          blocksLight: true,
+          blocksSound: true,
+          bottomElevationFt: 0,
+          topElevationFt: 10,
+          doorState: { isOpen: false, isLocked: false },
+        },
+      ],
+    });
+
+    const cases = [
+      {
+        id: "gm-en-named-campaign",
+        locale: "en" as const,
+        role: "GM" as const,
+        campaignName: "Sunless Citadel",
+        expectedCampaign: "Campaign: Sunless Citadel",
+        expectedFlip: "Flip the direction of one-way wall #1",
+        expectedDeleteWall: "Delete wall segment #1",
+        expectedDoorStatus: "Door #1: Closed",
+        expectedDeleteDoor: "Delete door #1",
+      },
+      {
+        id: "gm-fr-unnamed-campaign-fallback",
+        locale: "fr" as const,
+        role: "GM" as const,
+        campaignName: undefined,
+        expectedCampaign: "Campagne active",
+        expectedFlip: "Inverser le sens du mur à sens unique n° 1",
+        expectedDeleteWall: "Supprimer le segment de mur n° 1",
+        expectedDoorStatus: "Porte n° 1 : Fermée",
+        expectedDeleteDoor: "Supprimer la porte n° 1",
+      },
+      {
+        id: "player-atlas-named-campaign",
+        locale: "en" as const,
+        role: "PLAYER" as const,
+        campaignName: "Curse of Strahd",
+        expectedCampaign: "Campaign: Curse of Strahd",
+      },
+      {
+        id: "player-atlas-unnamed-fallback",
+        locale: "fr" as const,
+        role: "PLAYER" as const,
+        campaignName: undefined,
+        expectedCampaign: "Campagne active",
+      },
+    ];
+
+    for (const tc of cases) {
+      it(`[${tc.id}] renders human-friendly labels without raw UUIDs`, () => {
+        localeSignal.value = tc.locale;
+        try {
+          const ui = mount(
+            h(MapsStudioTab, {
+              campaignId: CAMPAIGN_UUID,
+              campaignName: tc.campaignName,
+              userRole: tc.role,
+              initialScenes: [studioScene()],
+            }),
+          );
+          assert.equal(ui.byTestId("maps-campaign-label").textContent, tc.expectedCampaign);
+          assert.doesNotMatch(ui.container.textContent, new RegExp(CAMPAIGN_UUID));
+
+          if (tc.role === "GM") {
+            assert.equal(ui.byTestId(`flip-wall-${WALL_ID}`).getAttribute("aria-label"), tc.expectedFlip);
+            assert.equal(ui.byTestId(`delete-wall-${WALL_ID}`).getAttribute("aria-label"), tc.expectedDeleteWall);
+            const doorsList = ui.byTestId("doors-list");
+            assert.match(doorsList.textContent, new RegExp(tc.expectedDoorStatus!));
+            const doorButtons = doorsList.querySelectorAll("button");
+            const deleteDoorBtn = doorButtons[doorButtons.length - 1];
+            assert.equal(deleteDoorBtn.getAttribute("aria-label"), tc.expectedDeleteDoor);
+            assert.doesNotMatch(ui.byTestId("all-walls-list").textContent, new RegExp(WALL_ID));
+            assert.doesNotMatch(doorsList.textContent, new RegExp(DOOR_UUID));
+          }
+          ui.unmount();
+        } finally {
+          localeSignal.value = "en";
+        }
+      });
+    }
   });
 });

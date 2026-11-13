@@ -191,8 +191,10 @@ export function MapsWorkspaceTab({ campaignId, client, isGm }: MapsWorkspaceTabP
       return t('mapsTab.backgroundSaved', { name: target.title });
     });
 
+  const campaignName = client.state.campaigns.value.find((c) => c.id === campaignId)?.name;
+
   if (!isGm) {
-    return <SceneAtlas key={revision} campaignId={campaignId} scenes={scenes} />;
+    return <SceneAtlas key={revision} campaignId={campaignId} campaignName={campaignName} scenes={scenes} />;
   }
 
   return (
@@ -258,6 +260,7 @@ export function MapsWorkspaceTab({ campaignId, client, isGm }: MapsWorkspaceTabP
       <MapsStudioTab
         key={revision}
         campaignId={campaignId}
+        campaignName={campaignName}
         userRole="GM"
         initialScenes={scenes}
         onSaveScene={saveScene}

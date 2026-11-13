@@ -114,3 +114,26 @@ describe("platform-neutral copy instructions", () => {
     });
   }
 });
+
+describe("French tabletop token terminology harmonization (UA #14)", () => {
+  const tokenKeys = [
+    { id: "fr-not-found-uses-jeton", key: "feedback.reason.NOT_FOUND", expected: /jeton/ },
+    { id: "fr-door-reach-uses-jeton", key: "feedback.reason.DOOR_OUT_OF_REACH", expected: /jeton/ },
+    { id: "fr-remove-token-uses-jeton", key: "command.action.REMOVE_TOKEN", expected: /jeton/ },
+    { id: "fr-table-empty-uses-jeton", key: "table.empty", expected: /jeton/ },
+    { id: "fr-vitals-no-selection-uses-jeton", key: "vitals.noSelection", expected: /jeton/ },
+  ] as const;
+
+  for (const tc of tokenKeys) {
+    it(`[${tc.id}] ${tc.key} uses 'jeton'`, () => {
+      assert.match(FR[tc.key], tc.expected);
+    });
+  }
+
+  it("[fr-zero-pion-occurrences] FR dictionary contains zero 'pion' or 'pions' words", () => {
+    const offendingKeys = Object.entries(FR)
+      .filter(([, value]) => /\bpions?\b/i.test(value))
+      .map(([key]) => key);
+    assert.deepEqual(offendingKeys, []);
+  });
+});

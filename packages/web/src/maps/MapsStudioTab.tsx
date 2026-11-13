@@ -9,6 +9,7 @@ import { createStarterDungeonScene, generateEntityUuid, mapBackendSceneToFronten
 import { SceneAtlas } from './SceneAtlas.tsx';
 import { DARK_CANVAS_PALETTE, SHARED_WALL_KINDS, type CanonicalWallKind } from '../canvas/CanvasThemePalette.ts';
 import type { Point2D } from '../engine/wasmBridge.ts';
+import { session } from '../api/session.ts';
 import { t, type MessageKey } from '../i18n/index.ts';
 import { flipOneWay, scenePoint, snapToGridCorner, wallFromDrag } from './wallDrawing.ts';
 import { glyphPath, wallGlyphs } from '../canvas/wallGlyphs.ts';
@@ -48,6 +49,8 @@ const WALL_TYPE_LABEL_KEYS: Record<WallType, MessageKey> = {
 
 export interface MapsStudioTabProps {
   campaignId: string;
+  /** Human-readable campaign title; resolved from session campaigns when omitted. */
+  campaignName?: string;
   userRole: UserRole;
   initialScenes?: CampaignMapScene[];
   onActivateScene?: (scene: CampaignMapScene) => void;
@@ -58,6 +61,7 @@ export interface MapsStudioTabProps {
 
 export function MapsStudioTab({
   campaignId,
+  campaignName,
   userRole,
   initialScenes = [],
   onActivateScene,
@@ -169,8 +173,16 @@ export function MapsStudioTab({
   }
 
   if (userRole !== 'GM') {
-    return <SceneAtlas campaignId={campaignId} scenes={initialScenes} />;
+    return <SceneAtlas campaignId={campaignId} campaignName={campaignName} scenes={initialScenes} />;
   }
+
+  const resolvedCampaignName =
+    campaignName?.trim() ||
+    session.campaigns.value.find((c) => c.id === campaignId)?.name?.trim() ||
+    '';
+  const campaignLabelText = resolvedCampaignName
+    ? t('maps.campaignLabel', { name: resolvedCampaignName })
+    : t('maps.campaignUnnamed');
 
   const selectedScene = scenesSignal.value.find((s) => s.id === selectedSceneIdSignal.value) ?? null;
 
@@ -460,7 +472,7 @@ export function MapsStudioTab({
       <header class="maps-studio-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 'var(--atlas-font-size-lg)' }}>{t('maps.studio.title')}</h2>
-          <span class="atlas-tabular-nums" style={{ fontSize: 'var(--atlas-font-size-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.campaignLabel', { id: campaignId })}</span>
+          <span data-testid="maps-campaign-label" class="atlas-tabular-nums" style={{ fontSize: 'var(--atlas-font-size-xs)', color: 'var(--atlas-text-muted)' }}>{campaignLabelText}</span>
         </div>
         <div style={{ display: 'flex', gap: 'var(--atlas-space-sm)' }}>
           <button
@@ -991,33 +1003,36 @@ export function MapsStudioTab({
                   {selectedScene.walls.length === 0 ? (
                     <span style={{ fontSize: 'var(--atlas-font-size-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.noWalls')}</span>
                   ) : (
-                    selectedScene.walls.map((w) => (
-                      <div key={w.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--atlas-font-size-xs)', padding: '2px 4px', background: 'var(--atlas-surface-raised)', borderRadius: 'var(--atlas-radius-sm)' }}>
-                        <span class="atlas-tabular-nums">
-                          <strong>{t(WALL_TYPE_LABEL_KEYS[w.wallType] ?? 'maps.wallType.normal')}</strong> ({w.id}): [{w.bottomElevationFt}ft .. {w.topElevationFt}ft] ({w.a.x},{w.a.y}) &rarr; ({w.b.x},{w.b.y})
-                        </span>
-                        {w.wallType === 'OneWay' ? (
+                    selectedScene.walls.map((w, wallIdx) => {
+                      const wallIndex = wallIdx + 1;
+                      return (
+                        <div key={w.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--atlas-font-size-xs)', padding: '2px 4px', background: 'var(--atlas-surface-raised)', borderRadius: 'var(--atlas-radius-sm)' }}>
+                          <span class="atlas-tabular-nums">
+                            <strong>{t(WALL_TYPE_LABEL_KEYS[w.wallType] ?? 'maps.wallType.normal')}</strong> #{wallIndex}: [{w.bottomElevationFt}ft .. {w.topElevationFt}ft] ({w.a.x},{w.a.y}) &rarr; ({w.b.x},{w.b.y})
+                          </span>
+                          {w.wallType === 'OneWay' ? (
+                            <button
+                              type="button"
+                              aria-label={t('maps.flipOneWay', { index: wallIndex })}
+                              data-testid={`flip-wall-${w.id}`}
+                              onClick={() => handleFlipWall(w.id)}
+                              style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
+                            >
+                              {t('maps.flip')}
+                            </button>
+                          ) : null}
                           <button
                             type="button"
-                            aria-label={t('maps.flipOneWay', { id: w.id })}
-                            data-testid={`flip-wall-${w.id}`}
-                            onClick={() => handleFlipWall(w.id)}
+                            aria-label={t('maps.deleteWall', { index: wallIndex })}
+                            data-testid={`delete-wall-${w.id}`}
+                            onClick={() => handleDeleteWall(w.id)}
                             style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
                           >
-                            {t('maps.flip')}
+                            {t('action.delete')}
                           </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          aria-label={t('maps.deleteWall', { id: w.id })}
-                          data-testid={`delete-wall-${w.id}`}
-                          onClick={() => handleDeleteWall(w.id)}
-                          style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
-                        >
-                          {t('action.delete')}
-                        </button>
-                      </div>
-                    ))
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -1027,7 +1042,8 @@ export function MapsStudioTab({
                 <div data-testid="doors-list" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--atlas-space-xs)' }}>
                   {selectedScene.walls
                     .filter((w) => w.wallType === 'Door' || w.wallType === 'SecretDoor')
-                    .map((door) => {
+                    .map((door, doorIdx) => {
+                      const doorIndex = doorIdx + 1;
                       const isDoorLocked = door.wallType === 'Door' && Boolean(door.doorState?.isLocked);
                       const isDoorOpen = door.wallType === 'Door' ? Boolean(door.doorState?.isOpen) : Boolean(door.secretDoorState?.isOpen);
                       return (
@@ -1036,7 +1052,7 @@ export function MapsStudioTab({
                             <span>
                               {t('maps.doorStatus', {
                                 kind: t(door.wallType === 'SecretDoor' ? 'maps.wallType.secretDoor' : 'maps.wallType.door'),
-                                id: door.id,
+                                index: doorIndex,
                                 state: t(isDoorOpen ? 'maps.door.open' : 'maps.door.closed'),
                               })}
                             </span>
@@ -1065,7 +1081,7 @@ export function MapsStudioTab({
                             </button>
                             <button
                               type="button"
-                              aria-label={t('maps.deleteDoor', { id: door.id })}
+                              aria-label={t('maps.deleteDoor', { index: doorIndex })}
                               data-testid={`delete-wall-${door.id}`}
                               onClick={() => handleDeleteWall(door.id)}
                               style={{ minHeight: '40px', minWidth: '40px', padding: 'var(--atlas-space-xs) var(--atlas-space-sm)', fontSize: 'var(--atlas-font-size-xs)' }}
