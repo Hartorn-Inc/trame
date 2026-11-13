@@ -731,3 +731,77 @@ async fn concentration_check_is_prompted_and_server_rolled() {
         assert!(after.data.pending_concentration_checks.is_empty(), "{id}");
     }
 }
+
+#[tokio::test]
+async fn hits_within_5_ft_on_a_downed_hero_are_critical_and_add_two_failures() {
+    // (case_id, attacker is adjacent (goblin) or 15 ft away (lurker), outcome, failures added)
+    let cases = [
+        (
+            "adjacent_attacker_scores_a_critical",
+            true,
+            TargetOutcome::Critical,
+            2,
+        ),
+        (
+            "attacker_15_ft_away_only_hits",
+            false,
+            TargetOutcome::Hit,
+            1,
+        ),
+    ];
+    for (id, adjacent, outcome, failures) in cases {
+        let r = room().await;
+        let hp = state(&r).await.data.tokens[&r.hero].hp;
+        r.handle
+            .dispatch_direct_command(
+                r.gm.clone(),
+                TrameCommand::ApplyDamage {
+                    token_id: r.hero,
+                    raw_damage: hp,
+                    affinity: DamageAffinity::Normal,
+                    is_critical: false,
+                    damage_type: None,
+                },
+            )
+            .await
+            .unwrap();
+        let downed = state(&r).await.data.tokens[&r.hero].clone();
+        assert_eq!(
+            (downed.hp, downed.conditions.clone()),
+            (0, vec!["unconscious".to_string()]),
+            "{id}: 0 HP adds unconscious"
+        );
+
+        let attacker = if adjacent { r.goblin } else { r.lurker };
+        // Natural 1 and 20 decide the outcome on their own; reroll until the d20 is 2..=19.
+        let resolution = loop {
+            let resolution = resolve(
+                &r,
+                &r.gm,
+                request(Some(attacker), attack(30), "", 4, &[r.hero]),
+            )
+            .await
+            .unwrap();
+            if (2..=19).contains(&resolution.targets[0].d20_rolls[0]) {
+                break resolution;
+            }
+        };
+        assert_eq!(resolution.targets[0].outcome, outcome, "{id}: outcome");
+        r.handle
+            .dispatch_direct_command(
+                r.gm.clone(),
+                TrameCommand::ApplyResolution {
+                    resolution_id: resolution.id,
+                    token_id: None,
+                    adjustment: None,
+                },
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert_eq!(
+            state(&r).await.data.tokens[&r.hero].death_save_failures,
+            failures,
+            "{id}: death save failures"
+        );
+    }
+}

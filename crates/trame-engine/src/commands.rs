@@ -80,6 +80,9 @@
 //!      - `SetTokenConditions` follows token control (GM: any token; player:
 //!        owned tokens); `ConditionOverride` is GM-only. Both validate ids
 //!        (`1..=64` bytes, at most 32 per token) before pushing an `UndoEntry`.
+//!      - `SetTokenConditions` cannot add a condition listed in the token's
+//!        stat block `conditionImmunities` (`CommandError::ConditionImmune`)
+//!        unless a GM `ConditionOverride` forces it.
 //!      - `TokenState::effective_conditions` applies the rulings (`Remove`
 //!        wins over the token's own conditions, `Force` adds); engine checks
 //!        read effective conditions only.
@@ -426,6 +429,10 @@ pub const SPEED_ZERO_CONDITIONS: [&str; 5] = [
     "unconscious",
 ];
 
+/// Condition the engine adds to a non-dead token at 0 HP and removes when it is healed above
+/// 0 HP (`TableState::sync_zero_hp_unconscious`).
+pub const UNCONSCIOUS_CONDITION: &str = "unconscious";
+
 /// SRD 5.2.1 condition IDs granting resistance to all damage.
 pub const RESIST_ALL_DAMAGE_CONDITIONS: [&str; 1] = ["petrified"];
 
@@ -768,6 +775,28 @@ impl TokenState {
     /// after the rulings.
     pub fn condition_effects(&self) -> ConditionEffects {
         condition_effects(&self.conditions, &self.condition_overrides)
+    }
+
+    /// `true` when the stat block lists `condition_id` (lowercase) in `conditionImmunities`
+    /// and no GM `ConditionOverride` forces it. `SetTokenConditions` rejects adding such a
+    /// condition (`CommandError::ConditionImmune`); a GM ruling is the only way past it.
+    pub fn is_immune_to_condition(&self, condition_id: &str) -> bool {
+        let forced = self.condition_overrides.iter().any(|o| {
+            o.subject == OverrideSubject::Condition
+                && o.mode == OverrideMode::Force
+                && o.id == condition_id
+        });
+        !forced
+            && self
+                .stat_block
+                .as_ref()
+                .and_then(|block| block.get("conditionImmunities"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|list| {
+                    list.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .any(|id| id.trim().eq_ignore_ascii_case(condition_id))
+                })
     }
 
     /// Modifier added to the server's `1d20` initiative roll (`AuthoritativeInitiativeRoll`).
@@ -2518,7 +2547,30 @@ impl TableState {
                 .push(dc);
             events.push(TrameEvent::ConcentrationCheckRequested { token_id, dc });
         }
+        events.extend(self.sync_zero_hp_unconscious(token_id, token.hp));
         events
+    }
+
+    /// Keeps the `unconscious` condition in step with 0 HP (SRD 5.2.1) after an HP change on
+    /// `token_id` from `hp_before`, inside the caller's undo entry: a token that is at 0 HP and
+    /// not dead gains `unconscious`; a token brought from 0 HP back above 0 loses it. Only the
+    /// token's own conditions change, so a GM `ConditionOverride` still wins, and condition
+    /// immunities do not apply. Returns the `TokenConditionsChanged` event when it changed.
+    fn sync_zero_hp_unconscious(&mut self, token_id: Uuid, hp_before: i32) -> Option<TrameEvent> {
+        let tok = self.data.tokens.get_mut(&token_id)?;
+        let has = tok.conditions.iter().any(|c| c == UNCONSCIOUS_CONDITION);
+        if tok.hp == 0 && !tok.is_dead && !has && tok.conditions.len() < MAX_TOKEN_CONDITIONS {
+            tok.conditions.push(UNCONSCIOUS_CONDITION.to_string());
+        } else if tok.hp > 0 && hp_before == 0 && has {
+            tok.conditions.retain(|c| c != UNCONSCIOUS_CONDITION);
+        } else {
+            return None;
+        }
+        Some(TrameEvent::TokenConditionsChanged {
+            token_id,
+            conditions: tok.conditions.clone(),
+            effective_conditions: tok.effective_conditions(),
+        })
     }
 
     fn apply_command_unpruned(
@@ -2647,11 +2699,16 @@ impl TableState {
                 if outcome.regains_hp {
                     tok_mut.hp = 1;
                 }
-                Ok(vec![TrameEvent::DeathSaveRecorded {
+                let regains_hp = outcome.regains_hp;
+                let mut events = vec![TrameEvent::DeathSaveRecorded {
                     token_id,
                     d20,
                     outcome,
-                }])
+                }];
+                if regains_hp {
+                    events.extend(self.sync_zero_hp_unconscious(token_id, token.hp));
+                }
+                Ok(events)
             }
 
             TrameCommand::SetTokenConditions {
@@ -2670,6 +2727,13 @@ impl TableState {
                     if !normalized.contains(&id) {
                         normalized.push(id);
                     }
+                }
+                let token = &self.data.tokens[&token_id];
+                if let Some(immune) = normalized
+                    .iter()
+                    .find(|id| !token.conditions.contains(id) && token.is_immune_to_condition(id))
+                {
+                    return Err(CommandError::ConditionImmune(immune.clone()));
                 }
                 self.push_undo(format!("Set conditions for {name}"));
                 let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
@@ -2952,11 +3016,13 @@ impl TableState {
                     tok.death_save_failures = 0;
                     tok.is_stable = false;
                 }
-                Ok(vec![TrameEvent::TokenHealed {
+                let mut events = vec![TrameEvent::TokenHealed {
                     token_id,
                     hp_restored,
                     new_hp: tok.hp,
-                }])
+                }];
+                events.extend(self.sync_zero_hp_unconscious(token_id, token.hp));
+                Ok(events)
             }
 
             TrameCommand::ClearAoe { aoe_id } => {
@@ -3023,6 +3089,7 @@ impl TableState {
                     .clone();
                 self.push_undo(format!("GM override resources for {token_name}"));
                 let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
+                let hp_before = tok.hp;
                 if let Some(v) = hp {
                     tok.hp = v.clamp(0, tok.max_hp);
                     if tok.hp > 0 {
@@ -3047,7 +3114,7 @@ impl TableState {
                 if let Some(v) = has_reaction {
                     tok.has_reaction = v;
                 }
-                Ok(vec![TrameEvent::TokenResourcesOverridden {
+                let mut events = vec![TrameEvent::TokenResourcesOverridden {
                     token_id,
                     hp: tok.hp,
                     temp_hp: tok.temp_hp,
@@ -3056,7 +3123,11 @@ impl TableState {
                     has_bonus_action: tok.has_bonus_action,
                     has_reaction: tok.has_reaction,
                     is_dead: tok.is_dead,
-                }])
+                }];
+                if hp.is_some() {
+                    events.extend(self.sync_zero_hp_unconscious(token_id, hp_before));
+                }
+                Ok(events)
             }
 
             TrameCommand::ProjectAoe {

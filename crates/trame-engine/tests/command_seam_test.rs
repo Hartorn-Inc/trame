@@ -1267,6 +1267,160 @@ fn apply_damage_tracks_death_saves_and_enforces_ownership() {
 }
 
 #[test]
+fn zero_hp_adds_unconscious_and_regaining_hp_removes_it() {
+    use trame_engine::{OverrideMode, OverrideSubject};
+    struct Case {
+        id: &'static str,
+        target_owner: Option<Uuid>,
+        hp: i32,
+        conditions: Vec<&'static str>,
+        remove_ruling: bool,
+        command: TrameCommand,
+        expect_conditions: Vec<&'static str>,
+        expect_effective: Vec<&'static str>,
+    }
+    let base = || Case {
+        id: "",
+        target_owner: Some(PLAYER_ID),
+        hp: 5,
+        conditions: vec!["prone"],
+        remove_ruling: false,
+        command: damage(HERO_ID, 5),
+        expect_conditions: vec!["prone", "unconscious"],
+        expect_effective: vec!["prone", "unconscious"],
+    };
+    let cases = [
+        Case {
+            id: "hero_dropped_to_zero_falls_unconscious",
+            ..base()
+        },
+        Case {
+            id: "hit_at_zero_keeps_a_single_unconscious",
+            hp: 0,
+            conditions: vec!["unconscious"],
+            command: damage(HERO_ID, 1),
+            expect_conditions: vec!["unconscious"],
+            expect_effective: vec!["unconscious"],
+            ..base()
+        },
+        Case {
+            id: "gm_ruling_removing_unconscious_wins",
+            remove_ruling: true,
+            expect_effective: vec!["prone"],
+            ..base()
+        },
+        Case {
+            id: "synthetic_monster_dies_instead",
+            target_owner: None,
+            expect_conditions: vec!["prone"],
+            expect_effective: vec!["prone"],
+            ..base()
+        },
+        Case {
+            id: "massive_damage_kills_without_unconscious",
+            command: damage(HERO_ID, 40),
+            expect_conditions: vec!["prone"],
+            expect_effective: vec!["prone"],
+            ..base()
+        },
+        Case {
+            id: "healing_from_zero_wakes_the_hero",
+            hp: 0,
+            conditions: vec!["unconscious", "prone"],
+            command: TrameCommand::HealActor {
+                token_id: HERO_ID,
+                amount: 3,
+            },
+            expect_conditions: vec!["prone"],
+            expect_effective: vec!["prone"],
+            ..base()
+        },
+        Case {
+            id: "healing_above_zero_keeps_other_unconsciousness",
+            hp: 4,
+            conditions: vec!["unconscious"],
+            command: TrameCommand::HealActor {
+                token_id: HERO_ID,
+                amount: 3,
+            },
+            expect_conditions: vec!["unconscious"],
+            expect_effective: vec!["unconscious"],
+            ..base()
+        },
+        Case {
+            id: "natural_20_death_save_wakes_the_hero",
+            hp: 0,
+            conditions: vec!["unconscious"],
+            command: TrameCommand::RecordDeathSave {
+                token_id: HERO_ID,
+                d20: Some(20),
+            },
+            expect_conditions: vec![],
+            expect_effective: vec![],
+            ..base()
+        },
+        Case {
+            id: "gm_resource_override_to_zero_knocks_out",
+            command: TrameCommand::GmOverrideTokenResources {
+                token_id: HERO_ID,
+                hp: Some(0),
+                temp_hp: None,
+                speed_remaining_ft: None,
+                has_action: None,
+                has_bonus_action: None,
+                has_reaction: None,
+            },
+            ..base()
+        },
+    ];
+    for c in cases {
+        let mut hero = token(HERO_ID, "Kyra", 0.0, 0.0, c.target_owner);
+        hero.max_hp = 20;
+        hero.hp = c.hp;
+        hero.conditions = c.conditions.iter().map(|s| s.to_string()).collect();
+        if c.remove_ruling {
+            hero.condition_overrides
+                .push(trame_engine::ConditionOverrideEntry {
+                    subject: OverrideSubject::Condition,
+                    id: "unconscious".to_string(),
+                    mode: OverrideMode::Remove,
+                });
+        }
+        let mut state = table(vec![hero.clone()], vec![]);
+        let events = state
+            .apply_command(&gm(), c.command)
+            .unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+        let tok = &state.data.tokens[&HERO_ID];
+        let strings = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(tok.conditions, strings(&c.expect_conditions), "case {}", c.id);
+        assert_eq!(
+            tok.effective_conditions(),
+            strings(&c.expect_effective),
+            "case {} effective",
+            c.id
+        );
+        let changed = tok.conditions != hero.conditions;
+        assert_eq!(
+            events
+                .iter()
+                .any(|e| matches!(e, TrameEvent::TokenConditionsChanged { .. })),
+            changed,
+            "case {} conditions event",
+            c.id
+        );
+        assert_eq!(state.undo_stack.len(), 1, "case {} one undo entry", c.id);
+        state
+            .apply_command(&gm(), TrameCommand::UndoLastAction)
+            .unwrap();
+        assert_eq!(
+            state.data.tokens[&HERO_ID].conditions, hero.conditions,
+            "case {} undone",
+            c.id
+        );
+    }
+}
+
+#[test]
 fn typed_damage_derives_affinity_from_the_target_token() {
     struct Case {
         id: &'static str,

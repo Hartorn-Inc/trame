@@ -1093,6 +1093,102 @@ fn condition_override_is_gm_only_wins_over_conditions_and_is_undoable() {
 }
 
 #[test]
+fn set_token_conditions_respects_stat_block_condition_immunities() {
+    use trame_engine::{ConditionOverrideEntry, OverrideMode, OverrideSubject};
+    const LICH_ID: Uuid = Uuid::from_u128(0x30);
+    struct Case {
+        id: &'static str,
+        actor: CommandActor,
+        existing: Vec<&'static str>,
+        force_ruling: Option<&'static str>,
+        conditions: Vec<&'static str>,
+        expect: Result<Vec<&'static str>, &'static str>,
+    }
+    let cases = [
+        Case {
+            id: "gm_cannot_paralyze_a_lich",
+            actor: gm(),
+            existing: vec![],
+            force_ruling: None,
+            conditions: vec!["prone", "Paralyzed"],
+            expect: Err("condition immunity: this creature is immune to paralyzed"),
+        },
+        Case {
+            id: "lich_takes_conditions_it_is_not_immune_to",
+            actor: gm(),
+            existing: vec![],
+            force_ruling: None,
+            conditions: vec!["blinded"],
+            expect: Ok(vec!["blinded"]),
+        },
+        Case {
+            id: "gm_force_ruling_lets_paralyzed_through",
+            actor: gm(),
+            existing: vec![],
+            force_ruling: Some("paralyzed"),
+            conditions: vec!["paralyzed"],
+            expect: Ok(vec!["paralyzed"]),
+        },
+        Case {
+            id: "condition_already_on_the_token_can_stay_while_others_change",
+            actor: gm(),
+            existing: vec!["paralyzed"],
+            force_ruling: None,
+            conditions: vec!["paralyzed", "blinded"],
+            expect: Ok(vec!["paralyzed", "blinded"]),
+        },
+    ];
+    for c in cases {
+        let mut lich = token(LICH_ID, "Lich", 0.0, 0.0, None);
+        lich.stat_block = Some(json!({
+            "conditionImmunities": ["charmed", "exhaustion", "frightened", "paralyzed", "poisoned"]
+        }));
+        lich.conditions = c.existing.iter().map(|s| s.to_string()).collect();
+        if let Some(id) = c.force_ruling {
+            lich.condition_overrides.push(ConditionOverrideEntry {
+                subject: OverrideSubject::Condition,
+                id: id.to_string(),
+                mode: OverrideMode::Force,
+            });
+        }
+        let mut state = table(vec![lich]);
+        let before = state.data.tokens[&LICH_ID].conditions.clone();
+        let result = state.apply_command(
+            &c.actor,
+            TrameCommand::SetTokenConditions {
+                token_id: LICH_ID,
+                conditions: c.conditions.iter().map(|s| s.to_string()).collect(),
+            },
+        );
+        match c.expect {
+            Ok(expected) => {
+                result.unwrap_or_else(|e| panic!("case {}: {e}", c.id));
+                assert_eq!(
+                    state.data.tokens[&LICH_ID].conditions, expected,
+                    "case {} state",
+                    c.id
+                );
+            }
+            Err(message) => {
+                let err = result.unwrap_err();
+                assert!(
+                    matches!(err, CommandError::ConditionImmune(_)),
+                    "case {}: {err}",
+                    c.id
+                );
+                assert_eq!(err.to_string(), message, "case {}", c.id);
+                assert!(state.undo_stack.is_empty(), "case {} no undo entry", c.id);
+                assert_eq!(
+                    state.data.tokens[&LICH_ID].conditions, before,
+                    "case {} unchanged",
+                    c.id
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn condition_rulings_decide_whether_a_reactor_is_incapacitated() {
     use trame_engine::{OverrideMode, OverrideSubject};
     struct Case {
