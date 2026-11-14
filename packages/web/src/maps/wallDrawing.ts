@@ -24,8 +24,14 @@
  *    - `wallFlagsFor` is the single source of the default movement / vision
  *      / light / sound flags per kind (Window lets sight and light through,
  *      Illusion lets bodies and sound through, Terrain lets sound through).
+ * 4. `One-Way Walls Carry Their Normal`:
+ *    - A drawn one-way wall stores the engine's default normal for its drag
+ *      direction (sight going "down" a left-to-right drag is blocked), and
+ *      `flipOneWay` negates it, so what the studio arrow shows is what the
+ *      engine enforces after save.
  * ============================================================================
  */
+import { oneWayNormal } from '../canvas/wallGlyphs.ts';
 import type { Point2D } from '../engine/wasmBridge.ts';
 import type { StudioWallSegment, WallType } from './types.ts';
 
@@ -84,7 +90,15 @@ export function wallFromDrag(
     ...wallFlagsFor(type),
     bottomElevationFt,
     topElevationFt,
+    oneWayNormal: type === 'OneWay' ? oneWayNormal(start, end, null) : undefined,
     doorState: type === 'Door' ? { isOpen: false, isLocked: false } : undefined,
     secretDoorState: type === 'SecretDoor' ? { isOpen: false } : undefined,
   };
+}
+
+/** The one-way wall with its blocking side swapped (invariant 4); other walls unchanged. */
+export function flipOneWay(wall: StudioWallSegment): StudioWallSegment {
+  if (wall.wallType !== 'OneWay') return wall;
+  const n = oneWayNormal(wall.a, wall.b, wall.oneWayNormal ?? null);
+  return { ...wall, oneWayNormal: { x: -n.x || 0, y: -n.y || 0 } };
 }

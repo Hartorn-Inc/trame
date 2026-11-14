@@ -1,6 +1,8 @@
 ---
 name: frontend-reviewer
 description: Frontend component architecture, PreactSignalState boundaries, ATLAS v1.1 token & WidgetRegistry discipline, and PixiJS v8 SceneGraph reviewer for Hartorn-Inc/trame.
+model: inherit
+readonly: true
 ---
 
 # Frontend Specialist Reviewer (`Hartorn-Inc/trame`)

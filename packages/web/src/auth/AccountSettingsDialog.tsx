@@ -6,7 +6,8 @@
  * PURPOSE:
  * -----
  * Account menu opened from the lobby header: shows who is signed in, their
- * `InstanceRole` and what it allows, and lets the user turn on two-factor
+ * `InstanceRole` and what it allows, lets the user change their password
+ * (spec story 15), and lets the user turn on two-factor
  * authentication (TOTP). TOTP stays optional (spec D16), but the `Owner`
  * account controls every other account, so its recommendation is worded more
  * strongly. Without the enrollment flow the recommendation would be a dead
@@ -30,13 +31,19 @@
  *      authenticator confirms it, so abandoning the dialog never locks the
  *      user out.
  * 5. `Persistent Live Regions`:
- *    - The TOTP status and error regions are always mounted and only their
- *      text changes, so screen readers announce progress and failures.
+ *    - The TOTP and password status and error regions are always mounted and
+ *      only their text changes, so screen readers announce progress and failures.
+ * 6. `Password Change Proves Possession`:
+ *    - The current password is always required, plus a TOTP code when TOTP
+ *      is on (`POST /auth/password`). The server revokes every other session;
+ *      this one stays signed in. Guest accounts have no password and see no
+ *      form (they bind credentials through the lobby prompt instead).
  *
  * EXECUTION LIFECYCLE:
  * -----
  * "Set up" -> `setupTotp()` -> key + link + code field
  * "Turn on" -> `enableTotp(code)` -> user `totpEnabled` -> confirmation text.
+ * "Change password" -> `changePassword(current, new, code?)` -> fields cleared -> confirmation text.
  * ============================================================================
  */
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -67,6 +74,22 @@ const ROLE_DESCRIPTION_KEYS: Record<InstanceRole, MessageKey> = {
 };
 
 const TOTP_ERROR_ID = "account-totp-error";
+const PASSWORD_ERROR_ID = "account-password-error";
+
+type PasswordField = "current" | "new" | "code";
+
+const PASSWORD_ERRORS: Record<string, MessageKey> = {
+  INVALID_CREDENTIALS: "account.password.error.current",
+  MFA_REQUIRED: "auth.error.invalidTotp",
+  INVALID_TOTP_CODE: "auth.error.invalidTotp",
+  WEAK_PASSWORD: "auth.error.weakPassword",
+};
+
+const PASSWORD_ERROR_FIELDS: Partial<Record<MessageKey, PasswordField>> = {
+  "account.password.error.current": "current",
+  "auth.error.invalidTotp": "code",
+  "auth.error.weakPassword": "new",
+};
 
 /** Enrollment progress: not started, requesting the secret, or waiting for the confirming code. */
 type Enrollment = { step: "idle" } | { step: "preparing" } | { step: "confirm"; enrollment: TotpEnrollment };
@@ -74,6 +97,98 @@ type Enrollment = { step: "idle" } | { step: "preparing" } | { step: "confirm"; 
 function totpErrorKey(err: unknown): MessageKey {
   if (err instanceof ApiError && err.status === 401) return "auth.error.invalidTotp";
   return apiErrorKey(err, {});
+}
+
+/** Password change form (invariant 6); the TOTP field only exists when TOTP is on. */
+function ChangePasswordSection({ client, totpEnabled }: { client: ApiClient; totpEnabled: boolean }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<MessageKey | null>(null);
+  const [changed, setChanged] = useState(false);
+  const errorField = error ? PASSWORD_ERROR_FIELDS[error] : undefined;
+  const errorIdFor = (field: PasswordField) => (errorField === field ? PASSWORD_ERROR_ID : null);
+
+  const submit = async (e: Event) => {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setChanged(false);
+    try {
+      await client.changePassword({ currentPassword: current, newPassword: next, totpCode: totpEnabled ? code.trim() : undefined });
+      setCurrent("");
+      setNext("");
+      setCode("");
+      setChanged(true);
+    } catch (err) {
+      setError(apiErrorKey(err, PASSWORD_ERRORS));
+    }
+    setBusy(false);
+  };
+
+  return (
+    <section class="ds-inset ds-stack-sm" aria-labelledby="account-password-title" data-testid="account-password">
+      <h3 id="account-password-title" class="ds-section-title" style={{ margin: 0 }}>
+        {t("account.password.title")}
+      </h3>
+      <form class="ds-stack-sm" data-testid="account-password-form" onSubmit={submit}>
+        <AccountField
+          id="account-password-current"
+          label={t("account.password.current")}
+          type="password"
+          autocomplete="current-password"
+          value={current}
+          onInput={setCurrent}
+          errorId={errorIdFor("current")}
+        />
+        <AccountField
+          id="account-password-new"
+          label={t("account.password.new")}
+          type="password"
+          autocomplete="new-password"
+          value={next}
+          onInput={setNext}
+          hint={t("setup.passwordHint")}
+          errorId={errorIdFor("new")}
+        />
+        {totpEnabled && (
+          <AccountField
+            id="account-password-code"
+            label={t("account.totp.code")}
+            type="text"
+            inputMode="numeric"
+            autocomplete="one-time-code"
+            value={code}
+            onInput={setCode}
+            errorId={errorIdFor("code")}
+          />
+        )}
+        <p role="status" data-testid="account-password-status">
+          {changed ? t("account.password.changed") : ""}
+        </p>
+        <div role="alert" data-testid="account-password-alert-region">
+          {error && (
+            <p id={PASSWORD_ERROR_ID} class="ds-field-error" data-testid="account-password-error">
+              {t(error)}
+            </p>
+          )}
+        </div>
+        <div>
+          <button
+            type="submit"
+            class="ds-btn ds-btn-secondary"
+            data-testid="account-password-submit"
+            aria-disabled={busy ? "true" : undefined}
+            aria-busy={busy ? "true" : undefined}
+          >
+            {busy ? t("auth.submitting") : t("account.password.submit")}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
 }
 
 /** Account summary with the TOTP recommendation (stronger for the Owner) and enrollment. */
@@ -194,6 +309,8 @@ export function AccountSettingsDialog({ client, user, onClose }: AccountSettings
             </span>
             <p class="ds-hint">{t(ROLE_DESCRIPTION_KEYS[user.instanceRole])}</p>
           </div>
+
+          {!user.isGuest && <ChangePasswordSection client={client} totpEnabled={user.totpEnabled} />}
 
           <section class="ds-inset ds-stack-sm" aria-labelledby="account-totp-title" data-testid="account-totp">
             <h3 id="account-totp-title" class="ds-section-title" style={{ margin: 0 }}>

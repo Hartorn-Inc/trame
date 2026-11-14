@@ -8,7 +8,7 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && tsc --noEmit",
-    "test": "node --import ./tests/tsx-loader.mjs --import ./tests/engine-setup.mjs --test \"tests/**/*.test.{ts,tsx}\"",
+    "test": "node --test-concurrency=4 --import ./tests/tsx-loader.mjs --import ./tests/engine-setup.mjs --test \"tests/**/*.test.{ts,tsx}\"",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {

@@ -28,17 +28,23 @@
 //!        `ActorUpdated`; the room snapshots the synced tokens (WAL durability).
 //!   4. `Linked Vitals Persistence`:
 //!      - `install_room_sinks` drains `LinkedVitalsChange` from rooms and writes hp /
-//!        temp hp (and changed conditions) into the linked actor sheet. Synthetic
-//!        tokens never reach storage. At 0 hp the class feature toggles that end
-//!        there (`SRD_FEATURES_ENDING_AT_ZERO_HP`: Rage) leave `activeFeatureIds`.
+//!        temp hp, death saving throw counters (`death_save_successes`,
+//!        `death_save_failures`), `is_stable`, `is_dead`, and changed conditions into
+//!        the linked actor sheet (`Dnd5eActorData` or flat `Dnd5eActorSheet`).
+//!        Synthetic tokens never reach storage. At 0 hp the class feature toggles
+//!        that end there (`SRD_FEATURES_ENDING_AT_ZERO_HP`: Rage) leave
+//!        `activeFeatureIds`.
 //!   4b. `Sheet-Derived Rules Fields`:
 //!      - Threat reach (equipped reach weapon or stat-block melee reach) and darkvision
 //!        (species or stat-block senses) come from the stored sheet on every resync and
 //!        on actor-linked `SpawnToken` (`resolve_spawn`), never from the client.
 //!      - Armor Class comes from the sheet's `derived.armorClass` and speed from
 //!        `derived.speed` (class features applied), else `attributes.speedFt` minus
-//!        exhaustion (GS6). Both are bounded like stat block values (AC `1..=30`,
-//!        speed `0..=200` ft) and sheet conditions are normalized and capped like
+//!        exhaustion (GS6). Saves come from `derived.savingThrows` (clamped to
+//!        `-10..=30`) before the recomputed bonus, and the active feature
+//!        resistances in `derived.featureRules.resistances` (SRD damage types only)
+//!        join the sheet's resistances. AC and speed are bounded like stat block
+//!        values (AC `1..=30`, speed `0..=200` ft) and sheet conditions are normalized and capped like
 //!        `SetTokenConditions`. A token whose conditions impose Speed 0 keeps the
 //!        sheet speed as its maximum but has no movement left.
 //!      - A `SpawnToken` whose `stat_block` names an actor template UUID gets a copy of
@@ -73,7 +79,8 @@
 //!     ├── 2. Conditional update `WHERE version = expected_version` (409 on mismatch).
 //!     ├── 3. Extract `ActorTacticalSync` from the sheet JSON.
 //!     └── 4. Wake the room -> `notify_actor_updated` (sync linked tokens, snapshot,
-//!            broadcast `ActorUpdated` to the GM and the linked tokens' controllers).
+//!            broadcast `ActorUpdated` to the GM and the actor's owning `Player` with
+//!            `statBlock` stripped for non-GM recipients).
 //! ============================================================================
 
 use crate::archive::ExportEntity;
@@ -100,7 +107,7 @@ use crate::timeline::AppendEventInput;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post, put};
@@ -821,7 +828,41 @@ fn derived_initiative_extra(data: &Value) -> i32 {
     alert_bonus - 2 * exhaustion
 }
 
-/// Saving throw bonuses of a sheet, keyed by ability id, for server-rolled saves (D6):
+/// Range a synced saving throw bonus is clamped to (the stat block `savingThrows` bound).
+const SHEET_SAVE_BONUS_RANGE: std::ops::RangeInclusive<i32> = -10..=30;
+
+/// Saving throw bonuses of a sheet, keyed by ability id, for server-rolled saves (D6). The
+/// derived saves the client stores with the sheet (`derived.savingThrows`: class features
+/// such as Aura of Protection applied) win per ability, with the same trust model as
+/// `derived.armorClass`: each is clamped to `SHEET_SAVE_BONUS_RANGE`. Abilities without a
+/// finite derived value keep the recomputed bonus (`recomputed_save_bonuses`).
+fn sheet_save_bonuses(data: &Value) -> Option<BTreeMap<String, i32>> {
+    use trame_engine::resolution::ABILITY_IDS;
+    let mut bonuses = recomputed_save_bonuses(data);
+    if let Some(derived) = data
+        .pointer("/derived/savingThrows")
+        .and_then(Value::as_object)
+    {
+        for ab in ABILITY_IDS {
+            if let Some(bonus) = derived
+                .get(ab)
+                .and_then(Value::as_f64)
+                .filter(|b| b.is_finite())
+            {
+                let bonus = (bonus.round() as i32).clamp(
+                    *SHEET_SAVE_BONUS_RANGE.start(),
+                    *SHEET_SAVE_BONUS_RANGE.end(),
+                );
+                bonuses
+                    .get_or_insert_with(BTreeMap::new)
+                    .insert(ab.to_string(), bonus);
+            }
+        }
+    }
+    bonuses
+}
+
+/// Saving throw bonuses recomputed from the sheet's own fields, keyed by ability id:
 /// - Stat block sheet (`statBlock` object, or numeric `abilities.<ability>`): the printed
 ///   `savingThrows`, else the score modifier (`resolution::stat_block_save_bonus`).
 /// - Character sheet (`abilities.<ability>.score`, clamped to `ABILITY_SCORES`): the modifier,
@@ -830,7 +871,7 @@ fn derived_initiative_extra(data: &Value) -> i32 {
 ///   `saveProficiencies` map, `level`, `exhaustionLevel`) follows the same formula. Feats and
 ///   magic items are not folded in.
 /// - Neither: `None`, so the token keeps its current bonuses.
-fn sheet_save_bonuses(data: &Value) -> Option<BTreeMap<String, i32>> {
+fn recomputed_save_bonuses(data: &Value) -> Option<BTreeMap<String, i32>> {
     use trame_engine::resolution::ABILITY_IDS;
     let collect = |f: &dyn Fn(&str) -> i32| {
         Some(
@@ -886,17 +927,20 @@ fn sheet_save_bonuses(data: &Value) -> Option<BTreeMap<String, i32>> {
 /// packs by `packages/game-systems/dnd5e/tests/serverTablesDrift.test.ts`.
 const SRD_REACH_WEAPONS: [&str; 5] = ["glaive", "halberd", "lance", "pike", "whip"];
 
-/// Darkvision in feet of each SRD 5.2.1 species (`speciesId` key without `srd:species:`),
-/// mirroring `SRD_SPECIES[*].darkvisionFt` in `packages/game-systems/dnd5e/src/origins.ts`.
-const SRD_SPECIES_DARKVISION_FT: [(&str, f64); 9] = [
+/// Darkvision in feet of each built-in species (`speciesId` key without prefix: 9 SRD 5.2.1
+/// species + 2 TRAME originals per ADR-0038), mirroring `SRD_SPECIES[*].darkvisionFt` in
+/// `packages/game-systems/dnd5e/src/origins.ts`.
+const SRD_SPECIES_DARKVISION_FT: [(&str, f64); 11] = [
     ("dragonborn", 60.0),
     ("dwarf", 120.0),
     ("elf", 60.0),
     ("gnome", 60.0),
     ("goliath", 0.0),
+    ("half_elf", 60.0),
     ("halfling", 0.0),
     ("human", 0.0),
     ("orc", 120.0),
+    ("radiant_scion", 60.0),
     ("tiefling", 60.0),
 ];
 
@@ -945,8 +989,9 @@ fn threat_reach_ft(data: &Value) -> Option<f64> {
 }
 
 /// Darkvision in feet from the sheet: a stat block's `senses.darkvision` (`0` when the
-/// `senses` object omits it), else the SRD species of `speciesId`, else `None` (unknown
-/// species: the token keeps its current senses).
+/// `senses` object omits it), else the built-in species of `speciesId` (accepting bare keys,
+/// `srd:species:<key>`, or `trame:species:<key>`), else `None` (unknown species: the token
+/// keeps its current senses).
 fn darkvision_ft(data: &Value) -> Option<f64> {
     if let Some(senses) = data.get("senses").and_then(Value::as_object) {
         let ft = senses
@@ -956,7 +1001,10 @@ fn darkvision_ft(data: &Value) -> Option<f64> {
         return Some(ft.clamp(0.0, 500.0));
     }
     let species = data.get("speciesId").and_then(Value::as_str)?;
-    let key = species.strip_prefix("srd:species:").unwrap_or(species);
+    let key = species
+        .strip_prefix("srd:species:")
+        .or_else(|| species.strip_prefix("trame:species:"))
+        .unwrap_or(species);
     SRD_SPECIES_DARKVISION_FT
         .iter()
         .find(|(id, _)| *id == key)
@@ -999,11 +1047,43 @@ fn sheet_speed_ft(data: &Value) -> Option<f64> {
     Some((base - 5.0 * f64::from(exhaustion)).max(0.0))
 }
 
+/// `(resistances, immunities, vulnerabilities)` damage-type lists (`ActorTacticalSync`).
+type DamageAffinityLists = (Vec<String>, Vec<String>, Vec<String>);
+
+/// Adds the resistances of the class features in force that the client derives with the sheet
+/// (`derived.featureRules.resistances`, e.g. Rage: bludgeoning, piercing, slashing) to the
+/// sheet's own resistances, so typed damage on the token follows the toggle. Same trust model
+/// as `derived.armorClass`, bounded like a stat block: only the 13 SRD damage types
+/// (`statblock::DAMAGE_TYPES`, case-insensitive) count, each once. Without that list the
+/// affinities are unchanged, so a sheet saved after Rage ends drops the extra resistances.
+fn merge_feature_resistances(
+    affinities: Option<DamageAffinityLists>,
+    data: &Value,
+) -> Option<DamageAffinityLists> {
+    let Some(feature) = data
+        .pointer("/derived/featureRules/resistances")
+        .and_then(Value::as_array)
+    else {
+        return affinities;
+    };
+    let (mut resist, immune, vuln) = affinities.unwrap_or_default();
+    for damage_type in feature.iter().filter_map(Value::as_str) {
+        let damage_type = damage_type.trim().to_ascii_lowercase();
+        if crate::statblock::DAMAGE_TYPES.contains(&damage_type.as_str())
+            && !resist.iter().any(|r| r.eq_ignore_ascii_case(&damage_type))
+        {
+            resist.push(damage_type);
+        }
+    }
+    Some((resist, immune, vuln))
+}
+
 /// Extracts the token-relevant subset of a `Dnd5eActorData` sheet:
 /// `attributes.hp.{current,max,temp}`, the Armor Class (`sheet_armor_class`),
 /// `abilities.dex.score` (-> modifier), the walking speed (`sheet_speed_ft`),
 /// `conditions[].id`, `damageMitigations` (`RESISTANT` / `IMMUNE` / `VULNERABLE` per damage
-/// type, A68), the threat reach (`threat_reach_ft`), and darkvision (`darkvision_ft`).
+/// type, A68) plus active feature resistances (`merge_feature_resistances`), the threat reach
+/// (`threat_reach_ft`), darkvision (`darkvision_ft`), and save bonuses (`sheet_save_bonuses`).
 pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTacticalSync {
     let conditions = data.get("conditions").and_then(Value::as_array).map(|arr| {
         arr.iter()
@@ -1032,13 +1112,18 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
             }
             (resist, immune, vuln)
         });
+    let damage_affinities = merge_feature_resistances(damage_affinities, data);
     let dex_mod = i32_at(data, &["abilities", "dex", "score"])
         .map(|s| (s.clamp(*ABILITY_SCORES.start(), *ABILITY_SCORES.end()) - 10).div_euclid(2));
+    let exhaustion = sheet_exhaustion(data);
+    let (death_save_successes, death_save_failures, is_stable, is_dead) =
+        sheet_death_saves_and_mortality(data, exhaustion);
     ActorTacticalSync {
         name: name.map(str::to_string),
-        hp_current: i32_at(data, &["attributes", "hp", "current"]),
-        hp_max: i32_at(data, &["attributes", "hp", "max"]),
-        temp_hp: i32_at(data, &["attributes", "hp", "temp"]),
+        hp_current: i32_at(data, &["attributes", "hp", "current"])
+            .or_else(|| i32_at(data, &["hpCurrent"])),
+        hp_max: i32_at(data, &["attributes", "hp", "max"]).or_else(|| i32_at(data, &["hpMax"])),
+        temp_hp: i32_at(data, &["attributes", "hp", "temp"]).or_else(|| i32_at(data, &["tempHp"])),
         ac: sheet_armor_class(data),
         dex_mod,
         initiative_extra: dex_mod.map(|_| derived_initiative_extra(data)),
@@ -1048,17 +1133,126 @@ pub fn tactical_sync_from_sheet(name: Option<&str>, data: &Value) -> ActorTactic
         reach_ft: threat_reach_ft(data),
         darkvision_ft: darkvision_ft(data),
         save_bonuses: sheet_save_bonuses(data),
+        feature_roll_advantages: feature_roll_advantages(data),
+        exhaustion,
+        death_save_successes,
+        death_save_failures,
+        is_stable,
+        is_dead,
     }
 }
 
+/// SRD 5.2.1 Exhaustion level (`0..=6`) stored on `attributes.exhaustion` (`Dnd5eActorData`)
+/// or `exhaustionLevel` (flat `Dnd5eActorSheet`). `None` when neither field is present so
+/// partial sheet updates leave the token's level unchanged.
+fn sheet_exhaustion(data: &Value) -> Option<u8> {
+    i32_at(data, &["attributes", "exhaustion"])
+        .or_else(|| i32_at(data, &["exhaustionLevel"]))
+        .map(|n| n.clamp(0, i32::from(trame_engine::rules::MAX_EXHAUSTION_LEVEL)) as u8)
+}
+
+fn bool_at(v: &Value, path: &[&str]) -> Option<bool> {
+    let mut cur = v;
+    for key in path {
+        cur = cur.get(key)?;
+    }
+    cur.as_bool()
+}
+
+/// Extracts `(death_save_successes, death_save_failures, is_stable, is_dead)` from either
+/// `Dnd5eActorData` (`attributes.deathSaves.{successes,failures,isStable?}`, root `isDead`)
+/// or flat `Dnd5eActorSheet` (`deathSaves.{successes,failures,isStable,isDead}`).
+///
+/// Reaching `3` successes marks `is_stable` and resets both counters (`resolve_death_save`
+/// invariant); reaching `3` failures or Exhaustion level `6` (`MAX_EXHAUSTION_LEVEL`) marks
+/// `is_dead`. Missing fields stay `None` so partial sheet payloads do not clobber live token
+/// counters.
+fn sheet_death_saves_and_mortality(
+    data: &Value,
+    exhaustion: Option<u8>,
+) -> (Option<u8>, Option<u8>, Option<bool>, Option<bool>) {
+    use trame_engine::rules::{
+        DEATH_SAVE_FAILURES_TO_DIE, DEATH_SAVE_SUCCESSES_TO_STABILIZE, MAX_EXHAUSTION_LEVEL,
+    };
+
+    let raw_successes = i32_at(data, &["attributes", "deathSaves", "successes"])
+        .or_else(|| i32_at(data, &["deathSaves", "successes"]))
+        .map(|n| n.clamp(0, i32::from(DEATH_SAVE_SUCCESSES_TO_STABILIZE)) as u8);
+    let raw_failures = i32_at(data, &["attributes", "deathSaves", "failures"])
+        .or_else(|| i32_at(data, &["deathSaves", "failures"]))
+        .map(|n| n.clamp(0, i32::from(DEATH_SAVE_FAILURES_TO_DIE)) as u8);
+
+    let explicit_dead = bool_at(data, &["isDead"])
+        .or_else(|| bool_at(data, &["deathSaves", "isDead"]))
+        .or_else(|| bool_at(data, &["attributes", "deathSaves", "isDead"]));
+    let dead_from_failures = raw_failures.is_some_and(|f| f >= DEATH_SAVE_FAILURES_TO_DIE);
+    let dead_from_exhaustion = exhaustion.is_some_and(|e| e >= MAX_EXHAUSTION_LEVEL);
+    let is_dead = if dead_from_failures || dead_from_exhaustion {
+        Some(true)
+    } else {
+        explicit_dead
+    };
+
+    let explicit_stable = bool_at(data, &["attributes", "deathSaves", "isStable"])
+        .or_else(|| bool_at(data, &["deathSaves", "isStable"]));
+    let stable_from_successes =
+        raw_successes.is_some_and(|s| s >= DEATH_SAVE_SUCCESSES_TO_STABILIZE);
+    let is_stable = if is_dead == Some(true) {
+        Some(false)
+    } else if stable_from_successes {
+        Some(true)
+    } else {
+        explicit_stable
+    };
+
+    let (successes, failures) = if stable_from_successes && is_dead != Some(true) {
+        (Some(0), Some(0))
+    } else {
+        (raw_successes, raw_failures)
+    };
+
+    (successes, failures, is_stable, is_dead)
+}
+
+/// Server-rolled d20s the sheet's features in force give Advantage on, from
+/// `derived.featureRules.rolls` (`{ kind: "advantage", on: { roll } }`): only
+/// `FEATURE_ROLL_INITIATIVE` (Feral Instinct) and `FEATURE_ROLL_DEATH_SAVE` (Champion
+/// Survivor) are kept, each once, so a client cannot widen what the server rolls with
+/// Advantage. `None` without `derived.featureRules` keeps the token's list.
+fn feature_roll_advantages(data: &Value) -> Option<Vec<String>> {
+    use trame_engine::resolution::{FEATURE_ROLL_DEATH_SAVE, FEATURE_ROLL_INITIATIVE};
+    let rules = data.pointer("/derived/featureRules")?.as_object()?;
+    let mut out = Vec::new();
+    for rule in rules
+        .get("rolls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if rule.get("kind").and_then(Value::as_str) != Some("advantage") {
+            continue;
+        }
+        let scope = rule.pointer("/on/roll").and_then(Value::as_str);
+        for wanted in [FEATURE_ROLL_INITIATIVE, FEATURE_ROLL_DEATH_SAVE] {
+            if scope == Some(wanted) && !out.iter().any(|r| r == wanted) {
+                out.push(wanted.to_string());
+            }
+        }
+    }
+    Some(out)
+}
+
 /// Resolves the storage-backed parts of a `SpawnToken` before it reaches the room:
-/// - Actor-linked token: every synced field (HP, AC, speed, conditions, affinities, reach,
-///   darkvision) is overwritten from the stored sheet, so a client cannot spawn its token
-///   with better numbers than the sheet allows. An actor that cannot be loaded leaves the
-///   token unchanged.
 /// - `stat_block` holding an actor template UUID: replaced by a copy of that actor's
-///   `statBlock`; the room then validates and applies it (`statblock::normalize_command`).
+///   `statBlock`; synthetic tokens then have it validated and applied in the room
+///   (`statblock::normalize_command`), while actor-linked tokens seed from it first
+///   (`statblock::seed_token_from_stat_block`) before applying the stored sheet.
 ///   A template that is missing or has no stat block rejects the command.
+/// - Actor-linked token: every synced field (HP, death saves, stability, `is_dead`, AC, speed,
+///   exhaustion, conditions, affinities, reach, darkvision) is overlaid from the stored
+///   sheet, so a client cannot spawn its token with better numbers than the sheet allows and
+///   the room's `normalize_command` preserves sheet authority over any base `stat_block`. An
+///   actor that cannot be loaded leaves the token unchanged (or stat-block-seeded).
 ///
 /// Other commands pass through unchanged.
 pub async fn resolve_spawn(
@@ -1069,12 +1263,6 @@ pub async fn resolve_spawn(
     let TrameCommand::SpawnToken { mut token } = cmd else {
         return Ok(cmd);
     };
-    if let Some(actor_id) = token.actor_id
-        && let Ok(Some(actor)) = get_actor(state, campaign_id, actor_id).await
-    {
-        tactical_sync_from_sheet(None, &actor.payload)
-            .apply_to_token(&mut token, trame_engine::commands::TableMode::Exploration);
-    }
     if let Some(template_id) = token
         .stat_block
         .as_ref()
@@ -1082,6 +1270,15 @@ pub async fn resolve_spawn(
         .and_then(|s| Uuid::parse_str(s).ok())
     {
         token.stat_block = Some(actor_template_stat_block(state, campaign_id, template_id).await?);
+    }
+    if let Some(actor_id) = token.actor_id {
+        if token.stat_block.is_some() {
+            crate::statblock::seed_token_from_stat_block(&mut token)?;
+        }
+        if let Ok(Some(actor)) = get_actor(state, campaign_id, actor_id).await {
+            tactical_sync_from_sheet(None, &actor.payload)
+                .apply_to_token(&mut token, trame_engine::commands::TableMode::Exploration);
+        }
     }
     Ok(TrameCommand::SpawnToken { token })
 }
@@ -1114,6 +1311,7 @@ async fn sync_actor_to_room(state: &AppState, record: &ActorRecord, sync: ActorT
     if let Err(err) = room
         .notify_actor_updated(
             record.id,
+            record.owner_user_id,
             u64::try_from(record.version).unwrap_or(0),
             record.payload.clone(),
             sync,
@@ -1776,6 +1974,12 @@ async fn ensure_asset_quota(
 
 /// `GET /assets/download/{*key}?exp=&sig=` -> asset bytes when the HMAC signature is valid
 /// and unexpired (`403` otherwise). The signature is the credential: no cookie required.
+/// When the asset lives in the object store, the answer is a `307` to a short-lived signed
+/// object-store URL instead, so the bytes never pass through the server.
+///
+/// Both answers carry `Cache-Control: private, no-store`: the URL embeds a signature (and
+/// the redirect a second one), so no shared cache may keep the bytes or the redirect past
+/// the signature's expiry, and a GM-hidden map must not outlive its reveal window in one.
 pub async fn download_asset_handler(
     State(state): State<AppState>,
     Path(key): Path<String>,
@@ -1787,10 +1991,19 @@ pub async fn download_asset_handler(
     {
         return forbidden("invalid or expired asset signature");
     }
+    let private = (CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    match state.asset_store.direct_download_url(&key).await {
+        Ok(Some(url)) => {
+            return ([private], axum::response::Redirect::temporary(&url)).into_response();
+        }
+        Ok(None) => {}
+        Err(err) => return storage_error(err),
+    }
     match state.asset_store.get_asset(&key).await {
         Ok(Some(bytes)) => {
             let mut headers = HeaderMap::new();
             headers.insert(CONTENT_TYPE, HeaderValue::from_static("image/webp"));
+            headers.insert(private.0, private.1);
             (StatusCode::OK, headers, bytes).into_response()
         }
         Ok(None) => not_found("asset not found"),
@@ -1844,6 +2057,8 @@ pub fn scene_from_import(
         spatial_audio_emitters: Vec::new(),
         staged_tokens: Vec::new(),
         explored_fog_texture: None,
+        difficult_terrain: Vec::new(),
+        fog_overrides: Vec::new(),
     }
 }
 
@@ -1983,10 +2198,70 @@ fn end_features_at_zero_hp(data: &mut Value, hp: i32) {
     }
 }
 
-/// Writes a linked token's hp / temp hp into its actor sheet (`attributes.hp`), and its
-/// conditions when they changed (`merge_sheet_conditions`), retrying once on a concurrent
-/// sheet edit, then broadcasts the new version (`ActorUpdated`). At 0 hp the toggles that
-/// end there are switched off (`end_features_at_zero_hp`).
+/// Applies `change` onto `data`, preserving either flat `Dnd5eActorSheet` or nested
+/// `Dnd5eActorData` schema shape.
+fn apply_vitals_to_sheet_json(data: &mut Value, change: &LinkedVitalsChange) {
+    let is_flat_sheet = !data.get("attributes").is_some_and(Value::is_object)
+        && (data.get("hpCurrent").is_some()
+            || data.get("hpMax").is_some()
+            || data.get("deathSaves").is_some_and(Value::is_object)
+            || data.get("exhaustionLevel").is_some());
+
+    if is_flat_sheet {
+        data["hpCurrent"] = json!(change.hp);
+        data["tempHp"] = json!(change.temp_hp);
+        if !data.get("deathSaves").is_some_and(Value::is_object) {
+            data["deathSaves"] = json!({});
+        }
+        data["deathSaves"]["successes"] = json!(change.death_save_successes);
+        data["deathSaves"]["failures"] = json!(change.death_save_failures);
+        data["deathSaves"]["isStable"] = json!(change.is_stable);
+        data["deathSaves"]["isDead"] = json!(change.is_dead);
+    } else {
+        if !data.get("attributes").is_some_and(Value::is_object) {
+            data["attributes"] = json!({});
+        }
+        if !data["attributes"].get("hp").is_some_and(Value::is_object) {
+            data["attributes"]["hp"] = json!({});
+        }
+        data["attributes"]["hp"]["current"] = json!(change.hp);
+        data["attributes"]["hp"]["temp"] = json!(change.temp_hp);
+        if !data["attributes"]
+            .get("deathSaves")
+            .is_some_and(Value::is_object)
+        {
+            data["attributes"]["deathSaves"] = json!({});
+        }
+        data["attributes"]["deathSaves"]["successes"] = json!(change.death_save_successes);
+        data["attributes"]["deathSaves"]["failures"] = json!(change.death_save_failures);
+        data["attributes"]["deathSaves"]["isStable"] = json!(change.is_stable);
+        data["isDead"] = json!(change.is_dead);
+        if data.get("deathSaves").is_some_and(Value::is_object) {
+            data["deathSaves"]["successes"] = json!(change.death_save_successes);
+            data["deathSaves"]["failures"] = json!(change.death_save_failures);
+            data["deathSaves"]["isStable"] = json!(change.is_stable);
+            data["deathSaves"]["isDead"] = json!(change.is_dead);
+        }
+    }
+
+    end_features_at_zero_hp(data, change.hp);
+    if let Some(conditions) = &change.conditions {
+        data["conditions"] = merge_sheet_conditions(data.get("conditions"), conditions);
+    }
+}
+
+/// Writes a linked token's vitals (`hp`, `temp_hp`, death saving throw counters,
+/// `is_stable`, `is_dead`, and changed `conditions`) into its actor sheet without drifting
+/// the sheet's representation:
+/// - Flat `Dnd5eActorSheet` (no `attributes` object, carries `hpCurrent` or top-level
+///   `deathSaves`): updates `hpCurrent`, `tempHp`, and
+///   `deathSaves: { successes, failures, isStable, isDead }`.
+/// - Standard `Dnd5eActorData` (or minimal sheet JSON): updates `attributes.hp.{current,temp}`,
+///   `attributes.deathSaves.{successes,failures,isStable}`, and root `isDead` (plus
+///   top-level `deathSaves` when also present).
+///
+/// Retries once on a concurrent sheet edit, then broadcasts the new version (`ActorUpdated`).
+/// At 0 hp the toggles that end there are switched off (`end_features_at_zero_hp`).
 pub async fn persist_linked_vitals(
     state: &AppState,
     change: &LinkedVitalsChange,
@@ -1996,18 +2271,7 @@ pub async fn persist_linked_vitals(
             return Ok(());
         };
         let mut data = actor.payload.clone();
-        if !data.get("attributes").is_some_and(Value::is_object) {
-            data["attributes"] = json!({});
-        }
-        if !data["attributes"].get("hp").is_some_and(Value::is_object) {
-            data["attributes"]["hp"] = json!({});
-        }
-        data["attributes"]["hp"]["current"] = json!(change.hp);
-        data["attributes"]["hp"]["temp"] = json!(change.temp_hp);
-        end_features_at_zero_hp(&mut data, change.hp);
-        if let Some(conditions) = &change.conditions {
-            data["conditions"] = merge_sheet_conditions(data.get("conditions"), conditions);
-        }
+        apply_vitals_to_sheet_json(&mut data, change);
         match update_actor(
             state,
             change.campaign_id,
@@ -2027,6 +2291,7 @@ pub async fn persist_linked_vitals(
                     let _ = room
                         .notify_actor_updated(
                             record.id,
+                            record.owner_user_id,
                             u64::try_from(record.version).unwrap_or(0),
                             record.payload,
                             ActorTacticalSync::default(),

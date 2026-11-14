@@ -43,6 +43,10 @@
 //!      - `SenseProfile::sight_range_ft` derives each token's vision radius from its own
 //!        senses and the ambient preset, so darkness hides the map from a token without
 //!        darkvision while a dwarf beside it still sees 120 ft.
+//!   7. `One-Way Walls Always Have A Direction`:
+//!      - `WallSegment::one_way_normal` replaces a zero `OneWay` normal (editor walls,
+//!        older saves) with the segment's left-hand perpendicular, so a one-way wall
+//!        never silently stops blocking in both directions.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -233,6 +237,35 @@ impl WallSegment {
         }
     }
 
+    /// Blocking normal of a `WallKind::OneWay` wall: rays travelling along it are stopped,
+    /// rays travelling against it pass.
+    ///
+    /// A zero normal (the map editor's `wallType: "OneWay"` carries none, and scenes saved
+    /// before it sent one stored `0, 0`) falls back to the segment's left-hand perpendicular
+    /// `(-(b.y - a.y), b.x - a.x)`, normalised, so the wall is directional instead of never
+    /// blocking. On screen axes (`y` down) a wall drawn left to right blocks sight going down.
+    /// Non-`OneWay` walls and degenerate segments return `(0, 0)`.
+    pub fn one_way_normal(&self) -> Point2D {
+        let WallKind::OneWay { normal_x, normal_y } = self.kind else {
+            return Point2D { x: 0.0, y: 0.0 };
+        };
+        if normal_x != 0.0 || normal_y != 0.0 {
+            return Point2D {
+                x: normal_x,
+                y: normal_y,
+            };
+        }
+        let (dx, dy) = (self.b.x - self.a.x, self.b.y - self.a.y);
+        let len = dx.hypot(dy);
+        if len < 1e-10 {
+            return Point2D { x: 0.0, y: 0.0 };
+        }
+        Point2D {
+            x: -dy / len,
+            y: dx / len,
+        }
+    }
+
     /// Evaluates whether this wall blocks a vision ray travelling along `ray_dir` for an observer
     /// with `has_truesight`.
     ///
@@ -248,8 +281,9 @@ impl WallSegment {
             WallKind::Normal => (true, false),
             WallKind::Window => (false, false),
             WallKind::Terrain => (false, true),
-            WallKind::OneWay { normal_x, normal_y } => {
-                let dot = ray_dir.x * normal_x + ray_dir.y * normal_y;
+            WallKind::OneWay { .. } => {
+                let normal = self.one_way_normal();
+                let dot = ray_dir.x * normal.x + ray_dir.y * normal.y;
                 (dot > 0.0, false)
             }
             WallKind::Door { is_open, .. } | WallKind::SecretDoor { is_open } => (!is_open, false),

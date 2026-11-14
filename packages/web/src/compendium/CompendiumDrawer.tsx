@@ -25,12 +25,25 @@
  *    - The spawn button renders only when the host passes `onSpawnMonster`
  *      (GM with a loaded table); the server rejects `SPAWN_TOKEN` from
  *      players regardless.
+ * 4. `Studio Staging`:
+ *    - With `onStageMonster` (map studio) a monster is staged on the scene
+ *      being prepared instead of spawned live; the studio stores only its
+ *      `srd:monster:<slug>` reference (`maps/monsterStaging.ts`).
+ * 5. `Accessible Escape & Focus Lifecycle`:
+ *    - When `autoFocus` is enabled (the default for overlay and picker drawers),
+ *      opening the drawer moves keyboard focus into the search input while
+ *      recording the previously focused trigger element; closing via `Escape`
+ *      or the close button restores focus to that trigger before invoking
+ *      `onClose` so explicit caller focus targets win cleanly.
+ *    - When mounted inline (`autoFocus={false}`, e.g. the workspace Compendium
+ *      tabpanel), opening neither steals tablist focus nor binds a global
+ *      `Escape` listener.
  * ============================================================================
  */
 import { h, type VNode } from 'preact';
 import type { WirePoint2D, WireTrameCommand } from '../api/wire.ts';
 import type { MonsterStatBlock } from '../../../game-systems/dnd5e/src/index.ts';
-import { useSafeState } from '../sheet/safeHooks.ts';
+import { useSafeEffect, useSafeRef, useSafeState } from '../sheet/safeHooks.ts';
 import type { CommandDispatcher } from '../sheet/types.ts';
 import { spawnToken } from '../table/commands.ts';
 import { CompendiumDragDropManager } from './CompendiumDragDropManager.ts';
@@ -49,6 +62,13 @@ export interface CompendiumEntry {
 export interface CompendiumDrawerProps {
   isOpen: boolean;
   onClose: () => void;
+  /**
+   * Moves focus into the search input on open, registers the document-level
+   * `Escape` listener, and restores the prior focus target on close. Defaults
+   * to `true` for overlay/picker drawers; pass `false` when mounted inline
+   * inside a tabpanel so roving tablist keyboard navigation keeps focus.
+   */
+  autoFocus?: boolean;
   entries?: CompendiumEntry[];
   systemId?: string;
   dispatchCommand?: CommandDispatcher;
@@ -57,6 +77,12 @@ export interface CompendiumDrawerProps {
   onDragStart?: (entry: CompendiumEntry, event: DragEvent) => void;
   /** GM spawn of a monster entry on the live table; the button is hidden when absent. */
   onSpawnMonster?: (entry: CompendiumEntry) => void;
+  /**
+   * Map studio picker: stages a monster entry on the scene being prepared.
+   * When present each monster gets a "Stage on scene" button and the sheet
+   * "Add" button is hidden, since no sheet is open in the studio.
+   */
+  onStageMonster?: (entry: CompendiumEntry) => void;
 }
 
 /** Cards rendered at once; narrower searches reach the rest (banner invariant 1). */
@@ -109,11 +135,70 @@ const CATEGORY_LABEL_KEYS: Record<(typeof CATEGORIES)[number], MessageKey> = {
 };
 
 export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | null {
-  if (!props.isOpen) return null;
-
   const [query, setQuery] = useSafeState('');
   const [category, setCategory] = useSafeState<string>('all');
   const [openStatBlockId, setOpenStatBlockId] = useSafeState<string | null>(null);
+  const drawerRef = useSafeRef<HTMLElement | null>(null);
+  const searchInputRef = useSafeRef<HTMLInputElement | null>(null);
+  const previousFocusRef = useSafeRef<HTMLElement | null>(null);
+  const wasOpenRef = useSafeRef<boolean>(false);
+  const onCloseRef = useSafeRef(props.onClose);
+  onCloseRef.current = props.onClose;
+  const shouldAutoFocus = props.autoFocus !== false;
+
+  const restorePreviousFocus = () => {
+    const previous = previousFocusRef.current;
+    previousFocusRef.current = null;
+    if (
+      previous &&
+      typeof previous.focus === 'function' &&
+      (typeof document === 'undefined' || !document.body || document.body.contains(previous))
+    ) {
+      previous.focus();
+    }
+  };
+
+  useSafeEffect(() => {
+    if (props.isOpen && !wasOpenRef.current) {
+      wasOpenRef.current = true;
+      if (shouldAutoFocus) {
+        if (typeof document !== 'undefined') {
+          const active = document.activeElement as HTMLElement | null;
+          if (active && typeof active.focus === 'function' && !drawerRef.current?.contains(active)) {
+            previousFocusRef.current = active;
+          }
+        }
+        const focusTarget = searchInputRef.current ?? drawerRef.current;
+        focusTarget?.focus?.();
+      }
+    } else if (!props.isOpen && wasOpenRef.current) {
+      wasOpenRef.current = false;
+      if (shouldAutoFocus) {
+        restorePreviousFocus();
+      }
+    }
+
+    if (!props.isOpen || !shouldAutoFocus || typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
+      return;
+    }
+
+    const handleDocumentKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (document.body?.querySelector?.('.ds-modal-backdrop')) return;
+      e.preventDefault?.();
+      e.stopPropagation?.();
+      restorePreviousFocus();
+      onCloseRef.current();
+    };
+
+    document.addEventListener('keydown', handleDocumentKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleDocumentKeyDown);
+    };
+  }, [props.isOpen, shouldAutoFocus]);
+
+  if (!props.isOpen) return null;
+
   const entries = props.entries ?? [];
   const dragManager = new CompendiumDragDropManager({
     systemId: props.systemId ?? 'dnd5e',
@@ -157,18 +242,31 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
     props.onDragStart?.(entry, e);
   };
 
+  const closeDrawer = () => {
+    if (shouldAutoFocus) {
+      restorePreviousFocus();
+    }
+    props.onClose();
+  };
+
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
+      if (typeof e.preventDefault === 'function') {
+        e.preventDefault();
+      }
       if (typeof e.stopPropagation === 'function') {
         e.stopPropagation();
       }
-      props.onClose();
+      closeDrawer();
     }
   };
 
   return h(
     'aside',
     {
+      ref: drawerRef,
+      role: 'region',
+      tabIndex: -1,
       class: 'ds-compendium-drawer',
       'data-testid': 'compendium-drawer',
       'aria-label': t('compendium.drawer'),
@@ -178,14 +276,25 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
       'header',
       { class: 'ds-drawer-header' },
       h('h3', null, t('compendium.title')),
-      h('button', { type: 'button', class: 'ds-btn-close', 'data-testid': 'btn-close-compendium', 'aria-label': t('compendium.close'), onClick: props.onClose }, t('action.close')),
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'ds-btn ds-btn-sm ds-btn-close',
+          'data-testid': 'btn-close-compendium',
+          'aria-label': t('compendium.close'),
+          onClick: closeDrawer,
+        },
+        t('action.close'),
+      ),
     ),
     h(
       'div',
       { class: 'ds-compendium-search-bar' },
       h('input', {
+        ref: searchInputRef,
         type: 'text',
-        class: 'ds-input-search',
+        class: 'ds-input ds-input-search',
         'data-testid': 'compendium-search-input',
         'aria-label': t('compendium.searchLabel'),
         placeholder: t('compendium.searchPlaceholder'),
@@ -243,7 +352,7 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
                 h('strong', { class: 'ds-entry-name' }, entry.name),
                 h('span', { class: 'ds-entry-type' }, ` [${entry.entityType}] `),
                 h('span', { class: 'ds-entry-tier' }, entry.tier),
-                h(
+                props.onStageMonster ? null : h(
                   'button',
                   {
                     type: 'button',
@@ -284,6 +393,19 @@ export function CompendiumDrawer(props: CompendiumDrawerProps): VNode<any> | nul
                         onClick: () => props.onSpawnMonster?.(entry),
                       },
                       t('compendium.spawn'),
+                    )
+                  : null,
+                statBlock && props.onStageMonster
+                  ? h(
+                      'button',
+                      {
+                        type: 'button',
+                        class: 'ds-btn ds-btn-secondary ds-btn-sm',
+                        'data-testid': `btn-stage-${entry.slug}`,
+                        'aria-label': t('compendium.stageAria', { name: entry.name }),
+                        onClick: () => props.onStageMonster?.(entry),
+                      },
+                      t('compendium.stage'),
                     )
                   : null,
                 statBlockOpen

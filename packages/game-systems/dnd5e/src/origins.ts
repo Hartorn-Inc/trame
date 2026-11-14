@@ -6,11 +6,11 @@
  * PURPOSE:
  * --------
  * Holds the rule data of the SRD 5.2.1 (2024 rules) character origin: the 9
- * species, the 4 SRD backgrounds plus 2 original TRAME backgrounds, and the
- * 17 SRD feats, together with the two origin transitions (`applyBackground`,
- * `validateFeatSelection`). `srdContent.ts` renders this data as compendium
- * entries and `progression.ts` enforces it on level-up, so a rule lives in
- * one place.
+ * SRD species plus 2 original TRAME species, the 4 SRD backgrounds plus 5
+ * original TRAME backgrounds, and the 17 SRD feats, together with the two
+ * origin transitions (`applyBackground`, `validateFeatSelection`).
+ * `srdContent.ts` renders this data as compendium entries and `progression.ts`
+ * enforces it on level-up, so a rule lives in one place.
  *
  * Open Game Content Attribution:
  * This work includes material from the System Reference Document 5.2.1
@@ -33,10 +33,15 @@
  *      - Fighting Style feats have the prerequisite "Fighting Style feature":
  *        they are offered at a feat slot (`getFeatSlotOptions`) only to an
  *        actor whose class has that feature (Fighter 1, Paladin 2, Ranger 2).
- *   4. `Original Backgrounds`:
- *      - Caravan Guide and Lamplighter are TRAME originals built with the same
- *        shape (three abilities, one Origin feat, two skills, one tool,
- *        equipment or 50 GP) to replace non-SRD Folk Hero and Noble.
+ *   4. `Original Species & Backgrounds (ADR-0038)`:
+ *      - `Half-Elf` and `Radiant Scion` are TRAME original species marked
+ *        `source: "trame-original"`, granting zero ability score increases,
+ *        standard speed and darkvision (`60 ft`), and 100% original English and
+ *        French trait descriptions with zero non-SRD rulebook prose.
+ *      - `Caravan Guide`, `Lamplighter`, `Artisan`, `Merchant`, and
+ *        `House Guardian` are TRAME original backgrounds built with the same
+ *        shape (three abilities, one SRD Origin feat, two SRD skills, one SRD
+ *        tool, SRD equipment or 50 GP) to cover classic archetypes cleanly.
  *   5. `Feat Choices Are Data`:
  *      - Magic Initiate (spell list, ability, 2 cantrips, 1 level-1 spell) and
  *        Skilled (3 skills or tools) publish their required picks as
@@ -61,9 +66,9 @@ import { getActorProficiencies } from "./classRules.ts";
 // SPECIES
 // ============================================================================
 
-/** Rule data of one SRD 5.2.1 species. Species never raise ability scores. */
+/** Rule data of one species (SRD 5.2.1 or TRAME original). Species never raise ability scores. */
 export interface SpeciesRules {
-  /** Creature size; Human and Tiefling choose Medium or Small. */
+  /** Creature size; Human, Tiefling, and Radiant Scion choose Medium or Small. */
   size: "Medium" | "Small" | "Medium or Small";
   /** Walking speed in feet. */
   speedFt: number;
@@ -73,21 +78,27 @@ export interface SpeciesRules {
   hpBonusPerLevel: number;
   /** Trait names (English, canonical). */
   traits: readonly string[];
+  /** `"srd"` for SRD 5.2.1 species, `"trame-original"` for TRAME originals (ADR-0038). */
+  source: "srd" | "trame-original";
+  /** Bilingual trait descriptions for TRAME original species traits (100% original prose). */
+  traitDescriptions?: Readonly<Record<string, { en: string; fr: string }>>;
 }
 
-/** Keys of the 9 SRD 5.2.1 species (without the `srd:species:` prefix). */
+/** Keys of the 11 built-in species (9 SRD 5.2.1 + 2 TRAME originals, without prefix). */
 export type SrdSpeciesId =
   | "dragonborn"
   | "dwarf"
   | "elf"
   | "gnome"
   | "goliath"
+  | "half_elf"
   | "halfling"
   | "human"
   | "orc"
+  | "radiant_scion"
   | "tiefling";
 
-/** The 9 SRD 5.2.1 species. */
+/** The 9 SRD 5.2.1 species plus 2 TRAME original species (`half_elf`, `radiant_scion`). */
 export const SRD_SPECIES: Readonly<Record<SrdSpeciesId, SpeciesRules>> = {
   dragonborn: {
     size: "Medium",
@@ -95,6 +106,7 @@ export const SRD_SPECIES: Readonly<Record<SrdSpeciesId, SpeciesRules>> = {
     darkvisionFt: 60,
     hpBonusPerLevel: 0,
     traits: ["Draconic Ancestry", "Breath Weapon", "Damage Resistance", "Darkvision", "Draconic Flight"],
+    source: "srd",
   },
   dwarf: {
     size: "Medium",
@@ -102,6 +114,7 @@ export const SRD_SPECIES: Readonly<Record<SrdSpeciesId, SpeciesRules>> = {
     darkvisionFt: 120,
     hpBonusPerLevel: 1,
     traits: ["Darkvision", "Dwarven Resilience", "Dwarven Toughness", "Stonecunning"],
+    source: "srd",
   },
   elf: {
     size: "Medium",
@@ -109,6 +122,7 @@ export const SRD_SPECIES: Readonly<Record<SrdSpeciesId, SpeciesRules>> = {
     darkvisionFt: 60,
     hpBonusPerLevel: 0,
     traits: ["Darkvision", "Elven Lineage", "Fey Ancestry", "Keen Senses", "Trance"],
+    source: "srd",
   },
   gnome: {
     size: "Small",
@@ -116,6 +130,7 @@ export const SRD_SPECIES: Readonly<Record<SrdSpeciesId, SpeciesRules>> = {
     darkvisionFt: 60,
     hpBonusPerLevel: 0,
     traits: ["Darkvision", "Gnomish Cunning", "Gnomish Lineage"],
+    source: "srd",
   },
   goliath: {
     size: "Medium",
@@ -123,6 +138,25 @@ export const SRD_SPECIES: Readonly<Record<SrdSpeciesId, SpeciesRules>> = {
     darkvisionFt: 0,
     hpBonusPerLevel: 0,
     traits: ["Giant Ancestry", "Large Form", "Powerful Build"],
+    source: "srd",
+  },
+  half_elf: {
+    size: "Medium",
+    speedFt: 30,
+    darkvisionFt: 60,
+    hpBonusPerLevel: 0,
+    traits: ["Dual Heritage", "Fey Resilience"],
+    source: "trame-original",
+    traitDescriptions: {
+      "Dual Heritage": {
+        en: "Raised at the crossroads of two lineages, you draw on adaptable diplomacy and steady poise among diverse cultures.",
+        fr: "Élevé à la croisée de deux lignées, vous faites preuve d'une aisance diplomatique adaptable et d'un sang-froid naturel parmi des peuples variés.",
+      },
+      "Fey Resilience": {
+        en: "Your fey-touched heritage fortifies your mind against magical beguilement and resists slumber woven by magic.",
+        fr: "Votre héritage marqué par la Féerie affermit votre esprit face aux enchantements trompeurs et résiste à l'assoupissement magique.",
+      },
+    },
   },
   halfling: {
     size: "Small",
@@ -130,6 +164,7 @@ export const SRD_SPECIES: Readonly<Record<SrdSpeciesId, SpeciesRules>> = {
     darkvisionFt: 0,
     hpBonusPerLevel: 0,
     traits: ["Brave", "Halfling Nimbleness", "Luck", "Naturally Stealthy"],
+    source: "srd",
   },
   human: {
     size: "Medium or Small",
@@ -137,6 +172,7 @@ export const SRD_SPECIES: Readonly<Record<SrdSpeciesId, SpeciesRules>> = {
     darkvisionFt: 0,
     hpBonusPerLevel: 0,
     traits: ["Resourceful", "Skillful", "Versatile"],
+    source: "srd",
   },
   orc: {
     size: "Medium",
@@ -144,6 +180,25 @@ export const SRD_SPECIES: Readonly<Record<SrdSpeciesId, SpeciesRules>> = {
     darkvisionFt: 120,
     hpBonusPerLevel: 0,
     traits: ["Adrenaline Rush", "Darkvision", "Relentless Endurance"],
+    source: "srd",
+  },
+  radiant_scion: {
+    size: "Medium or Small",
+    speedFt: 30,
+    darkvisionFt: 60,
+    hpBonusPerLevel: 0,
+    traits: ["Celestial Spark", "Guiding Touch"],
+    source: "trame-original",
+    traitDescriptions: {
+      "Celestial Spark": {
+        en: "An inner upper-planar glow answers your focus, shedding gentle radiance in darkness and steadying your spirit against dread.",
+        fr: "Une lueur céleste intérieure répond à votre concentration, diffusant une clarté apaisante dans l'obscurité et affermissant votre courage.",
+      },
+      "Guiding Touch": {
+        en: "Once per rest, a brief touch channels warm luminous vitality to ease a creature's wounds and steady its breath.",
+        fr: "Une fois par repos, un bref contact transmet une chaleur lumineuse revigorante qui apaise les blessures d'un allié.",
+      },
+    },
   },
   tiefling: {
     size: "Medium or Small",
@@ -151,13 +206,14 @@ export const SRD_SPECIES: Readonly<Record<SrdSpeciesId, SpeciesRules>> = {
     darkvisionFt: 60,
     hpBonusPerLevel: 0,
     traits: ["Darkvision", "Fiendish Legacy", "Otherworldly Presence"],
+    source: "srd",
   },
 };
 
-/** Resolves `"dwarf"` or `"srd:species:dwarf"` to its rules, or `undefined`. */
+/** Resolves `"dwarf"`, `"srd:species:dwarf"`, or `"trame:species:half_elf"` to its rules, or `undefined`. */
 export function getSpeciesRules(speciesId?: string): SpeciesRules | undefined {
   if (!speciesId) return undefined;
-  const key = speciesId.replace(/^srd:species:/, "").toLowerCase();
+  const key = speciesId.replace(/^(?:srd|trame):species:/, "").toLowerCase();
   return Object.hasOwn(SRD_SPECIES, key) ? SRD_SPECIES[key as SrdSpeciesId] : undefined;
 }
 
@@ -504,10 +560,19 @@ export interface BackgroundRules {
   source: "srd" | "trame-original";
 }
 
-/** Keys of the 6 backgrounds (without the `srd:background:` prefix). */
-export type BackgroundId = "acolyte" | "criminal" | "sage" | "soldier" | "caravan_guide" | "lamplighter";
+/** Keys of the 9 backgrounds (4 SRD 5.2.1 + 5 TRAME originals, without prefix). */
+export type BackgroundId =
+  | "acolyte"
+  | "criminal"
+  | "sage"
+  | "soldier"
+  | "artisan"
+  | "caravan_guide"
+  | "house_guardian"
+  | "lamplighter"
+  | "merchant";
 
-/** SRD 5.2.1 Acolyte, Criminal, Sage and Soldier, plus two TRAME originals. */
+/** SRD 5.2.1 Acolyte, Criminal, Sage and Soldier, plus five TRAME originals (ADR-0038). */
 export const BACKGROUNDS: Readonly<Record<BackgroundId, BackgroundRules>> = {
   acolyte: {
     abilities: ["int", "wis", "cha"],
@@ -543,12 +608,28 @@ export const BACKGROUNDS: Readonly<Record<BackgroundId, BackgroundRules>> = {
     equipment: ["Spear", "Shortbow", "20 Arrows", "Gaming Set", "Healer's Kit", "Quiver", "Traveler's Clothes", "14 GP"],
     source: "srd",
   },
+  artisan: {
+    abilities: ["str", "con", "int"],
+    originFeat: "srd:feat:skilled",
+    skillProficiencies: ["investigation", "persuasion"],
+    toolProficiency: "Smith's Tools",
+    equipment: ["Smith's Tools", "2 Pouches", "Traveler's Clothes", "27 GP"],
+    source: "trame-original",
+  },
   caravan_guide: {
     abilities: ["str", "con", "wis"],
     originFeat: "srd:feat:skilled",
     skillProficiencies: ["animal_handling", "survival"],
     toolProficiency: "Cartographer's Tools",
     equipment: ["Cartographer's Tools", "Bedroll", "Hempen Rope", "Lantern", "Traveler's Clothes", "12 GP"],
+    source: "trame-original",
+  },
+  house_guardian: {
+    abilities: ["str", "con", "cha"],
+    originFeat: "srd:feat:alert",
+    skillProficiencies: ["athletics", "medicine"],
+    toolProficiency: "Herbalism Kit",
+    equipment: ["Spear", "Herbalism Kit", "Healer's Kit", "Traveler's Clothes", "37 GP"],
     source: "trame-original",
   },
   lamplighter: {
@@ -559,12 +640,20 @@ export const BACKGROUNDS: Readonly<Record<BackgroundId, BackgroundRules>> = {
     equipment: ["Tinker's Tools", "Hooded Lantern", "2 Flasks of Oil", "Tinderbox", "Traveler's Clothes", "15 GP"],
     source: "trame-original",
   },
+  merchant: {
+    abilities: ["con", "int", "cha"],
+    originFeat: "srd:feat:skilled",
+    skillProficiencies: ["persuasion", "insight"],
+    toolProficiency: "Navigator's Tools",
+    equipment: ["Navigator's Tools", "2 Pouches", "Traveler's Clothes", "22 GP"],
+    source: "trame-original",
+  },
 };
 
-/** Resolves `"sage"` or `"srd:background:sage"` to its rules, or `undefined`. */
+/** Resolves `"sage"`, `"srd:background:sage"`, or `"trame:background:artisan"` to its rules, or `undefined`. */
 export function getBackgroundRules(backgroundId?: string): BackgroundRules | undefined {
   if (!backgroundId) return undefined;
-  const key = backgroundId.replace(/^srd:background:/, "").toLowerCase();
+  const key = backgroundId.replace(/^(?:srd|trame):background:/, "").toLowerCase();
   return Object.hasOwn(BACKGROUNDS, key) ? BACKGROUNDS[key as BackgroundId] : undefined;
 }
 
@@ -638,7 +727,7 @@ export function applyBackground(
       entry.proficiencyRank = 1;
     }
   }
-  clone.backgroundId = `srd:background:${backgroundId.replace(/^srd:background:/, "").toLowerCase()}`;
+  clone.backgroundId = `srd:background:${backgroundId.replace(/^(?:srd|trame):background:/, "").toLowerCase()}`;
   clone.features = [...(clone.features ?? []), background.originFeat];
   clone.featsTaken = [...(clone.featsTaken ?? []), { featId: background.originFeat, level: 1 }];
   const proficiencies = getActorProficiencies(clone);

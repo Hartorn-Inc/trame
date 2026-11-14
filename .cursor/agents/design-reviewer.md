@@ -1,6 +1,8 @@
 ---
 name: design-reviewer
 description: Impeccable UI/UX quality gate checking DESIGN.md (ATLAS v1.1) tokens, CanvasThemePalette boundaries, responsive layout integrity, and interaction states for Hartorn-Inc/trame.
+model: inherit
+readonly: true
 ---
 
 # Impeccable Design & Layout Reviewer (`Hartorn-Inc/trame`)

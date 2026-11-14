@@ -22,7 +22,7 @@ export function InventoryContainerTreeWidget(props: WidgetProps): VNode<any> {
     isAttuned: Boolean(it.isAttuned),
     requiresAttunement: Boolean(it.requiresAttunement),
     id: String(it.id ?? ''),
-    name: String(it.name ?? 'Item'),
+    name: String(it.name ?? t('sheet.inventory.unnamed')),
     quantity: Number(it.quantity ?? 1),
     unitWeight: Number(it.unitWeight ?? it.weightPounds ?? 0),
     containerId: it.containerId ?? null,

@@ -39,6 +39,7 @@ use super::password::{
 pub use super::pat::{
     PatError, PatMiddleware, PatRecord, PatStore, create_pat_handler, list_pats_handler,
 };
+use super::recovery::{InMemoryPasswordResets, RecoveryStore};
 use super::totp::{TotpService, totp_enable_handler, totp_setup_handler, totp_verify_handler};
 use crate::security::{SecurityPolicy, auth_rate_limit_middleware};
 use crate::storage::blob::Sha256Hasher;
@@ -172,14 +173,15 @@ pub trait SessionStore: Send + Sync {
     }
 }
 
-/// Unified trait combining `SessionStore`, `IdentityStore`, `PatStore`, `OAuthStore`, and
-/// `AccountStore`.
+/// Unified trait combining `SessionStore`, `IdentityStore`, `PatStore`, `OAuthStore`,
+/// `AccountStore`, and `RecoveryStore`.
 pub trait FullAuthStore:
-    SessionStore + IdentityStore + PatStore + OAuthStore + AccountStore
+    SessionStore + IdentityStore + PatStore + OAuthStore + AccountStore + RecoveryStore
 {
 }
-impl<T: SessionStore + IdentityStore + PatStore + OAuthStore + AccountStore + ?Sized> FullAuthStore
-    for T
+impl<
+    T: SessionStore + IdentityStore + PatStore + OAuthStore + AccountStore + RecoveryStore + ?Sized,
+> FullAuthStore for T
 {
 }
 
@@ -194,7 +196,9 @@ pub struct InMemorySessionStore {
     pub(super) campaign_members: Arc<RwLock<HashMap<(Uuid, Uuid), CampaignMemberRecord>>>,
     /// Bootstrap token, instance id, and invites; one mutex serializes claims and redemptions.
     pub(super) accounts: Arc<tokio::sync::Mutex<InMemoryAccounts>>,
-    sessions: Arc<RwLock<HashMap<String, SessionRecord>>>,
+    pub(super) sessions: Arc<RwLock<HashMap<String, SessionRecord>>>,
+    /// Password-reset links (`recovery.rs`); taken before `users` and `sessions`.
+    pub(super) password_resets: Arc<tokio::sync::Mutex<InMemoryPasswordResets>>,
     revoked_invites: Arc<RwLock<HashSet<Uuid>>>,
     personal_access_tokens: Arc<RwLock<HashMap<Uuid, PatRecord>>>,
     pending_oauth: Arc<RwLock<HashMap<String, PendingOAuthState>>>,
@@ -1240,8 +1244,9 @@ pub async fn me_handler(State(state): State<AuthState>, headers: HeaderMap) -> R
 }
 
 /// Builds the Axum router for authentication endpoints plus owner bootstrap and instance
-/// administration (`instance.rs`). Credential endpoints (`login`, `register`, `totp/*`, `bind*`,
-/// bootstrap) sit behind `auth_rate_limit_middleware`. Invites live in `access.rs`.
+/// administration (`instance.rs`) and account recovery (`recovery.rs`). Credential endpoints
+/// (`login`, `register`, `totp/*`, `bind*`, bootstrap, password reset and change) sit behind
+/// `auth_rate_limit_middleware`. Invites live in `access.rs`.
 pub fn build_auth_router(state: AuthState) -> Router {
     let rate_limited = Router::new()
         .route("/api/v1/auth/register", post(register_handler))
@@ -1269,5 +1274,6 @@ pub fn build_auth_router(state: AuthState) -> Router {
         )
         .merge(rate_limited)
         .with_state(state.clone())
+        .merge(super::recovery::recovery_router(state.clone()))
         .merge(crate::instance::instance_router(state))
 }

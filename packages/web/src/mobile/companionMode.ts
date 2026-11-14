@@ -309,7 +309,7 @@ export class TrameAppRoot {
     const closeBtn = new LightweightElement("button");
     closeBtn.setAttribute("data-testid", "modal-close-button");
     closeBtn.setAttribute("class", "ds-btn ds-btn-secondary");
-    closeBtn.textContent = "Close";
+    closeBtn.textContent = t("action.close");
     closeBtn.addEventListener("click", () => {
       this.handoutManager.closeModal();
     });
@@ -399,7 +399,7 @@ export class MobileCompanionLayout {
     viewEl.setAttribute("class", `tab-view tab-view-${this.activeTab}`);
 
     const title = new LightweightElement("h3");
-    title.textContent = `View: ${this.activeTab}`;
+    title.textContent = t(`nav.${this.activeTab}`);
     viewEl.appendChild(title);
 
     this.tabContentElement.appendChild(viewEl);

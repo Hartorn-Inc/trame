@@ -2,15 +2,25 @@ import { useSignal } from '@preact/signals';
 import type { CampaignMapScene } from './types.ts';
 import { filterScenesForRole, mapBackendSceneToFrontend } from './domain.ts';
 import { EmptyMapAtlasSvg } from '../components/icons/AtlasEmptyStates.tsx';
+import { session } from '../api/session.ts';
 import { t } from '../i18n/index.ts';
 
 export interface SceneAtlasProps {
   campaignId: string;
+  /** Human-readable campaign title; resolved from session campaigns when omitted. */
+  campaignName?: string;
   scenes: CampaignMapScene[];
   onSelectScene?: (scene: CampaignMapScene) => void;
 }
 
-export function SceneAtlas({ campaignId, scenes, onSelectScene }: SceneAtlasProps) {
+export function SceneAtlas({ campaignId, campaignName, scenes, onSelectScene }: SceneAtlasProps) {
+  const resolvedCampaignName =
+    campaignName?.trim() ||
+    session.campaigns.value.find((c) => c.id === campaignId)?.name?.trim() ||
+    '';
+  const campaignLabelText = resolvedCampaignName
+    ? t('maps.campaignLabel', { name: resolvedCampaignName })
+    : t('maps.campaignUnnamed');
   const normalizedScenes = scenes.map((s) =>
     'walls' in s && Array.isArray((s as any).walls) ? (s as CampaignMapScene) : mapBackendSceneToFrontend(s),
   );
@@ -27,7 +37,7 @@ export function SceneAtlas({ campaignId, scenes, onSelectScene }: SceneAtlasProp
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 'var(--atlas-font-size-lg)' }}>{t('maps.atlas.title')}</h2>
-          <span class="atlas-tabular-nums" style={{ fontSize: 'var(--atlas-font-size-xs)', color: 'var(--atlas-text-muted)' }}>{t('maps.campaignLabel', { id: campaignId })}</span>
+          <span data-testid="maps-campaign-label" class="atlas-tabular-nums" style={{ fontSize: 'var(--atlas-font-size-xs)', color: 'var(--atlas-text-muted)' }}>{campaignLabelText}</span>
         </div>
       </header>
 

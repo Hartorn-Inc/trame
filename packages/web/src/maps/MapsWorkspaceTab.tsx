@@ -32,6 +32,10 @@
  *    - An uploaded image is stored as its object key in
  *      `background_image_url` (the same shape the UVTT import produces); the
  *      table presigns it at render time, so no expiring URL is persisted.
+ * 5. `Confirm Over Live Play`:
+ *    - Activating over combat, pending rolls or monsters on the table first
+ *      shows `ActivateSceneConfirmDialog` listing what will be lost; nothing
+ *      is saved or sent until the GM confirms.
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -39,7 +43,7 @@
  * ├── import  -> `importMap` -> `getMaps` (new version) -> `revision++`
  * ├── upload  -> `uploadAsset` -> set key on scene -> `saveMaps` -> `revision++`
  * ├── save    -> `saveMaps(all, version)` -> new version | conflict panel
- * ├── activate -> `saveMaps(all, version)` -> WS `ACTIVATE_SCENE { scene_id }`
+ * ├── activate -> [confirm if live play] -> `saveMaps(all, version)` -> WS `ACTIVATE_SCENE { scene_id }`
  * └── conflict -> reload (`getMaps`) | overwrite (`saveMaps(pending, current_version)`)
  * ============================================================================
  */
@@ -51,6 +55,7 @@ import { t } from '../i18n/index.ts';
 import { activateScene } from '../table/commands.ts';
 import { mapBackendSceneToFrontend, mapFrontendSceneToBackend } from './domain.ts';
 import { MapsStudioTab } from './MapsStudioTab.tsx';
+import { ActivateSceneConfirmDialog, activationImpact, type ActivationImpact } from './ActivateSceneConfirmDialog.tsx';
 import { SceneAtlas } from './SceneAtlas.tsx';
 import type { CampaignMapScene } from './types.ts';
 
@@ -94,6 +99,7 @@ export function MapsWorkspaceTab({ campaignId, client, isGm }: MapsWorkspaceTabP
 
   const [version, setVersion] = useState(0);
   const [conflict, setConflict] = useState<SceneConflict | null>(null);
+  const [pendingActivation, setPendingActivation] = useState<{ scene: CampaignMapScene; impact: ActivationImpact } | null>(null);
 
   const reload = async () => {
     const maps = await client.getMaps(campaignId);
@@ -152,6 +158,13 @@ export function MapsWorkspaceTab({ campaignId, client, isGm }: MapsWorkspaceTabP
       return t('mapsTab.saved', { name: scene.title });
     });
 
+  /** Activates `scene`, after a confirmation when the live table is in play (invariant 5). */
+  const requestActivate = (scene: CampaignMapScene) => {
+    const impact = activationImpact(client.state.table.value, scene);
+    if (impact) setPendingActivation({ scene, impact });
+    else void activate(scene);
+  };
+
   const activate = (scene: CampaignMapScene) =>
     run(async () => {
       const stored = mapFrontendSceneToBackend(scene);
@@ -178,8 +191,10 @@ export function MapsWorkspaceTab({ campaignId, client, isGm }: MapsWorkspaceTabP
       return t('mapsTab.backgroundSaved', { name: target.title });
     });
 
+  const campaignName = client.state.campaigns.value.find((c) => c.id === campaignId)?.name;
+
   if (!isGm) {
-    return <SceneAtlas key={revision} campaignId={campaignId} scenes={scenes} />;
+    return <SceneAtlas key={revision} campaignId={campaignId} campaignName={campaignName} scenes={scenes} />;
   }
 
   return (
@@ -245,11 +260,24 @@ export function MapsWorkspaceTab({ campaignId, client, isGm }: MapsWorkspaceTabP
       <MapsStudioTab
         key={revision}
         campaignId={campaignId}
+        campaignName={campaignName}
         userRole="GM"
         initialScenes={scenes}
         onSaveScene={saveScene}
-        onActivateScene={(scene) => void activate(scene)}
+        onActivateScene={requestActivate}
       />
+      {pendingActivation ? (
+        <ActivateSceneConfirmDialog
+          scene={pendingActivation.scene}
+          impact={pendingActivation.impact}
+          onCancel={() => setPendingActivation(null)}
+          onConfirm={() => {
+            const { scene } = pendingActivation;
+            setPendingActivation(null);
+            void activate(scene);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

@@ -1,0 +1,25 @@
+# ============================================================================
+# TRAME PUBLIC HTTPS EDGE (Caddyfile)
+# ============================================================================
+#
+# PURPOSE:
+# --------
+# The only container that publishes host ports (80/443). It obtains and renews
+# a certificate for `TRAME_DOMAIN` automatically (ACME HTTP-01/TLS-ALPN-01, so
+# ports 80 and 443 must be reachable from the internet) and redirects HTTP to
+# HTTPS. `localhost` (local smoke test) gets a certificate from Caddy's
+# internal CA instead.
+#
+# INVARIANTS & SAFETY BOUNDARIES:
+# -------------------------------
+#   1. `Single Proxy Hop`:
+#      - No `trusted_proxies`: Caddy replaces any client `X-Forwarded-For`
+#        with the socket peer, so `trame-server` runs with
+#        `TRAME_TRUSTED_PROXY_HOPS=1` and spoofed headers cannot pick a
+#        rate-limit bucket.
+#   2. Routes, compression and WebSocket rules: see `trame-routes.caddy`.
+# ============================================================================
+
+{$TRAME_DOMAIN} {
+	import trame-routes.caddy
+}

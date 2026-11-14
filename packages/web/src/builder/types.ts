@@ -77,6 +77,12 @@ export interface CharacterDraft {
   /** Background equipment: option A item names, or `["50 GP"]` (option B). */
   equipmentIds: string[];
   /**
+   * Origin feat picks keyed by `getOriginFeatChoices` id (`spell_list`,
+   * `spellcasting_ability`, `cantrips`, `level_1_spell`, `proficiencies`);
+   * reset when the background changes.
+   */
+  featSelections: Record<string, string[]>;
+  /**
    * Class picks keyed by `getClassChoices` id (`skills`, `tools`,
    * `equipment` option id, `cantrips`, `spells`); reset when the class changes.
    */
@@ -108,6 +114,7 @@ export function createDefaultDraft(overrides?: Partial<CharacterDraft>): Charact
     abilityScores: createDefaultAbilityScores(),
     abilityGenerationMethod: "pointBuy",
     equipmentIds: [],
+    featSelections: {},
     classSelections: {},
     ...overrides,
   };

@@ -91,6 +91,14 @@ export type DeathSavePhase = "conscious" | "dying" | "stable" | "dead" | "unknow
 /** Door handle drawn at a door's midpoint on the board. */
 export interface DoorHandle {
   wallId: Uuid;
+  /** Segment start point in canvas pixels (`px`). */
+  a: WirePoint2D;
+  /** Segment end point in canvas pixels (`px`). */
+  b: WirePoint2D;
+  /** Bottom elevation of the door segment in feet (`ft`). */
+  bottomElevationFt: number;
+  /** Top elevation of the door segment in feet (`ft`). */
+  topElevationFt: number;
   /** Midpoint of the door segment in canvas pixels (`px`). */
   pos: WirePoint2D;
   isOpen: boolean;
@@ -234,7 +242,12 @@ export function spawnTopLeft(
  * distinguishable in target lists and the initiative tracker.
  */
 export function uniqueTokenName(base: string, state: ProjectedTableState | null): string {
-  const names = new Set(listTableTokens(state).map((tok) => tok.name));
+  return uniqueNameAmong(base, listTableTokens(state).map((tok) => tok.name));
+}
+
+/** `uniqueTokenName` over an explicit name list (for example a scene's staged tokens). */
+export function uniqueNameAmong(base: string, taken: Iterable<string>): string {
+  const names = new Set(taken);
   if (!names.has(base)) return base;
   let n = 2;
   while (names.has(`${base} ${n}`)) n++;
@@ -286,6 +299,10 @@ export function doorHandles(state: ProjectedTableState | null, isGm: boolean, sp
     return [
       {
         wallId: wall.id,
+        a: wall.a,
+        b: wall.b,
+        bottomElevationFt: numberOr(wall.bottom_elevation_ft, -1000),
+        topElevationFt: numberOr(wall.top_elevation_ft, 1000),
         pos,
         isOpen: kind.is_open,
         isLocked,
@@ -298,6 +315,68 @@ export function doorHandles(state: ProjectedTableState | null, isGm: boolean, sp
       },
     ];
   });
+}
+
+function segmentIntersectsRect(a: WirePoint2D, b: WirePoint2D, min: WirePoint2D, max: WirePoint2D): boolean {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const clip = (p: number, q: number): boolean => {
+    if (p === 0) return q >= 0;
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+    return true;
+  };
+  return clip(-dx, a.x - min.x) && clip(dx, max.x - a.x) && clip(-dy, a.y - min.y) && clip(dy, max.y - a.y);
+}
+
+function segmentRectDistancePx(a: WirePoint2D, b: WirePoint2D, min: WirePoint2D, max: WirePoint2D): number {
+  if (segmentIntersectsRect(a, b, min, max)) return 0;
+  const toRect = (p: WirePoint2D): number => {
+    const dx = Math.max(0, min.x - p.x, p.x - max.x);
+    const dy = Math.max(0, min.y - p.y, p.y - max.y);
+    return Math.hypot(dx, dy);
+  };
+  const sx = b.x - a.x;
+  const sy = b.y - a.y;
+  const lenSq = sx * sx + sy * sy;
+  const toSegment = (p: WirePoint2D): number => {
+    const t = lenSq > 0 ? Math.min(1, Math.max(0, ((p.x - a.x) * sx + (p.y - a.y) * sy) / lenSq)) : 0;
+    return Math.hypot(p.x - (a.x + t * sx), p.y - (a.y + t * sy));
+  };
+  return Math.min(
+    toRect(a),
+    toRect(b),
+    toSegment(min),
+    toSegment({ x: max.x, y: min.y }),
+    toSegment(max),
+    toSegment({ x: min.x, y: max.y }),
+  );
+}
+
+/**
+ * 3D distance in feet (`ft`) from `token`'s footprint to `door`, matching the
+ * engine's `player_reaches_door` check: the larger of the horizontal
+ * footprint-to-segment distance and the vertical gap to the door's elevation
+ * span, rounded to `0.1 ft`.
+ */
+export function doorDistanceFt(door: DoorHandle, token: TableToken, cellSizePx: number, feetPerCell = 5): number {
+  const cell = cellSizePx > 0 ? cellSizePx : 50;
+  const ftPerCell = feetPerCell > 0 ? feetPerCell : 5;
+  const max = {
+    x: token.topLeft.x + Math.max(1, token.gridW) * cell,
+    y: token.topLeft.y + Math.max(1, token.gridH) * cell,
+  };
+  const horizontalFt = segmentRectDistancePx(door.a, door.b, token.topLeft, max) * (ftPerCell / cell);
+  const verticalFt = Math.max(0, door.bottomElevationFt - token.elevationFt, token.elevationFt - door.topElevationFt);
+  return Math.round(Math.max(horizontalFt, verticalFt) * 10) / 10;
 }
 
 /**

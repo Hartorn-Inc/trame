@@ -22,10 +22,17 @@
  * 3. `Undo Re-Opens Prompts`:
  *    - Undo can withdraw reaction prompts (`UNDONE`) or restore earlier ones;
  *      the reaction banner reflects both from the next snapshot.
+ * 4. `Named Live Undo & Memory-Only Disclosure`:
+ *    - When a live session has observed an accepted undoable command, the Undo
+ *      button names its localized `command.action.*` label; after `UNDO`,
+ *      `ACTIVATE_SCENE`, or a reconnect/reload it falls back to the generic
+ *      label while remaining operable in case server-side undo entries exist.
+ *    - Both `title` and a visually-hidden `aria-describedby` hint disclose
+ *      that undo history lives in server memory only and is lost on restart.
  * ============================================================================
  */
 import type { ApiClient } from '../api/client.ts';
-import { t, type MessageKey } from '../i18n/index.ts';
+import { hasMessage, t, type MessageKey } from '../i18n/index.ts';
 import {
   AMBIENT_LIGHTING_PRESETS,
   commitMcpStaging,
@@ -44,6 +51,12 @@ export function GmOverrideToolbar({ client, isGm }: GmOverrideToolbarProps) {
   if (!isGm) return null;
   const table = client.state.table.value;
   const proposals = Object.values(client.state.mcpProposals.value);
+  const lastAction = client.state.lastUndoableAction.value;
+  const actionKey = lastAction ? `command.action.${lastAction}` : '';
+  const undoLabel = lastAction
+    ? t('gm.undoNamed', { action: hasMessage(actionKey) ? t(actionKey) : t('command.action.generic') })
+    : t('gm.undo');
+  const undoHint = t('gm.undoMemoryHint');
 
   return (
     <div class="ds-gm-toolbar" role="toolbar" aria-label={t('gm.toolbar')} data-testid="gm-toolbar">
@@ -60,9 +73,19 @@ export function GmOverrideToolbar({ client, isGm }: GmOverrideToolbarProps) {
             <option key={preset} value={preset}>{t(`gm.lighting.${preset}` as MessageKey)}</option>
           ))}
         </select>
-        <button type="button" class="ds-btn ds-btn-secondary" data-testid="gm-undo" onClick={() => client.submitCommand(undoLastAction())}>
-          {t('gm.undo')}
+        <button
+          type="button"
+          class="ds-btn ds-btn-secondary"
+          data-testid="gm-undo"
+          title={undoHint}
+          aria-describedby="gm-undo-hint"
+          onClick={() => client.submitCommand(undoLastAction())}
+        >
+          {undoLabel}
         </button>
+        <span id="gm-undo-hint" class="ds-visually-hidden" data-testid="gm-undo-hint">
+          {undoHint}
+        </span>
       </div>
       {proposals.length > 0 ? (
         <section class="ds-stack-sm" aria-label={t('gm.mcp.title')} data-testid="gm-mcp-proposals">

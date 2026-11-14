@@ -1,59 +1,68 @@
 /**
  * ============================================================================
- * TWO-BROWSER CAMPAIGN JOURNEY: GM + PLAYER (campaign.spec.ts)
+ * MULTI-BROWSER CAMPAIGN JOURNEY: GM + THREE PLAYERS (campaign.spec.ts)
  * ============================================================================
  *
  * PURPOSE:
  * -----
- * Drives one full D&D 5e session through the real UI with two simultaneous
- * browser contexts (GM and player), each recording video: Owner setup,
- * campaign invite and redemption, character creation (a level-1 Wizard),
- * map import and activation, doors (and the player's 5 ft door reach),
- * conditions and GM rulings, tokens, initiative, movement and reactions,
- * damage/heal/undo, SRD monsters spawned hidden from the compendium, player
- * attacks and area spells resolved by the server as pending resolutions
- * (ADR-0042) with an explicit Apply, a GM monster attack from the stat block
- * panel, concentration checks, spell slots, dice, sheet conflict, documents
- * and handouts, and the player projection rules.
+ * Drives one full D&D 5e session through the real UI with four simultaneous
+ * browser contexts in one Chromium (GM and player one recorded on video,
+ * players two and three unrecorded): Owner setup, one campaign invite
+ * redeemed by three players then revoked, character creation (a level-1
+ * Wizard), map import and activation with the battlemap stored in S3 (Silo),
+ * doors (and the player's 5 ft door reach), conditions and GM rulings,
+ * tokens, initiative, movement and reactions, damage/heal/undo, SRD
+ * monsters spawned hidden from the compendium, player attacks and area
+ * spells resolved by the server as pending resolutions (ADR-0042) with an
+ * explicit Apply, a GM monster attack from the stat block panel,
+ * concentration checks, spell slots, dice, sheet conflict, documents and
+ * handouts, the player projection rules, HTTP and WebSocket compression,
+ * unchanged-projection frame skipping (RT12), and, with every browser still
+ * open, a SIGKILL, a graceful restart, and a backup restored onto a wiped
+ * database.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
  * 1. `Assert Outcomes, Keep Going`:
  *    - Every phase runs in `phase()`: a failure is recorded as a soft failure
- *      with screenshots of both pages and the journey continues, so one
- *      report covers the whole flow. The test still fails if any phase did.
+ *      with screenshots of the GM and player-one pages and the journey
+ *      continues, so one report covers the whole flow. The test still fails
+ *      if any phase did.
  * 2. `Projection Checked On The Wire`:
  *    - Player secrecy (monster HP/AC, GM-hidden tokens, secret doors, GM
  *      notes) is asserted on the decoded socket frames and REST payloads the
  *      player received, not only on what the UI rendered.
  * 3. `Production Hardening Observed From The Browser`:
- *    - Every `securitypolicyviolation` and CSP console message in either
+ *    - Every `securitypolicyviolation` and CSP console message in any
  *      context fails the run, as do brand font faces that are not `loaded`
  *      or font decode errors; index.html must carry the app CSP while API
  *      responses keep the strict one.
  * 4. `Pixels, Not DOM, For The Renderer`:
- *    - Darkness, lights and fog are asserted on composited screenshots of
- *      the WebGL board (`support/pixels.ts` luminance probes), comparing GM
- *      and player and before/after states rather than absolute colours.
- * 5. `Synchronized Recordings`:
- *    - Both contexts are created and closed together, so `gm.webm` and
- *      `player.webm` share one timeline for the side-by-side video.
+ *    - The battlemap, darkness, lights and fog are asserted on composited
+ *      screenshots of the WebGL board (`support/pixels.ts` probes), comparing
+ *      GM and player and before/after states rather than absolute colours.
+ *    - The uploaded background is green-tinted (G > R) while the UVTT image
+ *      is warm grey (R > G), so a green probe proves the S3 texture is drawn.
+ * 5. `Synchronized, Readable Recordings`:
+ *    - The GM and player-one contexts are created and closed together, so
+ *      `gm.webm` and `player.webm` share one timeline for the side-by-side
+ *      video; players two and three are not recorded to keep it readable.
  * 6. `Invite-Only Accounts, No Backdoor`:
  *    - The GM claims the fresh instance as `Owner` through the real setup URL
  *      the server logged (`owner_bootstrap_url`), which `make e2e` passes in
- *      as `E2E_SETUP_URL`; the player's account is created by redeeming the
- *      `CampaignInvite` link. Both URLs are opened by path and query against
- *      `baseURL`, so they work whatever origin `TRAME_PUBLIC_ORIGIN` names.
- * 7. `Crash Recovery Across Two Runs, No Server Backdoor`:
- *    - The Playwright container shares the server container's network
- *      namespace, so the server cannot be killed under a running browser.
- *      The journey ends its table changes with damage + undo and writes
- *      `artifacts/crash-handoff.json`; `make e2e` then runs
- *      `docker kill -s KILL` on trame-server, restarts it, and runs this
- *      spec again with `E2E_STAGE=after-restart`, which signs both users
- *      back in and asserts the WAL-recovered table shows the undone HP and
- *      that a pending resolution left unapplied before the kill still
- *      applies exactly once.
+ *      as `E2E_SETUP_URL`; the three player accounts are created by
+ *      redeeming one `CampaignInvite` link (4 uses), which the GM then
+ *      revokes. URLs are opened by path and query against `baseURL`, so they
+ *      work whatever origin `TRAME_PUBLIC_ORIGIN` names.
+ * 7. `Stack Operations Mid-Session, No Server Backdoor`:
+ *    - The browsers reach the server through `support/forward.ts`, so the
+ *      host harness (`scripts/run-e2e.sh`, asked through
+ *      `support/harness.ts`) can SIGKILL, restart, back up and restore it
+ *      while every page stays open. Recovery is asserted on the first
+ *      `StateSnapshot` each page receives after its socket reconnects on its
+ *      own: the WAL-recovered table shows the undone HP, a pending resolution
+ *      left unapplied before the kill still applies exactly once, and a note
+ *      written after the backup is gone once the dump is restored.
  * 8. `Server-Side Resolution Against Monsters (ADR-0042)`:
  *    - The player attacks and blasts the SRD monster; the server rolls
  *      against its hidden AC and save bonus. The player sees outcome and
@@ -64,35 +73,55 @@
  *    - Apply is proven idempotent by double-clicking it: two
  *      `APPLY_RESOLUTION` commands reach the server, the second is refused,
  *      and the hit points drop once.
+ * 9. `Assets From The Object Store (ADR-0041)`:
+ *    - Map images are fetched with `crossOrigin = "anonymous"` from
+ *      `/assets/download/...`, which must answer `307` to a presigned Silo
+ *      URL; Silo must answer `200` with `Access-Control-Allow-Origin` set to
+ *      the app origin (the storage-init CORS rule), or WebGL would refuse the
+ *      texture. Checked at first render, after the restart and after the
+ *      restore.
+ * 10. `Compression Seen By The Client`:
+ *    - The JS bundle and API JSON carry `Content-Encoding` br/zstd/gzip, every
+ *      room socket's handshake answer (read through CDP) selects
+ *      `trame.v1+deflate`, and every frame is a zlib stream that inflates to
+ *      a MessagePack envelope.
+ * 11. `RT12 On The Wire`:
+ *    - While the GM moves a GM-hidden token, no player socket receives a
+ *      state frame; a lighting change right after reaches all three.
  *
  * EXECUTION LIFECYCLE:
  * -----
- * GM claims Owner -> campaign -> invite -> player redeems -> characters (both)
- * -> sheet edit + version conflict -> UVTT import + background + secret door
- * + locked door + GM light + hidden goblin -> activate -> tokens -> WebGL
- * renderer, fog, GM vision preview, night + lights (pixel probes) ->
- * projection checks -> door handles and vision -> player door reach
- * (DoorOutOfReach, then adjacent) -> Restrained + GM ruling -> combat ->
- * player reload (initiative after reconnect) -> movement / opportunity
- * attack -> damage, undo, heal -> compendium monster spawned hidden at the
- * selected cell, revealed -> player attack + GM double Apply from the pending
- * list -> player slot spend -> player area spell + player Apply -> GM stat
- * block attack on the concentrating Wizard -> player concentration check ->
- * monster privacy (DOM + wire) -> dice (WS + REST) -> documents + handout
- * -> player export refused -> offline / online reconnect -> unapplied player
- * hit left pending -> damage + undo before the crash -> fonts + CSP checks
- * -> videos saved under `artifacts/`.
- * [harness: SIGKILL + restart] -> `E2E_STAGE=after-restart`: sign in again
- * -> GM and player see the undone HP (no ghost damage) -> the player still
- * sees the pending hit -> the GM applies it exactly once.
+ * GM claims Owner -> campaign -> invite (4 uses) -> players two and three,
+ * then player one, redeem it -> GM sees 3 redemptions, revokes, a fourth
+ * visitor is refused -> characters -> sheet edit + version conflict -> UVTT
+ * import + background (stored in Silo) + secret door + locked door + GM
+ * light + hidden goblin -> activate -> tokens -> WebGL renderer -> map image
+ * through the signed redirect, drawn on both canvases -> compression (HTTP +
+ * WS) -> fog, GM vision preview, night + lights (pixel probes) ->
+ * projection checks -> RT12 hidden move -> door handles and vision ->
+ * player door reach -> Restrained + GM ruling -> combat -> player reload ->
+ * movement / opportunity attack -> damage, undo, heal -> compendium monster
+ * spawned hidden, revealed -> player attack + GM double Apply -> player slot
+ * spend -> player area spell + player Apply -> GM stat block attack ->
+ * player concentration check -> monster privacy -> dice (WS + REST) ->
+ * documents + handout -> player export refused -> offline / online
+ * reconnect -> unapplied player hit left pending -> damage + undo
+ * -> [harness: SIGKILL] -> sockets reconnect, undone HP, pending hit applied
+ * once -> [harness: restart] -> map image again from Silo after a reload
+ * -> [harness: backup] -> GM writes a note -> [harness: wipe + restore] ->
+ * campaign, map and table back, the note gone -> difficult terrain 2x move
+ * cost -> keyboard-only move + polite live region -> HUD death save at 0 HP
+ * without canvas selection -> fonts + CSP checks ->
+ * videos saved under `artifacts/`.
  * ============================================================================
  */
 import { expect, test, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { backgroundPng, uvttBundle } from '../support/fixtures.ts';
-import { decodePng, meanLuma, type ProbeRect, type RgbaImage } from '../support/pixels.ts';
-import { latestState, recordRoomFrames, recordSentCommands, states, type RecordedFrame } from '../support/wire.ts';
+import { harness } from '../support/harness.ts';
+import { decodePng, meanLuma, meanRgb, type ProbeRect, type RgbaImage } from '../support/pixels.ts';
+import { latestState, recordRoomFrames, recordSentCommands, states, type ProjectedState, type RecordedFrame } from '../support/wire.ts';
 
 const ARTIFACTS = process.env.E2E_ARTIFACTS_DIR ?? 'artifacts';
 const SCREENS = join(ARTIFACTS, 'screens');
@@ -102,6 +131,10 @@ const PASSWORD = 'Crypt-Lantern-Quill-2026!';
 
 const GM = { email: `gm-${RUN}@e2e.trame.test`, name: 'Game Master' };
 const PLAYER = { email: `player-${RUN}@e2e.trame.test`, name: 'Player One' };
+const PLAYER2 = { email: `player2-${RUN}@e2e.trame.test`, name: 'Player Two' };
+const PLAYER3 = { email: `player3-${RUN}@e2e.trame.test`, name: 'Player Three' };
+/** Uses the GM grants the invite: the three players redeem it, then the GM revokes it. */
+const INVITE_MAX_USES = 4;
 /** Owner setup URL from the server's `owner_bootstrap_url` log line (set by `make e2e`). */
 const SETUP_URL = process.env.E2E_SETUP_URL ?? '';
 const PC_NAME = 'Lyra Thornwood';
@@ -109,29 +142,20 @@ const MONSTER_NAME = 'Grak the Goblin Boss';
 const CAMPAIGN = `Crypt of Embers ${RUN}`;
 /** Pause after each phase so the recording can be followed by eye (ms). */
 const PHASE_PAUSE_MS = 1000;
-/** `after-restart` selects the post-SIGKILL check (invariant 7); unset runs the journey. */
-const STAGE = process.env.E2E_STAGE ?? 'journey';
-/** State the journey hands to the post-restart run (invariant 7). */
-const CRASH_HANDOFF = join(ARTIFACTS, 'crash-handoff.json');
-
-/** Contents of `CRASH_HANDOFF`. */
-interface CrashHandoff {
-  campaignId: string;
-  pcTokenId: string;
-  /** PC hit points after the undo, i.e. what the table must show after recovery. */
-  pcHp: number;
-  pcMaxHp: number;
-  gmEmail: string;
-  playerEmail: string;
-  /** SRD monster token the unapplied pending hit targets. */
-  srdTokenId: string;
-  /** Monster hit points before that hit is applied. */
-  srdHp: number;
-  /** Id of the player's `PendingResolution` left unapplied before the kill. */
-  pendingResolutionId: string;
-  /** Server-rolled damage of that hit, as the GM saw it before the kill. */
-  pendingDamage: number;
-}
+/** Origin of the browser-facing S3 endpoint (`S3_PUBLIC_ENDPOINT` in `e2e.env`). */
+const S3_PUBLIC_ORIGIN = process.env.E2E_S3_PUBLIC_ORIGIN ?? 'http://silo:9000';
+/** Subprotocol the server selects for zlib-compressed socket frames (ADR-0041, D24). */
+const WS_DEFLATE = 'trame.v1+deflate';
+/** Quiet time after the GM's hidden move during which no player may get a state frame (ms). */
+const RT12_QUIET_MS = 2000;
+/** Longest wait for a page's socket to reconnect after a harness action (ms). */
+const RECONNECT_TIMEOUT_MS = 90_000;
+/**
+ * Minimum mean `G - R` of a board probe on the uploaded green background
+ * (source cells G - R = 20 / 22, UVTT image R - G = 8 / 8): above it the S3
+ * texture is drawn, below it the canvas shows the void or the wrong image.
+ */
+const BACKGROUND_GREEN_MIN = 6;
 /**
  * GM light placed in the map studio (board px, 10 ft = 140 px dim radius),
  * outside the UVTT torch's 420 px reach around (210, 210).
@@ -201,6 +225,80 @@ async function newRecordedContext(browser: Browser): Promise<BrowserContext> {
     locale: 'en-US',
     recordVideo: { dir: join('test-results', 'videos'), size: VIEWPORT },
   });
+}
+
+/** Unrecorded context: players two and three, and the refused fourth visitor (invariant 5). */
+async function newPlainContext(browser: Browser): Promise<BrowserContext> {
+  return browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: VIEWPORT, locale: 'en-US' });
+}
+
+/** CDP view of one page: room socket subprotocols and a browser cache reset. */
+interface CdpProbe {
+  /** `Sec-WebSocket-Protocol` the server answered for each campaign room socket, in order (invariant 10). */
+  protocols: string[];
+  /** Drops the HTTP cache, so the next map image load really goes to the object store. */
+  clearCache: () => Promise<void>;
+}
+
+/** Attaches a CDP session to `page` before it opens any socket. */
+async function attachCdp(context: BrowserContext, page: Page): Promise<CdpProbe> {
+  const cdp = await context.newCDPSession(page);
+  const protocols: string[] = [];
+  const roomSockets = new Set<string>();
+  cdp.on('Network.webSocketCreated', (e) => {
+    if (e.url.includes('/campaigns/')) roomSockets.add(e.requestId);
+  });
+  cdp.on('Network.webSocketHandshakeResponseReceived', (e) => {
+    if (!roomSockets.has(e.requestId)) return;
+    const header = Object.entries(e.response.headers).find(([name]) => name.toLowerCase() === 'sec-websocket-protocol');
+    protocols.push(header ? String(header[1]) : '');
+  });
+  await cdp.send('Network.enable');
+  return {
+    protocols,
+    clearCache: async () => {
+      await cdp.send('Network.clearBrowserCache');
+    },
+  };
+}
+
+/** One image response from the object store, with the redirect that led to it (invariant 9). */
+interface S3ImageFetch {
+  status: number;
+  /** `Access-Control-Allow-Origin` of the object store's answer (`''` when absent). */
+  allowOrigin: string;
+  /** Path of the request redirected to the object store (`/assets/download/...`). */
+  redirectedFrom: string;
+  /** Status of that redirect (`307`). */
+  redirectStatus: number;
+}
+
+/** Records every response `page` gets from `S3_PUBLIC_ORIGIN`. */
+function recordS3Images(page: Page): S3ImageFetch[] {
+  const fetches: S3ImageFetch[] = [];
+  page.on('response', async (res) => {
+    if (!res.url().startsWith(`${S3_PUBLIC_ORIGIN}/`)) return;
+    const from = res.request().redirectedFrom();
+    const redirect = from ? await from.response().catch(() => null) : null;
+    const headers = await res.allHeaders().catch(() => ({}) as Record<string, string>);
+    fetches.push({
+      status: res.status(),
+      allowOrigin: headers['access-control-allow-origin'] ?? '',
+      redirectedFrom: from ? new URL(from.url()).pathname : '',
+      redirectStatus: redirect?.status() ?? 0,
+    });
+  });
+  return fetches;
+}
+
+/**
+ * Waits for the first `StateSnapshot` `frames` received after index `mark`,
+ * i.e. the resync of a socket that reconnected after a harness action.
+ */
+async function snapshotAfter(frames: RecordedFrame[], mark: number): Promise<ProjectedState> {
+  const fresh = () => frames.slice(mark).find((f) => f.tag === 'StateSnapshot');
+  await expect.poll(() => Boolean(fresh()), { timeout: RECONNECT_TIMEOUT_MS, message: 'a StateSnapshot after the reconnect' }).toBe(true);
+  return fresh()!.payload.state as ProjectedState;
 }
 
 /** Last path segment of a `data-testid` with the given prefix, e.g. `actor-<uuid>`. */
@@ -324,45 +422,54 @@ function printPhases(): void {
   console.log(results.map((r) => `${r.status.toUpperCase().padEnd(4)} ${r.phase}${r.note ? ` — ${r.note}` : ''}`).join('\n'));
 }
 
-/** Signs in through the sign-in screen and opens the campaign's live table. */
-async function signInToTable(page: Page, email: string, campaignId: string): Promise<void> {
-  await page.goto('/');
-  await expect(page.getByTestId('auth-screen')).toBeVisible();
-  await page.getByTestId('auth-email').fill(email);
-  await page.getByTestId('auth-password').fill(PASSWORD);
-  await page.getByTestId('auth-submit').click();
-  const open = page.getByTestId(`lobby-open-${campaignId}`);
-  await expect(page.getByTestId('campaign-workspace').or(open)).toBeVisible();
-  if (await open.isVisible()) await open.click();
-  await expect(page.getByTestId('campaign-workspace')).toBeVisible();
-  await page.getByTestId('workspace-tab-table').click();
-  await expect(page.getByTestId('table-map')).toBeVisible();
-}
-
-test('GM and player play one campaign session end to end', async ({ browser }) => {
-  test.skip(STAGE === 'after-restart', 'the journey runs before the harness kills the server');
-  test.setTimeout(20 * 60_000);
+test('GM and three players play one campaign session end to end, across a SIGKILL, a restart and a restore', async ({ browser }) => {
+  test.setTimeout(30 * 60_000);
   mkdirSync(SCREENS, { recursive: true });
 
   const gmCtx = await newRecordedContext(browser);
   const plCtx = await newRecordedContext(browser);
+  const p2Ctx = await newPlainContext(browser);
+  const p3Ctx = await newPlainContext(browser);
   const gm = await gmCtx.newPage();
   const pl = await plCtx.newPage();
+  const p2 = await p2Ctx.newPage();
+  const p3 = await p3Ctx.newPage();
   const both = { gm, player: pl };
+  const all = { gm, player: pl, player2: p2, player3: p3 };
   const gmFrames = recordRoomFrames(gm);
   const plFrames = recordRoomFrames(pl);
+  const p2Frames = recordRoomFrames(p2);
+  const p3Frames = recordRoomFrames(p3);
+  const frameLogs = { gm: gmFrames, player: plFrames, player2: p2Frames, player3: p3Frames };
   const gmSent = recordSentCommands(gm);
+  const cdp = {
+    gm: await attachCdp(gmCtx, gm),
+    player: await attachCdp(plCtx, pl),
+    player2: await attachCdp(p2Ctx, p2),
+    player3: await attachCdp(p3Ctx, p3),
+  };
+  const gmImages = recordS3Images(gm);
+  const plImages = recordS3Images(pl);
+  /** JS bundle responses the browsers loaded, with their `Content-Encoding` (invariant 10). */
+  const bundleEncodings: string[] = [];
   const consoleLog: string[] = [];
   const cspViolations: string[] = [];
   const fontErrors: string[] = [];
-  for (const ctx of [gmCtx, plCtx]) {
+  for (const ctx of [gmCtx, plCtx, p2Ctx, p3Ctx]) {
     await ctx.addInitScript(() => {
       document.addEventListener('securitypolicyviolation', (e) => {
         console.error(`[e2e-csp] ${e.violatedDirective} blocked ${e.blockedURI || '(inline)'} at ${e.sourceFile}:${e.lineNumber}`);
       });
     });
   }
-  for (const [who, page] of Object.entries(both)) {
+  for (const [who, page] of Object.entries(all)) {
+    page.on('response', async (res) => {
+      if (!/\/assets\/[^/]+\.js$/.test(new URL(res.url()).pathname)) return;
+      const headers = await res.allHeaders().catch(() => ({}) as Record<string, string>);
+      bundleEncodings.push(`${who}:${headers['content-encoding'] ?? 'identity'}`);
+    });
+  }
+  for (const [who, page] of Object.entries(all)) {
     page.on('pageerror', (err) => consoleLog.push(`[${who}] pageerror ${err.message}`));
     page.on('console', (msg) => {
       const text = msg.text();
@@ -396,6 +503,29 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
   };
 
   await pl.setContent('<main style="font:24px sans-serif;display:grid;place-items:center;height:100vh">Player: waiting for the invite link…</main>');
+  /** Board screenshot of `page` decoded for pixel probes, once the renderer drew the latest state. */
+  const board = async (page: Page): Promise<RgbaImage> => {
+    await page.waitForTimeout(700);
+    return decodePng(await page.getByTestId('table-board').screenshot());
+  };
+  /** Mean `G - R` of `rect` on `page`'s board: positive on the uploaded green background (invariant 4). */
+  const greenOf = async (page: Page, rect: ProbeRect) => {
+    const [r, g] = meanRgb(await board(page), rect);
+    return g - r;
+  };
+  /**
+   * Waits for a new object-store image in `fetches` (after index `mark`) and
+   * checks it came through the signed `307` with the CORS header (invariant 9).
+   */
+  const expectS3Image = async (fetches: S3ImageFetch[], mark: number) => {
+    await expect.poll(() => fetches.length, { timeout: 30_000, message: 'a map image from the object store' }).toBeGreaterThan(mark);
+    const fetch = fetches[fetches.length - 1];
+    expect(fetch.redirectedFrom, 'the image request was redirected from the signed download route').toMatch(/^\/assets\/download\//);
+    expect(fetch.redirectStatus, 'signed download answers a temporary redirect').toBe(307);
+    expect(fetch.status, 'the object store serves the image').toBe(200);
+    expect(fetch.allowOrigin, 'the bucket CORS rule allows the app origin').toBe(new URL(test.info().project.use.baseURL ?? '').origin);
+    return fetch;
+  };
 
   await phase('Server health', async () => {
     await expect
@@ -451,6 +581,7 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await gm.getByTestId(`lobby-invite-${campaignId}`).click();
     await expect(gm.getByTestId('invite-dialog')).toBeVisible();
     await expect(gm.getByTestId('invite-none')).toBeVisible();
+    await gm.getByTestId('invite-max-uses').fill(String(INVITE_MAX_USES));
     await gm.getByTestId('invite-create').click();
     const field = gm.getByTestId('invite-url');
     await expect(field).toHaveValue(/invite=/);
@@ -459,7 +590,29 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await shot({ gm }, 'gm-invite');
     await gm.getByTestId('invite-dialog-close').click();
     await expect(gm.getByTestId('invite-dialog')).toBeHidden();
-    return inviteUrl.replace(/invite=.*/, 'invite=<token>');
+    return `${inviteUrl.replace(/invite=.*/, 'invite=<token>')} (${INVITE_MAX_USES} uses)`;
+  });
+
+  /** Creates `who`'s account on the invite screen of `page`; lands in the campaign workspace. */
+  const redeemInvite = async (page: Page, who: { email: string; name: string }) => {
+    await page.goto(pathAndQuery(inviteUrl));
+    await expect(page.getByTestId('invite-redemption-screen')).toBeVisible();
+    await expect(page.getByTestId('invite-campaign')).toContainText(CAMPAIGN);
+    await page.getByTestId('invite-display-name').fill(who.name);
+    await page.getByTestId('invite-email').fill(who.email);
+    await page.getByTestId('invite-password').fill(PASSWORD);
+    await page.getByTestId('invite-submit').click();
+    await expect(page.getByTestId('campaign-workspace')).toBeVisible();
+  };
+
+  await phase('Players two and three create accounts from the same invite link and land in the campaign', async () => {
+    await redeemInvite(p2, PLAYER2);
+    await redeemInvite(p3, PLAYER3);
+    for (const page of [p2, p3]) {
+      const me = await (await page.request.get('/api/v1/auth/me')).text();
+      expect(me, 'an invite-created account is a plain instance Member').toMatch(/"instance_role":"MEMBER"/);
+    }
+    return `${PLAYER2.name} and ${PLAYER3.name} joined ${CAMPAIGN}`;
   });
 
   await phase('Player creates an account from the invite link and lands in the campaign', async () => {
@@ -477,10 +630,29 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await expect(pl.getByTestId('trame-status-badge')).toBeVisible();
     await gm.getByTestId(`lobby-invite-${campaignId}`).click();
     await expect(gm.getByTestId('redemptions-list')).toContainText(PLAYER.name);
+    await shot(both, 'joined');
+  });
+
+  await phase('GM sees three redemptions (3 of 4 uses), revokes the invite, and a fourth visitor is refused', async () => {
+    const list = gm.getByTestId('redemptions-list');
+    for (const who of [PLAYER, PLAYER2, PLAYER3]) await expect(list).toContainText(who.name);
+    await expect(gm.getByTestId('invite-uses')).toHaveText(`Used 3 of ${INVITE_MAX_USES}`);
+    await gm.getByTestId('invite-revoke').click();
+    await expect(gm.getByTestId('invite-status')).toHaveText('Revoked');
+    await shot({ gm }, 'gm-invite-revoked');
     await gm.getByTestId('invite-dialog-close').click();
+    const visitorCtx = await newPlainContext(browser);
+    try {
+      const visitor = await visitorCtx.newPage();
+      await visitor.goto(pathAndQuery(inviteUrl));
+      await expect(visitor.getByTestId('invite-unavailable')).toContainText('revoked');
+      await expect(visitor.getByTestId('invite-form')).toHaveCount(0);
+    } finally {
+      await visitorCtx.close();
+    }
     await gm.getByTestId(`lobby-open-${campaignId}`).click();
     await expect(gm.getByTestId('campaign-workspace')).toBeVisible();
-    await shot(both, 'joined');
+    return `redemptions: ${PLAYER.name}, ${PLAYER2.name}, ${PLAYER3.name}; revoked link refused`;
   });
 
   /**
@@ -490,7 +662,7 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
    */
   const fillClassChoices = async (page: Page) => {
     const modal = page.getByTestId('character-builder-modal');
-    const groups = await modal.locator('input[type="radio"][name^="class-"]').evaluateAll((els) => [...new Set(els.map((el) => (el as HTMLInputElement).name))]);
+    const groups = await modal.locator('input[type="radio"][name^="class-"], input[type="radio"][name^="feat-"]').evaluateAll((els) => [...new Set(els.map((el) => (el as HTMLInputElement).name))]);
     for (const group of groups) await modal.locator(`input[type="radio"][name="${group}"]`).first().check();
     const free = modal.locator('input[type="checkbox"]:not(:checked):not(:disabled)');
     for (let i = 0; i < 30 && (await free.count()) > 0; i++) await free.first().check();
@@ -521,6 +693,7 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await expect(page.getByTestId('builder-step-background')).toBeVisible();
     await page.locator('input[name="background"]').first().check();
     await page.getByTestId('builder-split-plus1_each').check();
+    await fillClassChoices(page);
     await page.getByTestId('builder-next').click();
     await expect(page.getByTestId('builder-step-abilityScores')).toBeVisible();
     await page.getByTestId('builder-method-standardArray').check();
@@ -705,11 +878,6 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await shot(both, 'tokens-placed');
   });
 
-  /** Composited pixels of the live board after the renderer drew the latest state. */
-  const board = async (page: Page): Promise<RgbaImage> => {
-    await page.waitForTimeout(700);
-    return decodePng(await page.getByTestId('table-board').screenshot());
-  };
   const lumas = (img: RgbaImage) =>
     Object.fromEntries(Object.entries(PROBE).map(([k, r]) => [k, meanLuma(img, r)])) as Record<keyof typeof PROBE, number>;
   const gmPreview = gm.getByTestId('table-preview-player-view');
@@ -732,6 +900,39 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
       infos.push(`${who}: ${gl.version} / ${gl.renderer}`);
     }
     return infos.join(' | ');
+  });
+
+  await phase('Map image from the object store: both browsers load the background through the signed 307 redirect, Silo answers 200 with CORS, and both canvases draw it', async () => {
+    const fetched = [await expectS3Image(gmImages, 0), await expectS3Image(plImages, 0)];
+    const green = { gmWest: await greenOf(gm, PROBE.west), gmEast: await greenOf(gm, PROBE.east), playerWest: await greenOf(pl, PROBE.west) };
+    await shot(both, 'map-from-s3');
+    for (const [probe, value] of Object.entries(green)) {
+      expect(value, `${probe}: the green S3 background is drawn (mean G - R)`).toBeGreaterThan(BACKGROUND_GREEN_MIN);
+    }
+    return `${fetched.map((f) => `${f.redirectedFrom.slice(0, 32)}… ${f.redirectStatus} -> ${f.status} ACAO ${f.allowOrigin}`).join(' | ')}; G-R ${JSON.stringify(green)}`;
+  });
+
+  await phase('Compression: the JS bundle and API JSON arrive br/zstd/gzip-encoded; every room socket negotiated trame.v1+deflate and its zlib frames decode to MessagePack', async () => {
+    expect(bundleEncodings.length, 'the browsers loaded the JS bundle').toBeGreaterThan(0);
+    for (const encoding of bundleEncodings) expect(encoding, 'JS bundle Content-Encoding').toMatch(/:(br|zstd|gzip)$/);
+    const json = await gm.request.get(campaignApi('/actors'), { headers: { 'accept-encoding': 'br, zstd, gzip' } });
+    expect(json.status()).toBe(200);
+    expect(json.headers()['content-type']).toMatch(/json/);
+    const jsonEncoding = json.headers()['content-encoding'] ?? 'identity';
+    expect(jsonEncoding, 'API JSON Content-Encoding').toMatch(/^(br|zstd|gzip)$/);
+    expect(json.headers()['vary'] ?? '', 'compressed responses vary on Accept-Encoding').toMatch(/accept-encoding/i);
+    const frameCounts: string[] = [];
+    for (const [who, probe] of Object.entries(cdp)) {
+      expect(probe.protocols.length, `${who}: a room socket handshake was seen`).toBeGreaterThan(0);
+      expect([...new Set(probe.protocols)], `${who}: every room handshake selected ${WS_DEFLATE}`).toEqual([WS_DEFLATE]);
+    }
+    for (const [who, frames] of Object.entries(frameLogs)) {
+      expect(frames.length, `${who}: frames received`).toBeGreaterThan(0);
+      expect(frames.filter((f) => !f.deflated).length, `${who}: frames not zlib-compressed`).toBe(0);
+      expect(frames.filter((f) => f.tag === 'UNDECODABLE').length, `${who}: frames that did not inflate to MessagePack`).toBe(0);
+      frameCounts.push(`${who} ${frames.length}`);
+    }
+    return `bundles ${[...new Set(bundleEncodings)].join(', ')}; /actors JSON ${jsonEncoding}; ${WS_DEFLATE} frames: ${frameCounts.join(', ')}`;
   });
 
   await phase('Fog of war: player sees fog behind the east wall, GM sees the whole map', async () => {
@@ -810,6 +1011,61 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await openTab(pl, 'table');
   });
 
+  /** `StateSnapshot` + `CommandAccepted` frames in `frames` (the frames RT12 may skip). */
+  const stateFrames = (frames: RecordedFrame[]) => frames.filter((f) => f.tag === 'StateSnapshot' || f.tag === 'CommandAccepted').length;
+  await phase('RT12: while the GM moves a GM-hidden token, no player socket receives a state frame; the next visible change reaches all three', async () => {
+    const watched = { player: plFrames, player2: p2Frames, player3: p3Frames };
+    const before = Object.fromEntries(Object.entries(watched).map(([who, frames]) => [who, stateFrames(frames)]));
+    const start = topLeftOf(gmFrames, hiddenTokenId);
+    if (!start) throw new Error('no position for the hidden goblin');
+    const goblin = gm.getByTestId(`token-${hiddenTokenId}`);
+    // Keyboard only: the template goblin can sit under the PC token, which takes the click.
+    await goblin.focus();
+    let moved: string | null = null;
+    for (const [go, back] of [
+      ['ArrowRight', 'ArrowLeft'],
+      ['ArrowDown', 'ArrowUp'],
+      ['ArrowLeft', 'ArrowRight'],
+    ]) {
+      await goblin.press(go);
+      const left = await expect
+        .poll(() => topLeftOf(gmFrames, hiddenTokenId), { timeout: 3_000 })
+        .not.toEqual(start)
+        .then(() => true)
+        .catch(() => false);
+      if (!left) continue;
+      const away = topLeftOf(gmFrames, hiddenTokenId);
+      if (!away) throw new Error('no position for the hidden goblin after the move');
+      // The key handler moves from the rendered position, so wait for the re-render first.
+      await expect(goblin).toHaveCSS('left', `${away.x}px`);
+      await expect(goblin).toHaveCSS('top', `${away.y}px`);
+      await goblin.press(back);
+      // Moves snap to the grid, so an off-grid imported token comes back to its cell's corner.
+      await expect.poll(() => topLeftOf(gmFrames, hiddenTokenId)).not.toEqual(away);
+      moved = `${JSON.stringify(start)} -${go}-> ${JSON.stringify(away)} -${back}-> ${JSON.stringify(topLeftOf(gmFrames, hiddenTokenId))}`;
+      break;
+    }
+    if (!moved) throw new Error('the GM could not move the hidden goblin');
+    await gm.waitForTimeout(RT12_QUIET_MS);
+    const after = Object.fromEntries(Object.entries(watched).map(([who, frames]) => [who, stateFrames(frames)]));
+    const extra = Object.entries(watched)
+      .filter(([who]) => after[who] !== before[who])
+      .map(([who, frames]) => {
+        const late = frames.filter((f) => f.tag === 'StateSnapshot' || f.tag === 'CommandAccepted').slice(before[who]);
+        const kinds = late.map((f) => `${f.tag}#${String(f.payload.seq_id)}[${((f.payload.events ?? []) as Array<{ event?: string }>).map((e) => e.event).join(',')}]`);
+        return `${who}: ${kinds.join(' ')}`;
+      });
+    if (extra.length) throw new Error(`state frames reached players during the hidden moves: ${extra.join('; ')}`);
+    for (const preset of ['DAYLIGHT', 'NIGHT_MOONLIGHT']) {
+      await gm.getByTestId('gm-lighting').selectOption(preset);
+      for (const [who, frames] of Object.entries(watched)) {
+        await expect.poll(() => latestState(frames)?.ambient_lighting, { message: `${who} sees ${preset}` }).toBe(preset);
+      }
+    }
+    const control = Object.entries(watched).map(([who, frames]) => `${who} +${stateFrames(frames) - after[who]}`);
+    return `GM moved the hidden goblin (${moved}): 0 state frames to any player in ${RT12_QUIET_MS} ms; lighting change and back: ${control.join(', ')}`;
+  });
+
   /** Door kind of a projected wall (`DOOR` / `SECRET_DOOR` carry `is_open`, doors `is_locked`). */
   type WireDoorKind = { kind?: string; is_open?: boolean; is_locked?: boolean };
   const wallsOf = (frames: RecordedFrame[]) => (latestState(frames)?.walls ?? []) as Array<{ id: string; kind?: WireDoorKind }>;
@@ -824,11 +1080,11 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     expect(playerSeesOpen(), 'the crypt door starts closed for the player').toBe(false);
     const before = meanLuma(await board(pl), PROBE_BEYOND_DOOR);
     const handle = gm.getByTestId(`door-${crypt.id}`);
-    await expect(handle).toHaveAttribute('aria-pressed', 'false');
+    await expect(handle).toHaveAttribute('aria-label', /^Open door/);
     await handle.click();
-    await expect(handle).toHaveAttribute('aria-pressed', 'true');
+    await expect(handle).toHaveAttribute('aria-label', /^Close door/);
     await expect.poll(playerSeesOpen).toBe(true);
-    await expect(pl.getByTestId(`door-${crypt.id}`)).toHaveAttribute('aria-pressed', 'true');
+    await expect(pl.getByTestId(`door-${crypt.id}`)).toHaveAttribute('aria-label', /^Close door/);
     const after = meanLuma(await board(pl), PROBE_BEYOND_DOOR);
     await shot(both, 'door-open-player-vision');
     expect(after, `player sees the floor beyond the open door (luma ${before} -> ${after})`).toBeGreaterThan(before + 15);
@@ -863,7 +1119,7 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await expect.poll(() => topLeftOf(plFrames, pcTokenId)).toEqual(DOOR_REACH_CELL);
     await handle.click();
     await expect.poll(playerSeesOpen).toBe(true);
-    await expect(handle).toHaveAttribute('aria-pressed', 'true');
+    await expect(handle).toHaveAttribute('aria-label', /^Close door/);
     await shot(both, 'door-opened-by-player');
     await handle.click();
     await expect.poll(playerSeesOpen).toBe(false);
@@ -1465,21 +1721,17 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     return `banner ${dropped} -> open; post-reconnect roll reached the GM`;
   });
 
-  let crashPending: Pick<CrashHandoff, 'srdTokenId' | 'srdHp' | 'pendingResolutionId' | 'pendingDamage'> = {
-    srdTokenId: '',
-    srdHp: 0,
-    pendingResolutionId: '',
-    pendingDamage: 0,
-  };
+  /** What the table must show after the SIGKILL (invariant 7), filled by the two phases before it. */
+  const crash = { pcHp: 0, pcMaxHp: 0, srdHp: 0, pendingResolutionId: '', pendingDamage: 0 };
   await phase('Player attacks the SRD monster again and leaves the server-held hit unapplied for the crash', async () => {
     const hit = await playerAttacksUntilHit();
     await pl.getByTestId('action-cancel').click();
     await expect(pl.getByTestId('action-card')).toBeHidden();
     await expect(pl.getByTestId(`pending-${hit.resolutionId}`), "the closed hit stays in the player's pending list").toBeVisible();
     await expect(gm.getByTestId(`pending-${hit.resolutionId}-damage-${srdTokenId}`)).toHaveValue(String(hit.damage));
-    crashPending = { srdTokenId, srdHp: srdHp(), pendingResolutionId: hit.resolutionId, pendingDamage: hit.damage };
+    Object.assign(crash, { srdHp: srdHp(), pendingResolutionId: hit.resolutionId, pendingDamage: hit.damage });
     await shot(both, 'pending-before-crash');
-    return `${hit.attack}: ${hit.outcomes.join(' -> ')}; ${hit.damage} damage pending on HP ${crashPending.srdHp}`;
+    return `${hit.attack}: ${hit.outcomes.join(' -> ')}; ${hit.damage} damage pending on HP ${crash.srdHp}`;
   });
 
   await phase('Crash setup: GM damages the PC and undoes it before the harness kills the server', async () => {
@@ -1493,18 +1745,375 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     await expect(hpText).toContainText(`HP ${start.hp} /`);
     await pl.getByTestId(`token-${pcTokenId}`).click();
     await expect(pl.getByTestId('vitals-hp')).toContainText(`HP ${start.hp} / ${start.max}`);
-    const handoff: CrashHandoff = {
-      campaignId,
-      pcTokenId,
-      pcHp: start.hp,
-      pcMaxHp: start.max,
-      gmEmail: GM.email,
-      playerEmail: PLAYER.email,
-      ...crashPending,
-    };
-    writeFileSync(CRASH_HANDOFF, JSON.stringify(handoff, null, 2));
+    Object.assign(crash, { pcHp: start.hp, pcMaxHp: start.max });
     await shot(both, 'pre-crash-undone');
-    return `PC ${start.hp} -> ${start.hp - 5} -> undo -> ${start.hp}; handoff written`;
+    return `PC ${start.hp} -> ${start.hp - 5} -> undo -> ${start.hp}`;
+  });
+
+  type Who = keyof typeof frameLogs;
+  /** Frame count of every page, so checks after a harness action only read the reconnected sockets' frames. */
+  const frameMarks = () => Object.fromEntries(Object.entries(frameLogs).map(([who, frames]) => [who, frames.length])) as Record<Who, number>;
+  /** Waits until every page resynced after `marks` and the recorded pages show an open connection. */
+  const allReconnected = async (marks: Record<Who, number>) => {
+    for (const [who, frames] of Object.entries(frameLogs)) await snapshotAfter(frames, marks[who as Who]);
+    for (const page of [gm, pl]) {
+      await expect(page.getByTestId('connection-banner')).toHaveAttribute('data-state', 'open', { timeout: RECONNECT_TIMEOUT_MS });
+    }
+  };
+  /** Reloads `page` and reopens the campaign's live table (the session cookie survives restarts). */
+  const reopenTable = async (page: Page) => {
+    await page.reload();
+    const open = page.getByTestId(`lobby-open-${campaignId}`);
+    await expect(page.getByTestId('campaign-workspace').or(open)).toBeVisible({ timeout: 30_000 });
+    if (await open.isVisible()) await open.click();
+    await expect(page.getByTestId('campaign-workspace')).toBeVisible();
+    await openTab(page, 'table');
+    await expect(page.getByTestId('table-map')).toBeVisible();
+  };
+
+  let crashMarks = frameMarks();
+  await phase('Server is SIGKILLed mid-session and restarts on the same database; all four browsers reconnect on their own', async () => {
+    crashMarks = frameMarks();
+    const done = await harness(ARTIFACTS, 'sigkill');
+    await allReconnected(crashMarks);
+    await shot(both, 'after-sigkill-reconnected');
+    return `${done}; every page resynced from a fresh StateSnapshot`;
+  });
+
+  await phase("GM's first snapshot after the SIGKILL shows the undone HP (no ghost damage)", async () => {
+    const recovered = await snapshotAfter(gmFrames, crashMarks.gm);
+    expect(recovered.tokens[pcTokenId]?.hp, 'WAL-recovered PC HP').toBe(crash.pcHp);
+    await gm.getByTestId(`token-${pcTokenId}`).click();
+    await expect(gm.getByTestId('vitals-hp')).toContainText(`HP ${crash.pcHp} / ${crash.pcMaxHp}`);
+    const quarantine = gm.getByTestId('wal-quarantine-banner');
+    if ((await quarantine.count()) > 0 && (await quarantine.evaluate((el) => el.classList.contains('ds-connection-banner')))) {
+      note(`GM quarantine banner after recovery: ${(await quarantine.innerText()).replace(/\s+/g, ' ')}`);
+    }
+    await shot({ gm }, 'after-restart-gm');
+    return `PC token hp ${crash.pcHp}/${crash.pcMaxHp} after WAL recovery`;
+  });
+
+  await phase("Player's first snapshot after the SIGKILL shows the same exact own HP", async () => {
+    const recovered = await snapshotAfter(plFrames, crashMarks.player);
+    expect(recovered.tokens[pcTokenId]?.hp, 'own PC HP in the recovered player projection').toBe(crash.pcHp);
+    await pl.getByTestId(`token-${pcTokenId}`).click();
+    await expect(pl.getByTestId('vitals-hp')).toContainText(`HP ${crash.pcHp} / ${crash.pcMaxHp}`);
+    await shot({ player: pl }, 'after-restart-player');
+  });
+
+  const pending = () => `pending-${crash.pendingResolutionId}`;
+  await phase('Player still sees the hit they left unapplied before the SIGKILL, with the same server-rolled damage', async () => {
+    expect(crash.pendingResolutionId, 'the journey left a pending hit').not.toBe('');
+    const recovered = await snapshotAfter(plFrames, crashMarks.player);
+    expect(Object.keys((recovered.pending_resolutions ?? {}) as Record<string, unknown>), 'the recovered player projection carries the hit').toContain(
+      crash.pendingResolutionId,
+    );
+    await expect(pl.getByTestId(pending())).toBeVisible();
+    await expect(pl.getByTestId(`${pending()}-outcome-${srdTokenId}`)).toHaveText(/^(Hit|Critical hit)$/);
+    await expect(pl.getByTestId(`${pending()}-damage-${srdTokenId}`)).toHaveText(`${crash.pendingDamage} damage`);
+    await shot({ player: pl }, 'after-restart-player-pending');
+  });
+
+  await phase('The pending resolution survived the SIGKILL: the GM applies it exactly once', async () => {
+    const recovered = await snapshotAfter(gmFrames, crashMarks.gm);
+    expect(Number(recovered.tokens[srdTokenId]?.hp), 'the monster HP survived without the pending damage').toBe(crash.srdHp);
+    await expect(gm.getByTestId(`${pending()}-damage-${srdTokenId}`)).toHaveValue(String(crash.pendingDamage));
+    await doubleApplyOnce(gm, gmFrames, gmSent, crash.pendingResolutionId, crash.pendingDamage, srdHp);
+    await expect(pl.getByTestId(pending())).toHaveCount(0);
+    await shot(both, 'after-restart-pending-applied');
+    return `monster HP ${crash.srdHp} -> ${crash.srdHp - crash.pendingDamage} after one Apply of ${crash.pendingDamage}`;
+  });
+
+  await phase('Server restarts gracefully mid-session (SIGTERM); all four browsers reconnect on their own and the table is unchanged', async () => {
+    await gm.getByTestId('gm-lighting').selectOption('DAYLIGHT');
+    await expect.poll(() => latestState(plFrames)?.ambient_lighting).toBe('DAYLIGHT');
+    const before = { monster: srdHp(), pc: pcHp() };
+    const marks = frameMarks();
+    const done = await harness(ARTIFACTS, 'restart');
+    await allReconnected(marks);
+    const after = await snapshotAfter(gmFrames, marks.gm);
+    expect({ monster: Number(after.tokens[srdTokenId]?.hp), pc: Number(after.tokens[pcTokenId]?.hp), lighting: after.ambient_lighting }).toEqual({
+      ...before,
+      lighting: 'DAYLIGHT',
+    });
+    await shot(both, 'after-graceful-restart');
+    return `${done}; monster HP ${before.monster}, PC HP ${before.pc} kept`;
+  });
+
+  await phase('Map images survive the restart: the player reloads and the background comes again from Silo (307, then 200 with CORS) and is drawn', async () => {
+    const mark = plImages.length;
+    await cdp.player.clearCache();
+    await reopenTable(pl);
+    const fetch = await expectS3Image(plImages, mark);
+    const green = await greenOf(pl, PROBE.west);
+    await shot({ player: pl }, 'after-restart-map-from-s3');
+    expect(green, 'the green S3 background is drawn on the player canvas (mean G - R)').toBeGreaterThan(BACKGROUND_GREEN_MIN);
+    return `${fetch.redirectStatus} -> ${fetch.status} ACAO ${fetch.allowOrigin}; player west G-R ${green}`;
+  });
+
+  await phase('Harness backs up the database mid-session with the backup image (pg_dump)', async () => {
+    return harness(ARTIFACTS, 'backup');
+  });
+
+  const AFTER_BACKUP_NOTE = 'Written after the backup';
+  await phase('GM writes a GM-only note after the backup', async () => {
+    await openTab(gm, 'documents');
+    await gm.getByTestId('create-note-btn').click();
+    await gm.getByTestId('note-title-input').fill(AFTER_BACKUP_NOTE);
+    await gm.getByTestId('note-scope-select').selectOption('DM_ONLY');
+    await gm.getByTestId('note-content-editor').fill('This note must not survive the restore.');
+    const saved = gm.waitForResponse((r) => r.url().includes('/notes/') && r.request().method() === 'PUT');
+    await gm.getByTestId('save-note-btn').click();
+    expect((await saved).status()).toBeLessThan(300);
+    expect(await (await gm.request.get(campaignApi('/notes'))).text()).toContain(AFTER_BACKUP_NOTE);
+    await openTab(gm, 'table');
+  });
+
+  await phase('Harness wipes the database volume and restores the dump; the server restarts and all four browsers reconnect on their own', async () => {
+    const table = (state: ProjectedState | null) => ({
+      monster: Number(state?.tokens[srdTokenId]?.hp),
+      pc: Number(state?.tokens[pcTokenId]?.hp),
+      mapWidthPx: state?.map_width_px,
+      walls: state?.walls.length,
+    });
+    const before = table(latestState(gmFrames));
+    const marks = frameMarks();
+    const done = await harness(ARTIFACTS, 'restore');
+    await allReconnected(marks);
+    expect(table(await snapshotAfter(gmFrames, marks.gm)), 'restored table: scene, walls and hit points').toEqual(before);
+    await shot(both, 'after-restore-reconnected');
+    return `${done}; monster HP ${before.monster}, PC HP ${before.pc} restored`;
+  });
+
+  await phase('After the restore the campaign, its notes and the map are back, the note written after the backup is gone, and both canvases draw the map from Silo', async () => {
+    const campaigns = await (await gm.request.get('/api/v1/campaigns')).text();
+    expect(campaigns, 'the campaign is restored').toContain(CAMPAIGN);
+    const notes = await (await gm.request.get(campaignApi('/notes'))).text();
+    expect(notes, 'notes written before the backup are restored').toContain('Crypt Lore');
+    expect(notes, 'the note written after the backup is gone').not.toContain(AFTER_BACKUP_NOTE);
+    const fetched: string[] = [];
+    const green: Record<string, number> = {};
+    for (const [who, page, images, probe] of [
+      ['gm', gm, gmImages, cdp.gm],
+      ['player', pl, plImages, cdp.player],
+    ] as const) {
+      const mark = images.length;
+      await probe.clearCache();
+      await reopenTable(page);
+      const fetch = await expectS3Image(images, mark);
+      fetched.push(`${who} ${fetch.redirectStatus} -> ${fetch.status}`);
+      green[who] = await greenOf(page, PROBE.west);
+    }
+    await shot(both, 'after-restore-map-from-s3');
+    for (const [who, value] of Object.entries(green)) expect(value, `${who}: the restored map is drawn from Silo (mean G - R)`).toBeGreaterThan(BACKGROUND_GREEN_MIN);
+    return `${fetched.join(', ')}; G-R ${JSON.stringify(green)}`;
+  });
+
+  /** Open cardinal neighbor in the clear northwest floor (`x, y <= 350`), unoccupied on the GM table. */
+  const openCardinalStep = () => {
+    const start = topLeftOf(plFrames, pcTokenId);
+    if (!start) throw new Error('no PC position');
+    const cell = Number(latestState(plFrames)?.cell_size_px ?? 70);
+    const taken = Object.values(latestState(gmFrames)?.tokens ?? {}).map((t) => t.top_left as { x: number; y: number });
+    const step = (
+      [
+        { dx: 0, dy: 1, go: 'ArrowDown', back: 'ArrowUp' },
+        { dx: 1, dy: 0, go: 'ArrowRight', back: 'ArrowLeft' },
+        { dx: 0, dy: -1, go: 'ArrowUp', back: 'ArrowDown' },
+        { dx: -1, dy: 0, go: 'ArrowLeft', back: 'ArrowRight' },
+      ] as const
+    ).find(({ dx, dy }) => {
+      const x = start.x + dx * cell;
+      const y = start.y + dy * cell;
+      return x >= 0 && y >= 0 && x + cell <= 350 && y + cell <= 350 && !taken.some((t) => t.x === x && t.y === y);
+    });
+    if (!step) throw new Error(`no open cardinal cell next to PC at ${JSON.stringify(start)}`);
+    const target = { x: start.x + step.dx * cell, y: start.y + step.dy * cell };
+    const startCell = { col: Math.round(start.x / cell), row: Math.round(start.y / cell) };
+    const targetCell = { col: Math.round(target.x / cell), row: Math.round(target.y / cell) };
+    return { start, target, startCell, targetCell, cell, step };
+  };
+
+  /** Advances combat to a fresh PC turn so `speed_remaining_ft` resets and `combat-turn-live` announces it. */
+  const advanceToFreshPcTurn = async () => {
+    await openTab(gm, 'table');
+    await openTab(pl, 'table');
+    if ((await gm.getByTestId('combat-active').innerText()).includes(PC_NAME)) {
+      await gm.getByTestId('combat-next').click();
+      await expect(gm.getByTestId('combat-active')).not.toContainText(PC_NAME);
+    }
+    for (let i = 0; i < 6 && !(await gm.getByTestId('combat-active').innerText()).includes(PC_NAME); i++) {
+      await gm.getByTestId('combat-next').click();
+      await gm.waitForTimeout(300);
+    }
+    await expect(gm.getByTestId('combat-active')).toContainText(PC_NAME);
+    await expect(pl.getByTestId('combat-active')).toContainText(PC_NAME);
+  };
+
+  await phase('Difficult terrain: GM paints a cell on the PC path; entering the 5-ft cell costs 10 ft (2x) in preview and remaining speed, then GM clears it', async () => {
+    await advanceToFreshPcTurn();
+    await expect(pl.getByTestId('combat-turn-live')).toHaveText(new RegExp(`^Your turn: ${PC_NAME}\\u200B?$`));
+    const token = pl.getByTestId(`token-${pcTokenId}`);
+    await token.focus();
+    await token.press('Shift+F10');
+    await expect(pl.getByTestId('token-menu')).toBeVisible();
+    await pl.getByTestId('token-menu-disengage').press('Enter');
+    await expect(pl.getByTestId('token-menu')).toBeHidden();
+    await expect.poll(() => Boolean(latestState(plFrames)?.tokens[pcTokenId]?.disengaged)).toBe(true);
+
+    const { start, target, startCell, targetCell, cell } = openCardinalStep();
+    const speedBefore = Number(latestState(plFrames)?.tokens[pcTokenId]?.speed_remaining_ft);
+    expect(speedBefore, 'fresh turn speed budget before entering difficult terrain').toBeGreaterThanOrEqual(25);
+
+    const hasTerrain = (frames: RecordedFrame[]) =>
+      ((latestState(frames)?.difficult_terrain ?? []) as Array<{ col: number; row: number }>).some(
+        (c) => c.col === targetCell.col && c.row === targetCell.row,
+      );
+    await gm.getByTestId('table-tool-terrainPaint').click();
+    await expect(gm.getByTestId('table-tool-terrainPaint')).toHaveAttribute('aria-pressed', 'true');
+    await gm.getByTestId('table-board').click({ position: { x: target.x + cell / 2, y: target.y + cell / 2 } });
+    await expect.poll(() => hasTerrain(gmFrames)).toBe(true);
+    await expect.poll(() => hasTerrain(plFrames)).toBe(true);
+
+    await token.click();
+    await expect(pl.getByTestId(`token-speed-${pcTokenId}`)).toHaveText(`${speedBefore} ft`);
+    await pl.getByTestId('table-board').hover({ position: { x: target.x + cell / 2, y: target.y + cell / 2 } });
+    await expect(pl.getByTestId('table-move-preview')).toContainText('10 ft');
+    await expect(pl.getByTestId('table-move-preview-text')).toHaveText(`Moving here costs 10 ft, leaving ${speedBefore - 10} ft.`);
+    await pl.getByTestId('table-board').click({ position: { x: target.x + cell / 2, y: target.y + cell / 2 } });
+    await expect.poll(() => topLeftOf(plFrames, pcTokenId)).toEqual(target);
+    await expect.poll(() => Number(latestState(plFrames)?.tokens[pcTokenId]?.speed_remaining_ft)).toBe(speedBefore - 10);
+    await expect(pl.getByTestId(`token-speed-${pcTokenId}`)).toHaveText(`${speedBefore - 10} ft`);
+    await expect(token).toHaveAttribute('aria-label', new RegExp(`${speedBefore - 10} ft of movement left$`));
+    await expect(pl.getByTestId('table-move-status')).toHaveText(
+      new RegExp(`^Moved to column ${targetCell.col + 1}, row ${targetCell.row + 1}, ${speedBefore - 10} ft left\\u200B?$`),
+    );
+    await shot(both, 'difficult-terrain-move');
+
+    await gm.getByTestId('table-tool-terrainErase').click();
+    await gm.getByTestId('table-board').click({ position: { x: target.x + cell / 2, y: target.y + cell / 2 } });
+    await gm.getByTestId('table-tool-select').click();
+    await expect.poll(() => hasTerrain(gmFrames)).toBe(false);
+    await expect.poll(() => hasTerrain(plFrames)).toBe(false);
+
+    await pl.getByTestId('table-board').click({ position: { x: start.x + cell / 2, y: start.y + cell / 2 } });
+    await expect.poll(() => topLeftOf(plFrames, pcTokenId)).toEqual(start);
+    await expect(token).toHaveCSS('left', `${start.x}px`);
+    await expect(token).toHaveCSS('top', `${start.y}px`);
+    await expect(pl.getByTestId(`token-speed-${pcTokenId}`)).toHaveText(`${speedBefore - 15} ft`);
+    return `entered (${targetCell.col + 1}, ${targetCell.row + 1}) for 10 ft (${speedBefore} -> ${speedBefore - 10} ft), erased terrain, returned to (${startCell.col + 1}, ${startCell.row + 1}) for 5 ft`;
+  });
+
+  await phase('Keyboard-only movement: focused token moves via M + Arrow + Enter and Arrow keys, announcing coordinates in the polite live region', async () => {
+    const token = pl.getByTestId(`token-${pcTokenId}`);
+    if (Number(latestState(plFrames)?.tokens[pcTokenId]?.speed_remaining_ft ?? 0) < 10 || !latestState(plFrames)?.tokens[pcTokenId]?.disengaged) {
+      await advanceToFreshPcTurn();
+      await token.focus();
+      await token.press('Shift+F10');
+      await pl.getByTestId('token-menu-disengage').press('Enter');
+      await expect(pl.getByTestId('token-menu')).toBeHidden();
+      await expect.poll(() => Boolean(latestState(plFrames)?.tokens[pcTokenId]?.disengaged)).toBe(true);
+    }
+
+    const { start, target, startCell, targetCell, step } = openCardinalStep();
+    const speedLeft = Number(latestState(plFrames)?.tokens[pcTokenId]?.speed_remaining_ft);
+    await token.focus();
+    await token.press('Escape');
+    await expect(token).toHaveAttribute('aria-pressed', 'false');
+
+    await token.focus();
+    await token.press('M');
+    const cursor = pl.getByTestId('table-cell-cursor');
+    await expect(cursor).toBeFocused();
+    await cursor.press(step.go);
+    await expect(pl.getByTestId('table-cursor-status')).toContainText(
+      `Column ${targetCell.col + 1}, row ${targetCell.row + 1}. Moving here costs 5 ft, leaving ${speedLeft - 5} ft.`,
+    );
+    await cursor.press('Enter');
+    await expect(cursor).toHaveCount(0);
+    await expect.poll(() => topLeftOf(plFrames, pcTokenId)).toEqual(target);
+    await expect(token).toHaveCSS('left', `${target.x}px`);
+    await expect(token).toHaveCSS('top', `${target.y}px`);
+    await expect(token).toBeFocused();
+
+    const moveLive = pl.getByTestId('table-move-status');
+    await expect(moveLive).toHaveAttribute('aria-live', 'polite');
+    const firstAnnouncement = `Moved to column ${targetCell.col + 1}, row ${targetCell.row + 1}, ${speedLeft - 5} ft left`;
+    await expect(moveLive).toHaveText(new RegExp(`^${firstAnnouncement}\\u200B?$`));
+
+    await token.press(step.back);
+    await expect.poll(() => topLeftOf(plFrames, pcTokenId)).toEqual(start);
+    await expect(token).toHaveCSS('left', `${start.x}px`);
+    await expect(token).toHaveCSS('top', `${start.y}px`);
+    const secondAnnouncement = `Moved to column ${startCell.col + 1}, row ${startCell.row + 1}, ${speedLeft - 10} ft left`;
+    await expect(moveLive).toHaveText(new RegExp(`^${secondAnnouncement}\\u200B?$`));
+    await shot({ player: pl }, 'keyboard-only-move');
+    return `${firstAnnouncement} -> ${secondAnnouncement}`;
+  });
+
+  await phase('Death saving throw without canvas selection: PC dropped to 0 HP on turn announces dying state and rolls from the HUD prompt', async () => {
+    if (!(await gm.getByTestId('combat-active').innerText()).includes(PC_NAME)) {
+      await advanceToFreshPcTurn();
+    }
+    const token = pl.getByTestId(`token-${pcTokenId}`);
+    await token.focus();
+    await token.press('Escape');
+    await expect(token).toHaveAttribute('aria-pressed', 'false');
+    await expect(pl.getByTestId('vitals-none')).toBeVisible();
+    await expect(pl.getByTestId('vitals-death-roll')).toHaveCount(0);
+    await expect(pl.getByTestId('death-save-prompt')).toHaveCount(0);
+
+    await gm.getByTestId(`token-${pcTokenId}`).click();
+    const startHp = hpOf(await gm.getByTestId('vitals-hp').innerText());
+    await gm.getByTestId('vitals-amount').fill(String(startHp.hp));
+    await gm.getByTestId('vitals-damage').click();
+    await expect.poll(pcHp).toBe(0);
+    await expect
+      .poll(() => JSON.stringify(latestState(plFrames)?.tokens[pcTokenId]?.conditions ?? []).toLowerCase())
+      .toContain('unconscious');
+
+    await expect(pl.getByTestId('vitals-none'), 'canvas token remains unselected').toBeVisible();
+    await expect(pl.getByTestId('vitals-death-roll')).toHaveCount(0);
+    const dyingLive = pl.getByTestId('combat-dying-live');
+    await expect(dyingLive).toHaveAttribute('aria-live', 'polite');
+    await expect(dyingLive).toHaveText(new RegExp(`^${PC_NAME} is dying: roll a death save\\u200B?$`));
+
+    const prompt = pl.getByTestId('death-save-prompt');
+    await expect(prompt).toBeVisible();
+    await expect(pl.getByTestId(`death-save-counters-${pcTokenId}`)).toHaveText('Successes 0 of 3, failures 0 of 3');
+    const rollBtn = pl.getByTestId(`death-save-roll-${pcTokenId}`);
+    await expect(rollBtn).toHaveAttribute('aria-label', `Roll death saving throw for ${PC_NAME}`);
+    await rollBtn.focus();
+    await rollBtn.press('Enter');
+
+    const announcement = pl.getByTestId('death-save-result');
+    await expect(announcement).toHaveText(new RegExp(`^${PC_NAME} rolled (?:[1-9]|1\\d|20) on a death saving throw\\. `));
+    const rolledText = (await announcement.innerText()).trim();
+    const plTok = latestState(plFrames)?.tokens[pcTokenId];
+    const hpAfterRoll = Number(plTok?.hp ?? 0);
+    await expect.poll(pcHp).toBe(hpAfterRoll);
+    if (hpAfterRoll === 1) {
+      await expect(announcement).toContainText(`${PC_NAME} regains 1 Hit Point and wakes up.`);
+      await expect(prompt).toHaveCount(0);
+    } else {
+      const successes = Number(plTok?.death_save_successes ?? 0);
+      const failures = Number(plTok?.death_save_failures ?? 0);
+      expect(successes + failures, 'death save updated tally').toBeGreaterThanOrEqual(1);
+      const tally = `Successes ${successes} of 3, failures ${failures} of 3`;
+      await expect(pl.getByTestId(`death-save-counters-${pcTokenId}`)).toHaveText(tally);
+      await expect(announcement).toContainText(tally);
+    }
+    await expect(pl.getByTestId('vitals-none'), 'completed HUD death save without selecting canvas token').toBeVisible();
+    await shot(both, 'hud-death-save');
+
+    const toHeal = startHp.hp - hpAfterRoll;
+    if (toHeal > 0) {
+      await gm.getByTestId('vitals-amount').fill(String(toHeal));
+      await gm.getByTestId('vitals-heal').click();
+    }
+    await expect.poll(pcHp).toBe(startHp.hp);
+    await expect(prompt).toHaveCount(0);
+    return `${rolledText}; restored HP ${startHp.hp}/${startHp.max}`;
   });
 
   await phase('Final table state on both screens', async () => {
@@ -1531,7 +2140,7 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     return summaries.join(' | ');
   });
 
-  await phase('No CSP violations in either browser', async () => {
+  await phase('No CSP violations in any of the four browsers', async () => {
     expect(cspViolations).toEqual([]);
     return `${cspViolations.length} violations`;
   });
@@ -1541,74 +2150,11 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
   writeFileSync(join(ARTIFACTS, 'csp-violations.log'), cspViolations.join('\n'));
   writeFileSync(join(ARTIFACTS, 'frames-player.json'), JSON.stringify(plFrames.map((f: RecordedFrame) => f.tag)));
   writeFileSync(join(ARTIFACTS, 'phases.json'), JSON.stringify({ results, notes }, null, 2));
+  await p2Ctx.close();
+  await p3Ctx.close();
   await gmCtx.close();
   await plCtx.close();
   await gm.video()?.saveAs(join(ARTIFACTS, 'gm.webm'));
   await pl.video()?.saveAs(join(ARTIFACTS, 'player.webm'));
-  printPhases();
-});
-
-test('after a SIGKILL and restart the table shows the undone state', async ({ browser }) => {
-  test.skip(STAGE !== 'after-restart', 'runs only after `make e2e` kills and restarts trame-server');
-  test.setTimeout(5 * 60_000);
-  mkdirSync(SCREENS, { recursive: true });
-  const handoff = JSON.parse(readFileSync(CRASH_HANDOFF, 'utf8')) as CrashHandoff;
-  const context = () => browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: VIEWPORT, locale: 'en-US' });
-  const gmCtx = await context();
-  const plCtx = await context();
-  const gm = await gmCtx.newPage();
-  const pl = await plCtx.newPage();
-  const gmFrames = recordRoomFrames(gm);
-  const gmSent = recordSentCommands(gm);
-  const phase = phaseRunner({ gm, player: pl }, 0);
-
-  await phase('Server is back after SIGKILL', async () => {
-    await expect
-      .poll(async () => (await gm.request.get('/healthz').catch(() => null))?.status() ?? 0, { timeout: 90_000 })
-      .toBe(200);
-  });
-
-  await phase('GM signs in again: the recovered table shows the undone HP (no ghost damage)', async () => {
-    await signInToTable(gm, handoff.gmEmail, handoff.campaignId);
-    await expect.poll(() => latestState(gmFrames)?.tokens[handoff.pcTokenId]?.hp ?? null).toBe(handoff.pcHp);
-    await gm.getByTestId(`token-${handoff.pcTokenId}`).click();
-    await expect(gm.getByTestId('vitals-hp')).toContainText(`HP ${handoff.pcHp} / ${handoff.pcMaxHp}`);
-    const quarantine = gm.getByTestId('wal-quarantine-banner');
-    if (await quarantine.evaluate((el) => el.classList.contains('ds-connection-banner'))) {
-      note(`GM quarantine banner after recovery: ${(await quarantine.innerText()).replace(/\s+/g, ' ')}`);
-    }
-    await shot({ gm }, 'after-restart-gm');
-    return `PC token hp ${handoff.pcHp}/${handoff.pcMaxHp} after WAL recovery`;
-  });
-
-  await phase('Player signs in again and sees the same exact own HP', async () => {
-    await signInToTable(pl, handoff.playerEmail, handoff.campaignId);
-    await pl.getByTestId(`token-${handoff.pcTokenId}`).click();
-    await expect(pl.getByTestId('vitals-hp')).toContainText(`HP ${handoff.pcHp} / ${handoff.pcMaxHp}`);
-    await shot({ player: pl }, 'after-restart-player');
-  });
-
-  const pending = `pending-${handoff.pendingResolutionId}`;
-  await phase('Player still sees the hit they left unapplied before the SIGKILL, with the same server-rolled damage', async () => {
-    expect(handoff.pendingResolutionId, 'the journey left a pending hit').not.toBe('');
-    await expect(pl.getByTestId(pending)).toBeVisible();
-    await expect(pl.getByTestId(`${pending}-outcome-${handoff.srdTokenId}`)).toHaveText(/^(Hit|Critical hit)$/);
-    await expect(pl.getByTestId(`${pending}-damage-${handoff.srdTokenId}`)).toHaveText(`${handoff.pendingDamage} damage`);
-    await shot({ player: pl }, 'after-restart-player-pending');
-  });
-
-  await phase('The pending resolution survived the SIGKILL: the GM applies it exactly once', async () => {
-    const srdHp = () => Number(latestState(gmFrames)?.tokens[handoff.srdTokenId]?.hp);
-    await expect.poll(srdHp, 'the monster HP survived without the pending damage').toBe(handoff.srdHp);
-    await expect(gm.getByTestId(`${pending}-damage-${handoff.srdTokenId}`)).toHaveValue(String(handoff.pendingDamage));
-    await doubleApplyOnce(gm, gmFrames, gmSent, handoff.pendingResolutionId, handoff.pendingDamage, srdHp);
-    await expect(pl.getByTestId(pending)).toHaveCount(0);
-    await shot({ gm, player: pl }, 'after-restart-pending-applied');
-    return `monster HP ${handoff.srdHp} -> ${handoff.srdHp - handoff.pendingDamage} after one Apply of ${handoff.pendingDamage}`;
-  });
-
-  writeFileSync(join(ARTIFACTS, 'phases-after-restart.json'), JSON.stringify({ results, notes }, null, 2));
-  await gmCtx.close();
-  await plCtx.close();
   printPhases();
 });

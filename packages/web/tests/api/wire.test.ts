@@ -142,12 +142,33 @@ describe("wire: decodeServerEnvelope", () => {
     {
       id: "CommandRejected exposes the echoed correlation_id",
       frame: encode({ CommandRejected: { reason: "Not your turn", correlation_id: "c-1" } }),
-      expected: { type: "CommandRejected", reason: "Not your turn", correlationId: "c-1" },
+      expected: { type: "CommandRejected", reason: "Not your turn", detail: null, correlationId: "c-1" },
     },
     {
       id: "CommandRejected without correlation_id (undecodable frame or older server) decodes to null id",
       frame: encode({ CommandRejected: { reason: "malformed frame" } }),
-      expected: { type: "CommandRejected", reason: "malformed frame", correlationId: null },
+      expected: { type: "CommandRejected", reason: "malformed frame", detail: null, correlationId: null },
+    },
+    {
+      id: "CommandRejected decodes the engine refusal code and feet",
+      frame: encode({
+        CommandRejected: {
+          reason: "insufficient movement budget: need 35.0 ft, have 10.0 ft",
+          detail: { code: "INSUFFICIENT_MOVEMENT", needed_ft: 35, remaining_ft: 10 },
+          correlation_id: "c-2",
+        },
+      }),
+      expected: {
+        type: "CommandRejected",
+        reason: "insufficient movement budget: need 35.0 ft, have 10.0 ft",
+        detail: { code: "INSUFFICIENT_MOVEMENT", neededFt: 35, remainingFt: 10, condition: null },
+        correlationId: "c-2",
+      },
+    },
+    {
+      id: "CommandRejected with a malformed detail decodes to a null detail",
+      frame: encode({ CommandRejected: { reason: "x", detail: { needed_ft: 3 } } }),
+      expected: { type: "CommandRejected", reason: "x", detail: null, correlationId: null },
     },
     {
       id: "unknown variant decodes to null for forward compatibility",

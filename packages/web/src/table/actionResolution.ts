@@ -36,21 +36,36 @@
  *    - A monster action with several damage types sends its first type as
  *      the primary part and up to `MAX_EXTRA_DAMAGE_PARTS` other types as
  *      `extra_damage`; the server rolls each part and the engine applies
- *      the target's affinity to each type. A spell's secondary save (Ice
- *      Knife) is described (`secondarySave`), never rolled here.
+ *      the target's affinity to each type. A spell does the same for the
+ *      parts it deals together (`damageCombination: "all"`: Flame Strike's
+ *      Fire and Radiant, Ice Storm's Bludgeoning and Cold). A spell's
+ *      secondary save (Ice Knife) is described (`secondarySave`), never
+ *      rolled here.
  * 6. `Upcast Dice From The Spell Text`:
  *    - A spell cast with a higher-level slot carries `castLevel`; its damage
  *      dice gain what the spell's higher-level text grants
  *      (`upcastDamageDice`), and stay as written when that text scales
- *      something else.
+ *      something else. An extra part is upcast only when the text names its
+ *      type (`upcastExtraPartDice`).
+ * 7. `Chosen Damage Type`:
+ *    - A spell whose parts are alternatives (Spirit Guardians: Radiant or
+ *      Necrotic) offers `damageTypeOptions`; the card sends the picked type
+ *      as the only damage type, never both.
+ * 8. `Instances Resolve Separately`:
+ *    - Beams and rays (Eldritch Blast, Scorching Ray) become one request per
+ *      instance, each its own attack roll; automatic darts (Magic Missile)
+ *      become one request per target with the darts aimed at it added up.
+ *      Riders (Hex, Divine Smite) and darts never carry an attack bonus.
  *
  * EXECUTION LIFECYCLE:
  * -----
- * `startAction(pending)` (sheet dispatcher or monster stat block)
+ * `startAction(pending, onCancel)` (sheet dispatcher or monster stat block)
  * ├── attack / monster: targets <- `targetTokenIdSignal`, board clicks toggle more.
  * ├── area (spell, or monster save action with an area such as a breath weapon):
  * │           board click sets `areaOriginSignal`; `PROJECT_AOE` -> engine
  * │           `AOE_PROJECTED.affected_token_ids` become the targets.
+ * ├── cancel before `commitAction()` -> runs `onCancel` (refunds pre-spent spell
+ * │           slot and restores prior concentration state).
  * ├── `buildActionRequest` -> `RESOLVE_ACTION` -> `ACTION_RESOLVED`.
  * └── review -> Apply -> `APPLY_RESOLUTION` (GM adjustments per target).
  * ============================================================================
@@ -62,7 +77,12 @@ import {
   computeDnd5eSheetDerived,
   resolveAttackRollMode,
   resolveSavingThrowMode,
+  spellDamageParts,
+  spellDamageResolution,
+  spellInstanceCount,
+  spellInstances,
   upcastDamageDice,
+  upcastExtraPartDice,
   type AbilityId,
   type AttackSource,
   type ConditionState,
@@ -128,8 +148,18 @@ export function monsterPendingAction(tokenId: Uuid, action: MonsterAction): Pend
   return area ? { kind: 'monster', tokenId, actionId: action.id, area } : { kind: 'monster', tokenId, actionId: action.id };
 }
 
-/** Opens the resolution card; an attack starts on the cover panel's target. */
-export function startAction(action: PendingAction): void {
+/** Rollback invoked if the open resolution card is cancelled or replaced before rolling/projecting. */
+let pendingCancelRollback: (() => void) | null = null;
+
+/**
+ * Opens the resolution card; an attack starts on the cover panel's target.
+ * Replacing an uncommitted pending action runs its `onCancel` rollback first
+ * so pre-spent spell slots and concentration never leak.
+ */
+export function startAction(action: PendingAction, onCancel?: () => void): void {
+  const previousRollback = pendingCancelRollback;
+  pendingCancelRollback = onCancel ?? null;
+  previousRollback?.();
   pendingActionSignal.value = action;
   const target = targetTokenIdSignal.value;
   actionTargetIdsSignal.value = !isAreaAction(action) && target ? [target] : [];
@@ -139,13 +169,27 @@ export function startAction(action: PendingAction): void {
   activeResolutionIdSignal.value = null;
 }
 
-/** Closes the resolution card; an unapplied resolution stays in the pending list. */
+/**
+ * Marks the pending action as committed to the room (rolled or projected), so
+ * subsequently closing the card keeps the spent spell slot and concentration.
+ */
+export function commitAction(): void {
+  pendingCancelRollback = null;
+}
+
+/**
+ * Closes the resolution card; an unapplied resolution stays in the pending list.
+ * When called before `commitAction()`, invokes the pending cast rollback.
+ */
 export function cancelAction(): void {
+  const rollback = pendingCancelRollback;
+  pendingCancelRollback = null;
   pendingActionSignal.value = null;
   actionTargetIdsSignal.value = [];
   areaOriginSignal.value = null;
   areaProjectedSignal.value = false;
   activeResolutionIdSignal.value = null;
+  rollback?.();
 }
 
 /** Adds or removes a target of the pending attack. */
@@ -184,6 +228,8 @@ export interface ResolvableAction {
   halfDamageOnSave: boolean;
   /** Damage dice (`""` when the action deals no damage); flat terms are moved to the modifier. */
   damageDice: string;
+  /** Healing dice (`"5d8"` on Mass Cure Wounds) when the spell restores Hit Points. */
+  healDice?: string;
   /** Flat damage added once. */
   damageModifier: number;
   damageType: DamageType | null;
@@ -199,6 +245,12 @@ export interface ResolvableAction {
   secondarySave?: { ability: AbilityId; dc: number } | null;
   /** Damage parts of other types, rolled and mitigated one by one (invariant 5). */
   extraDamage?: ExtraDamagePart[];
+  /** Types the caster picks the damage type from (Spirit Guardians), `damageType` first (invariant 7). */
+  damageTypeOptions?: DamageType[];
+  /** Beams, darts or rays at the cast level, each resolved on its own (invariant 8). */
+  instances?: { unit: 'beam' | 'dart' | 'ray'; count: number };
+  /** Spell damage added to a weapon hit already made (Hex, Divine Smite): automatic, never an attack roll. */
+  rider?: boolean;
 }
 
 /** One extra damage part of an action: its dice, flat modifier and type. */
@@ -223,6 +275,11 @@ export function deriveSheet(data: unknown): Dnd5eDerivedStats | null {
   }
 }
 
+/** Extra damage parts of a spell (`"5d6"` Radiant) as rolled parts, at most `MAX_EXTRA_DAMAGE_PARTS`. */
+function extraPartsOf(parts: readonly { dice: string; type: DamageType }[] | undefined): ExtraDamagePart[] {
+  return (parts ?? []).slice(0, MAX_EXTRA_DAMAGE_PARTS).map((part) => ({ ...splitDamage(part.dice), type: part.type }));
+}
+
 /** `ResolvableAction` of a derived attack; weapon crit range falls back to the feature rules. */
 export function resolvableFromAttack(attack: DerivedAttack, featureCriticalRange = 20): ResolvableAction {
   const data = attack.source === 'spell' ? CompendiumResolver.getDefault().get(attack.id)?.data : undefined;
@@ -241,19 +298,37 @@ export function resolvableFromAttack(attack: DerivedAttack, featureCriticalRange
     area: area ?? null,
     concentration: data?.concentration === true,
     secondarySave: attack.secondarySave ?? null,
+    ...(attack.extraDamage?.length ? { extraDamage: extraPartsOf(attack.extraDamage) } : {}),
+    ...(attack.damageTypeOptions?.length ? { damageTypeOptions: [...attack.damageTypeOptions] } : {}),
+    ...(attack.instances ? { instances: { ...attack.instances } } : {}),
+    ...(attack.delivery === 'rider' ? { rider: true } : {}),
+    ...(typeof data?.healDice === 'string' && data.healDice.trim() ? { healDice: data.healDice.trim() } : {}),
   };
 }
 
 /**
  * The action a pending sheet action resolves for the attacker's derived
- * sheet (dice scaled to its `castLevel`, invariant 6), `null` when it is gone.
+ * sheet (dice and instances scaled to its `castLevel`, invariants 6 and 8),
+ * `null` when it is gone.
  */
 export function resolvableFor(pending: PendingAction, derived: Dnd5eDerivedStats): ResolvableAction | null {
   if (pending.kind === 'monster') return null;
   const action = sheetResolvable(pending, derived);
-  const higherLevel = action?.source === 'spell' ? CompendiumResolver.getDefault().get(action.id)?.data.higherLevel : undefined;
-  if (!action || !pending.castLevel || typeof higherLevel !== 'string') return action;
-  return { ...action, damageDice: upcastDamageDice(action.damageDice, higherLevel, pending.castLevel) };
+  const data = action?.source === 'spell' ? CompendiumResolver.getDefault().get(action.id)?.data : undefined;
+  if (!action || !data || !pending.castLevel) return action;
+  const higherLevel = typeof data.higherLevel === 'string' ? data.higherLevel : undefined;
+  const castLevel = pending.castLevel;
+  const { extra } = spellDamageParts(data);
+  return {
+    ...action,
+    damageDice: higherLevel ? upcastDamageDice(action.damageDice, higherLevel, castLevel) : action.damageDice,
+    ...(action.extraDamage?.length
+      ? { extraDamage: extraPartsOf(extra.map((part) => ({ ...part, dice: upcastExtraPartDice(part, higherLevel, castLevel) }))) }
+      : {}),
+    ...(action.instances && !spellInstances(data)?.cantripScaling
+      ? { instances: { ...action.instances, count: spellInstanceCount(data, 1, castLevel) } }
+      : {}),
+  };
 }
 
 function sheetResolvable(pending: Exclude<PendingAction, { kind: 'monster' }>, derived: Dnd5eDerivedStats): ResolvableAction | null {
@@ -265,20 +340,42 @@ function sheetResolvable(pending: Exclude<PendingAction, { kind: 'monster' }>, d
   if (!entry) return null;
   const data = entry.data;
   const ability = data.saveAbility as AbilityId | undefined;
+  // A described spell (Spike Growth) is placed for its zone; its damage comes from later triggers.
+  const dealsDamage = spellDamageResolution(data) !== 'described' && typeof data.damageDice === 'string';
+  const { extra, typeOptions } = spellDamageParts(data);
   return {
     id,
     name: entry.name,
     attackBonus: null,
     save: ability ? { ability, dc: derived.spellSaveDc } : null,
     halfDamageOnSave: data.halfDamageOnSave === true,
-    damageDice: typeof data.damageDice === 'string' ? data.damageDice : '',
+    damageDice: dealsDamage ? (data.damageDice as string) : '',
     damageModifier: 0,
-    damageType: typeof data.damageType === 'string' ? (data.damageType as DamageType) : null,
+    damageType: dealsDamage && typeof data.damageType === 'string' ? (data.damageType as DamageType) : null,
     criticalRange: 20,
     source: 'spell',
     area: (data.area as { shape: string; sizeFt: number } | undefined) ?? null,
     concentration: data.concentration === true,
+    ...(dealsDamage && extra.length ? { extraDamage: extraPartsOf(extra) } : {}),
+    ...(dealsDamage && typeOptions.length ? { damageTypeOptions: typeOptions } : {}),
+    ...(typeof data.healDice === 'string' && data.healDice.trim() ? { healDice: data.healDice.trim() } : {}),
   };
+}
+
+/**
+ * Returns `true` when `action` is a pure area heal (`healDice` present with no
+ * attack roll, saving throw, or damage dice, e.g. `Mass Cure Wounds`), so the
+ * board projects `PROJECT_AOE` without sending a 0-damage `RESOLVE_ACTION`.
+ */
+export function isPureAreaHeal(action: ResolvableAction): boolean {
+  return (
+    action.area !== null &&
+    Boolean(action.healDice) &&
+    action.attackBonus === null &&
+    action.save === null &&
+    !action.damageDice &&
+    !action.extraDamage?.length
+  );
 }
 
 /** Splits `"1d10 + 8"` / `"2d6+1d8-1"` into dice terms (`"1d10"`) and the summed flat modifier (`8`). */
@@ -471,6 +568,60 @@ export function buildActionRequest(
       cover: target.cover,
     })),
   };
+}
+
+/** `"1d4 + 1"` repeated `times` -> `"3d4 + 3"` (every dice count and the flat modifier multiplied). */
+export function repeatDamage(expression: string, times: number): string {
+  const { dice, modifier } = splitDamage(expression);
+  const terms = dice ? dice.split('+').map((term) => term.replace(/^(\d+)d/, (_, count: string) => `${Number(count) * times}d`)) : [];
+  if (modifier) terms.push(String(modifier * times));
+  return terms.join(' + ');
+}
+
+/** Targets of an action with the number of its beams, darts or rays aimed at each (invariant 8). */
+export interface InstanceAllocation {
+  target: TargetContext;
+  /** Instances aimed at the target (`>= 1`); `1` for actions without instances. */
+  count: number;
+}
+
+/**
+ * `RESOLVE_ACTION` requests of `action` (invariant 8): one request for every
+ * target at once without instances; with instances, one attack request per
+ * beam or ray (each its own attack roll, duplicate targets are refused by the
+ * server), and for automatic darts one request per target with the darts'
+ * damage added up. Each request gets a fresh id from `newId`.
+ */
+export function buildActionRequests(
+  action: ResolvableAction,
+  attacker: AttackerContext,
+  allocations: readonly InstanceAllocation[],
+  newId: () => Uuid,
+): WireActionRequest[] {
+  if (!action.instances) return [buildActionRequest(action, attacker, allocations.map((a) => a.target), newId())];
+  const total = allocations.reduce((sum, a) => sum + a.count, 0);
+  if (action.attackBonus === null) {
+    return allocations.map(({ target, count }) =>
+      buildActionRequest(
+        {
+          ...action,
+          name: `${action.name} (${count}/${total})`,
+          damageDice: repeatDamage(action.damageDice, count),
+          damageModifier: action.damageModifier * count,
+        },
+        attacker,
+        [target],
+        newId(),
+      ),
+    );
+  }
+  let index = 0;
+  return allocations.flatMap(({ target, count }) =>
+    Array.from({ length: count }, () => {
+      index += 1;
+      return buildActionRequest({ ...action, name: `${action.name} (${index}/${total})` }, attacker, [target], newId());
+    }),
+  );
 }
 
 /** SRD cone: its width at any point equals its distance from the origin (`2 * atan(1/2)`). */

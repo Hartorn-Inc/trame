@@ -136,6 +136,12 @@ async fn test_campaign_maps_rbac_and_sanitization() {
             visibility: trame_server::maps::VisibilityChannel::GmHidden,
         }],
         explored_fog_texture: None,
+        difficult_terrain: vec![trame_engine::aoe::GridCell { col: 3, row: 4 }],
+        fog_overrides: vec![trame_engine::commands::FogOverrideCell {
+            cell_x: 5,
+            cell_y: 6,
+            mode: trame_engine::commands::FogOverrideMode::Reveal,
+        }],
     };
 
     // 1. Outsider cannot access
@@ -213,6 +219,14 @@ async fn test_campaign_maps_rbac_and_sanitization() {
     assert!(raw_gm["scenes"][0]["wall_segments"][0]["p1"].is_object());
     assert_eq!(gm_scenes[0].staged_tokens.len(), 1);
     assert_eq!(gm_scenes[0].spatial_audio_emitters.len(), 1);
+    assert_eq!(
+        (
+            gm_scenes[0].difficult_terrain.len(),
+            gm_scenes[0].fog_overrides.len()
+        ),
+        (1, 1),
+        "gm_reads_saved_terrain_and_fog_rulings"
+    );
 
     // 5b. Verify camelCase JSON payload deserialization and OneWay WallType persistence
     let camelcase_payload = serde_json::json!({
@@ -307,6 +321,14 @@ async fn test_campaign_maps_rbac_and_sanitization() {
     assert!(player_scenes[0].wall_segments[0].blocks_vision);
     assert_eq!(player_scenes[0].staged_tokens.len(), 0);
     assert_eq!(player_scenes[0].spatial_audio_emitters.len(), 0);
+    assert_eq!(
+        (
+            player_scenes[0].difficult_terrain.len(),
+            player_scenes[0].fog_overrides.len()
+        ),
+        (1, 0),
+        "player_sees_terrain_but_not_prepared_fog_rulings"
+    );
 }
 
 #[tokio::test]

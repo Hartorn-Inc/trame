@@ -6,9 +6,9 @@
  * PURPOSE:
  * -----
  * Decodes Playwright element screenshots (8-bit, non-interlaced RGB/RGBA PNG)
- * and measures mean luminance over rectangles, so the spec can assert what
- * the WebGL table actually drew (darkness, lights, fog) instead of trusting
- * the DOM. The WebGL drawing buffer is not readable after compositing, so
+ * and measures mean luminance or colour over rectangles, so the spec can
+ * assert what the WebGL table actually drew (the battlemap texture,
+ * darkness, lights, fog) instead of trusting the DOM. The WebGL drawing buffer is not readable after compositing, so
  * the composited screenshot is the only reliable pixel source.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
@@ -93,6 +93,21 @@ export function decodePng(png: Buffer): RgbaImage {
     data[p * 4 + 3] = channels === 4 ? rows[p * channels + 3] : 255;
   }
   return { width, height, data };
+}
+
+/** Mean `[r, g, b]` (`0..=255` each, rounded) over `rect`, clipped to the image. */
+export function meanRgb(img: RgbaImage, rect: ProbeRect): [number, number, number] {
+  const sum = [0, 0, 0];
+  let n = 0;
+  for (let y = Math.max(0, rect.y); y < Math.min(img.height, rect.y + rect.h); y++) {
+    for (let x = Math.max(0, rect.x); x < Math.min(img.width, rect.x + rect.w); x++) {
+      const i = (y * img.width + x) * 4;
+      for (let c = 0; c < 3; c++) sum[c] += img.data[i + c];
+      n++;
+    }
+  }
+  if (n === 0) throw new Error(`probe ${JSON.stringify(rect)} is outside the ${img.width}x${img.height} image`);
+  return [Math.round(sum[0] / n), Math.round(sum[1] / n), Math.round(sum[2] / n)];
 }
 
 /** Mean Rec. 601 luma (`0..=255`) over `rect`, clipped to the image. */

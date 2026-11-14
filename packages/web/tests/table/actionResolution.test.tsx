@@ -16,6 +16,7 @@ import { selectedTokenIdSignal } from "../../src/api/session.ts";
 import type { ProjectedTableState, WirePendingResolution, WireResolvedTarget } from "../../src/api/wire.ts";
 import { monsterStatBlockOf, type CompendiumEntry } from "../../src/compendium/CompendiumDrawer.tsx";
 import { localeSignal } from "../../src/i18n/index.ts";
+import { createSheetCommandDispatcher } from "../../src/sheet/sheetPersistence.ts";
 import { ActionResolutionCard } from "../../src/table/ActionResolutionCard.tsx";
 import {
   areaOriginSignal,
@@ -42,7 +43,7 @@ import type { TableToken } from "../../src/table/tableView.ts";
 import { assertAbsent, assertPresent, assertSameNode } from "../helpers/domAssert.ts";
 import { CAMPAIGN, GM_ID, GOBLIN, HERO, HERO_ACTOR, PLAYER_ID, fullToken, liveTable, mount, publicToken, tableState, type LiveTable } from "../helpers/liveTable.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
-import { flush } from "../helpers/mockTransport.ts";
+import { actorDto, flush } from "../helpers/mockTransport.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -443,6 +444,110 @@ describe("ActionResolutionCard: a player attacks a monster", () => {
   });
 });
 
+/** `HERO_ACTOR` as a `classId` caster of `level` knowing `spellId`, its casting ability at 16. */
+function casterKnowing(classId: string, level: number, spellId: string): Dnd5eActorData {
+  const actor = createDefaultActorData(HERO_ACTOR, "Mira");
+  actor.classId = classId;
+  actor.attributes.level = level;
+  for (const ab of ["int", "wis", "cha"] as const) actor.abilities[ab].score = 16;
+  actor.spellIds = [spellId];
+  return actor;
+}
+
+/** Player table whose hero is `actor`, with a second monster (`ORC`) to split instances on. */
+const ORC = "eeeeeeee-0000-4000-8000-000000000001";
+function casterTable(actor: Dnd5eActorData) {
+  const view = (over: Partial<ProjectedTableState> = {}) =>
+    playerView({
+      public_tokens: {
+        [GOBLIN]: publicToken(GOBLIN, "Goblin", { top_left: { x: 300, y: 300 } }),
+        [ORC]: publicToken(ORC, "Orc", { top_left: { x: 400, y: 300 } }),
+      },
+      ...over,
+    });
+  const { live, ui } = table("player", view());
+  live.client.state.actors.value = { [HERO_ACTOR]: { version: 1, data: actor } as any };
+  return { live, ui, view };
+}
+
+describe("ActionResolutionCard: beams, darts and chosen damage types", () => {
+  const beamCases = [
+    { id: "a level 5 warlock's Eldritch Blast rolls two 1d10 beams at one target", level: 5, aims: { [GOBLIN]: 2 }, perTarget: [GOBLIN, GOBLIN] },
+    { id: "a level 11 warlock splits three beams, each with its own attack roll", level: 11, aims: { [GOBLIN]: 1, [ORC]: 2 }, perTarget: [GOBLIN, ORC, ORC] },
+  ];
+  for (const c of beamCases) {
+    it(c.id, () => {
+      const { live, ui } = casterTable(casterKnowing("warlock", c.level, "srd:spell:eldritch_blast"));
+      startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:eldritch_blast" });
+      for (const id of Object.keys(c.aims)) ui.input(`action-target-${id}`, "on", "change");
+      for (const [id, count] of Object.entries(c.aims)) ui.input(`action-instances-${id}`, String(count), "input");
+      ui.click("action-roll");
+      const sent = live.commands().filter((cmd) => cmd.cmd === "RESOLVE_ACTION").map((cmd) => cmd.request);
+      assert.deepEqual(
+        sent.map((r) => [r.check.kind, r.damage_dice, r.targets.map((t: { token_id: string }) => t.token_id)]),
+        c.perTarget.map((id) => ["ATTACK", "1d10", [id]])
+      );
+      assert.equal(new Set(sent.map((r) => r.resolution_id)).size, sent.length);
+      ui.unmount();
+    });
+  }
+
+  it("Roll waits until every beam is aimed", () => {
+    const { ui } = casterTable(casterKnowing("warlock", 5, "srd:spell:eldritch_blast"));
+    startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:eldritch_blast" });
+    ui.input(`action-target-${GOBLIN}`, "on", "change");
+    ui.input(`action-instances-${GOBLIN}`, "1", "input");
+    assert.equal(ui.byTestId("action-roll").disabled, true);
+    assert.equal(ui.byTestId("action-instances-left").textContent, "Aimed: 1 of 2 beams.");
+    ui.unmount();
+  });
+
+  const dartCases = [
+    { id: "Magic Missile at level 1 sends three automatic darts as one 3d4 + 3 hit", castLevel: undefined, aims: { [GOBLIN]: 3 }, expected: [[GOBLIN, "3d4", 3]] },
+    { id: "Magic Missile split between two targets adds up the darts per target", castLevel: undefined, aims: { [GOBLIN]: 2, [ORC]: 1 }, expected: [[GOBLIN, "2d4", 2], [ORC, "1d4", 1]] },
+    { id: "Magic Missile cast at level 2 adds a fourth dart", castLevel: 2, aims: { [GOBLIN]: 4 }, expected: [[GOBLIN, "4d4", 4]] },
+  ];
+  for (const c of dartCases) {
+    it(c.id, () => {
+      const { live, ui } = casterTable(casterKnowing("wizard", 3, "srd:spell:magic_missile"));
+      startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: "srd:spell:magic_missile", castLevel: c.castLevel });
+      for (const id of Object.keys(c.aims)) ui.input(`action-target-${id}`, "on", "change");
+      for (const [id, count] of Object.entries(c.aims)) ui.input(`action-instances-${id}`, String(count), "input");
+      ui.click("action-roll");
+      const sent = live.commands().filter((cmd) => cmd.cmd === "RESOLVE_ACTION").map((cmd) => cmd.request);
+      assert.deepEqual(
+        sent.map((r) => [r.check.kind, r.targets[0].token_id, r.damage_dice, r.damage_modifier, r.damage_type]),
+        c.expected.map(([id, dice, modifier]) => ["AUTOMATIC", id, dice, modifier, "force"])
+      );
+      ui.unmount();
+    });
+  }
+
+  it("Spirit Guardians sends the picked damage type, never both", async () => {
+    const { live, ui, view } = casterTable(casterKnowing("cleric", 5, "srd:spell:spirit_guardians"));
+    startAction({ kind: "area", actorId: HERO_ACTOR, spellId: "srd:spell:spirit_guardians" });
+    const picker = ui.byTestId("action-damage-type");
+    assert.deepEqual(
+      Array.from(picker.querySelectorAll("option") as ArrayLike<{ value: string }>).map((o) => o.value),
+      ["radiant", "necrotic"]
+    );
+    ui.input("action-damage-type", "necrotic", "change");
+    ui.input("action-area-token", HERO, "change");
+    ui.click("action-area-project");
+    const projected = live.commands().find((cmd) => cmd.cmd === "PROJECT_AOE")!;
+    live.client.applyServerEnvelope({
+      type: "CommandAccepted",
+      seqId: seq++,
+      state: view(),
+      events: [{ event: "AOE_PROJECTED", template: projected.template, affected_cells: [], affected_token_ids: [GOBLIN], persisted: true }],
+    } as any);
+    await flush(6);
+    const request = live.commands().filter((cmd) => cmd.cmd === "RESOLVE_ACTION").at(-1)!.request;
+    assert.deepEqual([request.check.kind, request.damage_type, request.extra_damage], ["SAVE", "necrotic", []]);
+    ui.unmount();
+  });
+});
+
 describe("ActionResolutionCard: a player's area against monsters", () => {
   it("the server rolls each monster's save; the player sees success and half damage", async () => {
     const { live, ui } = table("player");
@@ -535,6 +640,94 @@ describe("ActionResolutionCard: a player's area against monsters", () => {
     assertAbsent(ui.byTestId("action-apply"), "action-apply");
     ui.unmount();
   });
+
+  const areaHealVsDamageCases: Array<{
+    id: string;
+    classId: string;
+    level: number;
+    spellId: string;
+    mode: "area" | "attack";
+    affectedTokenIds: string[];
+    expectedResolve: null | { kind: string; damageDice: string; damageType: string };
+  }> = [
+    {
+      id: "mass-cure-wounds-area-heal-skips-zero-damage-resolve-action",
+      classId: "cleric",
+      level: 9,
+      spellId: "srd:spell:mass_cure_wounds",
+      mode: "area",
+      affectedTokenIds: [HERO, GOBLIN],
+      expectedResolve: null,
+    },
+    {
+      id: "mass-cure-wounds-empty-area-skips-resolve-action",
+      classId: "cleric",
+      level: 9,
+      spellId: "srd:spell:mass_cure_wounds",
+      mode: "area",
+      affectedTokenIds: [],
+      expectedResolve: null,
+    },
+    {
+      id: "fireball-area-save-still-dispatches-resolve-action",
+      classId: "wizard",
+      level: 5,
+      spellId: "srd:spell:fireball",
+      mode: "area",
+      affectedTokenIds: [GOBLIN],
+      expectedResolve: { kind: "SAVE", damageDice: "8d6", damageType: "fire" },
+    },
+    {
+      id: "sacred-flame-save-cantrip-still-dispatches-resolve-action",
+      classId: "cleric",
+      level: 1,
+      spellId: "srd:spell:sacred_flame",
+      mode: "attack",
+      affectedTokenIds: [GOBLIN],
+      expectedResolve: { kind: "SAVE", damageDice: "1d8", damageType: "radiant" },
+    },
+  ];
+
+  for (const tc of areaHealVsDamageCases) {
+    it(`[${tc.id}]`, async () => {
+      const { live, ui, view } = casterTable(casterKnowing(tc.classId, tc.level, tc.spellId));
+      if (tc.mode === "area") {
+        startAction({ kind: "area", actorId: HERO_ACTOR, spellId: tc.spellId });
+        ui.input("action-area-token", GOBLIN, "change");
+        ui.click("action-area-project");
+        const projected = live.commands().find((cmd) => cmd.cmd === "PROJECT_AOE");
+        assertPresent(projected, "PROJECT_AOE dispatched");
+        live.client.applyServerEnvelope({
+          type: "CommandAccepted",
+          seqId: seq++,
+          state: view(),
+          events: [{ event: "AOE_PROJECTED", template: projected!.template, affected_cells: [], affected_token_ids: tc.affectedTokenIds, persisted: false }],
+        } as any);
+        await flush(6);
+      } else {
+        startAction({ kind: "attack", actorId: HERO_ACTOR, attackId: tc.spellId });
+        ui.input(`action-target-${GOBLIN}`, "on", "change");
+        ui.click("action-roll");
+        await flush(4);
+      }
+
+      const resolves = live.commands().filter((cmd) => cmd.cmd === "RESOLVE_ACTION");
+      if (tc.expectedResolve === null) {
+        assert.equal(resolves.length, 0);
+        if (tc.affectedTokenIds.length > 0) {
+          assert.equal(pendingActionSignal.value, null);
+        } else {
+          assert.equal(ui.byTestId("action-status").textContent, "No token is in the area.");
+        }
+      } else {
+        assert.equal(resolves.length, 1);
+        assert.equal(resolves[0].request.check.kind, tc.expectedResolve.kind);
+        assert.equal(resolves[0].request.damage_dice, tc.expectedResolve.damageDice);
+        assert.equal(resolves[0].request.damage_type, tc.expectedResolve.damageType);
+      }
+      ui.unmount();
+    });
+  }
 });
 
 describe("PendingResolutionsPanel: the GM's list", () => {
@@ -629,8 +822,75 @@ describe("PendingResolutionsPanel: the GM's list", () => {
   it("is absent when nothing is pending", () => {
     const { ui } = table("GM");
     assertAbsent(ui.byTestId("pending-resolutions"), "pending-resolutions");
+    const countLive = ui.byTestId("pending-resolutions-count");
+    assertPresent(countLive, "pending-resolutions-count stays mounted");
+    assert.equal(countLive.getAttribute("aria-live"), "polite");
+    assert.equal(countLive.textContent, "");
     ui.unmount();
   });
+
+  const attributionCases = [
+    { id: "en-known-attacker", locale: "en" as const, attackerId: HERO, expected: "Mira: Fire Bolt" },
+    { id: "fr-known-attacker", locale: "fr" as const, attackerId: HERO, expected: "Mira : Fire Bolt" },
+    { id: "en-missing-attacker-falls-back-to-action", locale: "en" as const, attackerId: null, expected: "Fire Bolt" },
+    { id: "fr-unknown-attacker-falls-back-to-action", locale: "fr" as const, attackerId: "ffffffff-0000-4000-8000-000000000099", expected: "Fire Bolt" },
+  ];
+  for (const tc of attributionCases) {
+    it(`[${tc.id}] displays attacker attribution with graceful fallback`, () => {
+      localeSignal.value = tc.locale;
+      const state = gmView({
+        pending_resolutions: { [ID]: pendingResolution(ID, [resolvedTarget()], { attacker_token_id: tc.attackerId }) },
+      });
+      const { ui } = table("GM", state);
+      const entry = ui.byTestId(`pending-${ID}`);
+      assertPresent(entry, "pending entry");
+      assert.equal(entry.getAttribute("aria-label"), tc.expected);
+      assert.equal(ui.byTestId(`pending-${ID}-heading`).textContent, tc.expected);
+      ui.unmount();
+      localeSignal.value = "en";
+    });
+  }
+
+  for (const tc of [
+    { id: "en-count-live-transitions", locale: "en" as const, one: "Pending resolutions: 1", zero: "Pending resolutions: 0" },
+    { id: "fr-count-live-transitions", locale: "fr" as const, one: "Résolutions en attente : 1", zero: "Résolutions en attente : 0" },
+  ]) {
+    it(`[${tc.id}] keeps polite count announcer mounted across 0 -> 1 -> 0 transitions`, () => {
+      localeSignal.value = tc.locale;
+      const { live, ui } = table("GM");
+      const before = ui.byTestId("pending-resolutions-count");
+      assertPresent(before, "mounted when empty");
+      assertAbsent(ui.byTestId("pending-resolutions"), "panel hidden when empty");
+      assert.equal(before.textContent, "");
+
+      live.client.applyServerEnvelope({
+        type: "CommandAccepted",
+        seqId: seq++,
+        state: withPending([resolvedTarget()]),
+        events: [],
+      } as any);
+      const during = ui.byTestId("pending-resolutions-count");
+      assertPresent(during, "mounted with 1 entry");
+      assertSameNode(during, before, "same live region node on 0 -> 1");
+      assert.equal(during.textContent, tc.one);
+      assertPresent(ui.byTestId("pending-resolutions"), "panel visible with 1 entry");
+
+      live.client.applyServerEnvelope({
+        type: "CommandAccepted",
+        seqId: seq++,
+        state: gmView(),
+        events: [],
+      } as any);
+      const after = ui.byTestId("pending-resolutions-count");
+      assertPresent(after, "mounted after clearing");
+      assertSameNode(after, before, "same live region node on 1 -> 0");
+      assert.equal(after.textContent, tc.zero);
+      assertAbsent(ui.byTestId("pending-resolutions"), "panel hidden again when empty");
+
+      ui.unmount();
+      localeSignal.value = "en";
+    });
+  }
 });
 
 describe("MonsterTurnPanel: the GM runs a monster's attack", () => {
@@ -809,6 +1069,227 @@ describe("ConcentrationCheckPrompt", () => {
   it("stays hidden without a check", () => {
     const { ui } = table("player");
     assertAbsent(ui.byTestId("concentration-prompt"), "concentration-prompt");
+    const liveRegion = ui.byTestId("concentration-check-live");
+    assertPresent(liveRegion, "concentration-check-live stays mounted");
+    assert.equal(liveRegion.getAttribute("aria-live"), "polite");
+    assert.equal(liveRegion.textContent, "");
     ui.unmount();
   });
+
+  const announceCases = [
+    {
+      id: "en-pending-check-appears-for-controlled-token",
+      locale: "en" as const,
+      initialChecks: {} as Record<string, number[]>,
+      nextChecks: { [HERO]: [14] } as Record<string, number[]>,
+      expected: "Concentration check DC 14 for Mira",
+    },
+    {
+      id: "fr-pending-check-appears-for-controlled-token",
+      locale: "fr" as const,
+      initialChecks: {} as Record<string, number[]>,
+      nextChecks: { [HERO]: [12] } as Record<string, number[]>,
+      expected: "Jet de concentration DD 12 pour Mira",
+    },
+    {
+      id: "en-additional-queued-check-announces-new-dc",
+      locale: "en" as const,
+      initialChecks: { [HERO]: [10] } as Record<string, number[]>,
+      nextChecks: { [HERO]: [10, 16] } as Record<string, number[]>,
+      expected: "Concentration check DC 16 for Mira",
+    },
+    {
+      id: "en-uncontrolled-token-check-stays-silent",
+      locale: "en" as const,
+      initialChecks: {} as Record<string, number[]>,
+      nextChecks: { [GOBLIN]: [13] } as Record<string, number[]>,
+      expected: "",
+    },
+  ];
+  for (const tc of announceCases) {
+    it(`[${tc.id}] polite concentration check announcement fires only on transition`, () => {
+      localeSignal.value = tc.locale;
+      const { live, ui } = table("player", playerView({ pending_concentration_checks: tc.initialChecks }));
+      const before = ui.byTestId("concentration-check-live");
+      assertPresent(before, "mounted initially");
+      assert.equal(before.textContent, "", "silent on initial mount");
+
+      live.client.applyServerEnvelope({
+        type: "CommandAccepted",
+        seqId: seq++,
+        state: playerView({ pending_concentration_checks: tc.nextChecks }),
+        events: [],
+      } as any);
+      const after = ui.byTestId("concentration-check-live");
+      assertPresent(after, "mounted after transition");
+      assertSameNode(after, before, "same live region DOM node");
+      assert.equal(after.textContent, tc.expected);
+
+      ui.unmount();
+      localeSignal.value = "en";
+    });
+  }
+});
+
+describe("Spell cast slot expenditure and concentration rollback (UA #15)", () => {
+  const ACTOR_PUT_URL = `PUT /api/v1/campaigns/${CAMPAIGN}/actors/${HERO_ACTOR}`;
+
+  const castCases: Array<{
+    id: string;
+    classId: string;
+    spellId: string;
+    wasConcentrating: boolean;
+    step: "project" | "roll" | "cancel" | "immediate";
+    expectedPutCurrents: number[];
+    expectedConcentrationCmds: boolean[];
+    cardRemainsOpenAfterCast: boolean;
+  }> = [
+    {
+      id: "normal-area-concentration-cast-keeps-slot-spent-and-concentration-set",
+      classId: "druid",
+      spellId: "srd:spell:faerie_fire",
+      wasConcentrating: false,
+      step: "project",
+      expectedPutCurrents: [1],
+      expectedConcentrationCmds: [true],
+      cardRemainsOpenAfterCast: true,
+    },
+    {
+      id: "cancelled-area-concentration-cast-refunds-slot-and-reverts-concentration",
+      classId: "druid",
+      spellId: "srd:spell:faerie_fire",
+      wasConcentrating: false,
+      step: "cancel",
+      expectedPutCurrents: [1, 2],
+      expectedConcentrationCmds: [true, false],
+      cardRemainsOpenAfterCast: true,
+    },
+    {
+      id: "cancelled-concentration-cast-preserves-existing-concentration",
+      classId: "druid",
+      spellId: "srd:spell:faerie_fire",
+      wasConcentrating: true,
+      step: "cancel",
+      expectedPutCurrents: [1, 2],
+      expectedConcentrationCmds: [],
+      cardRemainsOpenAfterCast: true,
+    },
+    {
+      id: "normal-attack-spell-cast-keeps-slot-spent",
+      classId: "cleric",
+      spellId: "srd:spell:guiding_bolt",
+      wasConcentrating: false,
+      step: "roll",
+      expectedPutCurrents: [1],
+      expectedConcentrationCmds: [],
+      cardRemainsOpenAfterCast: true,
+    },
+    {
+      id: "cancelled-attack-spell-cast-before-roll-refunds-slot",
+      classId: "cleric",
+      spellId: "srd:spell:guiding_bolt",
+      wasConcentrating: false,
+      step: "cancel",
+      expectedPutCurrents: [1, 2],
+      expectedConcentrationCmds: [],
+      cardRemainsOpenAfterCast: true,
+    },
+    {
+      id: "immediate-non-resolution-concentration-cast-spends-and-sets-immediately",
+      classId: "cleric",
+      spellId: "srd:spell:bless",
+      wasConcentrating: false,
+      step: "immediate",
+      expectedPutCurrents: [1],
+      expectedConcentrationCmds: [true],
+      cardRemainsOpenAfterCast: false,
+    },
+  ];
+
+  for (const tc of castCases) {
+    it(`[${tc.id}]`, async () => {
+      const actor = casterKnowing(tc.classId, 1, tc.spellId);
+      actor.spellSlots = { level1: { current: 2, max: 2 } };
+      const initialView = playerView({
+        tokens: {
+          [HERO]: fullToken(HERO, "Mira", {
+            owner_user_id: PLAYER_ID,
+            actor_id: HERO_ACTOR,
+            top_left: { x: 100, y: 50 },
+            concentrating: tc.wasConcentrating,
+          }),
+        },
+        public_tokens: { [GOBLIN]: publicToken(GOBLIN, "Goblin", { top_left: { x: 200, y: 200 } }) },
+      });
+      const live = liveTable(PLAYER_ID, initialView, {
+        [ACTOR_PUT_URL]: {
+          status: 200,
+          body: { actor: actorDto({ id: HERO_ACTOR, version: 2, data: { ...actor, spellSlots: { level1: { current: 1, max: 2 } } } }) },
+        },
+      });
+      live.client.state.actors.value = {
+        [HERO_ACTOR]: { version: 1, data: actor, name: "Mira", ownerUserId: PLAYER_ID },
+      };
+      const ui = mount(h(ActionResolutionCard, { client: live.client, isGm: false }));
+      const dispatch = createSheetCommandDispatcher({
+        client: live.client,
+        campaignId: CAMPAIGN,
+        actorId: HERO_ACTOR,
+      });
+
+      dispatch({
+        cmd: "CAST_SPELL",
+        type: "CAST_SPELL",
+        spellId: tc.spellId,
+        slot: { key: "level1", tier: { current: 1, max: 2 }, castLevel: 1 },
+        onTable: true,
+      });
+      await flush(4);
+
+      if (tc.cardRemainsOpenAfterCast) {
+        assertPresent(ui.byTestId("action-card"), "resolution card opens for table spell");
+      } else {
+        assertAbsent(ui.byTestId("action-card"), "non-resolution spell skips card");
+      }
+
+      if (tc.step === "project") {
+        ui.input("action-area-token", GOBLIN, "change");
+        ui.click("action-area-project");
+        await flush(4);
+        ui.click("action-cancel");
+        await flush(4);
+      } else if (tc.step === "roll") {
+        ui.click(`action-target-${GOBLIN}`);
+        ui.click("action-roll");
+        await flush(4);
+        ui.click("action-cancel");
+        await flush(4);
+      } else if (tc.step === "cancel") {
+        ui.click("action-cancel");
+        await flush(6);
+      }
+
+      const puts = live.transport.calls
+        .filter((call) => call.method === "PUT")
+        .map((call) => call.body as { expected_version: number; data: Dnd5eActorData });
+      assert.deepEqual(
+        puts.map((body) => body.data.spellSlots?.level1?.current),
+        tc.expectedPutCurrents,
+      );
+      if (puts.length === 2) {
+        assert.deepEqual(
+          puts.map((body) => body.expected_version),
+          [1, 2],
+        );
+      }
+
+      const concentrationCmds = live
+        .commands()
+        .filter((cmd) => cmd.cmd === "SET_CONCENTRATION")
+        .map((cmd) => Boolean(cmd.concentrating));
+      assert.deepEqual(concentrationCmds, tc.expectedConcentrationCmds);
+
+      ui.unmount();
+    });
+  }
 });

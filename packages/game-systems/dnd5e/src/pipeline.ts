@@ -318,13 +318,18 @@ export interface DamagePipelineOptions {
 }
 
 /**
- * Mitigation of one damage type after condition rules: resistance to all
- * damage (Petrified) makes `NONE` resistant and cancels a vulnerability, like
- * the engine's `damage_affinity_for`.
+ * Damage left from `amount` of one type after the actor's mitigation and the
+ * condition rules, like the engine's `typed_damage_input`: immunity wins;
+ * resistance to all damage (Petrified) makes `NONE` resistant; on a
+ * vulnerable type it applies first, then the vulnerability (SRD 5.2.1 order,
+ * 25 -> 12 -> 24).
  */
-function mitigationWithConditions(base: MitigationLevel, effects: ConditionEffects): MitigationLevel {
-  if (!effects.resistsAllDamage || base === "IMMUNE" || base === "RESISTANT") return base;
-  return base === "VULNERABLE" ? "NONE" : "RESISTANT";
+function mitigatedAmount(amount: number, base: MitigationLevel, effects: ConditionEffects): number {
+  const raw = Math.max(0, amount);
+  const resistant = base === "RESISTANT" || (effects.resistsAllDamage && base !== "IMMUNE");
+  if (base === "IMMUNE") return 0;
+  const halved = resistant ? Math.floor(raw / 2) : raw;
+  return base === "VULNERABLE" ? halved * 2 : halved;
 }
 
 /**
@@ -391,16 +396,11 @@ export function resolveDamagePipeline(
   });
   let totalMitigatedDamage = 0;
   for (const instance of damageInstances) {
-    const mitigation = mitigationWithConditions(clone.damageMitigations?.[instance.type] ?? "NONE", conditionEffects);
-    let instanceAmount = Math.max(0, instance.amount);
-    if (mitigation === "IMMUNE") {
-      instanceAmount = 0;
-    } else if (mitigation === "RESISTANT") {
-      instanceAmount = Math.floor(instanceAmount * 0.5);
-    } else if (mitigation === "VULNERABLE") {
-      instanceAmount = instanceAmount * 2;
-    }
-    totalMitigatedDamage += instanceAmount;
+    totalMitigatedDamage += mitigatedAmount(
+      instance.amount,
+      clone.damageMitigations?.[instance.type] ?? "NONE",
+      conditionEffects,
+    );
   }
 
   if (totalMitigatedDamage === 0) {

@@ -1,3 +1,4 @@
+import { t } from "../../i18n/index.ts";
 import { TrameCommand } from "../types.ts";
 import type { WidgetRenderContext } from "../WidgetRegistry.ts";
 
@@ -23,7 +24,7 @@ export function AttackActionTable(context: WidgetRenderContext): AttackActionTab
   const rawAttacks = Array.isArray(context.boundValues.attacks) ? context.boundValues.attacks : [];
   const attacks: AttackItem[] = rawAttacks.map((item: any) => ({
     id: String(item.id ?? ""),
-    name: String(item.name ?? "Attack"),
+    name: String(item.name ?? t("sheet.attacks.unnamed")),
     attackBonus: Number(item.attackBonus ?? 0),
     damageFormula: String(item.damageFormula ?? "1d6"),
     damageType: item.damageType ? String(item.damageType) : undefined,

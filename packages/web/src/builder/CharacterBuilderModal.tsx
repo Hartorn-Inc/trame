@@ -23,10 +23,15 @@
  * 3. `Single Submission`:
  *    - The create button is inert while the request is in flight, so a double
  *      click cannot create two actors.
- * 4. `Class Picks Capped In The UI`:
- *    - Multi-pick class choices (skills, cantrips, spells) are checkboxes
- *      that disable the unpicked options once `count` are chosen, with a
- *      polite "n of count chosen" status; single picks are radios.
+ * 4. `Class & Origin Feat Picks Capped In The UI`:
+ *    - Multi-pick choices (skills, proficiencies, cantrips, spells) are
+ *      checkboxes that disable the unpicked options once `count` are chosen,
+ *      with a polite "n of count chosen" status; single picks are radios.
+ * 5. `Accessible Ability Score Controls & Tabular Numerals`:
+ *    - Standard Array pairs `<label for>` with `<select id>`; Point-Buy uses
+ *      `role="group"` + `aria-labelledby` with localized stepper `aria-label`s
+ *      and zero orphaned `for` attributes. Numeric scores, modifiers, and
+ *      remaining Point-Buy points carry `.atlas-tabular-nums`.
  * ============================================================================
  */
 import { h, type ComponentChildren, type VNode } from 'preact';
@@ -36,6 +41,7 @@ import {
   CompendiumResolver,
   SRD_CLASS_PROGRESSION,
   SRD_SPECIES,
+  TOOL_OPTION_PREFIX,
   type AbilityId,
   type BackgroundId,
   type BuilderChoice,
@@ -81,6 +87,11 @@ function stepLabel(step: BuilderStep): string {
 
 function featLabel(featRef: string): string {
   return t(`builder.feat.${featRef.replace(/^srd:feat:/, '')}` as MessageKey);
+}
+
+function abilityModText(score: number): string {
+  const mod = Math.floor((score - 10) / 2);
+  return mod >= 0 ? `+${mod}` : `${mod}`;
 }
 
 /** SRD rules text of a spell option (English, verbatim), `null` when the compendium has none. */
@@ -147,17 +158,33 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
     }
   };
 
-  const radio = (name: string, value: string, checked: boolean, onSelect: () => void, label: string, meta?: string) =>
+  const radio = (
+    name: string,
+    value: string,
+    checked: boolean,
+    onSelect: () => void,
+    label: string,
+    meta?: string,
+    extra?: { metaClass?: string; metaTestId?: string; describedBy?: string },
+  ) =>
     h(
       'label',
       { key: value, class: cx('ds-choice ds-choice-stacked', checked && 'is-selected') },
       h(
         'span',
         { class: 'ds-cluster' },
-        h('input', { type: 'radio', name, value, checked, 'data-testid': `builder-${name}-${value}`, onChange: onSelect }),
+        h('input', {
+          type: 'radio',
+          name,
+          value,
+          checked,
+          'data-testid': `builder-${name}-${value}`,
+          'aria-describedby': extra?.describedBy,
+          onChange: onSelect,
+        }),
         h('span', { class: 'ds-value' }, label),
       ),
-      meta ? h('span', { class: 'ds-meta' }, meta) : null,
+      meta ? h('span', { class: cx('ds-meta', extra?.metaClass), 'data-testid': extra?.metaTestId }, meta) : null,
     );
 
   const fieldset = (legend: string, children: ComponentChildren) =>
@@ -237,6 +264,7 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
               : null,
           ])
         : null,
+      ...wizard.getOriginFeatChoices().map((featChoice) => renderChoice(featChoice, 'feat')),
     );
   };
 
@@ -246,8 +274,15 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
       'div',
       { class: 'ds-stack' },
       fieldset(t('builder.abilities.method'), [
-        radio('method', 'pointBuy', !isArray, () => wizard.setAbilityScores({ str: 8, dex: 8, con: 8, int: 8, wis: 8, cha: 8 }, 'pointBuy'),
-          t('builder.abilities.pointBuy'), t('builder.abilities.remaining', { points: wizard.getRemainingPointBuyBudget() })),
+        radio(
+          'method',
+          'pointBuy',
+          !isArray,
+          () => wizard.setAbilityScores({ str: 8, dex: 8, con: 8, int: 8, wis: 8, cha: 8 }, 'pointBuy'),
+          t('builder.abilities.pointBuy'),
+          t('builder.abilities.remaining', { points: wizard.getRemainingPointBuyBudget() }),
+          { metaClass: 'atlas-tabular-nums', metaTestId: 'builder-point-buy-remaining' },
+        ),
         radio('method', 'standardArray', isArray,
           () => wizard.setAbilityScores({ str: 15, dex: 14, con: 13, int: 12, wis: 10, cha: 8 }, 'standardArray'),
           t('builder.abilities.standardArray')),
@@ -257,12 +292,17 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
         { class: 'ds-list-plain ds-stack-sm' },
         DND5E_ABILITIES.map((ab) => {
           const base = draft.abilityScores[ab];
+          const abilityName = t(ABILITY_LABEL[ab]);
+          const labelId = `builder-ability-label-${ab}`;
+          const rowLabel = isArray
+            ? h('label', { for: `builder-score-${ab}`, class: 'ds-field-label' }, abilityName)
+            : h('span', { id: labelId, class: 'ds-field-label' }, abilityName);
           const control = isArray
             ? h(
                 'select',
                 {
                   id: `builder-score-${ab}`,
-                  class: 'ds-input',
+                  class: 'ds-input atlas-tabular-nums',
                   'data-testid': `builder-score-${ab}`,
                   value: String(base),
                   onChange: (e: Event) => wizard.setAbilityScores({ [ab]: Number((e.target as HTMLSelectElement).value) }),
@@ -270,22 +310,27 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
                 STANDARD_ARRAY.map((v) => h('option', { key: v, value: String(v) }, String(v))),
               )
             : h(
-                'span',
-                { class: 'ds-cluster' },
+                'div',
+                {
+                  role: 'group',
+                  'aria-labelledby': labelId,
+                  class: 'ds-cluster',
+                  'data-testid': `builder-stepper-${ab}`,
+                },
                 h('button', {
                   type: 'button',
                   class: 'ds-btn ds-btn-secondary',
                   'data-testid': `builder-dec-${ab}`,
-                  'aria-label': t('builder.abilities.decrease', { ability: t(ABILITY_LABEL[ab]) }),
+                  'aria-label': t('builder.abilities.decrease', { ability: abilityName }),
                   disabled: base <= 8,
                   onClick: () => wizard.setAbilityScores({ [ab]: base - 1 }),
                 }, '−'),
-                h('span', { class: 'ds-counter', 'data-testid': `builder-base-${ab}` }, String(base)),
+                h('span', { class: 'ds-counter atlas-tabular-nums', 'data-testid': `builder-base-${ab}` }, String(base)),
                 h('button', {
                   type: 'button',
                   class: 'ds-btn ds-btn-secondary',
                   'data-testid': `builder-inc-${ab}`,
-                  'aria-label': t('builder.abilities.increase', { ability: t(ABILITY_LABEL[ab]) }),
+                  'aria-label': t('builder.abilities.increase', { ability: abilityName }),
                   disabled: base >= 15 || POINT_BUY_COST_TABLE[base + 1] - POINT_BUY_COST_TABLE[base] > wizard.getRemainingPointBuyBudget(),
                   onClick: () => wizard.setAbilityScores({ [ab]: base + 1 }),
                 }, '+'),
@@ -293,38 +338,87 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
           return h(
             'li',
             { key: ab, class: 'ds-row' },
-            h('label', { for: `builder-score-${ab}`, class: 'ds-field-label' }, t(ABILITY_LABEL[ab])),
+            rowLabel,
             control,
-            h('span', { class: 'ds-value', 'data-testid': `builder-final-${ab}` }, t('builder.abilities.final', { score: finalScores[ab] })),
+            h(
+              'span',
+              { class: 'ds-cluster' },
+              h('span', { class: 'ds-value atlas-tabular-nums', 'data-testid': `builder-final-${ab}` }, t('builder.abilities.final', { score: finalScores[ab] })),
+              h('span', { class: 'ds-meta atlas-tabular-nums', 'data-testid': `builder-mod-${ab}` }, `(${abilityModText(finalScores[ab])})`),
+            ),
           );
         }),
       ),
     );
   };
 
-  const optionLabel = (choice: BuilderChoice, option: BuilderChoiceOption) =>
-    choice.kind === 'skill' ? t(`skill.${option.id}` as MessageKey) : choice.kind === 'feat' ? featLabel(option.id) : option.label;
+  const optionLabel = (choice: BuilderChoice, option: BuilderChoiceOption): string => {
+    switch (choice.kind) {
+      case 'ability':
+        return t(ABILITY_LABEL[option.id as AbilityId]);
+      case 'skill':
+        return t(`skill.${option.id}` as MessageKey);
+      case 'skill_or_tool':
+        return option.id.startsWith(TOOL_OPTION_PREFIX)
+          ? option.label
+          : t(`skill.${option.id}` as MessageKey);
+      case 'spell_list':
+        return t(`builder.class.${option.id}` as MessageKey);
+      case 'feat':
+        return featLabel(option.id);
+      default:
+        return option.label;
+    }
+  };
 
-  /** One class choice: radios for a single pick, else checkboxes capped at `count` (invariant 4). */
-  const renderChoice = (choice: BuilderChoice) => {
-    const picked = wizard.getClassSelection(choice.id);
+  const renderSpellDetails = (testPrefix: string, option: BuilderChoiceOption, description: string | null, descriptionId: string) =>
+    description
+      ? h(
+          'details',
+          { class: 'ds-meta', 'data-testid': `${testPrefix}-details` },
+          h('summary', null, t('builder.spells.details', { name: option.label })),
+          h('p', { id: descriptionId, lang: 'en', 'data-testid': descriptionId }, description),
+        )
+      : null;
+
+  /** One class or Origin feat choice: radios for a single pick, else checkboxes capped at `count` (invariant 4). */
+  const renderChoice = (choice: BuilderChoice, scope: 'class' | 'feat' = 'class') => {
+    const picked = scope === 'feat' ? wizard.getFeatSelection(choice.id) : wizard.getClassSelection(choice.id);
+    const toggle = (optionId: string) =>
+      scope === 'feat' ? wizard.toggleFeatOption(choice.id, optionId) : wizard.toggleClassOption(choice.id, optionId);
+    const idPrefix = scope === 'feat' ? `feat-${choice.id}` : choice.id;
+    const radioGroup = `${scope}-${choice.id}`;
     const full = picked.length >= choice.count;
     const legend = choice.kind === 'equipment_option'
       ? t('builder.choice.classEquipment')
       : t(`builder.choice.${choice.id}` as MessageKey, { count: choice.count });
     if (choice.count === 1) {
-      return fieldset(legend, choice.options.map((option) =>
-        radio(`class-${choice.id}`, option.id, picked.includes(option.id), () => wizard.toggleClassOption(choice.id, option.id),
+      return fieldset(legend, choice.options.map((option) => {
+        const description = choice.kind === 'spell' ? spellDescription(option.id) : null;
+        const testPrefix = `builder-${radioGroup}-${option.id}`;
+        const descriptionId = `${testPrefix}-description`;
+        const choiceRadio = radio(
+          radioGroup,
+          option.id,
+          picked.includes(option.id),
+          () => toggle(option.id),
           choice.kind === 'equipment_option' ? t('builder.equipment.classOption', { id: option.id }) : optionLabel(choice, option),
-          choice.kind === 'equipment_option' ? option.label : undefined)));
+          choice.kind === 'equipment_option' ? option.label : undefined,
+          description ? { describedBy: descriptionId } : undefined,
+        );
+        return description
+          ? h('div', { key: option.id, class: 'ds-stack-sm' }, choiceRadio, renderSpellDetails(testPrefix, option, description, descriptionId))
+          : choiceRadio;
+      }));
     }
     return fieldset(legend, [
-      h('p', { key: 'count', class: 'ds-meta', 'aria-live': 'polite', 'data-testid': `builder-${choice.id}-count` },
+      h('p', { key: 'count', class: 'ds-meta atlas-tabular-nums', 'aria-live': 'polite', 'data-testid': `builder-${idPrefix}-count` },
         t('builder.choice.picked', { picked: picked.length, count: choice.count })),
       ...choice.options.map((option) => {
         const checked = picked.includes(option.id);
         const description = choice.kind === 'spell' ? spellDescription(option.id) : null;
-        const descriptionId = `builder-${choice.id}-${option.id}-description`;
+        const testPrefix = `builder-${idPrefix}-${option.id}`;
+        const descriptionId = `${testPrefix}-description`;
         return h(
           'div',
           { key: option.id, class: 'ds-stack-sm' },
@@ -335,31 +429,24 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
               type: 'checkbox',
               checked,
               disabled: !checked && full,
-              'data-testid': `builder-${choice.id}-${option.id}`,
+              'data-testid': testPrefix,
               'aria-describedby': description ? descriptionId : undefined,
-              onChange: () => wizard.toggleClassOption(choice.id, option.id),
+              onChange: () => toggle(option.id),
             }),
             h('span', { class: 'ds-value' }, optionLabel(choice, option)),
           ),
-          description
-            ? h(
-                'details',
-                { class: 'ds-meta', 'data-testid': `builder-${choice.id}-${option.id}-details` },
-                h('summary', null, t('builder.spells.details', { name: option.label })),
-                h('p', { id: descriptionId, lang: 'en', 'data-testid': descriptionId }, description),
-              )
-            : null,
+          renderSpellDetails(testPrefix, option, description, descriptionId),
         );
       }),
     ]);
   };
 
-  const renderSkills = () => h('div', { class: 'ds-stack' }, wizard.choicesForStep('skills').map(renderChoice));
+  const renderSkills = () => h('div', { class: 'ds-stack' }, wizard.choicesForStep('skills').map((c) => renderChoice(c)));
 
   const renderSpells = () => {
     const choices = wizard.choicesForStep('spells');
     return h('div', { class: 'ds-stack' }, choices.length
-      ? choices.map(renderChoice)
+      ? choices.map((c) => renderChoice(c))
       : h('p', { class: 'ds-hint', 'data-testid': 'builder-no-spells' }, t('builder.spells.none')));
   };
 
@@ -368,7 +455,7 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
     const packageItems = background ? [...background.equipment] : [];
     const isGold = draft.equipmentIds.length === 1 && draft.equipmentIds[0] === GOLD_OPTION;
     return h('div', { class: 'ds-stack' },
-      wizard.choicesForStep('equipment').map(renderChoice),
+      wizard.choicesForStep('equipment').map((c) => renderChoice(c)),
       fieldset(t('builder.equipment.legend'), [
         radio('equipment', 'package', draft.equipmentIds.length > 0 && !isGold, () => wizard.setEquipment(packageItems),
           t('builder.equipment.package'), packageItems.join(', ')),
@@ -403,7 +490,7 @@ export function CharacterBuilderModal(props: CharacterBuilderModalProps): VNode<
         h('dt', { class: 'ds-meta' }, t('builder.step.background')),
         h('dd', null, draft.backgroundId ? t(`builder.background.${draft.backgroundId}` as MessageKey) : ''),
         h('dt', { class: 'ds-meta' }, t('builder.step.abilityScores')),
-        h('dd', null, DND5E_ABILITIES.map((ab) => `${ab.toUpperCase()} ${finalScores[ab]}`).join(' · ')),
+        h('dd', { class: 'atlas-tabular-nums' }, DND5E_ABILITIES.map((ab) => `${ab.toUpperCase()} ${finalScores[ab]}`).join(' · ')),
       ),
     );
 

@@ -26,7 +26,7 @@ import { signal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { apiClient, type ApiClient } from "../api/client.ts";
 import { selectedActorIdSignal } from "../api/session.ts";
-import { LocaleToggle, UnitsToggle } from "../components/ShellToggles.tsx";
+import { LocaleToggle, ThemeToggle, UnitsToggle } from "../components/ShellToggles.tsx";
 import { mobileCompanionOverrideSignal, t, type MessageKey } from "../i18n/index.ts";
 import { ActorSheetPanel, INVENTORY_SHEET_LAYOUT } from "../sheet/ActorSheetPanel.tsx";
 import { CombatTrackerBar } from "../table/CombatTrackerBar.tsx";
@@ -94,6 +94,7 @@ export function MobileCompanionView({ campaignId: campaignIdProp, client = apiCl
       >
         <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>{t("shell.companionMode")}</span>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <ThemeToggle style={COMPACT_TOGGLE_STYLE} />
           <LocaleToggle style={COMPACT_TOGGLE_STYLE} />
           <UnitsToggle style={COMPACT_TOGGLE_STYLE} />
           {mobileCompanionOverrideSignal.value && (

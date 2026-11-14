@@ -293,6 +293,9 @@ export function setupMockDom() {
     createDocumentFragment() {
       return new MockNode("#document-fragment", 11);
     },
+    getElementById(id: string): MockNode | null {
+      return id ? this.documentElement.querySelector(`#${id}`) : null;
+    },
     documentElement: new MockNode("HTML", 1),
     body: new MockNode("BODY", 1),
   };

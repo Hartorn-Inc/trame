@@ -151,7 +151,7 @@ The server survives crashes, undo and restarts without locking a campaign. Clien
 
 **Hosting and traffic**
 81. As an `Owner` with no budget, I want a documented Compose + Caddy deployment with automatic HTTPS on an Oracle Always Free VM or a home machine behind Cloudflare Tunnel, so that hosting costs 0 EUR.
-82. As an `Owner` accepting a card on file, I want a documented Terraform deployment on Cloud Run `europe-west9` + Neon + R2 with a 1 EUR budget alert, so that hosting costs a few cents with no server to maintain.
+82. As an `Owner` accepting a card on file, I want a documented Terraform deployment on Cloud Run `europe-west9` + Neon + R2 with budget warnings at 1 EUR and 5 EUR and a hard cap at 10 EUR, so that hosting costs a few cents with no server to maintain.
 83. As an `Owner`, I want the free-tier limits, risks (Oracle idle reclamation, capacity) and egress costs documented, so that I choose with full information.
 84. As a player on a slow connection, I want every HTTP response compressed according to my `Accept-Encoding` (images and fonts excepted), so that the app loads fast and egress stays cheap.
 85. As a player, I want WebSocket traffic compressed and unchanged state frames skipped, so that long sessions use little bandwidth.
@@ -267,7 +267,9 @@ Decision numbers refer to the decision log below.
   - Cloud Run `europe-west9`, request timeout 3600 s, `max-instances = 1`, session affinity, public invoker, Artifact Registry;
   - Neon connection string in Secret Manager (at most 6 secret versions), R2 credentials;
   - a nightly backup Cloud Run job triggered by Cloud Scheduler;
-  - a budget alert at 1 EUR.
+  - a monthly budget with email warnings at 1 EUR and 5 EUR and a hard cap at 10 EUR, where a Cloud Run function unlinks the project from billing (budget data lags usage by hours, so the cap can be overshot slightly);
+  - keyless deploys of green `main` commits from GitHub Actions, with required reviewers on the `production` environment recommended.
+- Operator guides: [`deploy/compose/README.md`](../../deploy/compose/README.md), [`deploy/terraform/README.md`](../../deploy/terraform/README.md), and the shared [backup and restore runbook](../../deploy/backup-and-restore.md).
 - ADR-0010 is amended: S3 asset storage with direct downloads, Neon instead of Cloud SQL, and the two hosting targets.
 
 ## Testing Decisions
@@ -419,7 +421,7 @@ IDs were assigned when writing this spec. RT1-RT8 and SEC1-SEC9 are the items qu
 
 **Hosting and traffic**
 - D5/D18 Two documented targets:
-  - Primary "near-free": Cloud Run `europe-west9` (Paris, Tier 1 free compute) + Neon free (Frankfurt) + Cloudflare R2, budget alert at 1 EUR. Card required; Europe egress billed from the first byte (about 0.105 USD/GiB), kept to cents by compression and direct R2 downloads.
+  - Primary "near-free": Cloud Run `europe-west9` (Paris, Tier 1 free compute) + Neon free (Frankfurt) + Cloudflare R2, budget warnings at 1 EUR and 5 EUR and a hard cap at 10 EUR that unlinks billing (the cap acts on lagging budget data). Card required; Europe egress billed from the first byte (about 0.105 USD/GiB), kept to cents by compression and direct R2 downloads.
   - "Strictly 0 EUR": the prod Compose + Caddy on an Oracle Always Free VM (2 OCPU / 12 GB since June 2026; idle reclamation and capacity risks documented) or on a home machine behind Cloudflare Tunnel.
 - D19 S3-compatible asset storage (amends ADR-0010): when configured (R2 on Cloud Run, optional on VPS), assets go to S3 and browsers download them by signed URL directly; otherwise Postgres as today.
 - D20 Compression: every HTTP response honours `Accept-Encoding` (gzip/br/zstd middleware, images and fonts skipped); the WebSocket negotiates compression; state frames are skipped when nothing changed for that recipient. Delta frames are a tracked follow-up.

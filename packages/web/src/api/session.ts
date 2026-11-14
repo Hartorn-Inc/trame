@@ -36,6 +36,7 @@ import type {
   ReactionPromptCloseReason,
   Uuid,
   WirePoint2D,
+  WireRejectionDetail,
   WireTrameEvent,
 } from "./wire.ts";
 
@@ -126,6 +127,8 @@ export interface CommandFeedback {
   action: string | null;
   /** Server rejection reason (`rejected` only). */
   reason: string | null;
+  /** Engine refusal code and numbers (`rejected` only); absent for server-side refusals. */
+  detail?: WireRejectionDetail | null;
 }
 
 /**
@@ -195,6 +198,12 @@ export interface SessionState {
   /** Most recent `REACTION_PROMPT_CLOSED` event, e.g. `UNDONE` after a GM undo. */
   lastClosedPrompt: Signal<ClosedReactionPrompt | null>;
   /**
+   * Command tag (`"MOVE_TOKEN"`, `"APPLY_DAMAGE"`, ...) of the last undoable command
+   * accepted during this live socket session; `null` on initial connect, reconnect,
+   * `UNDO_LAST_ACTION`, or `ACTIVATE_SCENE`.
+   */
+  lastUndoableAction: Signal<string | null>;
+  /**
    * WAL entries the room set aside during recovery (`WalEntriesQuarantined`, ADR-0040),
    * in `seq_id` order; empty when none or once the GM dismissed the notice.
    */
@@ -223,6 +232,7 @@ export function createSessionState(): SessionState {
     rttMs: signal<number | null>(null),
     initiativeTotals: signal<Record<Uuid, number>>({}),
     lastClosedPrompt: signal<ClosedReactionPrompt | null>(null),
+    lastUndoableAction: signal<string | null>(null),
     walQuarantine: signal<QuarantinedWalSummary[]>([]),
   };
 }

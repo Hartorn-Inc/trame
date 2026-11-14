@@ -237,6 +237,22 @@ describe("Damage pipeline: Petrified resists all damage", () => {
       assert.equal(result.totalMitigatedDamage, expected);
     });
   }
+
+  const vulnerable: [string, string[], number, number][] = [
+    ["petrified_then_vulnerable_25_to_24", ["petrified"], 25, 24],
+    ["vulnerable_alone_25_to_50", [], 25, 50],
+    ["petrified_then_vulnerable_1_to_0", ["petrified"], 1, 0],
+  ];
+  for (const [id, conditions, amount, expected] of vulnerable) {
+    it(id, () => {
+      const actor = createDefaultActorData("statue", "Statue");
+      actor.attributes.hp = { current: 100, max: 100, temp: 0 };
+      actor.damageMitigations.bludgeoning = "VULNERABLE";
+      actor.conditions = conditions.map((c) => ({ id: c, name: c, durationRounds: 10, trigger: "ROUNDS" as const }));
+      const result = resolveDamagePipeline(actor, [{ amount, type: "bludgeoning" }]);
+      assert.equal(result.totalMitigatedDamage, expected);
+    });
+  }
 });
 
 describe("Sheet derivation exposes condition effects", () => {

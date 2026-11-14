@@ -20,21 +20,38 @@
 //!    - Checks `TRAME_PORT`, then `PORT`, and defaults to `8080`.
 //! 3. `SIGTERM / SIGINT Lifecycle`:
 //!    - Sets `IS_SHUTTING_DOWN` so new HTTP/WebSocket connections are rejected.
-//!    - Invokes `RoomLeaseManager::hibernate_all` within a 10-second timeout so
-//!      every active room flushes its WAL before the process exits.
+//!    - Invokes `RoomLeaseManager::shutdown_all`: every active room flushes its
+//!      WAL and queues a `1001` close, then socket writers get
+//!      `SOCKET_FLUSH_GRACE` to send it, all within `SHUTDOWN_BUDGET` (8 s),
+//!      below Cloud Run's 10 s SIGTERM grace.
 //!
 //! 4. `Fail-Closed Secrets (G7)`:
 //!    - `ServerConfig::from_env` must succeed before anything binds; outside
 //!      `TRAME_ENV=dev` a missing or weak secret prints the offending variable
 //!      names and exits with status 1.
 //!
+//! 5. `Healthcheck Mode`:
+//!    - `trame-server healthcheck` probes `GET /healthz` on loopback and exits
+//!      `0`/`1` without reading secrets, so the distroless image can back a
+//!      Compose `healthcheck` (`crate::healthcheck`).
+//!
+//! 6. `Owner Recovery Mode`:
+//!    - `trame-server owner-reset-link` loads the same configuration, connects
+//!      to PostgreSQL, mints the `Owner`'s one-time password-reset link (24 h)
+//!      and logs it as one line with `event = "owner_password_reset_url"`,
+//!      then exits without binding a port (`crate::auth::recovery`). It needs
+//!      `DATABASE_URL`: the in-memory dev store has nothing to recover.
+//!
 //! EXECUTION LIFECYCLE:
 //! --------------------
 //!   `main()`
+//!     ├── -1. `healthcheck` argument: probe `/healthz`, exit 0 (healthy) or 1.
 //!     ├── 0. Resolve `ServerConfig` (exit 1 on `ConfigError`, e.g. no `DATABASE_URL` outside dev).
+//!     ├── 0b. `owner-reset-link` argument: mint and log the `Owner`'s reset link, exit 0 or 1.
 //!     ├── 1. Resolve port; open PostgreSQL (or the dev in-memory store).
 //!     ├── 2. `prepare_instance`: persisted instance id + owner setup URL log line when no `Owner`.
 //!     ├── 3. Build `RoomLeaseManager` over the PostgreSQL or in-memory WAL.
+//!     ├── 3b. With `S3_*`: `S3Store` serves assets; spawn the inline blob migration.
 //!     ├── 4. Construct the Axum `Router` and bind `0.0.0.0:{port}`.
 //!     ├── 5. Spawn the `Idle-Lease` sweeper (`tokio::time::interval`, 1 min).
 //!     └── 6. Serve with `with_graceful_shutdown(shutdown_handler)`.
@@ -44,23 +61,25 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use trame_server::assets::store::InMemoryAssetStore;
+use trame_server::assets::store::{AssetStore, InMemoryAssetStore};
 use trame_server::auth::magic_link::now_epoch_seconds;
+use trame_server::auth::recovery::{
+    OWNER_RESET_ARG, log_owner_password_reset, mint_owner_password_reset,
+};
 use trame_server::auth::session::{FullAuthStore, InMemorySessionStore};
 use trame_server::config::{LogFormat, RuntimeEnv, ServerConfig, TRAME_ENV_VAR};
+use trame_server::healthcheck::{HEALTHCHECK_ARG, HEALTHCHECK_TIMEOUT, probe_healthz};
 use trame_server::http::{
     InMemoryMembershipValidator, build_in_memory_router_with_store,
-    build_router_with_postgres_store,
+    build_router_with_postgres_and_asset_store,
 };
 use trame_server::instance::{log_owner_bootstrap, prepare_owner_bootstrap, resolve_instance_id};
 use trame_server::room::{IS_SHUTTING_DOWN, RoomLeaseManager};
 use trame_server::storage::SqlxPostgresStore;
+use trame_server::storage::s3::{S3Client, S3Store, migrate_inline_assets};
 use trame_server::timeline::InMemoryTimelineStorage;
 use trame_server::wal::InMemoryWalStorage;
 use uuid::Uuid;
-
-/// Maximum grace period allowed for room actors to flush state and close client connections.
-pub const SHUTDOWN_TIMEOUT_SECONDS: u64 = 10;
 
 /// Number of committed commands between WAL snapshots.
 const SNAPSHOT_INTERVAL_COMMANDS: u64 = 50;
@@ -108,6 +127,48 @@ async fn prepare_instance(store: &dyn FullAuthStore, config: &ServerConfig) -> U
     instance_id
 }
 
+/// `owner-reset-link`: mints the `Owner`'s one-time reset link on PostgreSQL and logs it.
+/// Returns the process exit status.
+async fn mint_owner_reset_link(config: &ServerConfig) -> i32 {
+    let Some(db_url) = config.database_url.as_deref() else {
+        tracing::error!(
+            "owner-reset-link needs DATABASE_URL: the in-memory dev store keeps no Owner across restarts"
+        );
+        return 1;
+    };
+    let store = match SqlxPostgresStore::connect_and_migrate(
+        db_url,
+        "/assets/download",
+        config.secrets.asset_signing_secret.clone(),
+    )
+    .await
+    {
+        Ok(store) => store,
+        Err(err) => {
+            tracing::error!(error = %err, "cannot connect to PostgreSQL");
+            return 1;
+        }
+    };
+    match mint_owner_password_reset(&store, config.public_origin.as_deref(), now_epoch_seconds())
+        .await
+    {
+        Ok(Some(ticket)) => {
+            log_owner_password_reset(&ticket);
+            0
+        }
+        Ok(None) => {
+            tracing::error!(
+                "instance has no Owner yet: claim it with the setup URL from the server log"
+            );
+            1
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "cannot mint the Owner reset link");
+            1
+        }
+    }
+}
+
 /// Coordinates graceful termination upon receiving SIGTERM or SIGINT.
 pub async fn shutdown_handler(lease_manager: Arc<RoomLeaseManager>) {
     wait_for_signal().await;
@@ -115,8 +176,7 @@ pub async fn shutdown_handler(lease_manager: Arc<RoomLeaseManager>) {
     IS_SHUTTING_DOWN.store(true, Ordering::Release);
     tracing::info!("shutdown signal received: rejecting new connections");
 
-    let timeout = Duration::from_secs(SHUTDOWN_TIMEOUT_SECONDS);
-    match lease_manager.hibernate_all(timeout).await {
+    match lease_manager.shutdown_all().await {
         Ok(hibernated) => {
             tracing::info!(
                 rooms = hibernated.len(),
@@ -127,6 +187,24 @@ pub async fn shutdown_handler(lease_manager: Arc<RoomLeaseManager>) {
             tracing::warn!(error = %err, "hibernation completed with error");
         }
     }
+}
+
+/// Copies asset payloads still inline in PostgreSQL to the object store in the background
+/// (ADR-0041). Idempotent: each boot only touches rows that still hold a payload.
+fn spawn_blob_migration(store: Arc<SqlxPostgresStore>, client: S3Client) {
+    tokio::spawn(async move {
+        match migrate_inline_assets(&store, &client).await {
+            Ok(report) if report.copied == 0 && report.failed == 0 => {}
+            Ok(report) => tracing::info!(
+                copied = report.copied,
+                failed = report.failed,
+                "asset blob migration to the object store finished"
+            ),
+            Err(err) => {
+                tracing::warn!(error = %err, "asset blob migration aborted; retried on next boot")
+            }
+        }
+    });
 }
 
 /// Awaits either SIGTERM (Cloud Run scale-to-zero / container stop) or SIGINT (Ctrl+C).
@@ -153,8 +231,21 @@ async fn wait_for_signal() {
     }
 }
 
+/// Listen port: `TRAME_PORT`, then `PORT`, defaulting to `8080`.
+fn listen_port() -> u16 {
+    std::env::var("TRAME_PORT")
+        .or_else(|_| std::env::var("PORT"))
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080)
+}
+
 #[tokio::main]
 async fn main() {
+    if std::env::args().nth(1).as_deref() == Some(HEALTHCHECK_ARG) {
+        let healthy = probe_healthz(listen_port(), HEALTHCHECK_TIMEOUT);
+        std::process::exit(if healthy { 0 } else { 1 });
+    }
     init_tracing();
     let config = match ServerConfig::from_env() {
         Ok(config) => config,
@@ -166,12 +257,11 @@ async fn main() {
     if config.env == RuntimeEnv::Dev {
         tracing::warn!("TRAME_ENV=dev: missing secrets use public development defaults");
     }
+    if std::env::args().nth(1).as_deref() == Some(OWNER_RESET_ARG) {
+        std::process::exit(mint_owner_reset_link(&config).await);
+    }
 
-    let port: u16 = std::env::var("TRAME_PORT")
-        .or_else(|_| std::env::var("PORT"))
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8080);
+    let port = listen_port();
 
     let (app, lease_manager) = if let Some(db_url) = config.database_url.clone() {
         let store = Arc::new(
@@ -190,11 +280,29 @@ async fn main() {
             SNAPSHOT_INTERVAL_COMMANDS,
             IDLE_LEASE_MS,
         ));
-        let app =
-            build_router_with_postgres_store(store, lease_manager.clone(), instance_id, &config);
+        let asset_store: Arc<dyn AssetStore> = match &config.s3 {
+            Some(s3) => {
+                let s3_store = S3Store::new(store.clone(), s3.clone())
+                    .expect("Failed to set up the S3 asset store");
+                spawn_blob_migration(store.clone(), s3_store.client().clone());
+                tracing::info!(bucket = %s3.bucket, endpoint = %s3.endpoint.origin(), "assets stored in the object store");
+                Arc::new(s3_store)
+            }
+            None => store.clone(),
+        };
+        let app = build_router_with_postgres_and_asset_store(
+            store,
+            asset_store,
+            lease_manager.clone(),
+            instance_id,
+            &config,
+        );
         (app, lease_manager)
     } else {
         tracing::warn!("TRAME_ENV=dev without DATABASE_URL: in-memory store, lost on restart");
+        if config.s3.is_some() {
+            tracing::warn!("S3_* ignored without DATABASE_URL: asset metadata needs PostgreSQL");
+        }
         let session_store = Arc::new(InMemorySessionStore::new());
         let instance_id = prepare_instance(session_store.as_ref(), &config).await;
         let wal = Arc::new(InMemoryWalStorage::new());

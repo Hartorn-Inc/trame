@@ -283,6 +283,11 @@ fn goblin_combat() -> Combat {
     (10, 10, 15, 30.0, 60.0, 5.0, 1, vec![])
 }
 
+/// SRD Ogre: 68 HP, AC 11, 40 ft, darkvision 60 ft, 5 ft reach, Large.
+fn ogre_combat() -> Combat {
+    (68, 68, 11, 40.0, 60.0, 5.0, 2, vec![])
+}
+
 /// A homebrew Large ogre-like block with a 10 ft reach attack and fire resistance.
 fn homebrew_block() -> Value {
     json!({
@@ -368,6 +373,49 @@ fn sheet_derives_armor_class_and_speed() {
     for (case, sheet, expected) in cases {
         let sync = tactical_sync_from_sheet(None, &sheet);
         assert_eq!((sync.ac, sync.speed_ft), expected, "case {case}");
+    }
+}
+
+#[test]
+fn sheet_exhaustion_syncs_and_clamps_onto_the_token() {
+    // (case_id, sheet, initial token exhaustion, expected synced token exhaustion)
+    let cases = [
+        (
+            "actor_data_exhaustion_syncs",
+            json!({ "attributes": { "exhaustion": 3 } }),
+            0,
+            3,
+        ),
+        (
+            "flat_sheet_exhaustion_level_syncs",
+            json!({ "exhaustionLevel": 2 }),
+            0,
+            2,
+        ),
+        (
+            "exhaustion_above_six_clamps_to_six",
+            json!({ "attributes": { "exhaustion": 12 } }),
+            0,
+            6,
+        ),
+        (
+            "negative_exhaustion_clamps_to_zero",
+            json!({ "attributes": { "exhaustion": -4 } }),
+            2,
+            0,
+        ),
+        (
+            "partial_sheet_without_exhaustion_keeps_current_level",
+            json!({ "attributes": { "hp": { "current": 5 } } }),
+            4,
+            4,
+        ),
+    ];
+    for (case, sheet, initial, expected) in cases {
+        let mut token = lying_token(None);
+        token.exhaustion = initial;
+        tactical_sync_from_sheet(None, &sheet).apply_to_token(&mut token, TableMode::Exploration);
+        assert_eq!(token.exhaustion, expected, "case {case}");
     }
 }
 
@@ -821,12 +869,17 @@ async fn websocket_spawn_derives_combat_numbers_and_rejects_bad_blocks() {
             Err(fragment) => {
                 let ServerEnvelope::CommandRejected {
                     reason,
+                    detail,
                     correlation_id,
                 } = reply
                 else {
                     panic!("case {case}: expected CommandRejected, got {reply:?}");
                 };
                 assert!(reason.contains(fragment), "case {case}: {reason}");
+                assert_eq!(
+                    detail, None,
+                    "case {case}: server-side refusals carry no engine code"
+                );
                 assert_eq!(correlation_id.as_deref(), Some(case), "case {case}");
                 assert!(
                     !table(&room).await.data.tokens.contains_key(&t.id),
@@ -834,6 +887,46 @@ async fn websocket_spawn_derives_combat_numbers_and_rejects_bad_blocks() {
                 );
             }
         }
+    }
+}
+
+#[tokio::test]
+async fn websocket_engine_refusals_carry_a_stable_code() {
+    let h = Harness::new();
+    let app = h.app();
+    let (campaign_id, _, gm) = h.campaign(&app).await;
+    let _room = h.room(campaign_id).await;
+    let addr = serve(app).await;
+    let mut ws = ws_open(addr, &format!("/ws/campaigns/{campaign_id}"), &gm).await;
+    assert!(matches!(
+        ws_read(&mut ws).await,
+        ServerEnvelope::StateSnapshot { .. }
+    ));
+    // (case_id, command, expected code)
+    let cases: Vec<(&str, TrameCommand, &str)> = vec![
+        (
+            "undo_on_a_fresh_table_is_nothing_to_undo",
+            TrameCommand::UndoLastAction,
+            "NOTHING_TO_UNDO",
+        ),
+        (
+            "removing_an_unknown_token_is_not_found",
+            TrameCommand::RemoveToken {
+                token_id: Uuid::new_v4(),
+            },
+            "NOT_FOUND",
+        ),
+    ];
+    for (case, cmd, code) in cases {
+        ws_write(&mut ws, &submit_frame(cmd, case)).await;
+        let ServerEnvelope::CommandRejected { detail, .. } = ws_read(&mut ws).await else {
+            panic!("case {case}: expected CommandRejected");
+        };
+        assert_eq!(
+            detail.map(|d| d.code),
+            Some(code.to_string()),
+            "case {case}"
+        );
     }
 }
 
@@ -902,17 +995,27 @@ fn scene_with(campaign_id: Uuid, staged: Value) -> Value {
 
 #[tokio::test]
 async fn staged_tokens_copy_validated_stat_blocks_and_activate_with_them() {
-    // (case_id, staged token fields, expected Ok(combat numbers) or Err(())
-    let cases: Vec<(&str, Value, Result<Combat, ()>)> = vec![
+    // (case_id, staged token fields, expected Ok((combat numbers, action names)) or Err(()))
+    let cases: Vec<(&str, Value, Result<(Combat, Vec<&str>), ()>)> = vec![
         (
             "srd_template_is_copied_on_save",
             json!({ "monster_template_id": "srd:monster:goblin" }),
-            Ok(goblin_combat()),
+            Ok((goblin_combat(), vec!["Scimitar", "Shortbow"])),
+        ),
+        (
+            "studio_picked_srd_ogre_activates_with_srd_hp_ac_and_actions",
+            json!({ "monster_template_id": "srd:monster:ogre" }),
+            Ok((ogre_combat(), vec!["Greatclub", "Javelin"])),
+        ),
+        (
+            "legacy_studio_key_ogre_maps_to_the_srd_ogre",
+            json!({ "monster_template_id": "Ogre" }),
+            Ok((ogre_combat(), vec!["Greatclub", "Javelin"])),
         ),
         (
             "homebrew_copy_is_kept",
             json!({ "stat_block": homebrew_block() }),
-            Ok(homebrew_combat()),
+            Ok((homebrew_combat(), vec!["Club", "Rock"])),
         ),
         (
             "out_of_bounds_homebrew_is_rejected",
@@ -946,7 +1049,7 @@ async fn staged_tokens_copy_validated_stat_blocks_and_activate_with_them() {
             json!({ "scenes": [scene], "expected_version": 0 }),
         )
         .await;
-        let Ok(numbers) = expected else {
+        let Ok((numbers, actions)) = expected else {
             assert_eq!(status, StatusCode::BAD_REQUEST, "case {case}: {body}");
             assert_eq!(body["code"], json!("INVALID_STAT_BLOCK"), "case {case}");
             continue;
@@ -985,9 +1088,102 @@ async fn staged_tokens_copy_validated_stat_blocks_and_activate_with_them() {
         .unwrap();
         let activated = table(&room).await.data.tokens[&token_id].clone();
         assert_eq!(combat(&activated), numbers, "case {case}");
+        let action_names: Vec<&str> = activated
+            .stat_block
+            .as_ref()
+            .and_then(|b| b["actions"].as_array())
+            .map(|list| list.iter().filter_map(|a| a["name"].as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(action_names, actions, "case {case}: actions copied");
         assert_eq!(
             activated.actor_id, None,
             "case {case}: stays a SyntheticToken"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// R3 — SpawnToken carrying both actor_id and stat_block preserves sheet authority
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn linked_actor_spawn_with_stat_block_preserves_sheet_authority() {
+    let h = Harness::new();
+    let app = h.app();
+    let (campaign_id, _, gm) = h.campaign(&app).await;
+    let template_id = h
+        .actor(
+            &app,
+            campaign_id,
+            &gm,
+            json!({ "statBlock": homebrew_block() }),
+        )
+        .await;
+    let linked_actor_id = h
+        .actor(
+            &app,
+            campaign_id,
+            &gm,
+            json!({
+                "attributes": {
+                    "hp": { "current": 5, "max": 20, "temp": 4 },
+                    "ac": 16,
+                    "speedFt": 30,
+                    "exhaustion": 2
+                }
+            }),
+        )
+        .await;
+    let room = h.room(campaign_id).await;
+
+    // (case_id, stat_block source, expected resistances from stat_block)
+    let cases = [
+        ("srd_ogre_with_sheet", json!("srd:monster:ogre"), vec![]),
+        (
+            "homebrew_block_with_sheet",
+            homebrew_block(),
+            vec!["fire".to_string()],
+        ),
+        (
+            "actor_template_with_sheet",
+            json!(template_id.to_string()),
+            vec!["fire".to_string()],
+        ),
+    ];
+    for (case, source, want_resist) in cases {
+        let mut t = lying_token(Some(source));
+        t.actor_id = Some(linked_actor_id);
+        let body = mcp_dispatch(&app, &gm, campaign_id, spawn_value(&t)).await;
+        assert!(body["error"].is_null(), "case {case}: {body}");
+        let spawned = table(&room).await.data.tokens[&t.id].clone();
+        assert_eq!(
+            (
+                spawned.hp,
+                spawned.max_hp,
+                spawned.temp_hp,
+                spawned.exhaustion,
+                spawned.ac,
+                spawned.speed_max_ft,
+                spawned.grid_w,
+                spawned.damage_resistances.clone(),
+            ),
+            (5, 20, 4, 2, 16, 20.0, 2, want_resist),
+            "case {case}: sheet vitals/exhaustion win while stat_block footprint/affinities survive"
+        );
+        assert!(
+            spawned.stat_block.as_ref().is_some_and(Value::is_object),
+            "case {case}: canonical stat_block retained on token"
+        );
+    }
+
+    let mut bad = lying_token(Some(with(homebrew_block(), "/hitPoints/average", json!(0))));
+    bad.actor_id = Some(linked_actor_id);
+    let rejected = mcp_dispatch(&app, &gm, campaign_id, spawn_value(&bad)).await;
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("hitPoints"),
+        "invalid stat_block still rejected on linked token: {rejected}"
+    );
 }

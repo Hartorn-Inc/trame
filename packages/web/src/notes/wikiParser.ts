@@ -2,6 +2,7 @@
  * AST node and token types for the TRAME Collaborative Wiki Markdown Parser
  * adhering to docs/specs/e5-collaborative-wiki-notes-ui-hando.md.
  */
+import { t } from "../i18n/index.ts";
 
 export type NoteVisibility = "PRIVATE" | "PARTY" | "DM_ONLY";
 export type UserRole = "GameMaster" | "Player" | "Spectator";
@@ -179,7 +180,7 @@ export function parseWikiMarkdown(rawMarkdown: string): ParsedWikiDocument {
       const handoutNode: HandoutBlockNode = {
         type: "handout",
         id: attrs.id || "",
-        title: attrs.title || "Handout",
+        title: attrs.title || t("docs.handouts.untitled"),
         revealed: attrs.revealed === "true",
         content: contentLines.join("\n"),
         raw: blockRawLines.join("\n"),

@@ -440,6 +440,21 @@ export interface QuarantinedWalSummary {
   quarantined_at_ms: number;
 }
 
+/**
+ * Stable code and numbers of an engine refusal (Rust `RejectionDetail`), so the client
+ * explains it in the reader's language instead of showing the English `reason`.
+ */
+export interface WireRejectionDetail {
+  /** One of the engine `COMMAND_ERROR_CODES` (`"WALL_COLLISION"`, ...). */
+  code: string;
+  /** `INSUFFICIENT_MOVEMENT`: movement the move needed, in feet (`ft`). */
+  neededFt: number | null;
+  /** `INSUFFICIENT_MOVEMENT`: movement left this turn, in feet (`ft`). */
+  remainingFt: number | null;
+  /** `CONDITION_IMMUNE`: SRD condition id (`"paralyzed"`). */
+  condition: string | null;
+}
+
 /** Outbound frames, discriminated by `type` on the client side only. */
 export type ClientEnvelope =
   | { type: "SubmitCommand"; command: WireTrameCommand; correlationId?: string }
@@ -455,7 +470,13 @@ export type ClientEnvelope =
 export type ServerEnvelope =
   | { type: "StateSnapshot"; seqId: number; state: ProjectedTableState }
   | { type: "CommandAccepted"; seqId: number; events: WireTrameEvent[]; state: ProjectedTableState }
-  | { type: "CommandRejected"; reason: string; correlationId: string | null }
+  | {
+      type: "CommandRejected";
+      reason: string;
+      /** `null` for server-side refusals (permissions, validation, storage). */
+      detail: WireRejectionDetail | null;
+      correlationId: string | null;
+    }
   | { type: "WalEntriesQuarantined"; entries: QuarantinedWalSummary[] }
   | { type: "DiceRolled"; roll: ProjectedDiceRoll }
   | { type: "PointerPingBroadcast"; senderUserId: Uuid; pos: WirePoint2D; colorHex: string }
@@ -565,6 +586,7 @@ export function parseServerEnvelope(raw: unknown): ServerEnvelope | null {
       return {
         type: "CommandRejected",
         reason: String(p.reason ?? ""),
+        detail: decodeRejectionDetail(p.detail),
         correlationId: typeof p.correlation_id === "string" ? p.correlation_id : null,
       };
     case "WalEntriesQuarantined":
@@ -608,4 +630,16 @@ export function decodeServerEnvelope(bytes: Uint8Array): ServerEnvelope | null {
     return null;
   }
   return parseServerEnvelope(normalizeUuids(raw));
+}
+
+function decodeRejectionDetail(raw: unknown): WireRejectionDetail | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const d = raw as Record<string, unknown>;
+  if (typeof d.code !== "string") return null;
+  return {
+    code: d.code,
+    neededFt: typeof d.needed_ft === "number" ? d.needed_ft : null,
+    remainingFt: typeof d.remaining_ft === "number" ? d.remaining_ft : null,
+    condition: typeof d.condition === "string" ? d.condition : null,
+  };
 }

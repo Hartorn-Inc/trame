@@ -180,3 +180,57 @@ export const SPELL_CLASS_ADDITIONS: Readonly<Record<string, readonly string[]>> 
 export const SPELL_DESCRIPTIONS: Readonly<Record<string, string>> = {
   "greater-invisibility": "A creature you touch has the Invisible condition until the spell ends.",
 };
+
+/** Repeated beams, darts or rays a spell creates, each resolved on its own. */
+export interface SpellInstancesRule {
+  /** What one instance is called on the table. */
+  unit: "beam" | "dart" | "ray";
+  /** Instances at the spell's own level (or at character level 1 for a cantrip). */
+  count: number;
+  /** Extra instances per slot level above the spell's level (Magic Missile `1`). */
+  perSlotLevel?: number;
+  /** Cantrip: `count` times the cantrip damage tier (x2 at level 5, x3 at 11, x4 at 17). */
+  cantripScaling?: boolean;
+}
+
+/** Resolution facts the spell text states in prose that the parser cannot read reliably. */
+export interface SpellRuleCorrection {
+  /**
+   * How damage resolves for a spell with neither an attack roll nor a saving throw:
+   * `automatic` (it hits, Magic Missile) or `rider` (added to a weapon hit, Hex).
+   * Unlisted spells of that kind are `described` (the damage comes from a later
+   * trigger or is self-inflicted), so they never borrow the spell attack bonus.
+   */
+  damageResolution?: "automatic" | "rider";
+  /**
+   * How the `damage` parts combine at once: `all` (Flame Strike: Fire and Radiant)
+   * or `choice` (Spirit Guardians: Radiant or Necrotic). Unlisted spells deal only
+   * the first part at once; later parts are timed or conditional (Acid Arrow).
+   */
+  damageCombination?: "all" | "choice";
+  /** Repeated instances (Eldritch Blast beams, Magic Missile darts, Scorching Ray rays). */
+  instances?: SpellInstancesRule;
+}
+
+/**
+ * Per-spell resolution corrections by compendium id, each checked against the
+ * SRD 5.2.1 spell text. `srdContentGenerated.test.ts` fails when an id matches
+ * no generated spell.
+ */
+export const SPELL_RULES: Readonly<Record<string, SpellRuleCorrection>> = {
+  "srd:spell:magic_missile": { damageResolution: "automatic", instances: { unit: "dart", count: 3, perSlotLevel: 1 } },
+  "srd:spell:eldritch_blast": { instances: { unit: "beam", count: 1, cantripScaling: true } },
+  "srd:spell:scorching_ray": { instances: { unit: "ray", count: 3, perSlotLevel: 1 } },
+  "srd:spell:hex": { damageResolution: "rider" },
+  "srd:spell:hunters_mark": { damageResolution: "rider" },
+  "srd:spell:divine_favor": { damageResolution: "rider" },
+  "srd:spell:divine_smite": { damageResolution: "rider" },
+  "srd:spell:shining_smite": { damageResolution: "rider" },
+  "srd:spell:flame_strike": { damageCombination: "all" },
+  "srd:spell:ice_storm": { damageCombination: "all" },
+  "srd:spell:meteor_swarm": { damageCombination: "all" },
+  "srd:spell:fire_shield": { damageCombination: "choice" },
+  "srd:spell:prismatic_spray": { damageCombination: "choice" },
+  "srd:spell:prismatic_wall": { damageCombination: "choice" },
+  "srd:spell:spirit_guardians": { damageCombination: "choice" },
+};

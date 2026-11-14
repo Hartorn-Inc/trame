@@ -17,7 +17,10 @@
  *      sheets, so another player's actor renders the "no sheet" hint.
  * 2. `REST Persistence`:
  *    - Widget edits go through `createSheetCommandDispatcher` (versioned PUT)
- *      and rolls through REST `POST .../dice/roll`.
+ *      and rolls through REST `POST .../dice/roll`. A `409 VERSION_CONFLICT`
+ *      re-syncs the stored actor sheet from the server and surfaces an
+ *      accessible `role="alert"` banner; network errors surface in the same
+ *      dismissible banner and clear on the next successful save.
  * 3. `Shared Padlock`:
  *    - The core-stats padlock is one signal, so the header and the widgets
  *      always agree on whether core stats are editable.
@@ -29,7 +32,12 @@ import type { ApiClient } from '../api/client.ts';
 import { CharacterSheetHeader } from '../components/character-sheet/CharacterSheetHeader.tsx';
 import { t } from '../i18n/index.ts';
 import { DeclarativeSheetView } from './DeclarativeSheetView.tsx';
-import { createSheetCommandDispatcher, restDiceRollService } from './sheetPersistence.ts';
+import { useSafeState } from './safeHooks.ts';
+import {
+  createSheetCommandDispatcher,
+  restDiceRollService,
+  syncConflictedActorSheet,
+} from './sheetPersistence.ts';
 import { sheetViewState } from './sheetViewState.ts';
 import type { SheetLayoutTree } from './types.ts';
 
@@ -65,11 +73,33 @@ export interface ActorSheetPanelProps {
 
 export function ActorSheetPanel(props: ActorSheetPanelProps) {
   const { client, actorId, campaignId } = props;
+  const [alertState, setAlertState] = useSafeState<{ actorId: string; message: string } | null>(null);
   const record = actorId ? client.state.actors.value[actorId] : undefined;
   const actor = record?.data as Dnd5eActorData | undefined;
   if (!actor || !actorId) {
     return <p class="ds-hint" data-testid="hud-no-sheet">{t('hud.noSheet')}</p>;
   }
+  const activeAlert = alertState?.actorId === actorId ? alertState.message : null;
+  const dispatchCommand = createSheetCommandDispatcher({
+    client,
+    campaignId,
+    actorId,
+    onConflict: (currentVersion) => {
+      setAlertState({
+        actorId,
+        message: syncConflictedActorSheet(client, campaignId, actorId, currentVersion),
+      });
+    },
+    onError: (message) => {
+      setAlertState({
+        actorId,
+        message: message || t('sheet.persistence.saveFailed'),
+      });
+    },
+    onSaved: () => {
+      setAlertState(null);
+    },
+  });
   return (
     <div class="ds-stack" data-testid="actor-sheet-panel">
       {props.layout ? null : (
@@ -86,6 +116,20 @@ export function ActorSheetPanel(props: ActorSheetPanelProps) {
           }}
         />
       )}
+      {activeAlert ? (
+        <div class="ds-panel ds-cluster" role="alert" data-testid="sheet-persistence-alert">
+          <span>{activeAlert}</span>
+          <button
+            type="button"
+            class="ds-btn ds-btn-sm ds-btn-secondary"
+            data-testid="btn-dismiss-sheet-alert"
+            aria-label={t('sheet.persistence.dismissAlert')}
+            onClick={() => setAlertState(null)}
+          >
+            {t('action.close')}
+          </button>
+        </div>
+      ) : null}
       <DeclarativeSheetView
         sheetLayout={props.layout}
         actorState={sheetViewState(actor)}
@@ -95,7 +139,7 @@ export function ActorSheetPanel(props: ActorSheetPanelProps) {
         onToggleCoreStatsLocked={() => {
           coreStatsLockedSignal.value = !coreStatsLockedSignal.value;
         }}
-        dispatchCommand={createSheetCommandDispatcher({ client, campaignId, actorId })}
+        dispatchCommand={dispatchCommand}
         onCloseDrawer={props.onClose}
         isTableCanvasMounted={props.isTableCanvasMounted}
       />

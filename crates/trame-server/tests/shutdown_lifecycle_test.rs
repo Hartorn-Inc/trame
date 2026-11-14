@@ -9,8 +9,11 @@
 //! Verifies end-to-end graceful shutdown and Cloud Run lifecycle handling:
 //! 1. `IS_SHUTTING_DOWN` atomic flag setting and immediate rejection of new
 //!    room connections with `RoomError::ShuttingDown` and HTTP 503 Service Unavailable.
-//! 2. `RoomLeaseManager::hibernate_all` commanding all active `TableRoomHandle` actors
-//!    to hibernate within a 10-second timeout.
+//! 2. `RoomLeaseManager::shutdown_all` / `hibernate_all` commanding all active
+//!    `TableRoomHandle` actors to hibernate within `SHUTDOWN_BUDGET` (8 s, below the
+//!    Cloud Run 10 s grace), leaving `SOCKET_FLUSH_GRACE` for the close frames.
+//! 6. Every frame wait is bounded (`recv_within`) and names its case, so a missing
+//!    frame fails the test instead of hanging the suite.
 //! 3. `TableRoomHandle::hibernate` broadcasting WebSocket Close frame `1001 Going Away`
 //!    to all connected clients.
 //! 4. `TableRoomHandle::hibernate` flushing and serializing uncommitted actor state
@@ -27,7 +30,7 @@ use trame_engine::commands::{CampaignRole, TokenState, TrameCommand};
 use trame_engine::geometry::Point2D;
 use trame_server::room::{
     ConnectedClient, IS_SHUTTING_DOWN, OutboundClientFrame, RoomError, RoomLeaseManager,
-    WS_CLOSE_CODE_GOING_AWAY, WS_CLOSE_REASON_GOING_AWAY,
+    SHUTDOWN_BUDGET, SOCKET_FLUSH_GRACE, WS_CLOSE_CODE_GOING_AWAY, WS_CLOSE_REASON_GOING_AWAY,
 };
 use trame_server::wal::{InMemoryWalStorage, WalStorage, recover_table_state};
 use uuid::Uuid;
@@ -47,14 +50,57 @@ impl ShutdownTestHarness {
         Self { wal, lease_manager }
     }
 
-    /// Simulates SIGTERM arrival by asserting shutdown flag, rejecting new traffic,
-    /// and triggering 10s hibernation flush across all active rooms.
+    /// Simulates SIGTERM arrival by asserting shutdown flag, rejecting new traffic, and
+    /// running `shutdown_all`, which must finish within `SHUTDOWN_BUDGET`.
     pub async fn simulate_sigterm(&self) -> Vec<Uuid> {
         IS_SHUTTING_DOWN.store(true, Ordering::Release);
-        self.lease_manager
-            .hibernate_all(Duration::from_secs(10))
-            .await
-            .expect("scale-to-zero hibernation must succeed")
+        let started = tokio::time::Instant::now();
+        let hibernated = tokio::time::timeout(
+            SHUTDOWN_BUDGET + Duration::from_secs(1),
+            self.lease_manager.shutdown_all(),
+        )
+        .await
+        .expect("simulate_sigterm: shutdown_all exceeded its budget")
+        .expect("scale-to-zero hibernation must succeed");
+        assert!(
+            started.elapsed() <= SHUTDOWN_BUDGET,
+            "simulate_sigterm: shutdown took {:?}",
+            started.elapsed()
+        );
+        hibernated
+    }
+}
+
+/// Longest wait for one outbound frame before the test fails instead of hanging.
+const RECV_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Next frame of `rx`, panicking with `case` when none arrives within `RECV_TIMEOUT` or the
+/// channel closed.
+async fn recv_within(
+    rx: &mut tokio::sync::mpsc::Receiver<OutboundClientFrame>,
+    case: &str,
+) -> OutboundClientFrame {
+    tokio::time::timeout(RECV_TIMEOUT, rx.recv())
+        .await
+        .unwrap_or_else(|_| panic!("case {case}: no frame within {RECV_TIMEOUT:?}"))
+        .unwrap_or_else(|| panic!("case {case}: channel closed before the frame"))
+}
+
+#[test]
+fn shutdown_budget_fits_cloud_run_grace() {
+    // (case_id, holds)
+    let cases = [
+        (
+            "budget_below_cloud_run_10s_sigterm_grace",
+            SHUTDOWN_BUDGET < Duration::from_secs(10),
+        ),
+        (
+            "socket_flush_grace_fits_inside_budget",
+            SOCKET_FLUSH_GRACE < SHUTDOWN_BUDGET,
+        ),
+    ];
+    for (case, holds) in cases {
+        assert!(holds, "case {case}");
     }
 }
 
@@ -123,8 +169,8 @@ async fn test_graceful_shutdown_room_hibernation() {
     .expect("Player connected");
 
     // Consume initial state snapshot frames
-    let _ = gm_rx.recv().await;
-    let _ = player_rx.recv().await;
+    recv_within(&mut gm_rx, "graceful_shutdown: GM initial snapshot").await;
+    recv_within(&mut player_rx, "graceful_shutdown: player initial snapshot").await;
 
     // 4. Submit uncommitted movement mutation: Paladin moves to (350.0, 450.0)
     let target_pos = Point2D::new(350.0, 450.0);
@@ -141,9 +187,9 @@ async fn test_graceful_shutdown_room_hibernation() {
     .await
     .expect("command sent");
 
-    // Consume CommandAccepted frames
-    let _ = gm_rx.recv().await;
-    let _ = player_rx.recv().await;
+    // Consume the GM's CommandAccepted frame. The player cannot see the
+    // unowned Paladin, so its projection is unchanged and RT12 sends nothing.
+    recv_within(&mut gm_rx, "graceful_shutdown: GM CommandAccepted").await;
 
     // 5. Trigger SIGTERM simulation via TestHarness
     let hibernated = harness.simulate_sigterm().await;
@@ -151,7 +197,7 @@ async fn test_graceful_shutdown_room_hibernation() {
     assert_eq!(harness.lease_manager.active_room_count().await, 0);
 
     // 6. Verify Close frame 1001 Going Away broadcast to all connected clients
-    let gm_close = gm_rx.recv().await.expect("GM receives close frame");
+    let gm_close = recv_within(&mut gm_rx, "graceful_shutdown: GM close frame").await;
     match gm_close {
         OutboundClientFrame::Close { code, reason } => {
             assert_eq!(code, WS_CLOSE_CODE_GOING_AWAY);
@@ -160,7 +206,7 @@ async fn test_graceful_shutdown_room_hibernation() {
         other => panic!("expected OutboundClientFrame::Close, got {other:?}"),
     }
 
-    let player_close = player_rx.recv().await.expect("Player receives close frame");
+    let player_close = recv_within(&mut player_rx, "graceful_shutdown: player close frame").await;
     match player_close {
         OutboundClientFrame::Close { code, reason } => {
             assert_eq!(code, WS_CLOSE_CODE_GOING_AWAY);
@@ -288,8 +334,8 @@ async fn test_hibernate_broadcasts_ws_close_1001_and_flushes_state() {
         .await
         .expect("client 2 attached");
 
-    let _ = client1_rx.recv().await;
-    let _ = client2_rx.recv().await;
+    recv_within(&mut client1_rx, "hibernate_1001: client 1 initial snapshot").await;
+    recv_within(&mut client2_rx, "hibernate_1001: client 2 initial snapshot").await;
 
     let move_cmd = TrameCommand::MoveToken {
         token_id,
@@ -304,16 +350,13 @@ async fn test_hibernate_broadcasts_ws_close_1001_and_flushes_state() {
     .await
     .expect("envelope sent");
 
-    let _ = client1_rx.recv().await;
-    let _ = client2_rx.recv().await;
+    // Client 2 cannot see the unowned token, so RT12 sends it no frame.
+    recv_within(&mut client1_rx, "hibernate_1001: client 1 CommandAccepted").await;
 
     let final_seq = room.hibernate().await.expect("hibernate succeeds");
     assert_eq!(final_seq, 1);
 
-    let frame1 = client1_rx
-        .recv()
-        .await
-        .expect("client 1 receives close frame");
+    let frame1 = recv_within(&mut client1_rx, "hibernate_1001: client 1 close frame").await;
     match frame1 {
         OutboundClientFrame::Close { code, reason } => {
             assert_eq!(code, WS_CLOSE_CODE_GOING_AWAY);
@@ -322,10 +365,7 @@ async fn test_hibernate_broadcasts_ws_close_1001_and_flushes_state() {
         _ => panic!("expected OutboundClientFrame::Close"),
     }
 
-    let frame2 = client2_rx
-        .recv()
-        .await
-        .expect("client 2 receives close frame");
+    let frame2 = recv_within(&mut client2_rx, "hibernate_1001: client 2 close frame").await;
     match frame2 {
         OutboundClientFrame::Close { code, reason } => {
             assert_eq!(code, WS_CLOSE_CODE_GOING_AWAY);
@@ -375,7 +415,7 @@ async fn test_room_lease_manager_hibernate_all_lifecycle() {
     })
     .await
     .unwrap();
-    let _ = c1_rx.recv().await;
+    recv_within(&mut c1_rx, "hibernate_all: client 1 initial snapshot").await;
 
     let (c2_tx, mut c2_rx) = trame_server::room::client_channel();
     r2.connect_client(ConnectedClient {
@@ -386,7 +426,7 @@ async fn test_room_lease_manager_hibernate_all_lifecycle() {
     })
     .await
     .unwrap();
-    let _ = c2_rx.recv().await;
+    recv_within(&mut c2_rx, "hibernate_all: client 2 initial snapshot").await;
 
     let timeout = Duration::from_secs(10);
     let hibernated = lease_manager
@@ -400,7 +440,7 @@ async fn test_room_lease_manager_hibernate_all_lifecycle() {
     assert!(hibernated.contains(&c3));
     assert_eq!(lease_manager.active_room_count().await, 0);
 
-    match c1_rx.recv().await.unwrap() {
+    match recv_within(&mut c1_rx, "hibernate_all: client 1 close frame").await {
         OutboundClientFrame::Close { code, reason } => {
             assert_eq!(code, WS_CLOSE_CODE_GOING_AWAY);
             assert_eq!(reason, WS_CLOSE_REASON_GOING_AWAY);
@@ -408,7 +448,7 @@ async fn test_room_lease_manager_hibernate_all_lifecycle() {
         _ => panic!("expected close frame for client 1"),
     }
 
-    match c2_rx.recv().await.unwrap() {
+    match recv_within(&mut c2_rx, "hibernate_all: client 2 close frame").await {
         OutboundClientFrame::Close { code, reason } => {
             assert_eq!(code, WS_CLOSE_CODE_GOING_AWAY);
             assert_eq!(reason, WS_CLOSE_REASON_GOING_AWAY);

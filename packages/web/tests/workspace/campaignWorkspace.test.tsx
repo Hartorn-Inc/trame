@@ -3,8 +3,15 @@ import { beforeEach, describe, it } from "node:test";
 import { h } from "preact";
 import { SRD_521_ATTRIBUTION } from "../../../game-systems/dnd5e/src/index.ts";
 import { selectedActorIdSignal, selectedTokenIdSignal } from "../../src/api/session.ts";
-import { isSheetDrawerOpenSignal } from "../../src/hud/HudDrawers.tsx";
-import { localeSignal } from "../../src/i18n/index.ts";
+import {
+  isCompendiumDrawerOpenSignal,
+  isSheetDrawerOpenSignal,
+  openCompendiumDrawer,
+  openSheetDrawer,
+} from "../../src/hud/HudDrawers.tsx";
+import { EN } from "../../src/i18n/en.ts";
+import { FR } from "../../src/i18n/fr.ts";
+import { localeSignal, type LocaleCode } from "../../src/i18n/index.ts";
 import { MapsWorkspaceTab, sceneNameFromFile, upsertScene } from "../../src/maps/MapsWorkspaceTab.tsx";
 import type { CampaignMapScene } from "../../src/maps/types.ts";
 import {
@@ -16,10 +23,11 @@ import {
 import { firstFreeCell } from "../../src/table/tableView.ts";
 import { ActorsTab } from "../../src/workspace/ActorsTab.tsx";
 import { CampaignWorkspace, nextTabIndex, WORKSPACE_TABS, type WorkspaceTabId } from "../../src/workspace/CampaignWorkspace.tsx";
-import { CAMPAIGN, GM_ID, HERO, HERO_ACTOR, OTHER_PLAYER_ID, PLAYER_ID, fullToken, liveTable, mount, tableState } from "../helpers/liveTable.ts";
+import type { ProjectedTableState } from "../../src/api/wire.ts";
+import { CAMPAIGN, GM_ID, GOBLIN, HERO, HERO_ACTOR, OTHER_PLAYER_ID, PLAYER_ID, fullToken, liveTable, mount, tableState } from "../helpers/liveTable.ts";
 import { actorDto, flush } from "../helpers/mockTransport.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
-import { assertAbsent } from "../helpers/domAssert.ts";
+import { assertAbsent, assertSameNode } from "../helpers/domAssert.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -46,6 +54,7 @@ beforeEach(() => {
   selectedActorIdSignal.value = null;
   selectedTokenIdSignal.value = null;
   isSheetDrawerOpenSignal.value = false;
+  isCompendiumDrawerOpenSignal.value = false;
   activeCompanionTabSignal.value = "sheet";
 });
 
@@ -95,6 +104,162 @@ describe("CampaignWorkspace: five tabs", () => {
   ];
   for (const c of keys) {
     it(`nextTabIndex: ${c.id}`, () => assert.equal(nextTabIndex(c.index, c.key, WORKSPACE_TABS.length), c.expected));
+  }
+
+  const drawerDismissCases: Array<{
+    id: string;
+    openDrawer: () => void;
+    switchAction: (ui: ReturnType<typeof mount>) => void;
+    expectedTab: WorkspaceTabId;
+    expectedCompendiumDomCount: number;
+  }> = [
+    {
+      id: "Q2: clicking Maps tab closes an open HUD sheet drawer",
+      openDrawer: () => openSheetDrawer(),
+      switchAction: (ui) => ui.click("workspace-tab-maps"),
+      expectedTab: "maps",
+      expectedCompendiumDomCount: 0,
+    },
+    {
+      id: "Q2: clicking Actors tab closes an open HUD compendium drawer",
+      openDrawer: () => openCompendiumDrawer(),
+      switchAction: (ui) => ui.click("workspace-tab-actors"),
+      expectedTab: "actors",
+      expectedCompendiumDomCount: 0,
+    },
+    {
+      id: "Q2: ArrowRight keydown on tablist closes an open HUD sheet drawer",
+      openDrawer: () => openSheetDrawer(),
+      switchAction: (ui) => ui.key("workspace-tab-table", "ArrowRight"),
+      expectedTab: "maps",
+      expectedCompendiumDomCount: 0,
+    },
+    {
+      id: "Q2: ArrowLeft keydown on tablist closes an open HUD compendium drawer while preserving standalone Compendium tab",
+      openDrawer: () => openCompendiumDrawer(),
+      switchAction: (ui) => ui.key("workspace-tab-table", "ArrowLeft"),
+      expectedTab: "compendium",
+      expectedCompendiumDomCount: 1,
+    },
+    {
+      id: "Q2: clicking Compendium tab closes HUD sheet drawer while mounting standalone CompendiumDrawer",
+      openDrawer: () => openSheetDrawer(),
+      switchAction: (ui) => ui.click("workspace-tab-compendium"),
+      expectedTab: "compendium",
+      expectedCompendiumDomCount: 1,
+    },
+  ];
+
+  for (const scenario of drawerDismissCases) {
+    it(scenario.id, () => {
+      const { client } = liveTable(GM_ID, tableState());
+      client.state.actors.value = {
+        [HERO_ACTOR]: { version: 4, data: heroSheet, name: "Brakka", ownerUserId: PLAYER_ID },
+      };
+      selectedActorIdSignal.value = HERO_ACTOR;
+      const ui = mount(h(CampaignWorkspace, { campaignId: CAMPAIGN, userRole: "GM", client }));
+
+      scenario.openDrawer();
+      assert.equal(
+        isSheetDrawerOpenSignal.value || isCompendiumDrawerOpenSignal.value,
+        true,
+        "HUD drawer opened prior to tab switch",
+      );
+
+      scenario.switchAction(ui);
+
+      assert.equal(ui.byTestId(`workspace-tab-${scenario.expectedTab}`).getAttribute("aria-selected"), "true");
+      assert.equal(isSheetDrawerOpenSignal.value, false, "HUD sheet drawer closed on tab switch");
+      assert.equal(isCompendiumDrawerOpenSignal.value, false, "HUD compendium drawer closed on tab switch");
+      assertAbsent(ui.byTestId("hud-sheet-drawer"), "hud-sheet-drawer unmounted");
+      assert.equal(
+        ui.container.querySelectorAll('[data-testid="compendium-drawer"]').length,
+        scenario.expectedCompendiumDomCount,
+      );
+      ui.unmount();
+    });
+  }
+
+  it("Q2: switching to Maps tab dismisses HUD drawer without affecting MapsStudioTab standalone monster picker", async () => {
+    const { client } = liveTable(GM_ID, tableState(), {
+      [`GET ${MAPS_URL}`]: { status: 200, body: { scenes: [backendScene], version: 3 } },
+    });
+    const ui = mount(h(CampaignWorkspace, { campaignId: CAMPAIGN, userRole: "GM", client }));
+
+    openCompendiumDrawer();
+    assert.equal(isCompendiumDrawerOpenSignal.value, true);
+
+    ui.click("workspace-tab-maps");
+    await flush();
+
+    assert.equal(isCompendiumDrawerOpenSignal.value, false, "HUD compendium drawer dismissed");
+    assertAbsent(ui.byTestId("compendium-drawer"), "no drawer before opening studio picker");
+
+    ui.click("open-monster-picker");
+    assert.ok(ui.byTestId("compendium-drawer"), "MapsStudioTab standalone monster picker opens");
+    assert.equal(isCompendiumDrawerOpenSignal.value, false, "HUD signal remains closed");
+    ui.unmount();
+  });
+
+  it("W1: ArrowLeft onto workspace-tab-compendium preserves tablist focus across flush() and ArrowRight wraps back to workspace-tab-table", async () => {
+    const { client } = liveTable(GM_ID, tableState());
+    const ui = mount(h(CampaignWorkspace, { campaignId: CAMPAIGN, userRole: "GM", client }));
+    const doc = (globalThis as any).document;
+
+    ui.byTestId("workspace-tab-table").focus();
+    assert.equal(doc.activeElement?.id, "workspace-tab-table");
+
+    ui.key("workspace-tab-table", "ArrowLeft");
+    await flush(2);
+
+    assert.equal(ui.byTestId("workspace-tab-compendium").getAttribute("aria-selected"), "true");
+    assert.ok(ui.byTestId("compendium-drawer"), "inline CompendiumDrawer mounted");
+    assert.equal(
+      doc.activeElement?.id,
+      "workspace-tab-compendium",
+      "inline CompendiumDrawer with autoFocus={false} must not yank focus out of roving tablist",
+    );
+
+    doc.dispatchEvent({ type: "keydown", key: "Escape" });
+    await flush();
+    assert.equal(
+      ui.byTestId("workspace-tab-compendium").getAttribute("aria-selected"),
+      "true",
+      "inline CompendiumDrawer must not register a global Escape listener",
+    );
+
+    ui.key("workspace-tab-compendium", "ArrowRight");
+    await flush(2);
+
+    assert.equal(ui.byTestId("workspace-tab-table").getAttribute("aria-selected"), "true");
+    assert.equal(doc.activeElement?.id, "workspace-tab-table", "ArrowRight wraps focus cleanly back to workspace-tab-table");
+    ui.unmount();
+  });
+
+  it("W1: clicking Close inside inline Compendium tab switches to Table tab and focuses workspace-tab-table", async () => {
+    const { client } = liveTable(PLAYER_ID, tableState());
+    const ui = mount(h(CampaignWorkspace, { campaignId: CAMPAIGN, userRole: "PLAYER", client, activeTab: "compendium" }));
+    const doc = (globalThis as any).document;
+
+    ui.click("btn-close-compendium");
+    await flush(2);
+
+    assert.equal(ui.byTestId("workspace-tab-table").getAttribute("aria-selected"), "true");
+    assert.equal(doc.activeElement?.id, "workspace-tab-table");
+    ui.unmount();
+  });
+
+  for (const tc of [
+    { id: "W3-dismiss-alert-label-in-name-en", catalog: EN, expected: "Close sheet alert" },
+    { id: "W3-dismiss-alert-label-in-name-fr", catalog: FR, expected: "Fermer l'alerte de la fiche" },
+  ]) {
+    it(`[${tc.id}] sheet.persistence.dismissAlert starts verbatim with action.close (WCAG 2.5.3)`, () => {
+      assert.equal(tc.catalog["sheet.persistence.dismissAlert"], tc.expected);
+      assert.ok(
+        tc.catalog["sheet.persistence.dismissAlert"].startsWith(tc.catalog["action.close"]),
+        `expected '${tc.catalog["sheet.persistence.dismissAlert"]}' to start with '${tc.catalog["action.close"]}'`,
+      );
+    });
   }
 });
 
@@ -211,6 +376,72 @@ describe("ActorsTab: create, open, place, portrait", () => {
       ui.unmount();
     });
   }
+
+  const portraitLabelCases: Array<{
+    id: string;
+    locale: LocaleCode;
+    actorName: string;
+    expectedVisible: string;
+    expectedAccessibleName: string;
+  }> = [
+    {
+      id: "F7-portrait-label-in-name-en",
+      locale: "en",
+      actorName: "Brakka",
+      expectedVisible: "Upload portrait",
+      expectedAccessibleName: "Upload portrait for Brakka",
+    },
+    {
+      id: "F7-portrait-label-in-name-fr",
+      locale: "fr",
+      actorName: "Brakka",
+      expectedVisible: "Téléverser un portrait",
+      expectedAccessibleName: "Téléverser un portrait pour Brakka",
+    },
+    {
+      id: "F7-portrait-label-unnamed-fallback-en",
+      locale: "en",
+      actorName: "",
+      expectedVisible: "Upload portrait",
+      expectedAccessibleName: "Upload portrait",
+    },
+  ];
+
+  for (const tc of portraitLabelCases) {
+    it(`[${tc.id}] satisfies WCAG 2.5.3 label-in-name without <label> + aria-label double-labeling`, async () => {
+      assert.ok(EN["actors.portraitFor"].startsWith(EN["actors.portrait"]), "EN portraitFor must start verbatim with EN portrait");
+      assert.ok(FR["actors.portraitFor"].startsWith(FR["actors.portrait"]), "FR portraitFor must start verbatim with FR portrait");
+      localeSignal.value = tc.locale;
+      try {
+        const dto = heroDto({ name: tc.actorName, data: { ...heroSheet, name: tc.actorName } });
+        const table = liveTable(PLAYER_ID, null, {
+          [`GET ${ACTORS_URL}`]: { status: 200, body: { actors: [dto] } },
+        });
+        const ui = mount(h(ActorsTab, { campaignId: CAMPAIGN, client: table.client, isGm: false }));
+        await flush();
+
+        const input = ui.byTestId(`actor-portrait-${HERO_ACTOR}`);
+        const inputId = `actor-portrait-input-${HERO_ACTOR}`;
+        assert.equal(input.id, inputId);
+        assert.equal(input.hasAttribute("aria-label"), false, "file input must not override its <label> with aria-label");
+
+        const label = ui.container.querySelector(`label[for="${inputId}"]`);
+        assert.ok(label, `label[for="${inputId}"] must exist`);
+        const spans = label.querySelectorAll("span");
+        assert.ok(spans.length >= 1, "label must render visible text span");
+        assert.equal(spans[0].textContent, tc.expectedVisible);
+        assert.equal(label.textContent, tc.expectedAccessibleName);
+        assert.ok(
+          label.textContent.startsWith(spans[0].textContent),
+          "computed accessible label must start verbatim with visible label (WCAG 2.5.3)",
+        );
+
+        ui.unmount();
+      } finally {
+        localeSignal.value = "en";
+      }
+    });
+  }
 });
 
 describe("firstFreeCell", () => {
@@ -266,6 +497,84 @@ describe("MapsWorkspaceTab: import, background, activation", () => {
     assert.deepEqual(table.commands().filter((c) => c.cmd === "ACTIVATE_SCENE"), [{ cmd: "ACTIVATE_SCENE", scene_id: SCENE_ID }]);
     ui.unmount();
   });
+
+  const liveCases: Array<{ id: string; state: Partial<ProjectedTableState>; confirm: boolean; lines: string[] }> = [
+    { id: "empty-table-activates-without-asking", state: {}, confirm: false, lines: [] },
+    {
+      id: "only-player-characters-activates-without-asking",
+      state: { tokens: { [HERO]: fullToken(HERO, "Hero", { owner_user_id: PLAYER_ID }) } },
+      confirm: false,
+      lines: [],
+    },
+    {
+      id: "spawned-monster-asks-and-names-the-removal",
+      state: { tokens: { [HERO]: fullToken(HERO, "Hero", { owner_user_id: PLAYER_ID }), [GOBLIN]: fullToken(GOBLIN, "Goblin") } },
+      confirm: true,
+      lines: ["1 monster or NPC on the table is removed.", "1 player character moves to the scene's spawn point."],
+    },
+    {
+      id: "combat-with-pending-roll-and-live-terrain-asks-and-lists-everything",
+      state: {
+        mode: "TURN_BY_TURN",
+        round: 3,
+        pending_resolutions: { r1: {} as never },
+        difficult_terrain: [{ col: 1, row: 1 }, { col: 2, row: 1 }],
+      },
+      confirm: true,
+      lines: [
+        "Combat ends (round 3) and the initiative order is cleared.",
+        "1 roll waiting for Apply is discarded.",
+        "Difficult terrain on the table (2 cells) is replaced by the 0 cells saved with this scene.",
+      ],
+    },
+  ];
+  for (const tc of liveCases) {
+    it(`[activate-over-live-play-${tc.id}]`, async () => {
+      const table = liveTable(GM_ID, tableState(tc.state), mapRoutes());
+      const ui = mount(h(MapsWorkspaceTab, { campaignId: CAMPAIGN, client: table.client, isGm: true }));
+      await flush();
+      ui.click("activate-scene-btn");
+      await flush();
+      const dialog = ui.byTestId("activate-confirm");
+      assert.equal(Boolean(dialog), tc.confirm, "dialog shown only over live play");
+      const activations = () => table.commands().filter((c) => c.cmd === "ACTIVATE_SCENE").length;
+      if (tc.confirm) {
+        const items = ui.byTestId("activate-confirm-losses").querySelectorAll("li").map((li: any) => li.textContent);
+        assert.deepEqual(items, tc.lines);
+        assert.equal(activations(), 0, "nothing sent before confirming");
+        ui.click("activate-confirm-accept");
+        await flush();
+        assertAbsent(ui.byTestId("activate-confirm"), "dialog closed");
+      }
+      assert.equal(activations(), 1);
+      ui.unmount();
+    });
+  }
+
+  const dismissals: Array<{ id: string; dismiss: (ui: ReturnType<typeof mount>) => void }> = [
+    { id: "cancel-button", dismiss: (ui) => ui.click("activate-confirm-cancel") },
+    { id: "escape-key", dismiss: () => (globalThis as any).document.dispatchEvent({ type: "keydown", key: "Escape" }) },
+  ];
+  for (const tc of dismissals) {
+    it(`[activate-confirm-dismissed-by-${tc.id}] sends nothing and returns focus to Activate`, async () => {
+      const state = tableState({ tokens: { [GOBLIN]: fullToken(GOBLIN, "Goblin") } });
+      const table = liveTable(GM_ID, state, mapRoutes());
+      const ui = mount(h(MapsWorkspaceTab, { campaignId: CAMPAIGN, client: table.client, isGm: true }));
+      await flush();
+      const activate = ui.byTestId("activate-scene-btn");
+      activate.focus();
+      ui.click("activate-scene-btn");
+      await flush();
+      assertSameNode((globalThis as any).document.activeElement, ui.byTestId("activate-confirm-cancel"), "Cancel focused first");
+      tc.dismiss(ui);
+      await flush();
+      assertAbsent(ui.byTestId("activate-confirm"), "dialog closed");
+      assertSameNode((globalThis as any).document.activeElement, activate, "focus back on Activate");
+      assert.equal(table.transport.calls.some((c) => c.method === "PUT"), false, "no save");
+      assert.equal(table.commands().some((c) => c.cmd === "ACTIVATE_SCENE"), false, "no activation");
+      ui.unmount();
+    });
+  }
 
   it("player gets the atlas and no upload controls", async () => {
     const table = liveTable(PLAYER_ID, null, mapRoutes());

@@ -121,8 +121,8 @@ function parityPair(exhaustion: number): [Dnd5eActorData, Dnd5eActorSheet] {
 describe("SystemSRD curated catalog (SRD 5.2.1)", () => {
   const exactCounts: [CompendiumEntityType, number][] = [
     ["class", 12],
-    ["species", 9],
-    ["background", 6],
+    ["species", 11],
+    ["background", 9],
     ["feat", 17],
     ["condition", 15],
   ];
@@ -320,12 +320,73 @@ describe("Casters at level 11+ always have spells to choose (S5)", () => {
   });
 });
 
-describe("Species (SRD 5.2.1)", () => {
-  it("G10-exactly-the-9-srd-521-species", () => {
-    assert.deepEqual(Object.keys(SRD_SPECIES).sort(), [
-      "dragonborn", "dwarf", "elf", "gnome", "goliath", "halfling", "human", "orc", "tiefling",
-    ]);
+describe("Species (9 SRD 5.2.1 + 2 TRAME originals, ADR-0038)", () => {
+  it("G10-species-are-9-srd-521-and-2-trame-originals", () => {
+    const entries = Object.entries(SRD_SPECIES);
+    assert.deepEqual(
+      entries.filter(([, s]) => s.source === "srd").map(([k]) => k).sort(),
+      ["dragonborn", "dwarf", "elf", "gnome", "goliath", "halfling", "human", "orc", "tiefling"]
+    );
+    assert.deepEqual(
+      entries.filter(([, s]) => s.source === "trame-original").map(([k]) => k).sort(),
+      ["half_elf", "radiant_scion"]
+    );
   });
+
+  const originalSpeciesCases: {
+    id: string;
+    key: "half_elf" | "radiant_scion";
+    size: "Medium" | "Medium or Small";
+    speedFt: number;
+    darkvisionFt: number;
+    traits: string[];
+    enName: string;
+    frName: string;
+  }[] = [
+    {
+      id: "half_elf-medium-30ft-60ft-darkvision-dual-heritage-fey-resilience",
+      key: "half_elf",
+      size: "Medium",
+      speedFt: 30,
+      darkvisionFt: 60,
+      traits: ["Dual Heritage", "Fey Resilience"],
+      enName: "Half-Elf",
+      frName: "Demi-Elfe",
+    },
+    {
+      id: "radiant_scion-medium-or-small-30ft-60ft-darkvision-celestial-spark-guiding-touch",
+      key: "radiant_scion",
+      size: "Medium or Small",
+      speedFt: 30,
+      darkvisionFt: 60,
+      traits: ["Celestial Spark", "Guiding Touch"],
+      enName: "Radiant Scion",
+      frName: "Héritier radieux",
+    },
+  ];
+  for (const tc of originalSpeciesCases) {
+    it(`ADR-0038-original-species-${tc.id}`, () => {
+      const rules = getSpeciesRules(tc.key);
+      assert.ok(rules);
+      assert.equal(rules, getSpeciesRules(`srd:species:${tc.key}`));
+      assert.equal(rules, getSpeciesRules(`trame:species:${tc.key}`));
+      assert.equal(rules.size, tc.size);
+      assert.equal(rules.speedFt, tc.speedFt);
+      assert.equal(rules.darkvisionFt, tc.darkvisionFt);
+      assert.equal(rules.hpBonusPerLevel, 0);
+      assert.equal(rules.source, "trame-original");
+      assert.deepEqual(rules.traits, tc.traits);
+      for (const trait of tc.traits) {
+        assert.ok(rules.traitDescriptions?.[trait]?.en.trim(), `${tc.key} ${trait} missing en description`);
+        assert.ok(rules.traitDescriptions?.[trait]?.fr.trim(), `${tc.key} ${trait} missing fr description`);
+      }
+      const entry = SYSTEM_SRD.find((e) => e.id === `srd:species:${tc.key}`);
+      assert.ok(entry);
+      assert.equal(entry.data.source, "trame-original");
+      assert.equal(entry.i18n?.en.name, tc.enName);
+      assert.equal(entry.i18n?.fr.name, tc.frName);
+    });
+  }
 
   for (const key of Object.keys(SRD_SPECIES)) {
     it(`G10-species-${key}-grants-no-ability-score-increase`, () => {
@@ -354,12 +415,72 @@ describe("Species (SRD 5.2.1)", () => {
   }
 });
 
-describe("Backgrounds (SRD 5.2.1 + 2 TRAME originals)", () => {
-  it("G10-backgrounds-are-4-srd-and-2-originals", () => {
+describe("Backgrounds (4 SRD 5.2.1 + 5 TRAME originals, ADR-0038)", () => {
+  it("G10-backgrounds-are-4-srd-and-5-originals", () => {
     const entries = Object.entries(BACKGROUNDS);
     assert.deepEqual(entries.filter(([, b]) => b.source === "srd").map(([k]) => k).sort(), ["acolyte", "criminal", "sage", "soldier"]);
-    assert.deepEqual(entries.filter(([, b]) => b.source === "trame-original").map(([k]) => k).sort(), ["caravan_guide", "lamplighter"]);
+    assert.deepEqual(
+      entries.filter(([, b]) => b.source === "trame-original").map(([k]) => k).sort(),
+      ["artisan", "caravan_guide", "house_guardian", "lamplighter", "merchant"]
+    );
   });
+
+  const newBackgroundCases: {
+    id: string;
+    key: BackgroundId;
+    abilities: [AbilityId, AbilityId, AbilityId];
+    originFeat: string;
+    skills: [string, string];
+    tool: string;
+    enName: string;
+    frName: string;
+  }[] = [
+    {
+      id: "artisan-str-con-int-skilled-smiths-tools",
+      key: "artisan",
+      abilities: ["str", "con", "int"],
+      originFeat: "srd:feat:skilled",
+      skills: ["investigation", "persuasion"],
+      tool: "Smith's Tools",
+      enName: "Artisan",
+      frName: "Artisan",
+    },
+    {
+      id: "merchant-con-int-cha-skilled-navigators-tools",
+      key: "merchant",
+      abilities: ["con", "int", "cha"],
+      originFeat: "srd:feat:skilled",
+      skills: ["persuasion", "insight"],
+      tool: "Navigator's Tools",
+      enName: "Merchant",
+      frName: "Marchand",
+    },
+    {
+      id: "house_guardian-str-con-cha-alert-herbalism-kit",
+      key: "house_guardian",
+      abilities: ["str", "con", "cha"],
+      originFeat: "srd:feat:alert",
+      skills: ["athletics", "medicine"],
+      tool: "Herbalism Kit",
+      enName: "House Guardian",
+      frName: "Gardien de lignée",
+    },
+  ];
+  for (const tc of newBackgroundCases) {
+    it(`ADR-0038-original-background-${tc.id}`, () => {
+      const bg = BACKGROUNDS[tc.key];
+      assert.deepEqual(bg.abilities, tc.abilities);
+      assert.equal(bg.originFeat, tc.originFeat);
+      assert.deepEqual(bg.skillProficiencies, tc.skills);
+      assert.equal(bg.toolProficiency, tc.tool);
+      assert.equal(bg.source, "trame-original");
+      const entry = SYSTEM_SRD.find((e) => e.id === `srd:background:${tc.key}`);
+      assert.ok(entry);
+      assert.equal(entry.data.source, "trame-original");
+      assert.equal(entry.i18n?.en.name, tc.enName);
+      assert.equal(entry.i18n?.fr.name, tc.frName);
+    });
+  }
 
   for (const [key, background] of Object.entries(BACKGROUNDS) as [BackgroundId, (typeof BACKGROUNDS)[BackgroundId]][]) {
     const [a, b, c] = background.abilities;

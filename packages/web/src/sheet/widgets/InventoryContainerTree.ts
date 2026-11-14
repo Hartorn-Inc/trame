@@ -1,3 +1,4 @@
+import { t } from "../../i18n/index.ts";
 import { TrameCommand } from "../types.ts";
 import type { WidgetRenderContext } from "../WidgetRegistry.ts";
 
@@ -32,7 +33,7 @@ export function InventoryContainerTree(context: WidgetRenderContext): InventoryC
   const rawItems = Array.isArray(context.boundValues.items) ? context.boundValues.items : [];
   const items: InventoryItemNode[] = rawItems.map((it: any) => ({
     id: String(it.id ?? ""),
-    name: String(it.name ?? "Item"),
+    name: String(it.name ?? t("sheet.inventory.unnamed")),
     quantity: Number(it.quantity ?? 1),
     unitWeight: Number(it.unitWeight ?? 0),
     containerId: it.containerId !== undefined ? it.containerId : null,

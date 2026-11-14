@@ -6,18 +6,19 @@
  * PURPOSE:
  * --------
  * Declares the curated SystemSRD catalog that lets a table run a campaign
- * without homebrew: the 12 classes, 9 species, 6 backgrounds, 17 feats, 15
- * conditions, spells from cantrips to level 9, weapons with their Weapon
- * Mastery property, armor, adventuring gear, and monsters from CR 0 to CR 20.
- * `compendium.ts` merges these entries with its hand-written starter entries
- * into `SYSTEM_SRD`.
+ * without homebrew: the 12 classes, 11 species (9 SRD + 2 TRAME originals),
+ * 9 backgrounds (4 SRD + 5 TRAME originals), 17 feats, 15 conditions, spells
+ * from cantrips to level 9, weapons with their Weapon Mastery property, armor,
+ * adventuring gear, and monsters from CR 0 to CR 20. `compendium.ts` merges
+ * these entries with its hand-written starter entries into `SYSTEM_SRD`.
  *
  * Open Game Content Attribution:
  * This work includes material from the System Reference Document 5.2.1
  * ("SRD 5.2.1") by Wizards of the Coast LLC, available at
  * https://www.dndbeyond.com/srd, licensed under CC-BY-4.0. Entries marked
  * `source: "srd-5.1"` come from the System Reference Document 5.1, also
- * licensed under CC-BY-4.0, where SRD 5.2.1 has no equivalent.
+ * licensed under CC-BY-4.0, where SRD 5.2.1 has no equivalent. Entries marked
+ * `source: "trame-original"` are original TRAME content (ADR-0038).
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -------------------------------
@@ -173,6 +174,16 @@ const SPECIES_TEXT: Record<SrdSpeciesId, Bilingual> = {
     en: ["Goliath", "Towering descendants of giants who can briefly grow to Large size."],
     fr: ["Goliath", "D'imposants descendants des géants, capables de prendre brièvement une taille G."],
   },
+  half_elf: {
+    en: [
+      "Half-Elf",
+      "Bridge-walkers of two worlds whose Dual Heritage adaptability and Fey Resilience steady them against beguiling magic.",
+    ],
+    fr: [
+      "Demi-Elfe",
+      "Héritiers de deux mondes dont le Double héritage adaptable et la Résilience féerique protègent l'esprit des enchantements.",
+    ],
+  },
   halfling: {
     en: ["Halfling", "Small, brave and lucky folk who slip past larger creatures."],
     fr: ["Halfelin", "Un petit peuple courageux et chanceux qui se faufile entre les créatures plus grandes."],
@@ -184,6 +195,16 @@ const SPECIES_TEXT: Record<SrdSpeciesId, Bilingual> = {
   orc: {
     en: ["Orc", "Tireless people with adrenaline rushes who refuse to fall when struck down."],
     fr: ["Orc", "Un peuple infatigable, porté par des poussées d'adrénaline, qui refuse de tomber lorsqu'il est terrassé."],
+  },
+  radiant_scion: {
+    en: [
+      "Radiant Scion",
+      "Mortals touched by upper-planar light who kindle a Celestial Spark in darkness and mend allies with a Guiding Touch.",
+    ],
+    fr: [
+      "Héritier radieux",
+      "Mortels marqués par une clarté céleste, capables d'éveiller une Étincelle céleste dans l'ombre et d'apaiser les blessures d'un Toucher bienveillant.",
+    ],
   },
   tiefling: {
     en: ["Tiefling", "People touched by the Lower Planes who resist harm and wield a fiendish legacy."],
@@ -216,13 +237,25 @@ const BACKGROUND_TEXT: Record<BackgroundId, Bilingual> = {
     en: ["Soldier", "You trained for war and learned to strike hard before the enemy strikes first."],
     fr: ["Soldat", "Vous avez été formé à la guerre et appris à frapper fort avant que l'ennemi ne le fasse."],
   },
+  artisan: {
+    en: ["Artisan", "You honed a craft at forge or workbench, judging materials keenly and bargaining fairly with patrons."],
+    fr: ["Artisan", "Vous avez exercé un métier à la forge ou à l'établi, jaugeant les matériaux d'un œil sûr et négociant avec vos commanditaires."],
+  },
   caravan_guide: {
     en: ["Caravan Guide", "You led merchant caravans across wild roads, reading the land and tending pack animals."],
     fr: ["Guide de caravane", "Vous avez mené des caravanes marchandes sur des routes sauvages, en lisant le terrain et en soignant les bêtes de somme."],
   },
+  house_guardian: {
+    en: ["House Guardian", "You stood watch over a sworn household, trained to hold the line and tend the wounded after a clash."],
+    fr: ["Gardien de lignée", "Vous avez veillé sur une maisonnée jurée, formé à tenir la ligne et à panser les blessés après l'affrontement."],
+  },
   lamplighter: {
     en: ["Lamplighter", "You kept a city's lamps burning through the night and learned to notice what moves in the dark."],
     fr: ["Allumeur de réverbères", "Vous avez entretenu les lanternes d'une cité toute la nuit et appris à repérer ce qui bouge dans l'ombre."],
+  },
+  merchant: {
+    en: ["Merchant", "You traded goods between market towns and ports, reading buyers at a glance and charting profitable routes."],
+    fr: ["Marchand", "Vous avez négocié des marchandises de bourg en port, lisant vos interlocuteurs au premier coup d'œil et traçant des routes rentables."],
   },
 };
 

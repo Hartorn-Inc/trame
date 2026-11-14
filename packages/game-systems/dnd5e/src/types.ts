@@ -421,9 +421,11 @@ export interface DerivedAttack {
    * How the attack resolves:
    * - `"melee"` / `"ranged"`: attack roll with `attackBonus`.
    * - `"save"`: the target makes `save.ability` against `save.dc`.
+   * - `"automatic"`: the spell hits without a roll (Magic Missile).
+   * - `"rider"`: spell damage added to a weapon hit already made (Hex, Divine Smite).
    */
-  delivery: "melee" | "ranged" | "save";
-  /** Total d20 attack bonus; `null` for `"save"` attacks. */
+  delivery: "melee" | "ranged" | "save" | "automatic" | "rider";
+  /** Total d20 attack bonus; `null` for `"save"`, `"automatic"` and `"rider"` attacks. */
   attackBonus: number | null;
   /** Saving throw a `"save"` attack forces. */
   save?: { ability: AbilityId; dc: number };
@@ -441,6 +443,16 @@ export interface DerivedAttack {
   versatileDamageDice?: string;
   /** Damage type. */
   damageType: DamageType;
+  /** Damage parts of other types dealt together with the primary one (Flame Strike: Radiant). */
+  extraDamage?: { dice: string; type: DamageType }[];
+  /** Damage types the caster picks one from (Spirit Guardians); `damageType` is the first. */
+  damageTypeOptions?: DamageType[];
+  /**
+   * Beams, darts or rays resolved one by one, `count` at the actor's level and the
+   * spell's own slot level (Eldritch Blast `2` at level 5, Magic Missile `3`); each
+   * deals `damageDice` + `damageModifier`.
+   */
+  instances?: { unit: "beam" | "dart" | "ray"; count: number };
   /** Natural d20 roll from which a weapon attack crits, present only below `20` (Champion). */
   criticalRange?: number;
   /** Melee reach in feet (`5`, or `10` with the Reach property). */

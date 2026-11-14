@@ -1,6 +1,8 @@
 ---
 name: spec-parity-reviewer
 description: Strict verification of 1-to-1 parity between the approved spec/ticket acceptance criteria and the PR diff for Hartorn-Inc/trame.
+model: inherit
+readonly: true
 ---
 
 # Specification & Acceptance Parity Reviewer (`Hartorn-Inc/trame`)

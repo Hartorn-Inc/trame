@@ -93,6 +93,15 @@ describe("bootstrapSession: entry route before the auth guard", () => {
       replacedUrl: "/",
     },
     {
+      id: "reset_path_routes_to_password_reset_and_leaves_reset_path",
+      pathname: "/reset-password",
+      search: "?token=c0ffee&lang=fr",
+      routes: { "GET /api/v1/auth/me": ME_OK },
+      route: { kind: "reset", token: "c0ffee" },
+      status: "authenticated",
+      replacedUrl: "/?lang=fr",
+    },
+    {
       id: "plain_url_restores_the_session_via_auth_me",
       pathname: "/play",
       search: "",

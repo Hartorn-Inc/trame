@@ -28,6 +28,10 @@
  *      - An action is `"full"` only when every sentence matched a known
  *        pattern; any leftover prose downgrades it to `"partial"`, and an
  *        action without an attack roll or saving throw is `"text"`.
+ *      - A damaging spell without an attack roll or saving throw is
+ *        `damageResolution: "described"` unless `SPELL_RULES` says it hits
+ *        automatically or rides on a weapon hit; extra damage parts combine
+ *        only where `SPELL_RULES` says so (`damageCombination`).
  *   5. `Deterministic Output`:
  *      - Entries are sorted by id, no timestamps are written, and
  *      `serializePack` emits one entry per line.
@@ -69,6 +73,7 @@ import {
   monsterCorrection,
   SPELL_CLASS_ADDITIONS,
   SPELL_DESCRIPTIONS,
+  SPELL_RULES,
 } from "./open5eCorrections.ts";
 
 /** Open5e fixture record (`model`, `pk`, `fields`) as stored in the `data/v2` JSON files. */
@@ -659,9 +664,11 @@ function capitalize(text: string): string {
  * (Fireball) and "On a successful save, a creature takes half as much damage"
  * (Thunderwave, Moonbeam, "*Successful Save:* Half as much damage."). Missing
  * the second form made those spells deal nothing on a successful save.
+ * Vitriolic Sphere says "takes half the initial damage only": the initial roll
+ * is the primary damage part, so it halves like the others.
  */
 export function halvesDamageOnSave(description: string): boolean {
-  return /half as much damage on a successful|successful save\b[^.]*half as much damage/i.test(description);
+  return /half as much damage on a successful|successful save\b[^.]*half (?:as much|the initial) damage/i.test(description);
 }
 
 function spellEntry(record: Open5eRecord): CompendiumEntry {
@@ -691,6 +698,8 @@ function spellEntry(record: Open5eRecord): CompendiumEntry {
   const materialCost = Number(str(f, "material_cost") || "0");
   const higherLevel = cleanText(str(f, "higher_level"));
   const reaction = str(f, "reaction_condition");
+  const rules = SPELL_RULES[id] ?? {};
+  const noRoll = damage.length > 0 && !attack && !save;
 
   return {
     id,
@@ -716,6 +725,9 @@ function spellEntry(record: Open5eRecord): CompendiumEntry {
       ...(save ? { saveAbility: ABILITY_BY_NAME[save[1].toLowerCase()] } : {}),
       ...(halvesDamageOnSave(description) ? { halfDamageOnSave: true } : {}),
       ...(damage.length > 0 ? { damageDice: damage[0].dice, damageType: damage[0].type, damage } : {}),
+      ...(noRoll ? { damageResolution: rules.damageResolution ?? "described" } : {}),
+      ...(rules.damageCombination && damage.length > 1 ? { damageCombination: rules.damageCombination } : {}),
+      ...(rules.instances ? { instances: rules.instances } : {}),
       ...(heal ? { healDice: normalizeDice(heal[1] ?? heal[2]) } : {}),
       ...(area ? { area } : {}),
       description,

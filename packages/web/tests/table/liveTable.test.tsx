@@ -26,7 +26,7 @@ import {
   tableState,
 } from "../helpers/liveTable.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
-import { assertAbsent } from "../helpers/domAssert.ts";
+import { assertAbsent, assertPresent } from "../helpers/domAssert.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -292,6 +292,138 @@ describe("GmOverrideToolbar: lighting, undo, and MCP staging review", () => {
     assert.deepEqual(live.commands(), [{ cmd: "SET_AMBIENT_LIGHTING", preset: "PITCH_DARKNESS" }]);
     ui.unmount();
   });
+
+  const undoLabelCases: Array<{
+    id: string;
+    locale: "en" | "fr";
+    batches: Array<Array<Record<string, unknown>>>;
+    expectedLabel: string;
+  }> = [
+    {
+      id: "en-fresh-mount-default-label",
+      locale: "en",
+      batches: [],
+      expectedLabel: "Undo last action",
+    },
+    {
+      id: "fr-fresh-mount-default-label",
+      locale: "fr",
+      batches: [],
+      expectedLabel: "Annuler la dernière action",
+    },
+    {
+      id: "en-move-token-label",
+      locale: "en",
+      batches: [[{ event: "TOKEN_MOVED", token_id: HERO }]],
+      expectedLabel: "Undo: Move token",
+    },
+    {
+      id: "fr-move-token-label",
+      locale: "fr",
+      batches: [[{ event: "TOKEN_MOVED", token_id: HERO }]],
+      expectedLabel: "Annuler : Déplacer le jeton",
+    },
+    {
+      id: "en-apply-damage-label",
+      locale: "en",
+      batches: [[{ event: "DAMAGE_APPLIED", token_id: GOBLIN }]],
+      expectedLabel: "Undo: Apply damage",
+    },
+    {
+      id: "fr-apply-damage-label",
+      locale: "fr",
+      batches: [[{ event: "DAMAGE_APPLIED", token_id: GOBLIN }]],
+      expectedLabel: "Annuler : Infliger des dégâts",
+    },
+    {
+      id: "en-mcp-commit-label",
+      locale: "en",
+      batches: [[{ event: "TOKEN_SPAWNED" }, { event: "MCP_STAGING_COMMITTED", proposal_id: PROPOSAL }]],
+      expectedLabel: "Undo: Apply assistant proposal",
+    },
+    {
+      id: "en-cleared-after-undo",
+      locale: "en",
+      batches: [[{ event: "TOKEN_MOVED", token_id: HERO }], [{ event: "ACTION_UNDONE", description: "Move token" }]],
+      expectedLabel: "Undo last action",
+    },
+    {
+      id: "en-cleared-after-activate-scene",
+      locale: "en",
+      batches: [[{ event: "TOKEN_MOVED", token_id: HERO }], [{ event: "SCENE_ACTIVATED", scene_id: "s1" }]],
+      expectedLabel: "Undo last action",
+    },
+    {
+      id: "en-handout-reveal-preserves-prior-undo",
+      locale: "en",
+      batches: [[{ event: "TOKEN_MOVED", token_id: HERO }], [{ event: "HANDOUT_REVEALED", handout_id: "h1" }]],
+      expectedLabel: "Undo: Move token",
+    },
+  ];
+
+  for (const tc of undoLabelCases) {
+    it(`[${tc.id}] names the last accepted undoable action and stays operable`, () => {
+      localeSignal.value = tc.locale;
+      try {
+        const live = liveTable(GM_ID, gmView());
+        const ui = mount(h(GmOverrideToolbar, { client: live.client, isGm: true }));
+        let nextSeq = 10;
+        for (const events of tc.batches) {
+          live.client.applyServerEnvelope({
+            type: "CommandAccepted",
+            seqId: nextSeq++,
+            events: events as Array<{ event: string } & Record<string, unknown>>,
+            state: gmView(),
+          });
+        }
+        const btn = ui.byTestId("gm-undo");
+        assertPresent(btn, "gm-undo button");
+        assert.equal(btn.disabled, false);
+        assert.equal(btn.textContent, tc.expectedLabel);
+        ui.unmount();
+      } finally {
+        localeSignal.value = "en";
+      }
+    });
+  }
+
+  const undoHintCases: Array<{
+    id: string;
+    locale: "en" | "fr";
+    expectedPattern: RegExp;
+  }> = [
+    {
+      id: "en-memory-only-tooltip-and-description",
+      locale: "en",
+      expectedPattern: /server memory only.*lost if the server restarts/i,
+    },
+    {
+      id: "fr-memory-only-tooltip-and-description",
+      locale: "fr",
+      expectedPattern: /mémoire du serveur.*perdu si le serveur redémarre/i,
+    },
+  ];
+
+  for (const tc of undoHintCases) {
+    it(`[${tc.id}] documents memory-only undo history on title and aria-describedby`, () => {
+      localeSignal.value = tc.locale;
+      try {
+        const live = liveTable(GM_ID, gmView());
+        const ui = mount(h(GmOverrideToolbar, { client: live.client, isGm: true }));
+        const btn = ui.byTestId("gm-undo");
+        const hint = ui.byTestId("gm-undo-hint");
+        assertPresent(btn, "gm-undo button");
+        assertPresent(hint, "gm-undo-hint description");
+        assert.equal(btn.getAttribute("aria-describedby"), "gm-undo-hint");
+        assert.equal(hint.id || hint.getAttribute("id"), "gm-undo-hint");
+        assert.match(btn.title || btn.getAttribute("title") || "", tc.expectedPattern);
+        assert.match(hint.textContent ?? "", tc.expectedPattern);
+        ui.unmount();
+      } finally {
+        localeSignal.value = "en";
+      }
+    });
+  }
 });
 
 describe("TokenVitalsPanel: damage and heal controls", () => {

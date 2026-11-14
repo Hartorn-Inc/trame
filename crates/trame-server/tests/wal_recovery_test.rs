@@ -246,6 +246,7 @@ fn rejection(frames: &[ServerEnvelope]) -> Option<(String, Option<String>)> {
         ServerEnvelope::CommandRejected {
             reason,
             correlation_id,
+            ..
         } => Some((reason.clone(), correlation_id.clone())),
         _ => None,
     })

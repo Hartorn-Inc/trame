@@ -412,7 +412,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
                   class="folder-breadcrumb"
                   data-testid={`folder-breadcrumb-${folderName.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`}
                 >
-                  <span aria-hidden="true">📁</span> {folderName}
+                  <span aria-hidden="true">📁</span> {folderName === "Root" ? t("docs.notes.rootFolder") : folderName}
                 </span>
                 <span class="atlas-tabular-nums" style={{ fontSize: "0.75rem", color: "var(--atlas-text-muted)" }}>
                   {tn("docs.notes.count", folderNotes.length)}
@@ -617,7 +617,7 @@ export function DocumentsWorkspaceTab(props: DocumentsWorkspaceTabProps = {}) {
               data-testid={`handout-card-${handout.handoutId}`}
               role="button"
               tabIndex={0}
-              aria-label={`Open handout: ${handout.title}`}
+              aria-label={t("docs.handouts.open", { title: handout.title })}
               class="handout-card-item"
               onClick={() => {
                 activeHandoutModalSignal.value = handout;

@@ -1280,6 +1280,41 @@ async fn a73_every_response_carries_hardening_headers() {
     }
 }
 
+#[tokio::test]
+async fn hsts_follows_the_public_origin_scheme() {
+    // (case_id, TRAME_PUBLIC_ORIGIN, expected Strict-Transport-Security)
+    let cases = [
+        (
+            "https_origin_sends_one_year_hsts_without_preload",
+            Some("https://table.example.org"),
+            Some("max-age=31536000"),
+        ),
+        (
+            "http_origin_sends_no_hsts",
+            Some("http://localhost:8080"),
+            None,
+        ),
+        ("no_public_origin_sends_no_hsts", None, None),
+    ];
+    for (case, origin, want) in cases {
+        let h = Harness::with(
+            SecurityPolicy {
+                public_origin: origin.map(str::to_string),
+                ..SecurityPolicy::default()
+            },
+            STRONG_SECRET,
+        );
+        let app = h.app();
+        for uri in ["/healthz", "/api/v1/auth/me", "/definitely/not/a/route"] {
+            let (_, headers, _) = send(&app, request("GET", uri, None, Body::empty())).await;
+            let got = headers
+                .get("strict-transport-security")
+                .map(|v| v.to_str().unwrap());
+            assert_eq!(got, want, "case {case}: {uri}");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // A70 / A63 — WebSocket hardening over a real socket
 // ---------------------------------------------------------------------------
@@ -1967,14 +2002,26 @@ async fn a65_vitality_events_reach_only_the_controller() {
             )
             .await;
         let frames = Table::drain(&mut table.player.1);
-        let Some(ServerEnvelope::CommandAccepted { events, state, .. }) = frames.first() else {
-            panic!("case {case}: expected CommandAccepted");
-        };
-        let saw = events
-            .iter()
-            .any(|e| matches!(e, trame_engine::commands::TrameEvent::DamageApplied { .. }));
+        let accepted = frames.iter().find_map(|f| match f {
+            ServerEnvelope::CommandAccepted { events, state, .. } => Some((events, state)),
+            _ => None,
+        });
+        let saw = accepted.is_some_and(|(events, _)| {
+            events
+                .iter()
+                .any(|e| matches!(e, trame_engine::commands::TrameEvent::DamageApplied { .. }))
+        });
         assert_eq!(saw, visible, "case {case}");
         if !visible {
+            // The goblin was already bloodied, so the player's projection is
+            // unchanged and RT12 sends no frame at all.
+            assert!(accepted.is_none(), "case {case}: unexpected frame");
+            let (_, mut rejoined) = connect(&table.room, player_user, CampaignRole::Player).await;
+            let Some(ServerEnvelope::StateSnapshot { state, .. }) =
+                Table::drain(&mut rejoined).into_iter().next()
+            else {
+                panic!("case {case}: expected reconnect snapshot");
+            };
             let view = &state.public_tokens[&target];
             assert_eq!(view.bloodied, BloodiedState::Bloodied, "case {case}");
         }
@@ -2073,6 +2120,9 @@ async fn condition_events_follow_token_visibility_and_control() {
                 assert!(matches!(expected, Seen::Rejected), "case {case}: rejected");
                 continue;
             }
+            // RT12: a change the player cannot see leaves its projection
+            // unchanged, so no frame is sent.
+            None if matches!(expected, Seen::Nothing) => continue,
             other => panic!("case {case}: unexpected frame {other:?}"),
         };
         let conditions_event = events

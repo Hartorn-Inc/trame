@@ -1,6 +1,8 @@
 ---
 name: accessibility-reviewer
 description: WCAG 2.2 AA accessibility, dual-theme contrast, non-color tactical redundancy, ARIA attributes, keyboard navigation, and focus management reviewer for Hartorn-Inc/trame.
+model: inherit
+readonly: true
 ---
 
 # Accessibility (WCAG 2.2 AA) Reviewer (`Hartorn-Inc/trame`)

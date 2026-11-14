@@ -47,6 +47,13 @@
 //!        elsewhere accounts come from owner bootstrap or `InviteRedemption`.
 //!      - `TRAME_INSTANCE_ID` must be a UUID when set; it overrides the id
 //!        persisted in the instance settings row (SEC11).
+//!   6. `All-Or-Nothing Object Store (ADR-0041)`:
+//!      - No `S3_*` variable set: assets stay in PostgreSQL.
+//!      - Any `S3_*` variable set: `S3_ENDPOINT`, `S3_BUCKET`,
+//!        `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` are all required and
+//!        the endpoints must parse. Outside dev a partial or malformed set is
+//!        a `ConfigError`, so a typo never silently keeps assets in
+//!        PostgreSQL; in dev it is logged and ignored.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -58,6 +65,7 @@
 //! ============================================================================
 
 use crate::security::{AuthRateLimiter, SecurityPolicy};
+use crate::storage::s3::{DEFAULT_S3_REGION, S3Config, S3Endpoint};
 use std::sync::Arc;
 
 /// Selects development fallbacks (`dev`) versus fail-closed production behavior.
@@ -95,6 +103,26 @@ pub const DATABASE_URL_ALIAS_VAR: &str = "TRAME_DATABASE_URL";
 pub const INSTANCE_ID_VAR: &str = "TRAME_INSTANCE_ID";
 /// Optional email the owner bootstrap is locked to.
 pub const BOOTSTRAP_OWNER_EMAIL_VAR: &str = "TRAME_BOOTSTRAP_OWNER_EMAIL";
+
+/// S3-compatible endpoint the server uses (`https://<account>.r2.cloudflarestorage.com`).
+pub const S3_ENDPOINT_VAR: &str = "S3_ENDPOINT";
+/// Endpoint signed into browser download redirects; defaults to `S3_ENDPOINT`.
+pub const S3_PUBLIC_ENDPOINT_VAR: &str = "S3_PUBLIC_ENDPOINT";
+/// Bucket holding the instance's assets.
+pub const S3_BUCKET_VAR: &str = "S3_BUCKET";
+/// SigV4 region; defaults to `auto` (Cloudflare R2).
+pub const S3_REGION_VAR: &str = "S3_REGION";
+/// Object-store access key id.
+pub const S3_ACCESS_KEY_ID_VAR: &str = "S3_ACCESS_KEY_ID";
+/// Object-store secret access key.
+pub const S3_SECRET_ACCESS_KEY_VAR: &str = "S3_SECRET_ACCESS_KEY";
+/// Variables that must all be set once any `S3_*` variable is (module invariant 6).
+pub const S3_REQUIRED_VARS: [&str; 4] = [
+    S3_ENDPOINT_VAR,
+    S3_BUCKET_VAR,
+    S3_ACCESS_KEY_ID_VAR,
+    S3_SECRET_ACCESS_KEY_VAR,
+];
 
 /// Upper bound accepted for `TRAME_TRUSTED_PROXY_HOPS`.
 pub const MAX_TRUSTED_PROXY_HOPS: usize = 8;
@@ -202,6 +230,8 @@ pub struct ServerConfig {
     pub database_url: Option<String>,
     /// `TRAME_INSTANCE_ID`; `None` uses the id persisted in the instance settings row.
     pub instance_id_override: Option<uuid::Uuid>,
+    /// `S3_*` object store; `None` keeps assets in PostgreSQL (module invariant 6).
+    pub s3: Option<S3Config>,
 }
 
 /// Startup configuration failure listing every offending variable at once.
@@ -225,6 +255,7 @@ impl ServerConfig {
             static_dir: None,
             database_url: None,
             instance_id_override: None,
+            s3: None,
         }
     }
 
@@ -346,6 +377,23 @@ impl ServerConfig {
             })
         });
 
+        let s3 = match parse_s3(&get) {
+            Ok(s3) => s3,
+            Err((s3_missing, s3_invalid)) if dev => {
+                tracing::warn!(
+                    missing = ?s3_missing,
+                    invalid = ?s3_invalid,
+                    "TRAME_ENV=dev: incomplete S3_* configuration ignored; assets stay in PostgreSQL"
+                );
+                None
+            }
+            Err((s3_missing, s3_invalid)) => {
+                missing.extend(s3_missing);
+                invalid.extend(s3_invalid);
+                None
+            }
+        };
+
         if !missing.is_empty() || !invalid.is_empty() {
             return Err(ConfigError { missing, invalid });
         }
@@ -365,14 +413,67 @@ impl ServerConfig {
                 public_origin: public_origin.clone(),
                 registration_open: dev,
                 bootstrap_owner_email,
+                asset_origin: s3.as_ref().map(|s3| s3.public_endpoint.origin()),
                 ..SecurityPolicy::default()
             }),
             public_origin,
             static_dir: get(STATIC_DIR_VAR).map(|d| std::path::PathBuf::from(d.trim())),
             database_url,
             instance_id_override,
+            s3,
         })
     }
+}
+
+/// Resolves the `S3_*` variables (module invariant 6): `Ok(None)` when none is set,
+/// `Err((missing, invalid))` for a partial or malformed set.
+fn parse_s3(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<S3Config>, (Vec<String>, Vec<String>)> {
+    let any_set = S3_REQUIRED_VARS
+        .iter()
+        .chain([&S3_PUBLIC_ENDPOINT_VAR, &S3_REGION_VAR])
+        .any(|var| get(var).is_some());
+    if !any_set {
+        return Ok(None);
+    }
+    let [endpoint, bucket, access_key_id, secret_access_key] = S3_REQUIRED_VARS.map(get);
+    let missing: Vec<String> = S3_REQUIRED_VARS
+        .iter()
+        .filter(|var| get(var).is_none())
+        .map(|var| var.to_string())
+        .collect();
+    let mut invalid = Vec::new();
+    let mut endpoint_of = |var: &str, value: Option<String>| {
+        let parsed = value.as_deref().and_then(S3Endpoint::parse);
+        if value.is_some() && parsed.is_none() {
+            invalid.push(format!("{var} (expected http(s)://host[:port])"));
+        }
+        parsed
+    };
+    let endpoint = endpoint_of(S3_ENDPOINT_VAR, endpoint);
+    let public_endpoint = endpoint_of(S3_PUBLIC_ENDPOINT_VAR, get(S3_PUBLIC_ENDPOINT_VAR));
+    if bucket.as_deref().is_some_and(|b| b.contains('/')) {
+        invalid.push(format!("{S3_BUCKET_VAR} (must not contain '/')"));
+    }
+    if !missing.is_empty() || !invalid.is_empty() {
+        return Err((missing, invalid));
+    }
+    let (Some(endpoint), Some(bucket), Some(access_key_id), Some(secret_access_key)) =
+        (endpoint, bucket, access_key_id, secret_access_key)
+    else {
+        return Err((missing, invalid));
+    };
+    Ok(Some(S3Config {
+        public_endpoint: public_endpoint.unwrap_or_else(|| endpoint.clone()),
+        endpoint,
+        bucket: bucket.trim().to_string(),
+        region: get(S3_REGION_VAR)
+            .map(|r| r.trim().to_string())
+            .unwrap_or_else(|| DEFAULT_S3_REGION.to_string()),
+        access_key_id: access_key_id.trim().to_string(),
+        secret_access_key: secret_access_key.trim().to_string(),
+    }))
 }
 
 /// Parses a 64-character hex string into a 32-byte AES-256 key.

@@ -19,10 +19,16 @@
  * 2. `Externally Tagged Envelopes`:
  *    - Each frame is `{ Tag: payload }`; `tag` / `payload` keep that split and
  *      undecodable frames are kept with `tag = "UNDECODABLE"`.
+ * 3. `Deflated Frames Inflated First (ADR-0041, trame.v1+deflate)`:
+ *    - When the socket negotiated `trame.v1+deflate`, every server frame is
+ *      one zlib stream. A MessagePack envelope starts with a fixmap byte
+ *      (`0x8n`), never with the zlib header (`0x78`, checksum `% 31 == 0`),
+ *      so the two are told apart per frame and `deflated` records which.
  * ============================================================================
  */
 import { Decoder } from '@msgpack/msgpack';
 import type { Page } from '@playwright/test';
+import { inflateSync } from 'node:zlib';
 
 /** One decoded server frame. */
 export interface RecordedFrame {
@@ -30,6 +36,13 @@ export interface RecordedFrame {
   tag: string;
   /** Envelope payload with UUIDs normalized to strings. */
   payload: Record<string, unknown>;
+  /** The frame arrived as a zlib stream (`trame.v1+deflate`, invariant 3). */
+  deflated: boolean;
+}
+
+/** True when `bytes` starts with a valid RFC 1950 zlib header (deflate, 32 KiB window). */
+export function isZlibStream(bytes: Uint8Array): boolean {
+  return bytes.length >= 2 && bytes[0] === 0x78 && ((bytes[0] << 8) | bytes[1]) % 31 === 0;
 }
 
 function uuid(bytes: Uint8Array): string {
@@ -61,12 +74,13 @@ export function recordRoomFrames(page: Page): RecordedFrame[] {
     if (!ws.url().includes('/campaigns/')) return;
     ws.on('framereceived', ({ payload }) => {
       if (typeof payload === 'string') return;
+      const deflated = isZlibStream(payload);
       try {
-        const raw = normalize(decoder.decode(payload)) as Record<string, unknown>;
+        const raw = normalize(decoder.decode(deflated ? inflateSync(payload) : payload)) as Record<string, unknown>;
         const [tag] = Object.keys(raw);
-        frames.push({ tag, payload: (raw[tag] ?? {}) as Record<string, unknown> });
+        frames.push({ tag, payload: (raw[tag] ?? {}) as Record<string, unknown>, deflated });
       } catch {
-        frames.push({ tag: 'UNDECODABLE', payload: {} });
+        frames.push({ tag: 'UNDECODABLE', payload: {}, deflated });
       }
     });
   });

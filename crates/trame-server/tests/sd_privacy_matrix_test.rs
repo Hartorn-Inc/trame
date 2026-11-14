@@ -1157,12 +1157,13 @@ async fn pointer_ping_throttle_is_per_user_across_sessions() {
 async fn slow_consumer_overflow_spares_the_other_clients() {
     let r = room().await;
     let gm_id = Uuid::new_v4();
+    let slow_id = Uuid::new_v4();
     let (slow_tx, slow_rx) = client_channel_with_capacity(3);
     let overflow = slow_tx.overflow_signal();
     r.handle
         .connect_client(ConnectedClient {
             session_id: Uuid::new_v4(),
-            user_id: Uuid::new_v4(),
+            user_id: slow_id,
             role: CampaignRole::Player,
             tx: slow_tx,
         })
@@ -1180,7 +1181,11 @@ async fn slow_consumer_overflow_spares_the_other_clients() {
     let mut delivered = 0;
     for (case, total, held, signalled) in cases {
         while submitted < total {
-            let id = Uuid::new_v4();
+            // Owned by the slow player, so its projection changes and every command queues a
+            // frame for it (unchanged projections are not resent).
+            let mut goblin =
+                TokenState::new_default(Uuid::new_v4(), "Goblin", Point2D::new(0.0, 0.0));
+            goblin.owner_user_id = Some(slow_id);
             r.handle
                 .dispatch_direct_command(
                     CommandActor {
@@ -1188,11 +1193,7 @@ async fn slow_consumer_overflow_spares_the_other_clients() {
                         role: CampaignRole::Gm,
                     },
                     TrameCommand::SpawnToken {
-                        token: Box::new(TokenState::new_default(
-                            id,
-                            "Goblin",
-                            Point2D::new(0.0, 0.0),
-                        )),
+                        token: Box::new(goblin),
                     },
                 )
                 .await

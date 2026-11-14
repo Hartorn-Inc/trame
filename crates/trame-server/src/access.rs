@@ -390,6 +390,7 @@ pub async fn remove_member_handler(
         Some(room) => room.evict_user(user_id).await.unwrap_or(0),
         None => 0,
     };
+    crate::http::refresh_player_roster(&state, campaign_id, None).await;
     tracing::info!(%campaign_id, %user_id, disconnected_sessions, "campaign member removed");
     Json(json!({ "removed": true, "disconnected_sessions": disconnected_sessions })).into_response()
 }
@@ -523,6 +524,7 @@ pub async fn redeem_invite_handler(
         Ok(outcome) => outcome,
         Err(err) => return redeem_error(err),
     };
+    crate::http::refresh_player_roster(&state, outcome.member.campaign_id, None).await;
     let user = match store.get_user_by_id(outcome.user_id).await {
         Ok(Some(user)) => user,
         Ok(None) => return storage_error("user not found after redemption"),

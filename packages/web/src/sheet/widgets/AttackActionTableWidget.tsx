@@ -13,8 +13,9 @@
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
  * 1. `Save Attacks Have No Attack Roll`:
- *    - An attack with `attackBonus: null` (a saving throw spell) shows
- *      "DC n ABILITY" and offers no attack-roll button.
+ *    - An attack with `attackBonus: null` shows "DC n ABILITY" for a saving
+ *      throw spell, "Auto" for an automatic hit (Magic Missile) and "On hit"
+ *      for a rider (Hex, Divine Smite), and offers no attack-roll button.
  * 2. `Damage Text Matches The Roll`:
  *    - The damage column is the same expression the damage roll sends
  *      (`damageExpression(dice, modifier)`), so the sheet never shows one
@@ -33,8 +34,10 @@ import type { WidgetProps } from '../WidgetRegistry.ts';
 interface AttackRow {
   id: string;
   name: string;
-  /** `null` for saving throw attacks. */
+  /** `null` for saving throw, automatic and rider attacks. */
   attackBonus: number | null;
+  /** `"automatic"` (Magic Missile) or `"rider"` (Hex) when the attack has neither a roll nor a save. */
+  delivery?: string;
   save?: { ability: string; dc: number };
   damageFormula: string;
   damageType?: string;
@@ -47,8 +50,9 @@ function toRow(item: any): AttackRow {
     item.damageFormula ?? item.damage ?? (typeof item.damageDice === 'string' ? damageExpression(item.damageDice, Number(item.damageModifier ?? 0), false) : '1d6');
   return {
     id: String(item.id ?? ''),
-    name: String(item.name ?? 'Attack'),
+    name: String(item.name ?? t('sheet.attacks.unnamed')),
     attackBonus: item.attackBonus === null ? null : Number(item.attackBonus ?? item.bonus ?? 0),
+    ...(item.delivery ? { delivery: String(item.delivery) } : {}),
     ...(item.save ? { save: { ability: String(item.save.ability), dc: Number(item.save.dc) } } : {}),
     damageFormula: String(damageFormula),
     damageType: item.damageType ? String(item.damageType) : undefined,
@@ -147,7 +151,11 @@ export function AttackActionTableWidget(props: WidgetProps): VNode<any> {
                   ? signed(atk.attackBonus)
                   : atk.save
                     ? t('sheet.attacks.saveDc', { dc: atk.save.dc, ability: atk.save.ability.toUpperCase() })
-                    : '—';
+                    : atk.delivery === 'automatic'
+                      ? t('sheet.attacks.automatic')
+                      : atk.delivery === 'rider'
+                        ? t('sheet.attacks.rider')
+                        : '—';
               return h(
                 'tr',
                 { key: atk.id, class: 'ds-attack-row', 'data-testid': `attack-row-${atk.id}` },

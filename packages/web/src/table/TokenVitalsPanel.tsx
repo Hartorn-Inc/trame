@@ -40,7 +40,7 @@
 import { useState } from 'preact/hooks';
 import type { ApiClient } from '../api/client.ts';
 import { selectedActorIdSignal, selectedTokenIdSignal } from '../api/session.ts';
-import { isSheetDrawerOpenSignal } from '../hud/HudDrawers.tsx';
+import { openSheetDrawer } from '../hud/HudDrawers.tsx';
 import { t, type MessageKey } from '../i18n/index.ts';
 import { applyDamage, DAMAGE_TYPES, healActor, recordDeathSave, setConcentration, type DamageType } from './commands.ts';
 import { deathSavePhase, listTableTokens, type TableToken } from './tableView.ts';
@@ -209,7 +209,7 @@ function TokenVitals({ client, isGm = false }: TokenVitalsPanelProps) {
           data-testid="vitals-open-sheet"
           onClick={() => {
             selectedActorIdSignal.value = token.actorId;
-            isSheetDrawerOpenSignal.value = true;
+            openSheetDrawer();
           }}
         >
           {t('vitals.openSheet')}
