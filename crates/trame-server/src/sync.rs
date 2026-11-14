@@ -66,11 +66,34 @@ use trame_engine::geometry::{
 };
 use uuid::Uuid;
 
+/// A submitted `TrameCommand` plus the client's correlation id (RT10).
+///
+/// Wire shape: the command's own map (`{"cmd": "MOVE_TOKEN", ...}`) with an optional extra
+/// `correlation_id` key, so clients that do not send one keep working unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandSubmission {
+    /// Tabletop mutation to apply.
+    #[serde(flatten)]
+    pub command: TrameCommand,
+    /// Opaque client token echoed in `ServerEnvelope::CommandRejected` (`None` when omitted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+}
+
+impl From<TrameCommand> for CommandSubmission {
+    fn from(command: TrameCommand) -> Self {
+        Self {
+            command,
+            correlation_id: None,
+        }
+    }
+}
+
 /// Inbound binary MessagePack payload sent from a connected client to the room actor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientEnvelope {
     /// Submits an authoritative tabletop mutation command (`MoveToken`, `ToggleDoor`, `ApplyDamage`, etc.).
-    SubmitCommand(Box<TrameCommand>),
+    SubmitCommand(Box<CommandSubmission>),
     /// Requests an authoritative CSPRNG dice roll evaluated by the room's `SeededDiceRoller`.
     RollDice {
         /// Standard dice notation string (e.g., `"2d20kh1+5"`).
@@ -79,6 +102,9 @@ pub enum ClientEnvelope {
         visibility: RollVisibility,
         /// Action label or skill name associated with the roll.
         reason: String,
+        /// Opaque client token echoed in `ServerEnvelope::CommandRejected` (`None` when omitted).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        correlation_id: Option<String>,
     },
     /// Broadcasts a transient Ephemeral Pointer ping onto the shared map canvas.
     PointerPing {
@@ -257,10 +283,21 @@ pub enum ServerEnvelope {
         /// Updated recipient-tailored tabletop state projection.
         state: ProjectedTableState,
     },
-    /// Unicast to the submitting client when a `TrameCommand` or dice roll fails validation or RBAC.
+    /// Unicast to the submitting client when a `TrameCommand` or dice roll fails validation,
+    /// RBAC, or persistence, or when a frame cannot be decoded (RT10).
     CommandRejected {
-        /// Human-readable rejection reason.
+        /// Human-readable rejection reason (never a raw storage error).
         reason: String,
+        /// The `correlation_id` the client sent with the rejected envelope; `None` when the
+        /// client sent none or the frame could not be decoded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        correlation_id: Option<String>,
+    },
+    /// Unicast to each Game Master who connects while the room actor that quarantined WAL
+    /// entries during recovery is alive (D4); the frontend shows it as a banner.
+    WalEntriesQuarantined {
+        /// One summary per quarantined entry, in `seq_id` order.
+        entries: Vec<QuarantinedWalSummary>,
     },
     /// Broadcast (or unicast according to `RollVisibility`) when a dice roll completes.
     DiceRolled(ProjectedDiceRoll),
@@ -296,6 +333,30 @@ pub enum ServerEnvelope {
         /// Staged MCP command batch awaiting `CommitMcpStaging` or `RejectMcpStaging`.
         proposal: McpStagingProposal,
     },
+}
+
+/// Game Master-facing summary of a `QuarantinedWalEntry` (no command payload).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuarantinedWalSummary {
+    /// Original WAL sequence number.
+    pub seq_id: u64,
+    /// Command label, e.g. `"UNDO_LAST_ACTION"`, `"MOVE_TOKEN"`, or `"MCP_STAGING"`.
+    pub command_kind: String,
+    /// Replay error, or a note naming the failing `seq_id` for later entries.
+    pub error: String,
+    /// Unix epoch timestamp in milliseconds (`ms`) when the entry was quarantined.
+    pub quarantined_at_ms: u64,
+}
+
+impl From<&crate::wal::QuarantinedWalEntry> for QuarantinedWalSummary {
+    fn from(entry: &crate::wal::QuarantinedWalEntry) -> Self {
+        Self {
+            seq_id: entry.seq_id,
+            command_kind: entry.command_kind.clone(),
+            error: entry.error.clone(),
+            quarantined_at_ms: entry.quarantined_at_ms,
+        }
+    }
 }
 
 /// Encodes a `ServerEnvelope` into a named MessagePack byte vector (`bytes`) for WebSocket transmission.

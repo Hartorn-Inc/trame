@@ -21,8 +21,18 @@
 //! 3. `Pre-Decode Dimension Ceiling`:
 //!    - Inspects raster image headers via `image_dimensions` before allocating
 //!      a full-resolution pixel buffer, rejecting images exceeding
-//!      `MAX_IMAGE_DIMENSION_PX` so malicious decompression bombs cannot exhaust
-//!      server RAM.
+//!      `MAX_IMAGE_DIMENSION_PX` per side or `MAX_IMAGE_PIXEL_AREA` in total, so
+//!      malicious decompression bombs cannot exhaust server RAM (SEC14).
+//!    - Player uploads use the lower `MAX_PLAYER_IMAGE_PIXEL_AREA` (16 Mpx);
+//!      GM uploads and map imports keep `MAX_IMAGE_PIXEL_AREA` (64 Mpx).
+//! 4. `Blocking-Pool Transcoding`:
+//!    - JSON/base64 parsing, decoding, resizing and WebP encoding run inside
+//!      `spawn_blocking`, so a large map never stalls the async runtime that
+//!      drives every live table (SEC14).
+//! 5. `Global Decode Gate`:
+//!    - At most `MAX_CONCURRENT_IMAGE_DECODES` (2) decodes run at once
+//!      (`IMAGE_DECODE_PERMITS`), so a burst of small-but-huge-canvas uploads
+//!      waits in line instead of allocating 256 MiB each in parallel.
 //! ============================================================================
 
 use crate::assets::store::{AssetStore, AssetStoreError};
@@ -41,7 +51,42 @@ use uuid::Uuid;
 pub const MAX_PAYLOAD_SIZE_BYTES: usize = 67_108_864; // 64 MiB
 pub const MAX_IMAGE_DIMENSION_PX: u32 = 16_384;
 pub const MAX_IMAGE_DIMENSION: u32 = MAX_IMAGE_DIMENSION_PX;
+/// Maximum decoded pixel count (width x height) for GM uploads and map imports: 64 Mpx,
+/// i.e. 256 MiB as RGBA8.
+pub const MAX_IMAGE_PIXEL_AREA: u64 = 64 * 1024 * 1024;
+/// Maximum decoded pixel count for player uploads (portraits, handout art): 16 Mpx, i.e.
+/// 64 MiB as RGBA8.
+pub const MAX_PLAYER_IMAGE_PIXEL_AREA: u64 = 16 * 1024 * 1024;
 pub const THUMBNAIL_MAX_DIMENSION_PX: u32 = 256;
+
+/// Image decodes/transcodes allowed to run at once across the whole server.
+pub const MAX_CONCURRENT_IMAGE_DECODES: usize = 2;
+
+/// Global gate held for the whole decode + encode of an upload or map import. Each decode
+/// may hold up to `MAX_IMAGE_PIXEL_AREA * 4` bytes, so peak memory stays bounded however
+/// many requests arrive; extra requests wait their turn instead of decoding in parallel.
+pub static IMAGE_DECODE_PERMITS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(MAX_CONCURRENT_IMAGE_DECODES);
+
+/// Runs `job` on the blocking pool while holding an `IMAGE_DECODE_PERMITS` permit. The permit
+/// moves into the blocking task, so a client that disconnects mid-decode does not free its
+/// slot before the work actually ends.
+async fn run_gated_decode<T, F>(job: F) -> Result<T, UvttImportError>
+where
+    F: FnOnce() -> Result<T, UvttImportError> + Send + 'static,
+    T: Send + 'static,
+{
+    let permit = IMAGE_DECODE_PERMITS
+        .acquire()
+        .await
+        .map_err(|e| UvttImportError::ImageDecodeFailure(e.to_string()))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        job()
+    })
+    .await
+    .map_err(|e| UvttImportError::ImageDecodeFailure(e.to_string()))?
+}
 
 /// Reads raster header dimensions without allocating the full pixel buffer.
 pub fn image_dimensions(image_bytes: &[u8]) -> Result<(u32, u32), UvttImportError> {
@@ -67,6 +112,8 @@ pub enum UvttImportError {
     ImageDecodeFailure(String),
     #[error("Image dimension {width}x{height} exceeds max 16384x16384 limit")]
     ImageDimensionExceeded { width: u32, height: u32 },
+    #[error("Image {width}x{height} exceeds the {limit} pixel area limit")]
+    ImagePixelAreaExceeded { width: u32, height: u32, limit: u64 },
     #[error("Failed to encode WebP image: {0}")]
     ImageEncodeFailure(String),
     #[error("Storage failure: {0}")]
@@ -300,7 +347,7 @@ pub fn parse_uvtt_geometry(doc: &UvttDocument) -> (Vec<WallSegment>, Vec<Importe
 /// Ingests a raw Universal VTT (.uvtt / .dd2vtt) byte stream, enforces security limits,
 /// converts raster graphics to canonical WebP + thumbnail, persists assets, and maps geometry.
 pub async fn import_uvtt_map<S: AssetStore + ?Sized>(
-    payload: &[u8],
+    payload: Bytes,
     instance_id: Uuid,
     campaign_id: Uuid,
     store: &S,
@@ -309,31 +356,14 @@ pub async fn import_uvtt_map<S: AssetStore + ?Sized>(
         return Err(UvttImportError::PayloadTooLarge(payload.len()));
     }
 
-    let doc: UvttDocument =
-        serde_json::from_slice(payload).map_err(|e| UvttImportError::InvalidJson(e.to_string()))?;
-
-    let cleaned_base64: String = doc.image.chars().filter(|c| !c.is_whitespace()).collect();
-
-    let raw_image_bytes = BASE64
-        .decode(&cleaned_base64)
-        .map_err(|e| UvttImportError::InvalidBase64(e.to_string()))?;
-
-    let decoded_img = decode_guarded_image(&raw_image_bytes)?;
-    let (width, height) = decoded_img.dimensions();
-
-    // Encode primary map image as WebP (or fallback to PNG if WebP writer unsupported)
-    let primary_bytes = encode_image(&decoded_img, ImageFormat::WebP)?;
-
-    // Compute SHA-256 content address digest
-    let hash_hex = Sha256Hasher::digest(&primary_bytes);
-
-    // Generate 256px maximum dimension thumbnail preserving aspect ratio
-    let thumb_img = decoded_img.resize(
-        THUMBNAIL_MAX_DIMENSION_PX,
-        THUMBNAIL_MAX_DIMENSION_PX,
-        FilterType::Lanczos3,
-    );
-    let thumb_bytes = encode_image(&thumb_img, ImageFormat::WebP)?;
+    let TranscodedMap {
+        doc,
+        primary_bytes,
+        thumb_bytes,
+        hash_hex,
+        width,
+        height,
+    } = run_gated_decode(move || transcode_uvtt(&payload)).await?;
 
     let primary_key =
         format!("instances/{instance_id}/campaigns/{campaign_id}/assets/{hash_hex}.webp");
@@ -366,15 +396,68 @@ pub async fn import_uvtt_map<S: AssetStore + ?Sized>(
     })
 }
 
-/// Magic-byte check (PNG/JPEG/WebP), header-only dimension guard, then full decode. The
-/// header check runs first so a decompression bomb is rejected before any pixel allocation.
-fn decode_guarded_image(raw: &[u8]) -> Result<DynamicImage, UvttImportError> {
+/// CPU-bound half of `import_uvtt_map`, run on the blocking pool.
+struct TranscodedMap {
+    /// Parsed document with `image` emptied (the raster lives in `primary_bytes`).
+    doc: UvttDocument,
+    primary_bytes: Vec<u8>,
+    thumb_bytes: Vec<u8>,
+    /// Lowercase hex SHA-256 of `primary_bytes` (content address).
+    hash_hex: String,
+    width: u32,
+    height: u32,
+}
+
+/// Parses the document, decodes the guarded raster, and encodes the WebP map and its
+/// `THUMBNAIL_MAX_DIMENSION_PX` thumbnail (PNG fallback when the WebP writer refuses).
+fn transcode_uvtt(payload: &[u8]) -> Result<TranscodedMap, UvttImportError> {
+    let mut doc: UvttDocument =
+        serde_json::from_slice(payload).map_err(|e| UvttImportError::InvalidJson(e.to_string()))?;
+    let cleaned_base64: String = std::mem::take(&mut doc.image)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let raw_image_bytes = BASE64
+        .decode(&cleaned_base64)
+        .map_err(|e| UvttImportError::InvalidBase64(e.to_string()))?;
+
+    let decoded_img = decode_guarded_image(&raw_image_bytes, MAX_IMAGE_PIXEL_AREA)?;
+    let (width, height) = decoded_img.dimensions();
+    let primary_bytes = encode_image(&decoded_img, ImageFormat::WebP)?;
+    let hash_hex = Sha256Hasher::digest(&primary_bytes);
+    let thumb_img = decoded_img.resize(
+        THUMBNAIL_MAX_DIMENSION_PX,
+        THUMBNAIL_MAX_DIMENSION_PX,
+        FilterType::Lanczos3,
+    );
+    let thumb_bytes = encode_image(&thumb_img, ImageFormat::WebP)?;
+    Ok(TranscodedMap {
+        doc,
+        primary_bytes,
+        thumb_bytes,
+        hash_hex,
+        width,
+        height,
+    })
+}
+
+/// Magic-byte check (PNG/JPEG/WebP), header-only dimension guard (sides and
+/// `max_pixel_area`), then full decode. The header check runs first so a decompression bomb
+/// is rejected before any pixel allocation.
+fn decode_guarded_image(raw: &[u8], max_pixel_area: u64) -> Result<DynamicImage, UvttImportError> {
     detect_magic_bytes(raw)?;
     let (hdr_width, hdr_height) = image_dimensions(raw)?;
     if hdr_width > MAX_IMAGE_DIMENSION || hdr_height > MAX_IMAGE_DIMENSION {
         return Err(UvttImportError::ImageDimensionExceeded {
             width: hdr_width,
             height: hdr_height,
+        });
+    }
+    if u64::from(hdr_width) * u64::from(hdr_height) > max_pixel_area {
+        return Err(UvttImportError::ImagePixelAreaExceeded {
+            width: hdr_width,
+            height: hdr_height,
+            limit: max_pixel_area,
         });
     }
     let decoded = image::load_from_memory(raw)
@@ -386,11 +469,24 @@ fn decode_guarded_image(raw: &[u8]) -> Result<DynamicImage, UvttImportError> {
     Ok(decoded)
 }
 
-/// Validates an uploaded raster with the same guards as map import and re-encodes it as
-/// WebP, returning the encoded bytes. Re-encoding strips polyglot trailers and metadata.
-pub fn transcode_upload_to_webp(raw: &[u8]) -> Result<Vec<u8>, UvttImportError> {
-    let decoded = decode_guarded_image(raw)?;
+/// Validates an uploaded raster with the same guards as map import, capped at
+/// `max_pixel_area` (`MAX_IMAGE_PIXEL_AREA` for GMs, `MAX_PLAYER_IMAGE_PIXEL_AREA` for
+/// players), and re-encodes it as WebP. Re-encoding strips polyglot trailers and metadata.
+pub fn transcode_upload_to_webp(
+    raw: &[u8],
+    max_pixel_area: u64,
+) -> Result<Vec<u8>, UvttImportError> {
+    let decoded = decode_guarded_image(raw, max_pixel_area)?;
     encode_image(&decoded, ImageFormat::WebP)
+}
+
+/// `transcode_upload_to_webp` on the blocking pool, behind `IMAGE_DECODE_PERMITS`, so
+/// decoding never stalls live tables and parallel uploads cannot multiply peak memory (SEC14).
+pub async fn transcode_upload_to_webp_blocking(
+    raw: Bytes,
+    max_pixel_area: u64,
+) -> Result<Vec<u8>, UvttImportError> {
+    run_gated_decode(move || transcode_upload_to_webp(&raw, max_pixel_area)).await
 }
 
 fn encode_image(img: &DynamicImage, format: ImageFormat) -> Result<Vec<u8>, UvttImportError> {
@@ -405,6 +501,61 @@ fn encode_image(img: &DynamicImage, format: ImageFormat) -> Result<Vec<u8>, Uvtt
             img.write_to(&mut fallback_cursor, ImageFormat::Png)
                 .map_err(|e| UvttImportError::ImageEncodeFailure(e.to_string()))?;
             Ok(fallback_buf)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn small_png() -> Bytes {
+        let img = image::RgbImage::from_pixel(8, 8, image::Rgb([40, 90, 160]));
+        let mut out = Cursor::new(Vec::new());
+        img.write_to(&mut out, ImageFormat::Png).unwrap();
+        Bytes::from(out.into_inner())
+    }
+
+    #[tokio::test]
+    async fn decode_waits_for_a_free_permit() {
+        // (case_id, permits held by other decodes, decode finishes within the deadline)
+        let cases = [
+            (
+                "all_permits_busy_decode_waits",
+                MAX_CONCURRENT_IMAGE_DECODES,
+                false,
+            ),
+            (
+                "one_permit_free_decode_runs",
+                MAX_CONCURRENT_IMAGE_DECODES - 1,
+                true,
+            ),
+        ];
+        for (case, held, finishes) in cases {
+            let busy = IMAGE_DECODE_PERMITS
+                .acquire_many(held as u32)
+                .await
+                .unwrap();
+            let decode = transcode_upload_to_webp_blocking(small_png(), MAX_IMAGE_PIXEL_AREA);
+            let outcome = tokio::time::timeout(Duration::from_millis(300), decode).await;
+            assert_eq!(outcome.is_ok(), finishes, "case {case}");
+            drop(busy);
+        }
+    }
+
+    #[test]
+    fn player_cap_is_lower_than_gm_cap() {
+        let png = small_png();
+        // (case_id, area limit, accepted)
+        let cases = [
+            ("fits_gm_cap", MAX_IMAGE_PIXEL_AREA, true),
+            ("fits_player_cap", MAX_PLAYER_IMAGE_PIXEL_AREA, true),
+            ("over_a_tiny_cap", 63, false),
+        ];
+        for (case, limit, accepted) in cases {
+            let result = transcode_upload_to_webp(&png, limit);
+            assert_eq!(result.is_ok(), accepted, "case {case}: {result:?}");
         }
     }
 }

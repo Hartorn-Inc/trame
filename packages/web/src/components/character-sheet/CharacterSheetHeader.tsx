@@ -30,6 +30,7 @@ import { h, type VNode } from 'preact';
 import { useState } from 'preact/hooks';
 import type { Dnd5eActorData } from '../../../../game-systems/dnd5e/src/index.ts';
 import { apiClient, type ApiClient } from '../../api/client.ts';
+import { describeActionError } from '../../api/errorMessages.ts';
 import { LevelUpModal, type DiceRollService } from '../modals/LevelUpModal.tsx';
 import { RestModal } from '../modals/RestModal.tsx';
 import { saveActorSheet } from '../../sheet/sheetPersistence.ts';
@@ -100,7 +101,7 @@ export function CharacterSheetHeader(props: CharacterSheetHeaderProps): VNode<an
       setConflict(null);
       await props.onSave?.(outcome.actor.data as Dnd5eActorData);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : t('sheetHeader.saveFailed'));
+      setSaveError(describeActionError(err, t('sheetHeader.saveFailed')));
     }
   };
 

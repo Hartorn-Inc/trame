@@ -12,6 +12,7 @@ import {
   TrameAppRoot,
   isMobileCompanionMode,
 } from "../src/mobile/companionMode.ts";
+import { assertAbsent } from "./helpers/domAssert.ts";
 
 describe("[E5-T1] Wiki Markdown Parser & Zero-Trust Role Filtering", () => {
   it("extracts [[Entity]] and [[Entity|Custom Label]] wikilinks cleanly", () => {
@@ -114,7 +115,7 @@ describe("[E5-T1] Mobile Companion Mode (< 768px) & Handout Reveal Modal", () =>
     // Verify Mobile Companion Layout is mounted
     assert.ok(container.querySelector('[data-testid="mobile-companion-layout"]'));
     // Verify TableCanvas is strictly absent and PixiJS was NEVER called
-    assert.equal(container.querySelector('[data-testid="table-canvas"]'), null);
+    assertAbsent(container.querySelector('[data-testid="table-canvas"]'), "table-canvas");
     assert.equal(pixiConstructed, false);
 
     root.destroy();
@@ -132,7 +133,7 @@ describe("[E5-T1] Mobile Companion Mode (< 768px) & Handout Reveal Modal", () =>
       },
     });
 
-    assert.equal(container.querySelector('[data-testid="mobile-companion-layout"]'), null);
+    assertAbsent(container.querySelector('[data-testid="mobile-companion-layout"]'), "mobile-companion-layout");
     const canvas = container.querySelector('[data-testid="table-canvas"]');
     assert.ok(canvas);
     assert.equal(pixiConstructed, true);
@@ -154,21 +155,21 @@ describe("[E5-T1] Mobile Companion Mode (< 768px) & Handout Reveal Modal", () =>
     const diceBtn = container.querySelector('[data-testid="tab-button-dice"]');
     assert.ok(diceBtn);
     diceBtn.click();
-    assert.equal(container.querySelector('[data-testid="tab-sheet"]'), null);
+    assertAbsent(container.querySelector('[data-testid="tab-sheet"]'), "tab-sheet");
     assert.ok(container.querySelector('[data-testid="tab-dice"]'));
 
     // Click Inventory tab button
     const invBtn = container.querySelector('[data-testid="tab-button-inventory"]');
     assert.ok(invBtn);
     invBtn.click();
-    assert.equal(container.querySelector('[data-testid="tab-dice"]'), null);
+    assertAbsent(container.querySelector('[data-testid="tab-dice"]'), "tab-dice");
     assert.ok(container.querySelector('[data-testid="tab-inventory"]'));
 
     // Click Party Journal tab button
     const journalBtn = container.querySelector('[data-testid="tab-button-journal"]');
     assert.ok(journalBtn);
     journalBtn.click();
-    assert.equal(container.querySelector('[data-testid="tab-inventory"]'), null);
+    assertAbsent(container.querySelector('[data-testid="tab-inventory"]'), "tab-inventory");
     assert.ok(container.querySelector('[data-testid="tab-journal"]'));
 
     // Switch back to Character Sheet
@@ -190,7 +191,7 @@ describe("[E5-T1] Mobile Companion Mode (< 768px) & Handout Reveal Modal", () =>
       handoutManager,
     });
 
-    assert.equal(container.querySelector('[data-testid="handout-reveal-modal"]'), null);
+    assertAbsent(container.querySelector('[data-testid="handout-reveal-modal"]'), "handout-reveal-modal");
 
     // Dispatch WebSocket handout.revealed event
     handoutManager.onHandoutRevealed({
@@ -228,7 +229,7 @@ describe("[E5-T1] Mobile Companion Mode (< 768px) & Handout Reveal Modal", () =>
     assert.ok(closeBtn);
     closeBtn.click();
 
-    assert.equal(container.querySelector('[data-testid="handout-reveal-modal"]'), null);
+    assertAbsent(container.querySelector('[data-testid="handout-reveal-modal"]'), "handout-reveal-modal");
 
     root.destroy();
   });

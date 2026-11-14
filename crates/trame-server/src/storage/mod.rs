@@ -3,6 +3,7 @@
 pub mod blob;
 pub mod local;
 pub mod postgres;
+pub mod postgres_accounts;
 pub mod s3;
 
 pub use blob::{

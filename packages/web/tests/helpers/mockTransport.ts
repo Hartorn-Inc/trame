@@ -47,6 +47,12 @@ export class MockSocket implements SocketLike {
     this.onopen?.({});
   }
 
+  /** Server- or network-initiated close: handlers receive `{ code }` (1006 = refused handshake or drop). */
+  serverClose(code: number): void {
+    this.readyState = 3;
+    this.onclose?.({ code });
+  }
+
   /** Delivers raw bytes, or msgpack-encodes a plain value, as one frame. */
   receive(frame: Uint8Array | unknown): void {
     const bytes = frame instanceof Uint8Array ? frame : encode(frame);
@@ -99,6 +105,8 @@ export function authUserDto(overrides: Record<string, unknown> = {}): Record<str
     is_guest: false,
     is_ephemeral: false,
     role: "PLAYER",
+    instance_role: "HOST",
+    totp_enabled: false,
     ...overrides,
   };
 }

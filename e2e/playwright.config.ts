@@ -15,6 +15,9 @@
  * 1. `One Worker, No Retries`:
  *    - The journey shares one campaign across its phases; a retry would
  *      start a second campaign and duplicate the videos.
+ *    - `E2E_STAGE=after-restart` (the post-SIGKILL run of `make e2e`) writes
+ *      its HTML report and JSON results under `-after-restart` names so the
+ *      journey's are kept.
  * 2. `Video Owned By The Spec`:
  *    - The spec creates its own recorded contexts, so the fixture-level
  *      `video` option stays off.
@@ -30,6 +33,8 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const artifacts = process.env.E2E_ARTIFACTS_DIR ?? 'artifacts';
+/** `make e2e` runs a second stage after restarting the server; keep both reports. */
+const suffix = process.env.E2E_STAGE === 'after-restart' ? '-after-restart' : '';
 
 export default defineConfig({
   testDir: 'tests',
@@ -41,8 +46,8 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   reporter: [
     ['list'],
-    ['html', { outputFolder: `${artifacts}/report`, open: 'never' }],
-    ['json', { outputFile: `${artifacts}/results.json` }],
+    ['html', { outputFolder: `${artifacts}/report${suffix}`, open: 'never' }],
+    ['json', { outputFile: `${artifacts}/results${suffix}.json` }],
   ],
   use: {
     ...devices['Desktop Chrome'],

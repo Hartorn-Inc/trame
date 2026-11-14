@@ -17,6 +17,7 @@ import {
   isMobileCompanionMode,
 } from "../src/mobile/companionMode.ts";
 import type { SheetLayoutTree } from "../src/sheet/types.ts";
+import { assertAbsent } from "./helpers/domAssert.ts";
 
 function createCompleteTestSheet(): SheetLayoutTree {
   return {
@@ -186,18 +187,18 @@ describe("Ticket #107: DeclarativeSheetRenderer PadlockEditMode, Tabular-Nums & 
 
       // Check ability score steppers / inputs are absent or disabled/readonly in locked mode
       const decStrBtn = container.querySelector('[data-testid="ability-dec-str"]');
-      assert.equal(decStrBtn, null, "Ability steppers should not be active in locked mode");
+      assertAbsent(decStrBtn, "Ability steppers should not be active in locked mode");
 
       // Check proficiency toggles are disabled or rendered non-interactively
       const saveProfToggle = container.querySelector('[data-testid="save-prof-toggle-str"]');
-      assert.equal(saveProfToggle, null, "Saving throw proficiency toggles should not be active in locked mode");
+      assertAbsent(saveProfToggle, "Saving throw proficiency toggles should not be active in locked mode");
 
       const skillCycleBtn = container.querySelector('[data-testid="skill-prof-cycle-athletics"]');
-      assert.equal(skillCycleBtn, null, "Skill proficiency rank cycling buttons should not be active in locked mode");
+      assertAbsent(skillCycleBtn, "Skill proficiency rank cycling buttons should not be active in locked mode");
 
       // Check max HP is locked
       const maxHpInput = container.querySelector('[data-testid="resource-input-max"]');
-      assert.equal(maxHpInput, null, "Resource max input should not be editable in locked mode");
+      assertAbsent(maxHpInput, "Resource max input should not be editable in locked mode");
       const maxHpVal = container.querySelector('[data-testid="resource-max-val"]');
       assert.ok(maxHpVal, "Locked max HP should be displayed as static element");
     });

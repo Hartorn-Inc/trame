@@ -40,11 +40,32 @@
  * 6. `Injectable Transport`:
  *    - `fetch` and the socket factory are constructor inputs so the app seam
  *      tests run against a mocked transport.
+ * 7. `Reconnect And Resync (RT11)`:
+ *    - `ConnectionManager` (`connection.ts`) reconnects with backoff and a
+ *      heartbeat. Across a reconnect the stale `table` stays visible under
+ *      the connection banner; the first `StateSnapshot` on the new socket
+ *      replaces it and resets every derived signal (initiative totals,
+ *      events, prompt closures, pings), so nothing from before the drop is
+ *      merged into the fresh state.
+ * 8. `Every Failed Action Is Reported (RT10 / UA16)`:
+ *    - Each `SubmitCommand` / `RollDice` carries a fresh `correlation_id`;
+ *      `CommandRejected` is matched back to the action (`PendingCommands`)
+ *      and pushed to `commandFeedback`. Submitting while the socket is not
+ *      open sends nothing, queues nothing, and pushes `notConnected`.
+ *    - When an open socket dies, every action still unanswered becomes a
+ *      `maybeLost` notice ("may not have been applied, check the table"):
+ *      its answer can never arrive on the next socket.
+ * 9. `GM-Only Quarantine Notice (ADR-0040, D4)`:
+ *    - `WalEntriesQuarantined` fills `walQuarantine`; the server unicasts it
+ *      to Game Masters on every attach while the recovering room lives, so
+ *      once the GM dismisses a notice, the same entries are not shown again
+ *      for that campaign on reconnect.
  *
  * EXECUTION LIFECYCLE:
  * -----
  * `connect(campaignId)`
- * ├── 1. Reset table signals, open `/api/v1/campaigns/{id}/ws` (binary).
+ * ├── 1. Reset table signals, start the room connection (binary socket on
+ * │      `/api/v1/campaigns/{id}/ws`, reconnecting on its own).
  * ├── 2. Each frame -> `decodeServerEnvelope` -> `applyServerEnvelope`.
  * └── 3. `submitCommand` / `rollDice` / `sendPointerPing` / `ping` encode
  *        externally tagged `ClientEnvelope`s while the socket is open.
@@ -66,28 +87,24 @@ import {
   type WireTrameEvent,
 } from "./wire.ts";
 import {
+  COMMAND_FEEDBACK_LIMIT,
   DICE_LOG_LIMIT,
   POINTER_PING_LIMIT,
   session as defaultSession,
   type AuthUser,
   type Campaign,
+  type InstanceRole,
   type CampaignMember,
+  type CommandFeedback,
   type SessionState,
 } from "./session.ts";
+import { ConnectionManager, type AccessProbeResult, type NetworkWatcher, type SocketLike } from "./connection.ts";
+import { PendingCommands, newCorrelationId } from "./pendingCommands.ts";
 
-/** `WebSocket.OPEN` without depending on a global `WebSocket` in tests. */
-const SOCKET_OPEN = 1;
+export type { SocketLike } from "./connection.ts";
 
-/** Minimal socket surface used by the client (satisfied by `WebSocket`). */
-export interface SocketLike {
-  binaryType: string;
-  readonly readyState: number;
-  send(data: Uint8Array): void;
-  close(): void;
-  onopen: ((ev: unknown) => void) | null;
-  onclose: ((ev: unknown) => void) | null;
-  onmessage: ((ev: { data: unknown }) => void) | null;
-}
+/** `CommandFeedback.action` for table dice rolls (`RollDice` is not a `TrameCommand`). */
+export const ROLL_DICE_ACTION = "ROLL_DICE";
 
 /** Network seam: REST `fetch` and the WebSocket factory. */
 export interface Transport {
@@ -105,6 +122,10 @@ export interface ApiClientOptions {
   baseUrl?: string;
   /** WebSocket origin (`ws(s)://host`); defaults to the page origin. */
   wsOrigin?: string;
+  /** Connectivity hints for reconnects; defaults to the browser's `online`/`offline`/visibility. */
+  network?: NetworkWatcher;
+  /** Uniform random source in `[0, 1)` for reconnect jitter; defaults to `Math.random`. */
+  random?: () => number;
 }
 
 /** REST failure carrying the HTTP status and the server's `{ code, error }` body. */
@@ -225,35 +246,152 @@ export interface LoginInput {
   totpCode?: string;
 }
 
-/** Result of redeeming an invite (`MagicLinkLoginResponse`). */
-export interface InviteRedemption {
-  user: AuthUser;
-  campaignId: Uuid;
-  role: string;
-  characterId: Uuid | null;
+/** `POST /api/v1/auth/login` code: the account has TOTP on and the request carried no `totp_code`. */
+export const MFA_REQUIRED = "MFA_REQUIRED";
+/** `POST /api/v1/auth/login` code: the `totp_code` is wrong or expired. */
+export const INVALID_TOTP_CODE = "INVALID_TOTP_CODE";
+
+/** Pending TOTP enrollment returned by `POST /api/v1/auth/totp/setup`. */
+export interface TotpEnrollment {
+  /** Base32 shared secret for manual entry in an authenticator app. */
+  secret: string;
+  /** `otpauth://totp/...` URI (issuer, account, 6 digits, 30 s period). */
+  otpauthUrl: string;
 }
+
+/** Public instance facts (`GET /api/v1/instance`). */
+export interface InstanceInfo {
+  /** `POST /api/v1/auth/register` is accepted (only under `TRAME_ENV=dev`). */
+  registrationOpen: boolean;
+  /** An `Owner` has claimed the instance. */
+  ownerClaimed: boolean;
+}
+
+/** Setup token state: `invalid` covers unknown, used, and replaced tokens. */
+export type SetupTokenStatus = "valid" | "expired" | "invalid";
+
+/** Result of `POST /api/v1/instance/bootstrap/status`. */
+export interface SetupTokenCheck {
+  status: SetupTokenStatus;
+  /** `TRAME_BOOTSTRAP_OWNER_EMAIL` when the token is valid and an email is locked. */
+  lockedEmail: string | null;
+}
+
+/** Body of `POST /api/v1/instance/bootstrap` (claims the instance as its `Owner`). */
+export interface OwnerBootstrapInput {
+  /** Raw setup token from the logged setup URL. */
+  token: string;
+  email: string;
+  /** Verified for an existing account, hashed for a new one. */
+  password: string;
+  /** 2-100 characters; ignored when the email already has an account. */
+  displayName: string;
+}
+
+/** One account in the Owner-only list (`GET /api/v1/instance/users`). */
+export interface InstanceUser {
+  id: Uuid;
+  email: string;
+  displayName: string;
+  instanceRole: InstanceRole;
+  /** Legacy guest account with no credentials bound yet. */
+  isGuest: boolean;
+  totpEnabled: boolean;
+  /** Creation time, UNIX epoch seconds. */
+  createdAt: number;
+}
+
+/** `CampaignInvite` state at read time. */
+export type InviteStatus = "active" | "revoked" | "expired" | "exhausted";
 
 /** Options for `POST /api/v1/campaigns/{id}/invites` (GM of that campaign only). */
 export interface CreateInviteInput {
-  /** Granted role; the server defaults to `"PLAYER"`. */
-  role?: string;
-  /** Character pre-assigned to the invited player. */
-  characterId?: Uuid;
-  /** Invite lifetime in seconds; the server defaults to 7 days. */
+  /** Lifetime in seconds; the server clamps it to `1..=604800` (7 days) and defaults to 7 days. */
   ttlSeconds?: number;
+  /** Redemptions allowed, `1..=100`; the server defaults to 8. */
+  maxUses?: number;
 }
 
-/** Minted invite (`CampaignInviteResponse`). */
+/** `CampaignInvite` as returned to the Game Master. */
 export interface CampaignInvite {
-  inviteUrl: string;
-  token: string;
-  /** Expiry as UNIX epoch seconds. */
-  expiresAt: number;
+  id: Uuid;
   campaignId: Uuid;
+  /** `{TRAME_PUBLIC_ORIGIN}/?invite={token}`; only present right after creation. */
+  inviteUrl: string | null;
+  /** Raw token; only present right after creation (storage keeps its hash). */
+  token: string | null;
+  /** UNIX epoch seconds. */
+  createdAt: number;
+  /** UNIX epoch seconds. */
+  expiresAt: number;
+  maxUses: number;
+  useCount: number;
+  /** UNIX epoch seconds, or `null` while not revoked. */
+  revokedAt: number | null;
+  status: InviteStatus;
+}
+
+/** One redemption of a campaign's invites (`GET .../invites/redemptions`). */
+export interface InviteRedemptionRecord {
+  inviteId: Uuid;
+  campaignId: Uuid;
+  userId: Uuid;
+  displayName: string;
+  /** UNIX epoch seconds. */
+  redeemedAt: number;
+}
+
+/** Where an invite leads (`POST /api/v1/invites/preview`), shown before any credential is asked. */
+export interface InvitePreview {
+  campaignId: Uuid;
+  /** `null` when the campaign metadata could not be loaded. */
+  campaignName: string | null;
+  status: InviteStatus;
+  /** UNIX epoch seconds. */
+  expiresAt: number;
+}
+
+/** New-account credentials for an unauthenticated `InviteRedemption`. */
+export interface RedeemInviteAccount {
+  email: string;
+  password: string;
+  /** 2-100 characters. */
+  displayName: string;
+}
+
+/** Result of `POST /api/v1/invites/redeem`. */
+export interface InviteRedemption {
+  campaignId: Uuid;
+  /** Campaign role after redemption (`PLAYER`, or the existing role). */
   role: string;
+  /** The account was already a member; no use was consumed. */
+  alreadyMember: boolean;
+  /** The redemption created the account (and set the session cookie). */
+  accountCreated: boolean;
+  user: AuthUser;
+}
+
+/** Result of `DELETE /api/v1/campaigns/{id}/members/{userId}`. */
+export interface MemberRemoval {
+  removed: boolean;
+  /** Live table sockets of that user closed by the server (WS close code 4403). */
+  disconnectedSessions: number;
 }
 
 type Json = Record<string, unknown>;
+
+const INSTANCE_ROLES: readonly InstanceRole[] = ["OWNER", "HOST", "MEMBER"];
+const INVITE_STATUSES: readonly InviteStatus[] = ["active", "revoked", "expired", "exhausted"];
+
+function toInstanceRole(raw: unknown): InstanceRole {
+  const role = String(raw ?? "").toUpperCase() as InstanceRole;
+  return INSTANCE_ROLES.includes(role) ? role : "MEMBER";
+}
+
+function toInviteStatus(raw: unknown): InviteStatus {
+  const status = String(raw ?? "").toLowerCase() as InviteStatus;
+  return INVITE_STATUSES.includes(status) ? status : "revoked";
+}
 
 function toAuthUser(raw: Json): AuthUser {
   return {
@@ -263,6 +401,35 @@ function toAuthUser(raw: Json): AuthUser {
     username: String(raw.username ?? ""),
     isGuest: Boolean(raw.is_guest),
     role: String(raw.role ?? "PLAYER"),
+    instanceRole: toInstanceRole(raw.instance_role),
+    totpEnabled: Boolean(raw.totp_enabled),
+  };
+}
+
+function toInstanceUser(raw: Json): InstanceUser {
+  return {
+    id: String(raw.id),
+    email: String(raw.email ?? ""),
+    displayName: String(raw.display_name ?? ""),
+    instanceRole: toInstanceRole(raw.instance_role),
+    isGuest: Boolean(raw.is_guest),
+    totpEnabled: Boolean(raw.totp_enabled),
+    createdAt: Number(raw.created_at ?? 0),
+  };
+}
+
+function toCampaignInvite(raw: Json): CampaignInvite {
+  return {
+    id: String(raw.id),
+    campaignId: String(raw.campaign_id),
+    inviteUrl: typeof raw.invite_url === "string" ? raw.invite_url : null,
+    token: typeof raw.token === "string" ? raw.token : null,
+    createdAt: Number(raw.created_at ?? 0),
+    expiresAt: Number(raw.expires_at ?? 0),
+    maxUses: Number(raw.max_uses ?? 0),
+    useCount: Number(raw.use_count ?? 0),
+    revokedAt: typeof raw.revoked_at === "number" ? raw.revoked_at : null,
+    status: toInviteStatus(raw.status),
   };
 }
 
@@ -339,13 +506,41 @@ export class ApiClient {
   private readonly transport: Transport;
   private readonly baseUrl: string;
   private readonly wsOrigin: string;
-  private socket: SocketLike | null = null;
+  private readonly room: ConnectionManager;
+  private readonly pending = new PendingCommands();
+  /** Campaign of the room connection, used by the access probe. */
+  private roomCampaignId: Uuid | null = null;
+  /** `true` from a socket opening until its `StateSnapshot` (invariant 7). */
+  private awaitingSnapshot = false;
+  private nextFeedbackId = 1;
+  /** `{campaignId}:{seq ids}` of the quarantine notice the GM dismissed (invariant 9). */
+  private dismissedQuarantineKey: string | null = null;
 
   constructor(options: ApiClientOptions = {}) {
     this.transport = options.transport ?? browserTransport();
     this.state = options.state ?? defaultSession;
     this.baseUrl = options.baseUrl ?? "";
     this.wsOrigin = options.wsOrigin ?? defaultWsOrigin();
+    this.room = new ConnectionManager({
+      state: this.state,
+      openSocket: (url) => this.transport.openSocket(url),
+      onFrame: (data) => {
+        const bytes = frameBytes(data);
+        const envelope = bytes ? decodeServerEnvelope(bytes) : null;
+        if (envelope) this.applyServerEnvelope(envelope);
+      },
+      onOpen: () => {
+        this.awaitingSnapshot = true;
+        this.pending.clear();
+      },
+      onSocketLost: () => {
+        for (const action of this.pending.drain()) this.pushFeedback({ kind: "maybeLost", action, reason: null });
+      },
+      probeAccess: () => this.probeRoomAccess(),
+      encodePing: (nowMs) => encodeClientEnvelope({ type: "Ping", clientTimeMs: nowMs }),
+      network: options.network,
+      random: options.random,
+    });
   }
 
   private request(method: string, path: string, body?: unknown): Promise<Json> {
@@ -425,6 +620,26 @@ export class ApiClient {
     return user;
   }
 
+  /**
+   * Starts TOTP enrollment (`POST /api/v1/auth/totp/setup`). The returned secret is
+   * stored as pending and protects nothing until `enableTotp` confirms a code.
+   */
+  async setupTotp(): Promise<TotpEnrollment> {
+    const res = await this.request("POST", "/api/v1/auth/totp/setup");
+    return { secret: String(res.secret_base32 ?? res.secret ?? ""), otpauthUrl: String(res.otpauth_url ?? "") };
+  }
+
+  /**
+   * Confirms enrollment with a 6-digit code from the authenticator
+   * (`POST /api/v1/auth/totp/enable`; `401` for a wrong code) and marks the
+   * signed-in user as TOTP-enabled.
+   */
+  async enableTotp(code: string): Promise<void> {
+    await this.request("POST", "/api/v1/auth/totp/enable", { code });
+    const user = this.state.user.value;
+    if (user) this.state.user.value = { ...user, totpEnabled: true };
+  }
+
   /** Ends the session and clears all user-scoped state. */
   async logout(): Promise<void> {
     await this.request("POST", "/api/v1/auth/logout");
@@ -454,23 +669,92 @@ export class ApiClient {
   }
 
   /**
-   * Redeems a `?invite=` token (`GuestSessionUpgrade`). The server reuses an
-   * existing session cookie when present, otherwise it creates a guest user.
+   * Binds email + password to a legacy guest session (`POST /api/v1/auth/bind`),
+   * then re-reads `/auth/me` because the bind response carries no `user`.
    */
-  async redeemInvite(token: string, nickname?: string): Promise<InviteRedemption> {
-    const res = await this.request("POST", "/api/v1/auth/magic-link/redeem", {
-      token,
-      ...(nickname ? { nickname } : {}),
+  async bindGuestAccount(input: { email: string; password: string }): Promise<AuthUser | null> {
+    await this.request("POST", "/api/v1/auth/bind", { email: input.email, password: input.password });
+    return this.restoreSession();
+  }
+
+  /** Reads the public registration mode and whether an `Owner` exists (`GET /api/v1/instance`). */
+  async getInstanceInfo(): Promise<InstanceInfo> {
+    const res = await this.request("GET", "/api/v1/instance");
+    return { registrationOpen: Boolean(res.registration_open), ownerClaimed: Boolean(res.owner_claimed) };
+  }
+
+  /** Checks a setup token before showing the owner form (`POST /api/v1/instance/bootstrap/status`). */
+  async getSetupTokenStatus(token: string): Promise<SetupTokenCheck> {
+    const res = await this.request("POST", "/api/v1/instance/bootstrap/status", { token });
+    const status = String(res.status);
+    return {
+      status: status === "valid" || status === "expired" ? status : "invalid",
+      lockedEmail: typeof res.locked_email === "string" ? res.locked_email : null,
+    };
+  }
+
+  /** Claims the instance as its `Owner` and signs in (`POST /api/v1/instance/bootstrap`). */
+  async bootstrapOwner(input: OwnerBootstrapInput): Promise<AuthUser> {
+    const res = await this.request("POST", "/api/v1/instance/bootstrap", {
+      token: input.token,
+      email: input.email,
+      password: input.password,
+      display_name: input.displayName,
     });
     const user = toAuthUser(res.user as Json);
     this.setUser(user);
+    return user;
+  }
+
+  /** Lists every account, oldest first (`GET /api/v1/instance/users`, Owner only). */
+  async listInstanceUsers(): Promise<InstanceUser[]> {
+    const res = await this.request("GET", "/api/v1/instance/users");
+    return ((res.users as Json[]) ?? []).map(toInstanceUser);
+  }
+
+  /**
+   * Promotes an account to `HOST` or demotes it to `MEMBER`
+   * (`PUT /api/v1/instance/users/{id}/role`, Owner only; `409 CANNOT_CHANGE_OWNER` for the Owner).
+   */
+  async setInstanceRole(userId: Uuid, role: "HOST" | "MEMBER"): Promise<InstanceUser> {
+    const res = await this.request("PUT", `/api/v1/instance/users/${encodeURIComponent(userId)}/role`, {
+      instance_role: role,
+    });
+    return toInstanceUser(res.user as Json);
+  }
+
+  /** Shows where an invite leads before any credential is asked (`POST /api/v1/invites/preview`). */
+  async previewInvite(token: string): Promise<InvitePreview> {
+    const res = await this.request("POST", "/api/v1/invites/preview", { token });
+    return {
+      campaignId: String(res.campaign_id),
+      campaignName: typeof res.campaign_name === "string" ? res.campaign_name : null,
+      status: toInviteStatus(res.status),
+      expiresAt: Number(res.expires_at ?? 0),
+    };
+  }
+
+  /**
+   * `InviteRedemption` (`POST /api/v1/invites/redeem`). Without a session,
+   * `account` creates a `Member` account (the server sets the session cookie);
+   * with a session, only the membership is added. Either way the returned user
+   * becomes `session.user` and the joined campaign becomes active.
+   */
+  async redeemInvite(token: string, account?: RedeemInviteAccount): Promise<InviteRedemption> {
+    const res = await this.request("POST", "/api/v1/invites/redeem", {
+      token,
+      ...(account ? { email: account.email, password: account.password, display_name: account.displayName } : {}),
+    });
+    const user = toAuthUser(res.user as Json);
     const campaignId = String(res.campaign_id);
+    this.setUser(user);
     this.state.activeCampaignId.value = campaignId;
     return {
-      user,
       campaignId,
       role: String(res.role ?? "PLAYER"),
-      characterId: typeof res.character_id === "string" ? res.character_id : null,
+      alreadyMember: Boolean(res.already_member),
+      accountCreated: Boolean(res.account_created),
+      user,
     };
   }
 
@@ -490,20 +774,46 @@ export class ApiClient {
     return campaign;
   }
 
-  /** Mints an invite link; only the campaign's GM is authorized by the server. */
+  /**
+   * Mints the campaign's invite link (`POST .../invites`, GM only). Minting
+   * revokes the previous link; the URL and token are only returned here.
+   */
   async createCampaignInvite(campaignId: Uuid, input: CreateInviteInput = {}): Promise<CampaignInvite> {
-    const res = await this.request("POST", `/api/v1/campaigns/${encodeURIComponent(campaignId)}/invites`, {
-      ...(input.role ? { role: input.role } : {}),
-      ...(input.characterId ? { character_id: input.characterId } : {}),
-      ...(input.ttlSeconds ? { ttl_seconds: input.ttlSeconds } : {}),
+    const res = await this.request("POST", campaignPath(campaignId, "/invites"), {
+      ...(input.ttlSeconds !== undefined ? { ttl_seconds: input.ttlSeconds } : {}),
+      ...(input.maxUses !== undefined ? { max_uses: input.maxUses } : {}),
     });
-    return {
-      inviteUrl: String(res.invite_url),
-      token: String(res.token),
-      expiresAt: Number(res.expires_at),
-      campaignId: String(res.campaign_id),
-      role: String(res.role),
-    };
+    return toCampaignInvite(res.invite as Json);
+  }
+
+  /** Reads the unrevoked invite, if any, without its URL (`GET .../invites/active`, GM only). */
+  async getActiveInvite(campaignId: Uuid): Promise<CampaignInvite | null> {
+    const res = await this.request("GET", campaignPath(campaignId, "/invites/active"));
+    return res.invite ? toCampaignInvite(res.invite as Json) : null;
+  }
+
+  /** Revokes the unrevoked invite (`DELETE .../invites/active`, GM only; `404 NO_ACTIVE_INVITE`). */
+  async revokeCampaignInvite(campaignId: Uuid): Promise<CampaignInvite> {
+    const res = await this.request("DELETE", campaignPath(campaignId, "/invites/active"));
+    return toCampaignInvite(res.invite as Json);
+  }
+
+  /** Lists who redeemed the campaign's invites and when (`GET .../invites/redemptions`, GM only). */
+  async listInviteRedemptions(campaignId: Uuid): Promise<InviteRedemptionRecord[]> {
+    const res = await this.request("GET", campaignPath(campaignId, "/invites/redemptions"));
+    return ((res.redemptions as Json[]) ?? []).map((r) => ({
+      inviteId: String(r.invite_id),
+      campaignId: String(r.campaign_id),
+      userId: String(r.user_id),
+      displayName: String(r.display_name ?? ""),
+      redeemedAt: Number(r.redeemed_at ?? 0),
+    }));
+  }
+
+  /** Removes a member and closes their live sockets (`DELETE .../members/{userId}`, GM only). */
+  async removeCampaignMember(campaignId: Uuid, userId: Uuid): Promise<MemberRemoval> {
+    const res = await this.request("DELETE", campaignPath(campaignId, `/members/${encodeURIComponent(userId)}`));
+    return { removed: Boolean(res.removed), disconnectedSessions: Number(res.disconnected_sessions ?? 0) };
   }
 
   /** Lists campaign members (`GET .../members`). */
@@ -687,7 +997,7 @@ export class ApiClient {
     return res.scene as Record<string, unknown>;
   }
 
-  /** Opens the campaign room socket, replacing any previous connection. */
+  /** Opens the campaign room connection (reconnecting on its own), replacing any previous one. */
   connect(campaignId: Uuid): void {
     this.disconnect();
     const s = this.state;
@@ -697,53 +1007,101 @@ export class ApiClient {
     s.mcpProposals.value = {};
     s.initiativeTotals.value = {};
     s.lastClosedPrompt.value = null;
-    s.connection.value = "connecting";
-
-    const socket = this.transport.openSocket(
-      `${this.wsOrigin}/api/v1/campaigns/${encodeURIComponent(campaignId)}/ws`,
-    );
-    socket.binaryType = "arraybuffer";
-    socket.onopen = () => {
-      if (this.socket === socket) s.connection.value = "open";
-    };
-    socket.onclose = () => {
-      if (this.socket === socket) {
-        this.socket = null;
-        s.connection.value = "closed";
-      }
-    };
-    socket.onmessage = (ev) => {
-      const bytes = frameBytes(ev.data);
-      const envelope = bytes ? decodeServerEnvelope(bytes) : null;
-      if (envelope) this.applyServerEnvelope(envelope);
-    };
-    this.socket = socket;
+    s.commandFeedback.value = [];
+    s.walQuarantine.value = [];
+    this.roomCampaignId = campaignId;
+    this.room.start(`${this.wsOrigin}/api/v1/campaigns/${encodeURIComponent(campaignId)}/ws`);
   }
 
-  /** Closes the room socket, if any. */
+  /** Closes the room connection for good, if any. */
   disconnect(): void {
-    const socket = this.socket;
-    this.socket = null;
-    if (socket) {
-      socket.close();
-      this.state.connection.value = "closed";
+    this.room.stop();
+    this.roomCampaignId = null;
+    this.pending.clear();
+  }
+
+  /** Retries the room connection now instead of waiting for the backoff delay. */
+  reconnectNow(): void {
+    this.room.reconnectNow();
+  }
+
+  /**
+   * Leaves the expired session for the sign-in screen (connection banner,
+   * `signedOut`). The active campaign is kept so signing in returns to it.
+   */
+  signInAgain(): void {
+    this.disconnect();
+    this.setUser(null);
+  }
+
+  /** Removes one toast from `commandFeedback`. */
+  dismissFeedback(id: number): void {
+    this.state.commandFeedback.value = this.state.commandFeedback.value.filter((f) => f.id !== id);
+  }
+
+  /** Hides the quarantine notice; the same entries stay hidden on reconnect (invariant 9). */
+  dismissWalQuarantine(): void {
+    this.dismissedQuarantineKey = this.quarantineKey(this.state.walQuarantine.value);
+    this.state.walQuarantine.value = [];
+  }
+
+  private quarantineKey(entries: { seq_id: number }[]): string {
+    return `${this.roomCampaignId}:${entries.map((e) => e.seq_id).join(",")}`;
+  }
+
+  /** Classifies a refused room handshake through the member-only campaign route. */
+  private async probeRoomAccess(): Promise<AccessProbeResult> {
+    if (this.roomCampaignId === null) return "unreachable";
+    try {
+      await this.request("GET", campaignPath(this.roomCampaignId));
+      return "ok";
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) return "signedOut";
+      if (err instanceof ApiError && err.status === 403) return "forbidden";
+      return "unreachable";
     }
   }
 
+  private pushFeedback(feedback: Omit<CommandFeedback, "id">): void {
+    this.state.commandFeedback.value = [
+      ...this.state.commandFeedback.value,
+      { id: this.nextFeedbackId++, ...feedback },
+    ].slice(-COMMAND_FEEDBACK_LIMIT);
+  }
+
   private send(envelope: ClientEnvelope): boolean {
-    if (!this.socket || this.socket.readyState !== SOCKET_OPEN) return false;
-    this.socket.send(encodeClientEnvelope(envelope));
+    return this.room.send(encodeClientEnvelope(envelope));
+  }
+
+  /**
+   * Sends a tracked action with a fresh `correlation_id` (invariant 8).
+   * Returns `false`, sends nothing, and reports `notConnected` when the socket is not open.
+   */
+  private sendTracked(action: string, build: (correlationId: string) => ClientEnvelope): boolean {
+    const correlationId = newCorrelationId();
+    if (!this.send(build(correlationId))) {
+      this.pushFeedback({ kind: "notConnected", action, reason: null });
+      return false;
+    }
+    this.pending.add(correlationId, action);
     return true;
   }
 
   /** Submits an externally tagged `TrameCommand`; `false` when the socket is not open. */
   submitCommand(command: WireTrameCommand): boolean {
-    return this.send({ type: "SubmitCommand", command });
+    const action = typeof command.cmd === "string" ? command.cmd : "";
+    return this.sendTracked(action, (correlationId) => ({ type: "SubmitCommand", command, correlationId }));
   }
 
-  /** Requests a server-side table roll (`RollDice`). */
+  /** Requests a server-side table roll (`RollDice`); `false` when the socket is not open. */
   rollDice(expression: string, visibility: WireRollVisibility, reason: string): boolean {
-    return this.send({ type: "RollDice", expression, visibility, reason });
+    return this.sendTracked(ROLL_DICE_ACTION, (correlationId) => ({
+      type: "RollDice",
+      expression,
+      visibility,
+      reason,
+      correlationId,
+    }));
   }
 
   /** Broadcasts an ephemeral pointer ping at a canvas position (`px`). */
@@ -761,6 +1119,15 @@ export class ApiClient {
     const s = this.state;
     switch (envelope.type) {
       case "StateSnapshot":
+        if (this.awaitingSnapshot) {
+          this.awaitingSnapshot = false;
+          s.initiativeTotals.value = {};
+          s.lastEvents.value = [];
+          s.lastClosedPrompt.value = null;
+          s.pointerPings.value = [];
+          s.lastRejection.value = null;
+          this.room.markHealthy();
+        }
         s.seqId.value = envelope.seqId;
         s.table.value = envelope.state;
         s.mcpProposals.value = envelope.state.mcp_staging_proposals ?? {};
@@ -778,6 +1145,14 @@ export class ApiClient {
         return;
       case "CommandRejected":
         s.lastRejection.value = envelope.reason;
+        this.pushFeedback({
+          kind: "rejected",
+          action: this.pending.take(envelope.correlationId, nowMs),
+          reason: envelope.reason,
+        });
+        return;
+      case "WalEntriesQuarantined":
+        if (this.quarantineKey(envelope.entries) !== this.dismissedQuarantineKey) s.walQuarantine.value = envelope.entries;
         return;
       case "DiceRolled":
         s.diceLog.value = [...s.diceLog.value, envelope.roll].slice(-DICE_LOG_LIMIT);
@@ -791,6 +1166,8 @@ export class ApiClient {
         return;
       case "Pong":
         s.rttMs.value = Math.max(0, nowMs - envelope.clientTimeMs);
+        this.pending.resolveSentBefore(envelope.clientTimeMs);
+        this.room.notePong();
         return;
       case "ActorUpdated": {
         const known = s.actors.value[envelope.actorId];

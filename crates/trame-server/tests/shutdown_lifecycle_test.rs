@@ -136,7 +136,7 @@ async fn test_graceful_shutdown_room_hibernation() {
     };
     room.send_envelope(
         gm_session_id,
-        trame_server::sync::ClientEnvelope::SubmitCommand(Box::new(move_cmd)),
+        trame_server::sync::ClientEnvelope::SubmitCommand(Box::new(move_cmd.into())),
     )
     .await
     .expect("command sent");
@@ -170,10 +170,11 @@ async fn test_graceful_shutdown_room_hibernation() {
     }
 
     // 7. Verify table state persistence in WAL storage upon recovery
-    let (recovered_state, recovered_seq) =
+    let recovered =
         recover_table_state(harness.wal.as_ref(), campaign_id).expect("WAL state recovered");
-    assert_eq!(recovered_seq, 1);
-    let moved_token = recovered_state
+    assert_eq!(recovered.seq_id, 1);
+    let moved_token = recovered
+        .state
         .data
         .tokens
         .get(&token_id)
@@ -298,7 +299,7 @@ async fn test_hibernate_broadcasts_ws_close_1001_and_flushes_state() {
     };
     room.send_envelope(
         client1_session_id,
-        trame_server::sync::ClientEnvelope::SubmitCommand(Box::new(move_cmd)),
+        trame_server::sync::ClientEnvelope::SubmitCommand(Box::new(move_cmd.into())),
     )
     .await
     .expect("envelope sent");
@@ -333,10 +334,11 @@ async fn test_hibernate_broadcasts_ws_close_1001_and_flushes_state() {
         _ => panic!("expected OutboundClientFrame::Close"),
     }
 
-    let (recovered_state, recovered_seq) =
+    let recovered =
         recover_table_state(wal.as_ref(), campaign_id).expect("recovery from storage succeeds");
-    assert_eq!(recovered_seq, 1);
-    let moved_token = recovered_state
+    assert_eq!(recovered.seq_id, 1);
+    let moved_token = recovered
+        .state
         .data
         .tokens
         .get(&token_id)
@@ -423,7 +425,8 @@ async fn test_http_endpoint_rejects_connections_during_shutdown() {
 
     let wal = Arc::new(InMemoryWalStorage::new());
     let lease_manager = Arc::new(RoomLeaseManager::new(wal.clone(), 25, 900_000));
-    let asset_store = Arc::new(trame_server::assets::store::InMemoryAssetStore::new());
+    let asset_store =
+        Arc::new(trame_server::assets::store::InMemoryAssetStore::with_ephemeral_secret());
     let membership = Arc::new(trame_server::http::InMemoryMembershipValidator::new());
     let instance_id = Uuid::new_v4();
 

@@ -16,6 +16,7 @@ import {
 import { CAMPAIGN, GM_ID, PLAYER_ID, liveTable, mount } from "../helpers/liveTable.ts";
 import { flush, type RouteReply } from "../helpers/mockTransport.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
+import { assertAbsent } from "../helpers/domAssert.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -88,7 +89,7 @@ describe("CampaignDocumentsTab: loading, empty and error states", () => {
     it(c.id, async () => {
       const { ui } = await mountDocuments(false, c.routes);
       for (const id of c.present) assert.ok(ui.byTestId(id), `${id} present`);
-      for (const id of c.absent) assert.equal(ui.byTestId(id), null, `${id} absent`);
+      for (const id of c.absent) assertAbsent(ui.byTestId(id), id);
       ui.unmount();
     });
   }
@@ -116,7 +117,7 @@ describe("CampaignDocumentsTab: role-gated controls", () => {
       ui.click("note-item-lore");
       assert.equal(Boolean(ui.byTestId("filter-dm-only")), c.gmOnly);
       assert.equal(Boolean(ui.byTestId("btn-reveal-handout")), c.gmOnly);
-      assert.equal(ui.byTestId("filter-private"), null, "no private scope on the server");
+      assertAbsent(ui.byTestId("filter-private"), "no private scope on the server");
       assert.ok(ui.byTestId("save-note-btn"), "both roles may save party notes");
       ui.unmount();
     });
@@ -262,14 +263,14 @@ describe("MapsWorkspaceTab: scene-list version", () => {
       ui.click("activate-scene-btn");
       await flush();
       assert.ok(ui.byTestId("maps-version-conflict"), "conflict panel shown");
-      assert.equal(ui.byTestId("maps-error"), null, "no generic error");
+      assertAbsent(ui.byTestId("maps-error"), "no generic error");
       assert.equal(commands().filter((cmd) => cmd.cmd === "ACTIVATE_SCENE").length, 0, "a stale save never activates");
       transport.routes[MAPS_PUT] = ok({ scenes: [backendScene], version: 10 });
       ui.click(c.button);
       await flush();
       assert.deepEqual(puts(transport), c.expectedPuts);
       assert.equal(transport.calls.filter((call) => call.method === "GET" && call.url === `${BASE}/maps`).length, c.expectedGets);
-      assert.equal(ui.byTestId("maps-version-conflict"), null, "panel closed");
+      assertAbsent(ui.byTestId("maps-version-conflict"), "panel closed");
       ui.unmount();
     });
   }

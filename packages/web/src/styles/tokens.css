@@ -568,6 +568,19 @@ select.ds-input {
   font-size: var(--atlas-font-size-xs);
 }
 
+/* Passive text badge (InstanceRole, invite status): the label carries the meaning, never amber */
+.ds-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5rem;
+  padding: 0 var(--atlas-space-sm);
+  color: var(--atlas-text);
+  font-size: var(--atlas-font-size-xs);
+  font-weight: 600;
+  border: 1px solid var(--atlas-border);
+  border-radius: var(--atlas-radius-sm);
+}
+
 .ds-field-error {
   margin: 0;
   color: var(--atlas-danger);
@@ -1044,6 +1057,72 @@ button.ds-prof-pip {
   border: 1px solid var(--atlas-border-control);
 }
 
+/* Room connection banner: Level 2 strip under the top bar (RoomConnectionFeedback.tsx) */
+.ds-connection-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--atlas-space-sm);
+  padding: var(--atlas-space-sm) var(--atlas-space-md);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  border-bottom: 1px solid var(--atlas-border);
+  border-left: 4px solid var(--atlas-border-control);
+}
+
+.ds-connection-banner[data-state="signedOut"],
+.ds-connection-banner[data-state="forbidden"],
+.ds-connection-banner[data-state="quarantine"] {
+  border-left-color: var(--atlas-danger);
+}
+
+.ds-connection-banner-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--atlas-space-sm);
+}
+
+.ds-connection-banner-text {
+  margin: 0;
+  font-size: var(--atlas-font-size-sm);
+  font-weight: 500;
+}
+
+/* Action feedback toasts: Level 3 overlay above the map canvas */
+.ds-toast-region {
+  position: fixed;
+  right: var(--atlas-space-md);
+  bottom: var(--atlas-space-md);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: var(--atlas-space-sm);
+  width: min(24rem, calc(100vw - 2 * var(--atlas-space-md)));
+  pointer-events: none;
+}
+
+.ds-toast {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--atlas-space-sm);
+  padding: var(--atlas-space-sm) var(--atlas-space-md);
+  background-color: var(--atlas-surface);
+  color: var(--atlas-text);
+  border: 1px solid var(--atlas-border);
+  border-left: 4px solid var(--atlas-danger);
+  border-radius: var(--atlas-radius-lg);
+  box-shadow: var(--atlas-elevation-overlay);
+  pointer-events: auto;
+}
+
+.ds-toast-message {
+  margin: 0;
+  font-size: var(--atlas-font-size-sm);
+}
+
 @media (max-width: 1023px) {
   .ds-table-layout {
     grid-template-columns: minmax(0, 1fr);
@@ -1076,6 +1155,11 @@ button.ds-prof-pip {
   .ds-save-roll,
   .ds-skill-roll {
     min-height: var(--atlas-hit-touch);
+  }
+
+  /* Keep toasts above the mobile companion bottom navigation */
+  .ds-toast-region {
+    bottom: calc(var(--atlas-hit-touch) + var(--atlas-space-lg));
   }
 }
 

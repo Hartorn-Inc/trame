@@ -948,7 +948,7 @@ mod tests {
 
         let wal = Arc::new(InMemoryWalStorage::new());
         let lease_manager = Arc::new(RoomLeaseManager::new(wal, 16, 900_000));
-        let asset_store = Arc::new(InMemoryAssetStore::new());
+        let asset_store = Arc::new(InMemoryAssetStore::with_ephemeral_secret());
         let membership = Arc::new(InMemoryMembershipValidator::new());
         let timeline_storage = Arc::new(InMemoryTimelineStorage::new());
         let session_store = Arc::new(InMemorySessionStore::new());
@@ -972,6 +972,7 @@ mod tests {
                 mfa_enabled: false,
                 totp_secret: None,
                 pending_totp_secret: None,
+                instance_role: trame_server::auth::accounts::InstanceRole::Host,
             })
             .await
             .unwrap();

@@ -77,7 +77,7 @@ describe("Initiative totals seeded from the projected snapshot", () => {
   ];
   for (const c of merges) {
     it(c.id, () => {
-      const { client } = liveTable(PLAYER_ID, null);
+      const { client } = liveTable(PLAYER_ID, tableState());
       client.state.initiativeTotals.value = c.known;
       client.applyServerEnvelope({ type: "StateSnapshot", seqId: 1, state: c.state });
       assert.deepEqual(client.state.initiativeTotals.value, c.expected);

@@ -9,6 +9,7 @@ import {
   type SheetLayoutTree,
   type WidgetLayoutNode,
 } from "../../src/sheet/types.ts";
+import { assertAbsent } from "../helpers/domAssert.ts";
 
 function createSampleSheetTree(): SheetLayoutTree {
   return {
@@ -243,13 +244,13 @@ describe("DeclarativeSheetRenderer VisibilityTier Rules", () => {
     });
 
     const gmSection = DeclarativeSheetRenderer.findNodeById(parsed, "gm-secrets-section");
-    assert.equal(gmSection, null);
+    assertAbsent(gmSection, "gmSection");
 
     const gmWidget = DeclarativeSheetRenderer.findNodeById(parsed, "gm-tracker-widget");
-    assert.equal(gmWidget, null);
+    assertAbsent(gmWidget, "gmWidget");
 
     const auditWidget = DeclarativeSheetRenderer.findNodeById(parsed, "audit-log-widget");
-    assert.equal(auditWidget, null);
+    assertAbsent(auditWidget, "auditWidget");
 
     const ownerRow = DeclarativeSheetRenderer.findNodeById(parsed, "owner-notes-row");
     assert.ok(ownerRow);
@@ -283,12 +284,12 @@ describe("DeclarativeSheetRenderer VisibilityTier Rules", () => {
     });
 
     const ownerRow = DeclarativeSheetRenderer.findNodeById(parsed, "owner-notes-row");
-    assert.equal(ownerRow, null);
+    assertAbsent(ownerRow, "ownerRow");
     const privateBio = DeclarativeSheetRenderer.findNodeById(parsed, "private-bio-widget");
-    assert.equal(privateBio, null);
+    assertAbsent(privateBio, "privateBio");
 
     const gmSection = DeclarativeSheetRenderer.findNodeById(parsed, "gm-secrets-section");
-    assert.equal(gmSection, null);
+    assertAbsent(gmSection, "gmSection");
 
     const coreCol = DeclarativeSheetRenderer.findNodeById(parsed, "core-column");
     assert.ok(coreCol);

@@ -20,6 +20,11 @@
 //!        via `tokio::task::block_in_place(|| handle.block_on(fut))` when called
 //!        on a multi-threaded Tokio worker, falling back to a lightweight thread
 //!        only when invoked from a `current_thread` test runtime or non-Tokio thread.
+//!      - Room actors block on those WAL calls, so every connection carries a
+//!        `statement_timeout` (`PG_STATEMENT_TIMEOUT_MS`), pool acquisition waits at
+//!        most `PG_ACQUIRE_TIMEOUT`, and each WAL call is capped by `WAL_CALL_TIMEOUT`:
+//!        a stalled database turns into a fast `WalError` the room rolls back from
+//!        instead of a frozen actor.
 //!   2. `Optimistic Concurrency Control (ADR-0037)`:
 //!      - Persistent actor mutations (`update_actor_optimistic`) verify
 //!        `version = $expected_version` atomically in SQL (`UPDATE ... WHERE version = $4`)
@@ -32,16 +37,18 @@
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
-//!   `SqlxPostgresStore::connect_and_migrate(database_url, base_url)`
+//!   `SqlxPostgresStore::connect_and_migrate(database_url, base_url, signing_secret)`
 //!     ├── 1. Connect `PgPool` & execute embedded `./migrations` (`0001_initial_schema.sql`).
 //!     ├── 2. Serve async auth/REST queries directly on `PgPool`.
 //!     └── 3. Bridge synchronous WAL/room trait calls via `run_pg_blocking` (`block_in_place`).
 //! ============================================================================
 
+use super::postgres_accounts::instance_role_column;
 use crate::archive::exporter::{ExportEntity, NoteRecord};
 use crate::archive::importer::{ArchiveError, CampaignImportTarget};
 use crate::archive::manifest::CampaignMetadata;
 use crate::assets::store::{AssetStore, AssetStoreError};
+use crate::auth::accounts::InstanceRole;
 use crate::auth::magic_link::{hmac_sha256, now_epoch_seconds};
 use crate::auth::oauth::{OAuthError, OAuthProvider, OAuthStore, PendingOAuthState};
 use crate::auth::password::IdentityStore;
@@ -56,7 +63,9 @@ use crate::notes::{NotesError, PartyJournalEntry, PartyJournalStorage};
 use crate::timeline::{
     AppendEventInput, SessionTimelineEvent, SessionTimelineResponse, TimelineError, TimelineStorage,
 };
-use crate::wal::{TableStateSnapshot, WalEntry, WalError, WalStorage};
+use crate::wal::{
+    QuarantinedWalEntry, StoredWalRow, TableStateSnapshot, WalEntry, WalError, WalStorage,
+};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
@@ -185,6 +194,33 @@ where
     .expect("pg worker thread panicked")
 }
 
+/// Longest a pool connection may wait to be acquired before the query fails.
+pub const PG_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Server-side `statement_timeout` (`ms`) set on every pooled connection: a statement stuck on
+/// a lock or a stalled database fails after this long instead of blocking its caller.
+pub const PG_STATEMENT_TIMEOUT_MS: u64 = 5_000;
+
+/// Client-side bound on one WAL call (`ms`). Slightly above `PG_STATEMENT_TIMEOUT_MS` so the
+/// server-side timeout normally fires first; this one also covers a connection that stopped
+/// answering at the network level, where no statement timeout can be delivered.
+pub const WAL_CALL_TIMEOUT: Duration = Duration::from_millis(PG_STATEMENT_TIMEOUT_MS + 1_000);
+
+/// `run_pg_blocking` for `WalStorage` calls, bounded by `WAL_CALL_TIMEOUT`. A room actor
+/// blocks on these calls, so an unbounded wait would freeze its mailbox (and its `Pong`s);
+/// a timeout instead becomes a `WalError` the room rolls back from (RT5).
+fn run_wal_query<F, T>(fut: F) -> Result<T, WalError>
+where
+    F: std::future::Future<Output = Result<T, WalError>> + Send + 'static,
+    T: Send + 'static,
+{
+    run_pg_blocking(async move {
+        tokio::time::timeout(WAL_CALL_TIMEOUT, fut)
+            .await
+            .unwrap_or(Err(WalError::TimedOut(WAL_CALL_TIMEOUT)))
+    })
+}
+
 /// Authoritative PostgreSQL 18 storage engine backed by `sqlx::PgPool`.
 #[derive(Clone)]
 pub struct SqlxPostgresStore {
@@ -195,12 +231,9 @@ pub struct SqlxPostgresStore {
 }
 
 impl SqlxPostgresStore {
-    /// Creates a new `SqlxPostgresStore` bound to an active `PgPool`.
-    pub fn new(pool: PgPool) -> Self {
-        let signing_secret = std::env::var("TRAME_JWT_SECRET")
-            .or_else(|_| std::env::var("JWT_SECRET"))
-            .map(|s| s.into_bytes())
-            .unwrap_or_else(|_| b"trame-default-hmac-sha256-signing-secret-key".to_vec());
+    /// Creates a new `SqlxPostgresStore` bound to an active `PgPool`, signing presigned asset
+    /// URLs with `signing_secret` (`ServerSecrets::asset_signing_secret` in production, SEC5).
+    pub fn new(pool: PgPool, signing_secret: Vec<u8>) -> Self {
         Self {
             pool,
             pending_oauth: Arc::new(RwLock::new(HashMap::new())),
@@ -209,22 +242,25 @@ impl SqlxPostgresStore {
         }
     }
 
-    /// Connects to PostgreSQL using `database_url` and runs embedded SQL migrations (`./migrations`).
+    /// Connects to PostgreSQL using `database_url` (pool acquire bounded by
+    /// `PG_ACQUIRE_TIMEOUT`, every statement by `PG_STATEMENT_TIMEOUT_MS`) and runs the
+    /// embedded SQL migrations (`./migrations`).
     pub async fn connect_and_migrate(
         database_url: &str,
         base_url: impl Into<String>,
+        signing_secret: Vec<u8>,
     ) -> Result<Self, sqlx::Error> {
-        let pool = PgPool::connect(database_url).await?;
+        use std::str::FromStr;
+        let options = sqlx::postgres::PgConnectOptions::from_str(database_url)?
+            .options([("statement_timeout", PG_STATEMENT_TIMEOUT_MS.to_string())]);
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(PG_ACQUIRE_TIMEOUT)
+            .connect_with(options)
+            .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
-        let mut store = Self::new(pool);
+        let mut store = Self::new(pool, signing_secret);
         store.base_url = base_url.into();
         Ok(store)
-    }
-
-    /// Replaces the presigned-URL HMAC key with the validated `ServerSecrets::asset_signing_secret`.
-    pub fn with_signing_secret(mut self, signing_secret: Vec<u8>) -> Self {
-        self.signing_secret = signing_secret;
-        self
     }
 
     /// Verifies PostgreSQL connectivity with `SELECT 1`.
@@ -1058,7 +1094,7 @@ impl SqlxPostgresStore {
 impl WalStorage for SqlxPostgresStore {
     fn append_entry(&self, entry: WalEntry) -> Result<(), WalError> {
         let pool = self.pool.clone();
-        run_pg_blocking(async move {
+        run_wal_query(async move {
             Self::ensure_campaign_row_on_pool(&pool, entry.campaign_id)
                 .await
                 .map_err(WalError::Serialization)?;
@@ -1094,7 +1130,7 @@ impl WalStorage for SqlxPostgresStore {
 
     fn save_snapshot(&self, snapshot: TableStateSnapshot) -> Result<(), WalError> {
         let pool = self.pool.clone();
-        run_pg_blocking(async move {
+        run_wal_query(async move {
             Self::ensure_campaign_row_on_pool(&pool, snapshot.campaign_id)
                 .await
                 .map_err(WalError::Serialization)?;
@@ -1124,7 +1160,7 @@ impl WalStorage for SqlxPostgresStore {
         campaign_id: Uuid,
     ) -> Result<Option<TableStateSnapshot>, WalError> {
         let pool = self.pool.clone();
-        run_pg_blocking(async move {
+        run_wal_query(async move {
             let row_opt =
                 sqlx::query("SELECT snapshot_data FROM wal_snapshots WHERE campaign_id = $1")
                     .bind(campaign_id)
@@ -1148,11 +1184,11 @@ impl WalStorage for SqlxPostgresStore {
         &self,
         campaign_id: Uuid,
         after_seq_id: u64,
-    ) -> Result<Vec<WalEntry>, WalError> {
+    ) -> Result<Vec<StoredWalRow>, WalError> {
         let pool = self.pool.clone();
-        run_pg_blocking(async move {
+        run_wal_query(async move {
             let rows = sqlx::query(
-                "SELECT payload FROM wal_entries
+                "SELECT sequence_num, payload FROM wal_entries
                  WHERE campaign_id = $1 AND sequence_num > $2
                  ORDER BY sequence_num ASC",
             )
@@ -1162,16 +1198,102 @@ impl WalStorage for SqlxPostgresStore {
             .await
             .map_err(|e| WalError::Serialization(e.to_string()))?;
 
-            let mut out = Vec::with_capacity(rows.len());
-            for row in rows {
-                let payload: serde_json::Value = row
-                    .try_get("payload")
-                    .map_err(|e| WalError::Serialization(e.to_string()))?;
-                let entry: WalEntry = serde_json::from_value(payload)
-                    .map_err(|e| WalError::Serialization(e.to_string()))?;
-                out.push(entry);
+            rows.into_iter()
+                .map(|row| {
+                    let get_err = |e: sqlx::Error| WalError::Serialization(e.to_string());
+                    Ok(StoredWalRow {
+                        seq_id: row.try_get::<i64, _>("sequence_num").map_err(get_err)? as u64,
+                        payload: row
+                            .try_get::<Option<serde_json::Value>, _>("payload")
+                            .map_err(get_err)?
+                            .unwrap_or(serde_json::Value::Null),
+                    })
+                })
+                .collect()
+        })
+    }
+
+    fn discard_entries_from(&self, campaign_id: Uuid, from_seq_id: u64) -> Result<(), WalError> {
+        let pool = self.pool.clone();
+        run_wal_query(async move {
+            sqlx::query("DELETE FROM wal_entries WHERE campaign_id = $1 AND sequence_num >= $2")
+                .bind(campaign_id)
+                .bind(from_seq_id as i64)
+                .execute(&pool)
+                .await
+                .map_err(|e| WalError::Serialization(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn quarantine_entries(
+        &self,
+        campaign_id: Uuid,
+        from_seq_id: u64,
+        entries: Vec<QuarantinedWalEntry>,
+    ) -> Result<(), WalError> {
+        let pool = self.pool.clone();
+        let db_err = |e: sqlx::Error| WalError::Serialization(e.to_string());
+        run_wal_query(async move {
+            let mut tx = pool.begin().await.map_err(db_err)?;
+            for entry in &entries {
+                sqlx::query(
+                    "INSERT INTO quarantined_wal_entries
+                       (campaign_id, sequence_num, command_kind, payload, error, quarantined_at)
+                     VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0))",
+                )
+                .bind(campaign_id)
+                .bind(entry.seq_id as i64)
+                .bind(&entry.command_kind)
+                .bind(&entry.payload)
+                .bind(&entry.error)
+                .bind(entry.quarantined_at_ms as f64)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
             }
-            Ok(out)
+            sqlx::query("DELETE FROM wal_entries WHERE campaign_id = $1 AND sequence_num >= $2")
+                .bind(campaign_id)
+                .bind(from_seq_id as i64)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
+            tx.commit().await.map_err(db_err)
+        })
+    }
+
+    fn list_quarantined_entries(
+        &self,
+        campaign_id: Uuid,
+    ) -> Result<Vec<QuarantinedWalEntry>, WalError> {
+        let pool = self.pool.clone();
+        run_wal_query(async move {
+            let rows = sqlx::query(
+                "SELECT sequence_num, command_kind, payload, error,
+                        (EXTRACT(EPOCH FROM quarantined_at) * 1000)::BIGINT AS quarantined_at_ms
+                 FROM quarantined_wal_entries
+                 WHERE campaign_id = $1
+                 ORDER BY sequence_num ASC, quarantined_at ASC",
+            )
+            .bind(campaign_id)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| WalError::Serialization(e.to_string()))?;
+            rows.into_iter()
+                .map(|row| {
+                    let get_err = |e: sqlx::Error| WalError::Serialization(e.to_string());
+                    Ok(QuarantinedWalEntry {
+                        campaign_id,
+                        seq_id: row.try_get::<i64, _>("sequence_num").map_err(get_err)? as u64,
+                        command_kind: row.try_get("command_kind").map_err(get_err)?,
+                        payload: row.try_get("payload").map_err(get_err)?,
+                        error: row.try_get("error").map_err(get_err)?,
+                        quarantined_at_ms: row
+                            .try_get::<i64, _>("quarantined_at_ms")
+                            .map_err(get_err)? as u64,
+                    })
+                })
+                .collect()
         })
     }
 }
@@ -1210,6 +1332,7 @@ impl SessionStore for SqlxPostgresStore {
                 mfa_enabled: false,
                 totp_secret: None,
                 pending_totp_secret: None,
+                instance_role: InstanceRole::Member,
             })
         })
     }
@@ -1430,7 +1553,7 @@ impl IdentityStore for SqlxPostgresStore {
             let normalized = email.trim().to_lowercase();
             let row_opt = sqlx::query(
                 "SELECT id, email, display_name, password_hash, is_ephemeral, role,
-                        mfa_enabled, totp_secret, pending_totp_secret,
+                        mfa_enabled, totp_secret, pending_totp_secret, instance_role,
                         EXTRACT(EPOCH FROM created_at)::BIGINT AS created_epoch
                  FROM users
                  WHERE LOWER(email) = $1",
@@ -1459,6 +1582,7 @@ impl IdentityStore for SqlxPostgresStore {
                 mfa_enabled: row.try_get("mfa_enabled").unwrap_or(false),
                 totp_secret: row.try_get("totp_secret").ok().flatten(),
                 pending_totp_secret: row.try_get("pending_totp_secret").ok().flatten(),
+                instance_role: instance_role_column(&row),
             }))
         })
     }
@@ -1470,7 +1594,7 @@ impl IdentityStore for SqlxPostgresStore {
         Box::pin(async move {
             let row_opt = sqlx::query(
                 "SELECT id, email, display_name, password_hash, is_ephemeral, role,
-                        mfa_enabled, totp_secret, pending_totp_secret,
+                        mfa_enabled, totp_secret, pending_totp_secret, instance_role,
                         EXTRACT(EPOCH FROM created_at)::BIGINT AS created_epoch
                  FROM users
                  WHERE id = $1",
@@ -1499,6 +1623,7 @@ impl IdentityStore for SqlxPostgresStore {
                 mfa_enabled: row.try_get("mfa_enabled").unwrap_or(false),
                 totp_secret: row.try_get("totp_secret").ok().flatten(),
                 pending_totp_secret: row.try_get("pending_totp_secret").ok().flatten(),
+                instance_role: instance_role_column(&row),
             }))
         })
     }
@@ -1535,8 +1660,8 @@ impl IdentityStore for SqlxPostgresStore {
                 .clone()
                 .unwrap_or_else(|| format!("ephemeral_{}@trame.local", user.id));
             sqlx::query(
-                "INSERT INTO users (id, email, display_name, password_hash, is_ephemeral, role, mfa_enabled, totp_secret, pending_totp_secret)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                "INSERT INTO users (id, email, display_name, password_hash, is_ephemeral, role, mfa_enabled, totp_secret, pending_totp_secret, instance_role)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                  ON CONFLICT (id) DO UPDATE SET
                    email = EXCLUDED.email,
                    display_name = EXCLUDED.display_name,
@@ -1557,6 +1682,7 @@ impl IdentityStore for SqlxPostgresStore {
             .bind(user.mfa_enabled)
             .bind(&user.totp_secret)
             .bind(&user.pending_totp_secret)
+            .bind(user.instance_role.as_str())
             .execute(&self.pool)
             .await
             .map_err(|e| SessionError::Storage(e.to_string()))?;
@@ -2278,6 +2404,22 @@ impl AssetStore for SqlxPostgresStore {
                 .try_get("payload")
                 .map_err(|e| AssetStoreError::Io(e.to_string()))?;
             Ok(Some(Bytes::from(bytes)))
+        })
+    }
+
+    fn campaign_usage_bytes(
+        &self,
+        campaign_id: Uuid,
+    ) -> crate::assets::store::BoxFuture<'_, Result<u64, AssetStoreError>> {
+        Box::pin(async move {
+            let total: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(byte_size), 0)::BIGINT FROM campaign_assets WHERE campaign_id = $1",
+            )
+            .bind(campaign_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| AssetStoreError::Io(e.to_string()))?;
+            Ok(total.max(0) as u64)
         })
     }
 

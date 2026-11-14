@@ -1,41 +1,48 @@
 /**
  * ============================================================================
- * SESSION BOOTSTRAP & GUEST SESSION UPGRADE (api/bootstrap.ts)
+ * SESSION BOOTSTRAP & ENTRY ROUTE (api/bootstrap.ts)
  * ============================================================================
  *
  * PURPOSE:
  * -----
- * Decides who the user is before the auth guard renders anything. An invite
- * link (`?invite=<jwt>`) must be redeemed FIRST: if the guard ran first, an
- * invited player without a session would land on the sign-in form and the
- * invite would be lost.
+ * Decides, before the auth guard renders anything, who the user is and which
+ * entry screen the URL asks for: the owner setup page (`/setup?token=`), an
+ * `InviteRedemption` (`?invite=<token>`), or the normal app. If the guard ran
+ * first, an invited visitor would land on a sign-in form they cannot use
+ * (registration is closed) and the token would be lost.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
- * 1. `Invite Only Via ?invite=`:
- *    - No other query parameter (`token`, `user_id`, `role`) is read; identity
- *      never comes from the URL (G4).
- * 2. `Single-Use URL`:
- *    - The `invite` parameter is stripped from the address bar whether the
- *      redemption succeeds or fails, so a reload cannot replay a consumed or
- *      expired token.
- * 3. `Fail Open To Restore`:
- *    - A failed redemption records `inviteError` and falls through to the
- *      normal `/auth/me` restore, so an existing session still works.
+ * 1. `Only Two Secrets Are Read From The URL`:
+ *    - `?invite=` and, on `/setup`, `?token=` are read; identity never comes
+ *      from the URL (G4). Parameters like `user_id` or `role` are ignored.
+ * 2. `Secrets Leave The Address Bar Immediately`:
+ *    - Both tokens are stripped (and `/setup` replaced by `/`) before any
+ *      request, so they do not stay in history, screenshots or `Referer`.
+ *      The route keeps the token in memory for its screen.
+ * 3. `Session Restored First`:
+ *    - `/auth/me` always runs, so the invite screen knows whether to offer
+ *      "Join" (signed in) or the account form (signed out).
+ * 4. `Fail Closed To Anonymous`:
+ *    - A network failure on restore leaves the user `anonymous`.
  *
  * EXECUTION LIFECYCLE:
  * -----
  * `bootstrapSession(client, location, replaceUrl)`
- * ├── 1. `?invite=` present -> `redeemInvite` (GuestSessionUpgrade), strip it.
- * │      └── success -> authenticated, `activeCampaignId` set; done.
- * └── 2. Otherwise / on failure -> `restoreSession()` (`GET /api/v1/auth/me`).
- *        └── network failure -> `anonymous`.
+ * ├── 1. `readBootRoute(location)` -> `setup` | `invite` | `app`.
+ * ├── 2. Not `app` -> `replaceUrl(stripBootSecrets(location))`.
+ * ├── 3. `restoreSession()` (`GET /api/v1/auth/me`); failure -> `anonymous`.
+ * └── 4. Return the route; `App` renders the matching screen.
  * ============================================================================
  */
-import { ApiError, type ApiClient } from "./client.ts";
+import type { ApiClient } from "./client.ts";
 
-/** Query parameter carrying the invite JWT. */
+/** Query parameter carrying a `CampaignInvite` token. */
 export const INVITE_PARAM = "invite";
+/** SPA path of the owner setup page (matches the server's `OWNER_SETUP_PATH`). */
+export const SETUP_PATH = "/setup";
+/** Query parameter carrying the owner setup token on `SETUP_PATH`. */
+export const SETUP_TOKEN_PARAM = "token";
 
 /** Current page location fields read by the bootstrap. */
 export interface BootLocation {
@@ -44,40 +51,51 @@ export interface BootLocation {
   hash: string;
 }
 
-/** Returns `location` as a relative URL with the `invite` parameter removed. */
-export function stripInviteParam(location: BootLocation): string {
+/** Entry screen requested by the URL; tokens are raw strings (possibly empty for `setup`). */
+export type BootRoute = { kind: "app" } | { kind: "setup"; token: string } | { kind: "invite"; token: string };
+
+/** The normal app route (lobby / workspace behind the auth guard). */
+export const APP_ROUTE: BootRoute = { kind: "app" };
+
+/** Reads the entry route; `/setup` wins over `?invite=`. */
+export function readBootRoute(location: BootLocation): BootRoute {
   const params = new URLSearchParams(location.search);
-  params.delete(INVITE_PARAM);
-  const query = params.toString();
-  return `${location.pathname}${query ? `?${query}` : ""}${location.hash}`;
+  if (location.pathname === SETUP_PATH) {
+    return { kind: "setup", token: params.get(SETUP_TOKEN_PARAM)?.trim() ?? "" };
+  }
+  const invite = params.get(INVITE_PARAM)?.trim();
+  return invite ? { kind: "invite", token: invite } : APP_ROUTE;
 }
 
 /**
- * Runs `GuestSessionUpgrade` when `?invite=` is present, otherwise restores
- * the cookie session. Always leaves `client.state.status` out of `restoring`.
+ * Returns `location` as a relative URL without the invite / setup token;
+ * `/setup` becomes `/` because the setup page has no meaning without its token.
+ */
+export function stripBootSecrets(location: BootLocation): string {
+  const params = new URLSearchParams(location.search);
+  params.delete(INVITE_PARAM);
+  const onSetup = location.pathname === SETUP_PATH;
+  if (onSetup) params.delete(SETUP_TOKEN_PARAM);
+  const query = params.toString();
+  return `${onSetup ? "/" : location.pathname}${query ? `?${query}` : ""}${location.hash}`;
+}
+
+/**
+ * Strips URL secrets, restores the cookie session, and returns the entry
+ * route. Always leaves `client.state.status` out of `restoring`.
  */
 export async function bootstrapSession(
   client: ApiClient,
   location: BootLocation,
   replaceUrl: (url: string) => void,
-): Promise<void> {
-  const invite = new URLSearchParams(location.search).get(INVITE_PARAM);
-  if (invite) {
-    replaceUrl(stripInviteParam(location));
-    try {
-      await client.redeemInvite(invite);
-      client.state.inviteError.value = null;
-      return;
-    } catch (err) {
-      client.state.inviteError.value =
-        err instanceof ApiError ? (err.code ?? err.message) : String(err);
-    }
-  }
-
+): Promise<BootRoute> {
+  const route = readBootRoute(location);
+  if (route.kind !== "app") replaceUrl(stripBootSecrets(location));
   try {
     await client.restoreSession();
   } catch {
     client.state.user.value = null;
     client.state.status.value = "anonymous";
   }
+  return route;
 }

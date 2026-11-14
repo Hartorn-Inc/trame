@@ -6,10 +6,11 @@
  * PURPOSE:
  * -----
  * Drives one full D&D 5e session through the real UI with two simultaneous
- * browser contexts (GM and player), each recording video: sign-up, campaign
- * and invite, character creation, map import and activation, tokens,
- * initiative, movement and reactions, damage/heal/undo, dice, sheet conflict,
- * documents and handouts, and the player projection rules.
+ * browser contexts (GM and player), each recording video: Owner setup,
+ * campaign invite and redemption, character creation, map import and
+ * activation, tokens, initiative, movement and reactions, damage/heal/undo,
+ * dice, sheet conflict, documents and handouts, and the player projection
+ * rules.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
@@ -33,20 +34,37 @@
  * 5. `Synchronized Recordings`:
  *    - Both contexts are created and closed together, so `gm.webm` and
  *      `player.webm` share one timeline for the side-by-side video.
+ * 6. `Invite-Only Accounts, No Backdoor`:
+ *    - The GM claims the fresh instance as `Owner` through the real setup URL
+ *      the server logged (`owner_bootstrap_url`), which `make e2e` passes in
+ *      as `E2E_SETUP_URL`; the player's account is created by redeeming the
+ *      `CampaignInvite` link. Both URLs are opened by path and query against
+ *      `baseURL`, so they work whatever origin `TRAME_PUBLIC_ORIGIN` names.
+ * 7. `Crash Recovery Across Two Runs, No Server Backdoor`:
+ *    - The Playwright container shares the server container's network
+ *      namespace, so the server cannot be killed under a running browser.
+ *      The journey ends its table changes with damage + undo and writes
+ *      `artifacts/crash-handoff.json`; `make e2e` then runs
+ *      `docker kill -s KILL` on trame-server, restarts it, and runs this
+ *      spec again with `E2E_STAGE=after-restart`, which signs both users
+ *      back in and asserts the WAL-recovered table shows the undone HP.
  *
  * EXECUTION LIFECYCLE:
  * -----
- * GM signs up -> campaign -> invite -> player redeems -> characters (both)
+ * GM claims Owner -> campaign -> invite -> player redeems -> characters (both)
  * -> sheet edit + version conflict -> UVTT import + background + secret door
  * + GM light + hidden goblin -> activate -> tokens -> WebGL renderer, fog,
  * GM vision preview, night + lights (pixel probes) -> projection checks -> combat ->
  * player reload (initiative after reconnect) -> movement / opportunity
  * attack -> damage, undo, heal -> dice (WS + REST) -> documents + handout
- * -> fonts + CSP checks -> videos saved under `artifacts/`.
+ * -> player export refused -> offline / online reconnect -> damage + undo
+ * before the crash -> fonts + CSP checks -> videos saved under `artifacts/`.
+ * [harness: SIGKILL + restart] -> `E2E_STAGE=after-restart`: sign in again
+ * -> GM and player see the undone HP (no ghost damage).
  * ============================================================================
  */
 import { expect, test, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { backgroundPng, uvttBundle } from '../support/fixtures.ts';
 import { decodePng, meanLuma, type ProbeRect, type RgbaImage } from '../support/pixels.ts';
@@ -59,11 +77,29 @@ const RUN = Date.now().toString(36);
 const PASSWORD = 'Crypt-Lantern-Quill-2026!';
 
 const GM = { email: `gm-${RUN}@e2e.trame.test`, name: 'Game Master' };
+const PLAYER = { email: `player-${RUN}@e2e.trame.test`, name: 'Player One' };
+/** Owner setup URL from the server's `owner_bootstrap_url` log line (set by `make e2e`). */
+const SETUP_URL = process.env.E2E_SETUP_URL ?? '';
 const PC_NAME = 'Lyra Thornwood';
 const MONSTER_NAME = 'Grak the Goblin Boss';
 const CAMPAIGN = `Crypt of Embers ${RUN}`;
 /** Pause after each phase so the recording can be followed by eye (ms). */
 const PHASE_PAUSE_MS = 1000;
+/** `after-restart` selects the post-SIGKILL check (invariant 7); unset runs the journey. */
+const STAGE = process.env.E2E_STAGE ?? 'journey';
+/** State the journey hands to the post-restart run (invariant 7). */
+const CRASH_HANDOFF = join(ARTIFACTS, 'crash-handoff.json');
+
+/** Contents of `CRASH_HANDOFF`. */
+interface CrashHandoff {
+  campaignId: string;
+  pcTokenId: string;
+  /** PC hit points after the undo, i.e. what the table must show after recovery. */
+  pcHp: number;
+  pcMaxHp: number;
+  gmEmail: string;
+  playerEmail: string;
+}
 /**
  * GM light placed in the map studio (board px, 10 ft = 140 px dim radius),
  * outside the UVTT torch's 420 px reach around (210, 210).
@@ -123,13 +159,57 @@ async function idFromTestId(locator: Locator, prefix: string): Promise<string> {
   return testId.slice(prefix.length);
 }
 
+/** Path and query of an absolute URL, so it is opened against `baseURL`. */
+function pathAndQuery(url: string): string {
+  const { pathname, search } = new URL(url);
+  return `${pathname}${search}`;
+}
+
 function hpOf(text: string): { hp: number; max: number } {
   const m = /HP (\d+) \/ (\d+)/.exec(text);
   if (!m) throw new Error(`no HP in "${text}"`);
   return { hp: Number(m[1]), max: Number(m[2]) };
 }
 
+/** Returns a phase runner: failures become soft failures with screenshots of `pages` (invariant 1). */
+function phaseRunner(pages: Record<string, Page>, pauseMs: number) {
+  return async (name: string, fn: () => Promise<string | void>) => {
+    await test.step(name, async () => {
+      try {
+        const detail = (await fn()) ?? '';
+        results.push({ phase: name, status: 'pass', note: detail });
+        await Object.values(pages)[0].waitForTimeout(pauseMs);
+      } catch (err) {
+        const message = (err instanceof Error ? err.message : String(err)).split('\n')[0].replace(/\u001b\[[0-9;]*m/g, '');
+        results.push({ phase: name, status: 'fail', note: message });
+        await shot(pages, `FAIL-${name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`);
+        expect.soft(message, `phase "${name}" failed`).toBe('');
+      }
+    });
+  };
+}
+
+function printPhases(): void {
+  console.log(results.map((r) => `${r.status.toUpperCase().padEnd(4)} ${r.phase}${r.note ? ` — ${r.note}` : ''}`).join('\n'));
+}
+
+/** Signs in through the sign-in screen and opens the campaign's live table. */
+async function signInToTable(page: Page, email: string, campaignId: string): Promise<void> {
+  await page.goto('/');
+  await expect(page.getByTestId('auth-screen')).toBeVisible();
+  await page.getByTestId('auth-email').fill(email);
+  await page.getByTestId('auth-password').fill(PASSWORD);
+  await page.getByTestId('auth-submit').click();
+  const open = page.getByTestId(`lobby-open-${campaignId}`);
+  await expect(page.getByTestId('campaign-workspace').or(open)).toBeVisible();
+  if (await open.isVisible()) await open.click();
+  await expect(page.getByTestId('campaign-workspace')).toBeVisible();
+  await page.getByTestId('workspace-tab-table').click();
+  await expect(page.getByTestId('table-map')).toBeVisible();
+}
+
 test('GM and player play one campaign session end to end', async ({ browser }) => {
+  test.skip(STAGE === 'after-restart', 'the journey runs before the harness kills the server');
   test.setTimeout(20 * 60_000);
   mkdirSync(SCREENS, { recursive: true });
 
@@ -165,21 +245,7 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     });
   }
 
-  /** Runs one journey phase; failures become soft failures with screenshots. */
-  const phase = async (name: string, fn: () => Promise<string | void>) => {
-    await test.step(name, async () => {
-      try {
-        const detail = (await fn()) ?? '';
-        results.push({ phase: name, status: 'pass', note: detail });
-        await gm.waitForTimeout(PHASE_PAUSE_MS);
-      } catch (err) {
-        const message = (err instanceof Error ? err.message : String(err)).split('\n')[0].replace(/\u001b\[[0-9;]*m/g, '');
-        results.push({ phase: name, status: 'fail', note: message });
-        await shot(both, `FAIL-${name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`);
-        expect.soft(message, `phase "${name}" failed`).toBe('');
-      }
-    });
-  };
+  const phase = phaseRunner(both, PHASE_PAUSE_MS);
 
   let campaignId = '';
   let pcActorId = '';
@@ -222,16 +288,21 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     return `bundle ${bundle} served by trame-server; app CSP: ${appCsp}`;
   });
 
-  await phase('GM signs up through the auth screen', async () => {
-    await gm.goto('/');
-    await expect(gm.getByTestId('auth-screen')).toBeVisible();
-    await gm.getByTestId('auth-mode-register').click();
-    await gm.getByTestId('auth-email').fill(GM.email);
-    await gm.getByTestId('auth-display-name').fill(GM.name);
-    await gm.getByTestId('auth-password').fill(PASSWORD);
-    await shot({ gm }, 'gm-register');
-    await gm.getByTestId('auth-submit').click();
+  await phase('GM claims the instance as Owner through the logged setup URL', async () => {
+    expect(SETUP_URL, 'E2E_SETUP_URL from the owner_bootstrap_url log line').toMatch(/\/setup\?token=/);
+    await gm.goto(pathAndQuery(SETUP_URL));
+    await expect(gm.getByTestId('owner-setup-screen')).toBeVisible();
+    await expect(gm).not.toHaveURL(/token=/);
+    await expect(gm.getByTestId('setup-form')).toBeVisible();
+    await gm.getByTestId('setup-email').fill(GM.email);
+    await gm.getByTestId('setup-display-name').fill(GM.name);
+    await gm.getByTestId('setup-password').fill(PASSWORD);
+    await shot({ gm }, 'gm-owner-setup');
+    await gm.getByTestId('setup-submit').click();
     await expect(gm.getByTestId('campaign-lobby')).toBeVisible();
+    const me = await (await gm.request.get('/api/v1/auth/me')).text();
+    expect(me, 'the GM session carries the Owner instance role').toMatch(/"instance_role":"OWNER"/);
+    return 'GM signed in as instance Owner';
   });
 
   await phase('GM creates a campaign', async () => {
@@ -244,21 +315,37 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
   });
 
   let inviteUrl = '';
-  await phase('GM mints an invite link', async () => {
+  await phase('GM mints a campaign invite link', async () => {
     await gm.getByTestId(`lobby-invite-${campaignId}`).click();
-    const field = gm.getByTestId(`lobby-invite-url-${campaignId}`);
+    await expect(gm.getByTestId('invite-dialog')).toBeVisible();
+    await expect(gm.getByTestId('invite-none')).toBeVisible();
+    await gm.getByTestId('invite-create').click();
+    const field = gm.getByTestId('invite-url');
     await expect(field).toHaveValue(/invite=/);
     inviteUrl = await field.inputValue();
+    await expect(gm.getByTestId('invite-status')).toBeVisible();
     await shot({ gm }, 'gm-invite');
-    return inviteUrl.replace(/invite=.*/, 'invite=<jwt>');
+    await gm.getByTestId('invite-dialog-close').click();
+    await expect(gm.getByTestId('invite-dialog')).toBeHidden();
+    return inviteUrl.replace(/invite=.*/, 'invite=<token>');
   });
 
-  await phase('Player redeems the invite and lands in the campaign', async () => {
-    const url = new URL(inviteUrl);
-    await pl.goto(`${url.pathname}${url.search}`);
-    await expect(pl.getByTestId('campaign-workspace')).toBeVisible();
+  await phase('Player creates an account from the invite link and lands in the campaign', async () => {
+    await pl.goto(pathAndQuery(inviteUrl));
+    await expect(pl.getByTestId('invite-redemption-screen')).toBeVisible();
     await expect(pl).not.toHaveURL(/invite=/);
+    await expect(pl.getByTestId('invite-campaign')).toContainText(CAMPAIGN);
+    await expect(pl.getByTestId('invite-mode-create')).toHaveAttribute('aria-pressed', 'true');
+    await pl.getByTestId('invite-display-name').fill(PLAYER.name);
+    await pl.getByTestId('invite-email').fill(PLAYER.email);
+    await pl.getByTestId('invite-password').fill(PASSWORD);
+    await shot({ player: pl }, 'player-invite');
+    await pl.getByTestId('invite-submit').click();
+    await expect(pl.getByTestId('campaign-workspace')).toBeVisible();
     await expect(pl.getByTestId('trame-status-badge')).toBeVisible();
+    await gm.getByTestId(`lobby-invite-${campaignId}`).click();
+    await expect(gm.getByTestId('redemptions-list')).toContainText(PLAYER.name);
+    await gm.getByTestId('invite-dialog-close').click();
     await gm.getByTestId(`lobby-open-${campaignId}`).click();
     await expect(gm.getByTestId('campaign-workspace')).toBeVisible();
     await shot(both, 'joined');
@@ -595,7 +682,7 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
       .waitFor({ timeout: 6_000 })
       .then(() => true)
       .catch(() => false);
-    const rejection = (await pl.getByTestId('table-rejection').innerText()).trim();
+    const rejection = (await pl.getByTestId('command-feedback-item').allInnerTexts()).join(' | ').trim();
     await shot(both, 'movement');
     if (!appeared) {
       note(`No opportunity-attack prompt after leaving reach (player rejection text: "${rejection}")`);
@@ -758,6 +845,60 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
     return `player PUT ${status}`;
   });
 
+  await phase('Player campaign export is refused (403)', async () => {
+    const res = await pl.request.get(campaignApi('/export'));
+    expect(res.status()).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe('FORBIDDEN');
+    return `player GET /export -> ${res.status()} ${body.code}`;
+  });
+
+  await phase('Network drop: player goes offline, reconnects, and the next action syncs', async () => {
+    await openTab(pl, 'table');
+    await openTab(gm, 'table');
+    const banner = pl.getByTestId('connection-banner');
+    await expect(banner).toHaveAttribute('data-state', 'open');
+    await plCtx.setOffline(true);
+    await expect(banner).toHaveAttribute('data-state', /^(offline|reconnecting)$/, { timeout: 30_000 });
+    await expect(banner).toHaveClass(/ds-connection-banner/);
+    const dropped = await banner.getAttribute('data-state');
+    await shot(both, 'player-offline');
+    await plCtx.setOffline(false);
+    await expect(banner).toHaveAttribute('data-state', 'open', { timeout: 30_000 });
+    await expect(banner).toHaveClass(/ds-visually-hidden/);
+    const gmLog = gm.getByTestId('tray-log').locator('li');
+    const gmBefore = await gmLog.count();
+    await pl.getByTestId('tray-expression').fill('1d6+1');
+    await pl.getByTestId('tray-roll').click();
+    await expect(gmLog).toHaveCount(gmBefore + 1);
+    await expect(gmLog.first()).toContainText('1d6+1');
+    return `banner ${dropped} -> open; post-reconnect roll reached the GM`;
+  });
+
+  await phase('Crash setup: GM damages the PC and undoes it before the harness kills the server', async () => {
+    await gm.getByTestId(`token-${pcTokenId}`).click();
+    const hpText = gm.getByTestId('vitals-hp');
+    const start = hpOf(await hpText.innerText());
+    await gm.getByTestId('vitals-amount').fill('5');
+    await gm.getByTestId('vitals-damage').click();
+    await expect(hpText).toContainText(`HP ${start.hp - 5} /`);
+    await gm.getByTestId('gm-undo').click();
+    await expect(hpText).toContainText(`HP ${start.hp} /`);
+    await pl.getByTestId(`token-${pcTokenId}`).click();
+    await expect(pl.getByTestId('vitals-hp')).toContainText(`HP ${start.hp} / ${start.max}`);
+    const handoff: CrashHandoff = {
+      campaignId,
+      pcTokenId,
+      pcHp: start.hp,
+      pcMaxHp: start.max,
+      gmEmail: GM.email,
+      playerEmail: PLAYER.email,
+    };
+    writeFileSync(CRASH_HANDOFF, JSON.stringify(handoff, null, 2));
+    await shot(both, 'pre-crash-undone');
+    return `PC ${start.hp} -> ${start.hp - 5} -> undo -> ${start.hp}; handoff written`;
+  });
+
   await phase('Final table state on both screens', async () => {
     await openTab(gm, 'table');
     await openTab(pl, 'table');
@@ -796,5 +937,50 @@ test('GM and player play one campaign session end to end', async ({ browser }) =
   await plCtx.close();
   await gm.video()?.saveAs(join(ARTIFACTS, 'gm.webm'));
   await pl.video()?.saveAs(join(ARTIFACTS, 'player.webm'));
-  console.log(results.map((r) => `${r.status.toUpperCase().padEnd(4)} ${r.phase}${r.note ? ` — ${r.note}` : ''}`).join('\n'));
+  printPhases();
+});
+
+test('after a SIGKILL and restart the table shows the undone state', async ({ browser }) => {
+  test.skip(STAGE !== 'after-restart', 'runs only after `make e2e` kills and restarts trame-server');
+  test.setTimeout(5 * 60_000);
+  mkdirSync(SCREENS, { recursive: true });
+  const handoff = JSON.parse(readFileSync(CRASH_HANDOFF, 'utf8')) as CrashHandoff;
+  const context = () => browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: VIEWPORT, locale: 'en-US' });
+  const gmCtx = await context();
+  const plCtx = await context();
+  const gm = await gmCtx.newPage();
+  const pl = await plCtx.newPage();
+  const gmFrames = recordRoomFrames(gm);
+  const phase = phaseRunner({ gm, player: pl }, 0);
+
+  await phase('Server is back after SIGKILL', async () => {
+    await expect
+      .poll(async () => (await gm.request.get('/healthz').catch(() => null))?.status() ?? 0, { timeout: 90_000 })
+      .toBe(200);
+  });
+
+  await phase('GM signs in again: the recovered table shows the undone HP (no ghost damage)', async () => {
+    await signInToTable(gm, handoff.gmEmail, handoff.campaignId);
+    await expect.poll(() => latestState(gmFrames)?.tokens[handoff.pcTokenId]?.hp ?? null).toBe(handoff.pcHp);
+    await gm.getByTestId(`token-${handoff.pcTokenId}`).click();
+    await expect(gm.getByTestId('vitals-hp')).toContainText(`HP ${handoff.pcHp} / ${handoff.pcMaxHp}`);
+    const quarantine = gm.getByTestId('wal-quarantine-banner');
+    if (await quarantine.evaluate((el) => el.classList.contains('ds-connection-banner'))) {
+      note(`GM quarantine banner after recovery: ${(await quarantine.innerText()).replace(/\s+/g, ' ')}`);
+    }
+    await shot({ gm }, 'after-restart-gm');
+    return `PC token hp ${handoff.pcHp}/${handoff.pcMaxHp} after WAL recovery`;
+  });
+
+  await phase('Player signs in again and sees the same exact own HP', async () => {
+    await signInToTable(pl, handoff.playerEmail, handoff.campaignId);
+    await pl.getByTestId(`token-${handoff.pcTokenId}`).click();
+    await expect(pl.getByTestId('vitals-hp')).toContainText(`HP ${handoff.pcHp} / ${handoff.pcMaxHp}`);
+    await shot({ player: pl }, 'after-restart-player');
+  });
+
+  writeFileSync(join(ARTIFACTS, 'phases-after-restart.json'), JSON.stringify({ results, notes }, null, 2));
+  await gmCtx.close();
+  await plCtx.close();
+  printPhases();
 });

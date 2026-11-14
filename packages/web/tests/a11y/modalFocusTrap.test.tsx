@@ -4,6 +4,7 @@ import { h, options, render } from "preact";
 import { useRef } from "preact/hooks";
 import { localeSignal } from "../../src/i18n/index.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
+import { assertSameNode } from "../helpers/domAssert.ts";
 
 localeSignal.value = "en";
 options.debounceRendering = (cb: () => void) => cb();
@@ -62,7 +63,7 @@ describe("useModalFocusTrap keeps keyboard focus and Escape inside the dialog", 
 
   it("moves focus to the first control on open", () => {
     open();
-    assert.equal(doc.activeElement, byTestId("first"));
+    assertSameNode(doc.activeElement, byTestId("first"), "focus moved to the expected node");
   });
 
   const tabCases = [
@@ -78,7 +79,7 @@ describe("useModalFocusTrap keeps keyboard focus and Escape inside the dialog", 
       if (c.from === "body") doc.activeElement = doc.body;
       else byTestId(c.from).focus();
       key("Tab", c.shift);
-      assert.equal(doc.activeElement, byTestId(c.to));
+      assertSameNode(doc.activeElement, byTestId(c.to), "focus moved to the expected node");
     });
   }
 
@@ -103,7 +104,7 @@ describe("useModalFocusTrap keeps keyboard focus and Escape inside the dialog", 
   it("focusin outside the dialog pulls focus back to the first control", () => {
     open();
     doc.dispatchEvent({ type: "focusin", target: trigger });
-    assert.equal(doc.activeElement, byTestId("first"));
+    assertSameNode(doc.activeElement, byTestId("first"), "focus moved to the expected node");
   });
 
   const inertCases = [
@@ -123,7 +124,7 @@ describe("useModalFocusTrap keeps keyboard focus and Escape inside the dialog", 
   it("restores focus to the trigger on close", () => {
     open();
     render(null, host);
-    assert.equal(doc.activeElement, trigger);
+    assertSameNode(doc.activeElement, trigger, "focus moved to the expected node");
   });
 });
 
@@ -159,7 +160,7 @@ describe("HandoutRevealModal uses the shared focus trap", () => {
         doc.dispatchEvent({ type: "keydown", key: c.key, shiftKey: false, preventDefault: () => undefined });
       }
       assert.equal(Boolean(host.querySelector('[data-testid="handout-reveal-modal"]')), c.open);
-      if (c.focus) assert.equal(doc.activeElement, host.querySelector(`[data-testid="${c.focus}"]`));
+      if (c.focus) assertSameNode(doc.activeElement, host.querySelector(`[data-testid="${c.focus}"]`), "focus moved to the expected node");
     });
   }
 });

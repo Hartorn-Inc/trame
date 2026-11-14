@@ -469,6 +469,7 @@ impl<S: OAuthStore> OAuthService<S> {
                     mfa_enabled: false,
                     totp_secret: None,
                     pending_totp_secret: None,
+                    instance_role: super::accounts::InstanceRole::Member,
                 };
 
                 self.store

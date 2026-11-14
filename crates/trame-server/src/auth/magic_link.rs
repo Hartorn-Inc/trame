@@ -79,15 +79,6 @@ impl MagicLinkService {
         }
     }
 
-    /// Creates a service reading `TRAME_INVITE_JWT_SECRET` or `JWT_SECRET` from environment with a fallback secret.
-    pub fn from_env_or_secret(default_secret: &[u8]) -> Self {
-        let secret = std::env::var("TRAME_INVITE_JWT_SECRET")
-            .or_else(|_| std::env::var("JWT_SECRET"))
-            .map(|s| s.into_bytes())
-            .unwrap_or_else(|_| default_secret.to_vec());
-        Self::new(secret, "trame-server")
-    }
-
     /// Validates that the configured HMAC-SHA256 secret is at least 32 bytes (`MIN_JWT_SECRET_BYTES`).
     pub fn validate_secret(&self) -> Result<(), MagicLinkError> {
         if self.jwt_secret.len() < MIN_JWT_SECRET_BYTES {

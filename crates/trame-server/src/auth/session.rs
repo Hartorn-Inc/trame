@@ -1,12 +1,12 @@
 //! ============================================================================
-//! USER SESSIONS, REGISTRATION, LOGIN, MFA & MAGIC LINK ONBOARDING (session.rs)
+//! USER SESSIONS, REGISTRATION, LOGIN & MFA (session.rs)
 //! ============================================================================
 //!
 //! PURPOSE:
 //! --------
-//! Manages authenticated user sessions, permanent account registration/login,
-//! TOTP MFA verification during password login, guest user provisioning from
-//! Magic Link invites, campaign membership records, and `trame_session` cookies.
+//! Manages authenticated user sessions, development-only account registration,
+//! login, TOTP MFA verification during password login, campaign membership
+//! records, and `trame_session` cookies.
 //!
 //! INVARIANTS & SAFETY BOUNDARIES:
 //! -------------------------------
@@ -14,13 +14,14 @@
 //!    - Raw 256-bit session tokens are returned only via `HttpOnly; Secure;
 //!      SameSite=Lax` cookies; only the SHA-256 hex digest is stored in
 //!      `SessionStore`.
-//! 2. `Magic Link Revocation & Expiration`:
-//!    - Revoked or expired Magic Link invite `jti` claims are rejected with
-//!      HTTP 401 Unauthorized.
-//! 3. `Single Invite Minting Route`:
-//!    - Invites are minted only by `POST /api/v1/campaigns/{id}/invites`
-//!      (`http.rs`), which requires the campaign `GameMaster` and a signing key
-//!      of at least 32 bytes (`MIN_JWT_SECRET_BYTES`). This router mints none.
+//! 2. `Invite-Only Accounts (ADR-0039)`:
+//!    - `POST /auth/register` answers `403 REGISTRATION_CLOSED` unless
+//!      `SecurityPolicy::registration_open` (only `TRAME_ENV=dev`). Accounts
+//!      otherwise come from owner bootstrap (`instance.rs`) or
+//!      `InviteRedemption` (`access.rs`); no route issues guest sessions.
+//! 3. `Legacy Guests`:
+//!    - Existing guest sessions keep working and can bind credentials through
+//!      `/auth/bind` (`password.rs`); `/auth/me` reports `is_guest`.
 //! 4. `TOTP MFA Enforcement on Password Login`:
 //!    - When a user has `mfa_enabled` or a configured `totp_secret`,
 //!      `login_handler` verifies the submitted 6-digit RFC 6238 `totp_code`
@@ -28,7 +29,8 @@
 //!      or invalid.
 //! ============================================================================
 
-use super::magic_link::{MagicLinkError, MagicLinkService, now_epoch_seconds};
+use super::accounts::{AccountStore, InMemoryAccounts, InstanceRole};
+use super::magic_link::{MagicLinkService, now_epoch_seconds};
 pub use super::oauth::{OAuthError, OAuthProvider, OAuthStore, PendingOAuthState};
 pub use super::password::IdentityStore;
 use super::password::{
@@ -94,6 +96,9 @@ pub struct UserRecord {
     pub totp_secret: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_totp_secret: Option<String>,
+    /// Instance-wide role (ADR-0039); records serialized before it existed read as `Member`.
+    #[serde(default)]
+    pub instance_role: InstanceRole,
 }
 
 /// Association of a user to a campaign with optional assigned character.
@@ -167,16 +172,28 @@ pub trait SessionStore: Send + Sync {
     }
 }
 
-/// Unified trait combining `SessionStore`, `IdentityStore`, `PatStore`, and `OAuthStore`.
-pub trait FullAuthStore: SessionStore + IdentityStore + PatStore + OAuthStore {}
-impl<T: SessionStore + IdentityStore + PatStore + OAuthStore + ?Sized> FullAuthStore for T {}
+/// Unified trait combining `SessionStore`, `IdentityStore`, `PatStore`, `OAuthStore`, and
+/// `AccountStore`.
+pub trait FullAuthStore:
+    SessionStore + IdentityStore + PatStore + OAuthStore + AccountStore
+{
+}
+impl<T: SessionStore + IdentityStore + PatStore + OAuthStore + AccountStore + ?Sized> FullAuthStore
+    for T
+{
+}
 
-/// In-memory implementation of `SessionStore` and `IdentityStore`.
+/// In-memory implementation of `SessionStore`, `IdentityStore`, and `AccountStore`.
 #[derive(Default, Clone)]
+/// Nested locks follow `accounts` -> `campaign_members` -> `users` -> `emails` ->
+/// `oauth_identities` (see `accounts.rs`, invariant 7); taking them in another order can
+/// deadlock against a queued writer.
 pub struct InMemorySessionStore {
-    users: Arc<RwLock<HashMap<Uuid, UserRecord>>>,
-    emails: Arc<RwLock<HashMap<String, Uuid>>>,
-    campaign_members: Arc<RwLock<HashMap<(Uuid, Uuid), CampaignMemberRecord>>>,
+    pub(super) users: Arc<RwLock<HashMap<Uuid, UserRecord>>>,
+    pub(super) emails: Arc<RwLock<HashMap<String, Uuid>>>,
+    pub(super) campaign_members: Arc<RwLock<HashMap<(Uuid, Uuid), CampaignMemberRecord>>>,
+    /// Bootstrap token, instance id, and invites; one mutex serializes claims and redemptions.
+    pub(super) accounts: Arc<tokio::sync::Mutex<InMemoryAccounts>>,
     sessions: Arc<RwLock<HashMap<String, SessionRecord>>>,
     revoked_invites: Arc<RwLock<HashSet<Uuid>>>,
     personal_access_tokens: Arc<RwLock<HashMap<Uuid, PatRecord>>>,
@@ -208,6 +225,7 @@ impl SessionStore for InMemorySessionStore {
                 mfa_enabled: false,
                 totp_secret: None,
                 pending_totp_secret: None,
+                instance_role: InstanceRole::Member,
             };
             self.users.write().await.insert(user_id, user.clone());
             Ok(user)
@@ -341,13 +359,17 @@ impl IdentityStore for InMemorySessionStore {
     ) -> BoxFuture<'a, Result<Option<UserRecord>, SessionError>> {
         Box::pin(async move {
             let normalized = email.trim().to_lowercase();
-            let emails = self.emails.read().await;
-            if let Some(user_id) = emails.get(&normalized).or_else(|| emails.get(email)) {
-                let users = self.users.read().await;
-                Ok(users.get(user_id).cloned())
-            } else {
-                Ok(None)
-            }
+            let user_id = {
+                let emails = self.emails.read().await;
+                emails
+                    .get(&normalized)
+                    .or_else(|| emails.get(email))
+                    .copied()
+            };
+            let Some(user_id) = user_id else {
+                return Ok(None);
+            };
+            Ok(self.users.read().await.get(&user_id).cloned())
         })
     }
 
@@ -517,13 +539,16 @@ impl OAuthStore for InMemorySessionStore {
         provider_user_id: &'a str,
     ) -> BoxFuture<'a, Result<Option<UserRecord>, SessionError>> {
         Box::pin(async move {
-            let identities = self.oauth_identities.read().await;
-            if let Some(user_id) = identities.get(&(provider, provider_user_id.to_string())) {
-                let users = self.users.read().await;
-                Ok(users.get(user_id).cloned())
-            } else {
-                Ok(None)
-            }
+            let user_id = self
+                .oauth_identities
+                .read()
+                .await
+                .get(&(provider, provider_user_id.to_string()))
+                .copied();
+            let Some(user_id) = user_id else {
+                return Ok(None);
+            };
+            Ok(self.users.read().await.get(&user_id).cloned())
         })
     }
 
@@ -744,16 +769,21 @@ impl AuthState {
     }
 }
 
-/// User summary returned by `/register`, `/login`, `/me`, and `/magic-link/redeem`.
+/// User summary returned by `/register`, `/login`, `/me`, owner bootstrap, and invite redemption.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthUserDto {
     pub id: Uuid,
     pub email: String,
     pub display_name: String,
     pub username: String,
+    /// `true` for a legacy guest session: the UI shows the bind prompt.
     pub is_guest: bool,
     pub is_ephemeral: bool,
     pub role: String,
+    /// Instance-wide role; `HOST` and `OWNER` may create campaigns.
+    pub instance_role: InstanceRole,
+    /// `true` once TOTP is enabled; the UI nudges accounts where it is `false`.
+    pub totp_enabled: bool,
 }
 
 impl From<UserRecord> for AuthUserDto {
@@ -769,6 +799,8 @@ impl From<UserRecord> for AuthUserDto {
             is_guest: u.is_guest,
             is_ephemeral: u.is_guest,
             role: u.role,
+            instance_role: u.instance_role,
+            totp_enabled: u.mfa_enabled || u.totp_secret.is_some(),
         }
     }
 }
@@ -798,26 +830,6 @@ pub struct AuthUserEnvelope {
     pub user: AuthUserDto,
 }
 
-/// Request payload submitted to POST /api/v1/auth/magic-link or /magic-link/redeem.
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub struct MagicLinkLoginRequest {
-    pub token: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nickname: Option<String>,
-}
-
-/// Response payload returned on successful magic link onboarding.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MagicLinkLoginResponse {
-    pub user_id: Uuid,
-    pub username: String,
-    pub campaign_id: Uuid,
-    pub character_id: Option<Uuid>,
-    pub role: String,
-    pub session_id: Uuid,
-    pub user: AuthUserDto,
-}
-
 /// Response payload returned on authentication error.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthErrorResponse {
@@ -826,11 +838,21 @@ pub struct AuthErrorResponse {
     pub error: String,
 }
 
-/// Handler for `POST /api/v1/auth/register`.
+/// Handler for `POST /api/v1/auth/register`: `403 REGISTRATION_CLOSED` outside `TRAME_ENV=dev`.
 pub async fn register_handler(
     State(state): State<AuthState>,
     Json(payload): Json<RegisterRequest>,
 ) -> Response {
+    if !state.security.registration_open {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(AuthErrorResponse {
+                code: Some("REGISTRATION_CLOSED".to_string()),
+                error: "registration is invite-only on this instance".to_string(),
+            }),
+        )
+            .into_response();
+    }
     let email = payload.email.trim().to_lowercase();
     let display_name = payload.display_name.trim().to_string();
 
@@ -880,7 +902,10 @@ pub async fn register_handler(
     }
 
     let pw_service = PasswordService::new();
-    let password_hash = match pw_service.hash_password(&payload.password) {
+    let password_hash = match pw_service
+        .hash_password_blocking(payload.password.clone())
+        .await
+    {
         Ok(h) => h,
         Err(PasswordError::WeakPassword(msg)) => {
             return (
@@ -915,6 +940,7 @@ pub async fn register_handler(
         mfa_enabled: false,
         totp_secret: None,
         pending_totp_secret: None,
+        instance_role: InstanceRole::Member,
     };
 
     if let Err(e) = state.session_store.save_user(user.clone()).await {
@@ -993,7 +1019,10 @@ pub async fn login_handler(
     };
 
     let pw_service = PasswordService::new();
-    if !pw_service.verify_password(&payload.password, stored_hash) {
+    if !pw_service
+        .verify_password_blocking(payload.password.clone(), stored_hash.clone())
+        .await
+    {
         return (
             StatusCode::UNAUTHORIZED,
             Json(AuthErrorResponse {
@@ -1044,14 +1073,16 @@ pub async fn login_handler(
             .totp_service
             .verify_code(&secret_bytes, provided_code, now)
         {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(AuthErrorResponse {
-                    code: Some("INVALID_TOTP_CODE".to_string()),
-                    error: "invalid or expired TOTP code".to_string(),
-                }),
-            )
-                .into_response();
+            return crate::security::totp_rejected(
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(AuthErrorResponse {
+                        code: Some("INVALID_TOTP_CODE".to_string()),
+                        error: "invalid or expired TOTP code".to_string(),
+                    }),
+                )
+                    .into_response(),
+            );
         }
     }
 
@@ -1208,216 +1239,18 @@ pub async fn me_handler(State(state): State<AuthState>, headers: HeaderMap) -> R
     }
 }
 
-fn storage_error_response(err: impl std::fmt::Display) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(AuthErrorResponse {
-            code: Some("STORAGE_ERROR".to_string()),
-            error: err.to_string(),
-        }),
-    )
-        .into_response()
-}
-
-/// Returns the user and session behind a valid, unexpired `trame_session` cookie, if any.
-async fn current_cookie_session(
-    state: &AuthState,
-    headers: &HeaderMap,
-) -> Option<(UserRecord, SessionRecord)> {
-    let token = extract_session_token(headers)?;
-    let session = state
-        .session_store
-        .get_session_by_token_hash(&hash_session_token(&token))
-        .await
-        .ok()
-        .flatten()
-        .filter(|s| s.expires_at >= now_epoch_seconds())?;
-    let user = state
-        .session_store
-        .get_user_by_id(session.user_id)
-        .await
-        .ok()
-        .flatten()?;
-    Some((user, session))
-}
-
-/// Axum handler consuming magic link JWTs at POST /api/v1/auth/magic-link and POST /api/v1/auth/magic-link/redeem.
-///
-/// When the request already carries a valid session cookie, the invite attaches to that user
-/// (no guest account, no new cookie). An existing membership keeps its role so a GM opening
-/// their own player invite is never downgraded. Otherwise a guest user and session are created.
-pub async fn magic_link_login_handler(
-    State(state): State<AuthState>,
-    headers: HeaderMap,
-    Json(payload): Json<MagicLinkLoginRequest>,
-) -> Response {
-    let claims = match state
-        .magic_link_service
-        .validate_invite_token(&payload.token, state.session_store.as_ref())
-        .await
-    {
-        Ok(c) => c,
-        Err(MagicLinkError::ExpiredToken) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(AuthErrorResponse {
-                    code: Some("EXPIRED_TOKEN".to_string()),
-                    error: "invite token has expired".to_string(),
-                }),
-            )
-                .into_response();
-        }
-        Err(MagicLinkError::RevokedToken) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(AuthErrorResponse {
-                    code: Some("REVOKED_TOKEN".to_string()),
-                    error: "invite token has been revoked".to_string(),
-                }),
-            )
-                .into_response();
-        }
-        Err(err) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(AuthErrorResponse {
-                    code: Some("INVALID_TOKEN".to_string()),
-                    error: err.to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    if let Some((user, session)) = current_cookie_session(&state, &headers).await {
-        let existing = match state
-            .session_store
-            .get_campaign_member(claims.campaign_id, user.id)
-            .await
-        {
-            Ok(m) => m,
-            Err(e) => return storage_error_response(e),
-        };
-        let member = match existing {
-            Some(m) => m,
-            None => match state
-                .session_store
-                .assign_campaign_member(
-                    claims.campaign_id,
-                    user.id,
-                    claims.character_id,
-                    &claims.role,
-                )
-                .await
-            {
-                Ok(m) => m,
-                Err(e) => return storage_error_response(e),
-            },
-        };
-        let resp = MagicLinkLoginResponse {
-            user_id: user.id,
-            username: user.username.clone(),
-            campaign_id: claims.campaign_id,
-            character_id: member.character_id,
-            role: member.role,
-            session_id: session.session_id,
-            user: AuthUserDto::from(user),
-        };
-        return (StatusCode::OK, Json(resp)).into_response();
-    }
-
-    let mut guest_user = match state.session_store.create_guest_user(&claims.role).await {
-        Ok(u) => u,
-        Err(e) => return storage_error_response(e),
-    };
-
-    if let Some(nick) = payload
-        .nickname
-        .as_ref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        guest_user.username = nick.to_string();
-        if let Err(e) = state.session_store.save_user(guest_user.clone()).await {
-            return storage_error_response(e);
-        }
-    }
-
-    if let Err(e) = state
-        .session_store
-        .assign_campaign_member(
-            claims.campaign_id,
-            guest_user.id,
-            claims.character_id,
-            &claims.role,
-        )
-        .await
-    {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(AuthErrorResponse {
-                code: Some("STORAGE_ERROR".to_string()),
-                error: e.to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    let session_token = generate_session_token();
-    let token_hash = hash_session_token(&session_token);
-    let session_record = match state
-        .session_store
-        .create_session(guest_user.id, &token_hash, DEFAULT_SESSION_TTL_SECONDS)
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(AuthErrorResponse {
-                    code: Some("STORAGE_ERROR".to_string()),
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    let cookie_val = state.session_cookie(&session_token, DEFAULT_SESSION_TTL_SECONDS);
-    let mut headers = HeaderMap::new();
-    if let Ok(val) = HeaderValue::from_str(&cookie_val) {
-        headers.insert(SET_COOKIE, val);
-    }
-
-    let user_dto = AuthUserDto::from(guest_user.clone());
-    let resp = MagicLinkLoginResponse {
-        user_id: guest_user.id,
-        username: guest_user.username,
-        campaign_id: claims.campaign_id,
-        character_id: claims.character_id,
-        role: guest_user.role,
-        session_id: session_record.session_id,
-        user: user_dto,
-    };
-
-    (StatusCode::OK, headers, Json(resp)).into_response()
-}
-
-/// Builds the Axum router for authentication endpoints. Credential endpoints (`login`,
-/// `register`, `totp/*`, `magic-link*`) sit behind `auth_rate_limit_middleware`. Invite
-/// minting lives only at `POST /api/v1/campaigns/{id}/invites` (`http.rs`).
+/// Builds the Axum router for authentication endpoints plus owner bootstrap and instance
+/// administration (`instance.rs`). Credential endpoints (`login`, `register`, `totp/*`, `bind*`,
+/// bootstrap) sit behind `auth_rate_limit_middleware`. Invites live in `access.rs`.
 pub fn build_auth_router(state: AuthState) -> Router {
     let rate_limited = Router::new()
         .route("/api/v1/auth/register", post(register_handler))
         .route("/api/v1/auth/login", post(login_handler))
-        .route("/api/v1/auth/magic-link", post(magic_link_login_handler))
-        .route(
-            "/api/v1/auth/magic-link/redeem",
-            post(magic_link_login_handler),
-        )
         .route("/api/v1/auth/totp/setup", post(totp_setup_handler))
         .route("/api/v1/auth/totp/enable", post(totp_enable_handler))
         .route("/api/v1/auth/totp/verify", post(totp_verify_handler))
+        .route("/api/v1/auth/bind", post(bind_account_handler))
+        .route("/api/v1/auth/bind-account", post(bind_account_handler))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_rate_limit_middleware,
@@ -1426,8 +1259,6 @@ pub fn build_auth_router(state: AuthState) -> Router {
     Router::new()
         .route("/api/v1/auth/logout", post(logout_handler))
         .route("/api/v1/auth/me", get(me_handler))
-        .route("/api/v1/auth/bind", post(bind_account_handler))
-        .route("/api/v1/auth/bind-account", post(bind_account_handler))
         .route(
             "/api/v1/auth/pat",
             post(create_pat_handler).get(list_pats_handler),
@@ -1437,5 +1268,6 @@ pub fn build_auth_router(state: AuthState) -> Router {
             post(create_pat_handler).get(list_pats_handler),
         )
         .merge(rate_limited)
-        .with_state(state)
+        .with_state(state.clone())
+        .merge(crate::instance::instance_router(state))
 }

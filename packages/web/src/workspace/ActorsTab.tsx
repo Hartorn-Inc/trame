@@ -28,6 +28,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { Dnd5eActorData } from '../../../game-systems/dnd5e/src/index.ts';
 import type { ApiClient } from '../api/client.ts';
+import { describeActionError } from '../api/errorMessages.ts';
 import { selectedActorIdSignal, type ActorRecord } from '../api/session.ts';
 import type { Uuid, WireTrameCommand } from '../api/wire.ts';
 import { CharacterBuilderModal } from '../builder/CharacterBuilderModal.tsx';
@@ -96,7 +97,7 @@ export function ActorsTab({ campaignId, client, isGm }: ActorsTabProps) {
       setStatus(outcome.status === 'saved' ? t('actors.portraitSaved', { name: record.name ?? '' }) : null);
       if (outcome.status === 'conflict') setError(t('actors.portraitConflict'));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('actors.portraitFailed'));
+      setError(describeActionError(err, t('actors.portraitFailed'), { isGm }));
     }
   };
 

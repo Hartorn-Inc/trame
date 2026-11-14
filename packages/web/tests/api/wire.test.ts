@@ -58,6 +58,16 @@ describe("wire: ClientEnvelope external tagging", () => {
       envelope: { type: "Ping", clientTimeMs: 1234 },
       wire: { Ping: { client_time_ms: 1234 } },
     },
+    {
+      id: "SubmitCommand flattens correlation_id into the internally tagged command map",
+      envelope: { type: "SubmitCommand", command: { cmd: "ADVANCE_TURN" }, correlationId: "c-1" },
+      wire: { SubmitCommand: { cmd: "ADVANCE_TURN", correlation_id: "c-1" } },
+    },
+    {
+      id: "RollDice carries correlation_id as an extra field",
+      envelope: { type: "RollDice", expression: "1d20", visibility: "Public", reason: "", correlationId: "c-2" },
+      wire: { RollDice: { expression: "1d20", visibility: "Public", reason: "", correlation_id: "c-2" } },
+    },
   ];
 
   for (const c of cases) {
@@ -103,6 +113,16 @@ describe("wire: decodeServerEnvelope", () => {
       id: "ActorUpdated carries version and data",
       frame: encodeLikeRmpSerde({ ActorUpdated: { actor_id: USER_ID, version: 3, data: { hp: 9 } } }, [USER_ID]),
       expected: { type: "ActorUpdated", actorId: USER_ID, version: 3, data: { hp: 9 } },
+    },
+    {
+      id: "CommandRejected exposes the echoed correlation_id",
+      frame: encode({ CommandRejected: { reason: "Not your turn", correlation_id: "c-1" } }),
+      expected: { type: "CommandRejected", reason: "Not your turn", correlationId: "c-1" },
+    },
+    {
+      id: "CommandRejected without correlation_id (undecodable frame or older server) decodes to null id",
+      frame: encode({ CommandRejected: { reason: "malformed frame" } }),
+      expected: { type: "CommandRejected", reason: "malformed frame", correlationId: null },
     },
     {
       id: "unknown variant decodes to null for forward compatibility",

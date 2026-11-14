@@ -35,6 +35,13 @@ describe("ds-* classes used by components resolve to tokens.css rules", () => {
     "src/sheet/widgets/SkillCheckListWidget.tsx",
     "src/auth/AuthScreen.tsx",
     "src/lobby/CampaignLobby.tsx",
+    "src/lobby/CampaignInviteDialog.tsx",
+    "src/lobby/InstanceAdminPanel.tsx",
+    "src/auth/OwnerSetupScreen.tsx",
+    "src/auth/InviteRedemptionScreen.tsx",
+    "src/auth/GuestBindPrompt.tsx",
+    "src/auth/AccountSettingsDialog.tsx",
+    "src/auth/accountForm.tsx",
     "src/components/ShellToggles.tsx",
     "src/workspace/DocumentsWorkspaceTab.tsx",
     "src/builder/CharacterBuilderModal.tsx",
@@ -46,6 +53,7 @@ describe("ds-* classes used by components resolve to tokens.css rules", () => {
     "src/table/ReactionBanner.tsx",
     "src/table/DiceTray.tsx",
     "src/table/TableTab.tsx",
+    "src/components/RoomConnectionFeedback.tsx",
   ];
 
   for (const file of files) {

@@ -19,6 +19,7 @@ import { CampaignWorkspace, nextTabIndex, WORKSPACE_TABS, type WorkspaceTabId } 
 import { CAMPAIGN, GM_ID, HERO, HERO_ACTOR, OTHER_PLAYER_ID, PLAYER_ID, fullToken, liveTable, mount, tableState } from "../helpers/liveTable.ts";
 import { actorDto, flush } from "../helpers/mockTransport.ts";
 import { setupMockDom } from "../helpers/mockDom.ts";
+import { assertAbsent } from "../helpers/domAssert.ts";
 
 setupMockDom();
 localeSignal.value = "en";
@@ -177,6 +178,39 @@ describe("ActorsTab: create, open, place, portrait", () => {
       ui.unmount();
     });
   }
+
+  const refusals = [
+    {
+      id: "per-user upload limit (429)",
+      reply: { status: 429, body: { code: "RATE_LIMITED", error: "too many uploads" } },
+      message: "Too many requests in a short time. Wait a minute, then try again.",
+    },
+    {
+      id: "campaign storage quota (413)",
+      reply: { status: 413, body: { code: "STORAGE_QUOTA_EXCEEDED", error: "quota" } },
+      message: "This campaign's file storage is full. Ask the server administrator for more space.",
+    },
+    {
+      id: "player image above 16 megapixels (400)",
+      reply: { status: 400, body: { code: "INVALID_IMAGE", error: "image too large" } },
+      message: "This image could not be used. Upload a PNG, JPEG, or WebP image of at most 16 megapixels.",
+    },
+  ];
+  for (const c of refusals) {
+    it(`portrait upload refused: ${c.id} shows a specific message and saves nothing`, async () => {
+      const table = liveTable(PLAYER_ID, null, {
+        [`GET ${ACTORS_URL}`]: { status: 200, body: { actors: [heroDto()] } },
+        [`POST ${ASSETS_URL}`]: c.reply,
+      });
+      const ui = mount(h(ActorsTab, { campaignId: CAMPAIGN, client: table.client, isGm: false }));
+      await flush();
+      chooseFile(ui.byTestId(`actor-portrait-${HERO_ACTOR}`), new File([new Uint8Array([1])], "hero.png", { type: "image/png" }));
+      await flush();
+      assert.equal(ui.byTestId("actors-error").textContent, c.message);
+      assert.equal(table.transport.calls.some((call) => call.method === "PUT"), false);
+      ui.unmount();
+    });
+  }
 });
 
 describe("firstFreeCell", () => {
@@ -238,7 +272,7 @@ describe("MapsWorkspaceTab: import, background, activation", () => {
     const ui = mount(h(MapsWorkspaceTab, { campaignId: CAMPAIGN, client: table.client, isGm: false }));
     await flush();
     assert.ok(ui.byTestId("scene-atlas"));
-    assert.equal(ui.byTestId("maps-import-uvtt"), null);
+    assertAbsent(ui.byTestId("maps-import-uvtt"), "maps-import-uvtt");
     ui.unmount();
   });
 

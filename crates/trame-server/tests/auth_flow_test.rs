@@ -1,18 +1,19 @@
 #![allow(clippy::doc_lazy_continuation)]
 
 //! ============================================================================
-//! HYBRID AUTH & MAGIC LINK ONBOARDING INTEGRATION TESTS (auth_flow_test.rs)
+//! LEGACY GUEST SESSION BIND FLOW INTEGRATION TESTS (auth_flow_test.rs)
 //! ============================================================================
 //!
 //! PURPOSE:
 //! --------
-//! Verifies end-to-end integration across the authentication lifecycle:
-//! 1. 1-click magic link onboarding creating a provisional guest user.
-//! 2. Automatic binding to an assigned campaign and character ID.
-//! 3. Minting of a secure `trame_session` cookie.
-//! 4. Seamless account credential binding (`/api/v1/auth/bind-account`) with
-//!    OWASP Argon2id password hashing, promoting the guest to a permanent user.
-//! 5. Exact preservation of character and campaign associations post-graduation.
+//! Guest sessions are no longer created (`InviteRedemption` replaced them,
+//! ADR-0039), but guests created before the change keep playing until they
+//! bind credentials. This suite verifies that:
+//! 1. `/api/v1/auth/me` flags a legacy guest (`is_guest: true`) so the UI can
+//!    show the bind prompt.
+//! 2. `/api/v1/auth/bind-account` turns the guest into a permanent `Member`
+//!    account with an Argon2id hash, keeping the same `user_id`.
+//! 3. Campaign and character associations survive the bind.
 //!
 //! INVARIANTS & SAFETY BOUNDARIES:
 //! -------------------------------
@@ -29,183 +30,112 @@ use tower::ServiceExt;
 use trame_server::auth::magic_link::MagicLinkService;
 use trame_server::auth::password::{BindAccountRequest, BindAccountResponse};
 use trame_server::auth::session::{
-    AuthState, IdentityStore, InMemorySessionStore, MagicLinkLoginRequest, MagicLinkLoginResponse,
-    SESSION_COOKIE_NAME, SessionStore, build_auth_router,
+    AuthState, IdentityStore, InMemorySessionStore, SESSION_COOKIE_NAME, SessionStore,
+    build_auth_router, generate_session_token, hash_session_token,
 };
 use trame_server::auth::totp::TotpService;
 use uuid::Uuid;
 
-/// Test fixture for orchestrating authentication router tests.
-pub struct AuthTestHarness {
-    pub session_store: Arc<InMemorySessionStore>,
-    pub magic_service: Arc<MagicLinkService>,
-    pub router: axum::Router,
+/// Router over an in-memory store holding one legacy guest session.
+struct LegacyGuest {
+    store: Arc<InMemorySessionStore>,
+    router: axum::Router,
+    user_id: Uuid,
+    cookie: String,
 }
 
-impl AuthTestHarness {
-    pub fn new() -> Self {
-        let session_store = Arc::new(InMemorySessionStore::new());
-        let magic_service = Arc::new(MagicLinkService::new(
-            b"integration-test-secret-key-32b!",
-            "trame-auth-test",
-        ));
-        let auth_state = AuthState {
-            magic_link_service: magic_service.clone(),
-            session_store: session_store.clone(),
+impl LegacyGuest {
+    async fn new(campaign_id: Uuid, character_id: Option<Uuid>) -> Self {
+        let store = Arc::new(InMemorySessionStore::new());
+        let router = build_auth_router(AuthState {
+            magic_link_service: Arc::new(MagicLinkService::new(
+                b"integration-test-secret-key-32b!",
+                "trame-auth-test",
+            )),
+            session_store: store.clone(),
             totp_service: Arc::new(TotpService::default()),
             security: Default::default(),
-        };
-        let router = build_auth_router(auth_state);
+        });
+        let guest = store.create_guest_user("PLAYER").await.unwrap();
+        store
+            .assign_campaign_member(campaign_id, guest.id, character_id, "PLAYER")
+            .await
+            .unwrap();
+        let token = generate_session_token();
+        store
+            .create_session(guest.id, &hash_session_token(&token), 3600)
+            .await
+            .unwrap();
         Self {
-            session_store,
-            magic_service,
+            store,
             router,
+            user_id: guest.id,
+            cookie: format!("{SESSION_COOKIE_NAME}={token}"),
         }
     }
 
-    pub fn create_invite(
-        &self,
-        campaign_id: Uuid,
-        character_id: Option<Uuid>,
-        role: &str,
-        ttl_seconds: u64,
-    ) -> String {
-        let creator_id = Uuid::new_v4();
-        let (token, _) = self
-            .magic_service
-            .create_invite_token(creator_id, campaign_id, character_id, role, ttl_seconds)
-            .expect("create invite token");
-        token
-    }
-}
-
-impl Default for AuthTestHarness {
-    fn default() -> Self {
-        Self::new()
+    async fn me(&self) -> serde_json::Value {
+        let req = Request::builder()
+            .uri("/api/v1/auth/me")
+            .header("Cookie", &self.cookie)
+            .body(Body::empty())
+            .unwrap();
+        let resp = self.router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
     }
 }
 
 #[tokio::test]
-async fn test_magic_link_guest_to_registered_binding() {
-    let harness = AuthTestHarness::new();
-
+async fn legacy_guest_sees_bind_prompt_flag_and_binds_into_member_account() {
     let campaign_id = Uuid::new_v4();
     let character_id = Uuid::new_v4();
-    let ttl = 3600u64;
+    let guest = LegacyGuest::new(campaign_id, Some(character_id)).await;
 
-    // 1. GM mints a 1-click magic link with an assigned character
-    let invite_token = harness.create_invite(campaign_id, Some(character_id), "PLAYER", ttl);
+    let me = guest.me().await;
+    assert_eq!(me["user"]["is_guest"], true);
+    assert_eq!(me["user"]["instance_role"], "MEMBER");
+    assert_eq!(me["user"]["totp_enabled"], false);
 
-    // 2. Player follows magic link to execute 1-click onboarding
-    let login_payload = serde_json::to_vec(&MagicLinkLoginRequest {
-        token: invite_token,
-        nickname: None,
-    })
-    .unwrap();
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/magic-link")
-        .header("Content-Type", "application/json")
-        .body(Body::from(login_payload))
-        .unwrap();
-
-    let resp = harness.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // Extract session token from Set-Cookie header
-    let cookie_header = resp
-        .headers()
-        .get(axum::http::header::SET_COOKIE)
-        .expect("must set trame_session cookie")
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(cookie_header.contains(SESSION_COOKIE_NAME));
-
-    let session_token = cookie_header
-        .split(';')
-        .next()
-        .and_then(|s| s.strip_prefix(&format!("{SESSION_COOKIE_NAME}=")))
-        .expect("extract raw session token")
-        .to_string();
-
-    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let login_resp: MagicLinkLoginResponse = serde_json::from_slice(&body_bytes).unwrap();
-
-    assert_eq!(login_resp.campaign_id, campaign_id);
-    assert_eq!(login_resp.character_id, Some(character_id));
-    assert_eq!(login_resp.role, "PLAYER");
-
-    // Confirm initial guest state
-    let initial_user = harness
-        .session_store
-        .get_user_by_id(login_resp.user_id)
-        .await
-        .unwrap()
-        .expect("user exists");
-    assert!(initial_user.is_guest);
-    assert!(initial_user.email.is_none());
-    assert!(initial_user.password_hash.is_none());
-
-    // Verify campaign member record is bound to character
-    let member = harness
-        .session_store
-        .get_campaign_member(campaign_id, login_resp.user_id)
-        .await
-        .unwrap()
-        .expect("membership exists");
-    assert_eq!(member.user_id, login_resp.user_id);
-    assert_eq!(member.campaign_id, campaign_id);
-    assert_eq!(member.character_id, Some(character_id));
-
-    // 3. Guest binds account credentials (email and password)
     let permanent_email = "adventurer@example.com";
-    let permanent_password = "HighEntropyPassw0rd2026!";
-
     let bind_payload = serde_json::to_vec(&BindAccountRequest {
         email: permanent_email.to_string(),
-        password: permanent_password.to_string(),
+        password: "HighEntropyPassw0rd2026!".to_string(),
     })
     .unwrap();
-
     let bind_req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/bind-account")
         .header("Content-Type", "application/json")
-        .header("Cookie", format!("{SESSION_COOKIE_NAME}={session_token}"))
+        .header("Cookie", &guest.cookie)
         .body(Body::from(bind_payload))
         .unwrap();
-
-    let bind_resp = harness.router.clone().oneshot(bind_req).await.unwrap();
+    let bind_resp = guest.router.clone().oneshot(bind_req).await.unwrap();
     assert_eq!(bind_resp.status(), StatusCode::OK);
-
     let bind_body = axum::body::to_bytes(bind_resp.into_body(), usize::MAX)
         .await
         .unwrap();
     let bind_result: BindAccountResponse = serde_json::from_slice(&bind_body).unwrap();
-
-    assert_eq!(bind_result.user_id, login_resp.user_id);
+    assert_eq!(bind_result.user_id, guest.user_id);
     assert_eq!(bind_result.email, permanent_email);
     assert!(!bind_result.is_guest);
 
-    // 4. Confirm retained character and campaign association
-    let retained_member = harness
-        .session_store
-        .get_campaign_member(campaign_id, login_resp.user_id)
+    assert_eq!(guest.me().await["user"]["is_guest"], false);
+
+    let retained_member = guest
+        .store
+        .get_campaign_member(campaign_id, guest.user_id)
         .await
         .unwrap()
         .expect("retained membership exists");
     assert_eq!(retained_member.character_id, Some(character_id));
-    assert_eq!(retained_member.campaign_id, campaign_id);
-    assert_eq!(retained_member.user_id, login_resp.user_id);
 
-    // Confirm user is now permanent with valid Argon2id hash
-    let graduated_user = harness
-        .session_store
-        .get_user_by_id(login_resp.user_id)
+    let graduated_user = guest
+        .store
+        .get_user_by_id(guest.user_id)
         .await
         .unwrap()
         .expect("graduated user exists");
