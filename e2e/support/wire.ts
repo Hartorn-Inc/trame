@@ -8,7 +8,8 @@
  * Records every MessagePack frame a page receives on the campaign room socket
  * and decodes it the way the web client does, so the suite can assert what
  * the server actually SENT to a recipient (player projection), not just what
- * the UI chose to render.
+ * the UI chose to render. It also lists the commands a page sent, so a test
+ * can prove a duplicate command reached the server.
  *
  * INVARIANTS & SAFETY BOUNDARIES:
  * -----
@@ -70,6 +71,27 @@ export function recordRoomFrames(page: Page): RecordedFrame[] {
     });
   });
   return frames;
+}
+
+/**
+ * Records the `cmd` of every `SubmitCommand` frame `page` sends on a room
+ * socket, so a test can prove a command really reached the server twice.
+ */
+export function recordSentCommands(page: Page): string[] {
+  const sent: string[] = [];
+  page.on('websocket', (ws) => {
+    if (!ws.url().includes('/campaigns/')) return;
+    ws.on('framesent', ({ payload }) => {
+      if (typeof payload === 'string') return;
+      try {
+        const raw = normalize(decoder.decode(payload)) as { SubmitCommand?: { cmd?: unknown } };
+        if (raw.SubmitCommand) sent.push(String(raw.SubmitCommand.cmd));
+      } catch {
+        sent.push('UNDECODABLE');
+      }
+    });
+  });
+  return sent;
 }
 
 /** Projected table state carried by `StateSnapshot` / `CommandAccepted` frames. */

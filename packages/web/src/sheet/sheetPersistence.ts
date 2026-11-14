@@ -35,12 +35,23 @@
  *    - `createSheetCommandDispatcher` turns a widget's `UPDATE_ACTOR_SHEET
  *      { path, value }` into a full-sheet PUT built from the stored sheet, so
  *      the same version check guards inline edits and modal results.
+ *    - A widget save that leaves the sheet at 0 Hit Points also switches off
+ *      the toggles that end there (Rage, `activeFeatureIdsAfterHpChange`),
+ *      as the server does for token damage.
+ * 5. `Casts Spend Before They Resolve`:
+ *    - `CAST_SPELL` saves the spent slot first; the table resolution it may
+ *      open (`table/actionResolution.ts`) never touches the sheet, so a
+ *      cancelled resolution does not refund the slot, as at a real table.
  * ============================================================================
  */
+import { CompendiumResolver, activeFeatureIdsAfterHpChange, type Dnd5eActorData } from "../../../game-systems/dnd5e/src/index.ts";
 import { ApiError, VERSION_CONFLICT, type ApiClient, type CampaignActor } from "../api/client.ts";
 import { describeActionError } from "../api/errorMessages.ts";
 import type { Uuid, WireRollVisibility } from "../api/wire.ts";
 import type { DiceRollResult, DiceRollService } from "../components/modals/LevelUpModal.tsx";
+import { casterTokenId, startAction } from "../table/actionResolution.ts";
+import { setConcentration } from "../table/commands.ts";
+import type { SpentSlot } from "./types.ts";
 
 /** Outcome of `saveActorSheet`. */
 export type SaveSheetOutcome =
@@ -129,15 +140,37 @@ export interface SheetDispatcherOptions {
   onError?: (message: string) => void;
 }
 
+/** `data` with the class feature toggles that end at 0 Hit Points switched off (invariant 4). */
+function withZeroHpTogglesEnded(data: unknown): unknown {
+  const actor = data as Dnd5eActorData;
+  if (!Array.isArray(actor?.activeFeatureIds) || (actor.attributes?.hp?.current ?? 1) > 0) return data;
+  return { ...actor, activeFeatureIds: activeFeatureIdsAfterHpChange(actor) };
+}
+
 /**
- * Routes the sheet widgets' virtual commands to REST: `ROLL_DICE` becomes a
- * REST roll and `UPDATE_ACTOR_SHEET { path, value }` a versioned sheet save.
- * Other widget commands (AoE templates, compendium drops) need the table and
- * are ignored here.
+ * Routes the sheet widgets' virtual commands:
+ * - `ROLL_DICE` becomes a REST roll (initiative goes to the room).
+ * - `UPDATE_ACTOR_SHEET { path, value }` or `{ changes: { path: value } }` is
+ *   one versioned sheet save (several paths at once, so a toggle and the pool
+ *   use it spends cannot race each other's version).
+ * - `CAST_SPELL` saves the spent slot, starts concentration on the caster's
+ *   token for a concentration spell, and on the table opens
+ *   the resolution card (area, attack or save spells).
+ * - `RESOLVE_ATTACK` opens the resolution card for a sheet attack.
+ * Other widget commands (compendium drops, notices) are ignored here.
  */
 export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (command: unknown) => void {
   const { client, campaignId, actorId } = options;
   const fail = (err: unknown) => options.onError?.(describeActionError(err, String(err)));
+  const save = (changes: Record<string, unknown>) => {
+    let next: unknown = client.state.actors.value[actorId]?.data ?? {};
+    for (const [path, value] of Object.entries(changes)) next = setAtPath(next, path, value);
+    saveActorSheet(client, campaignId, actorId, withZeroHpTogglesEnded(next))
+      .then((outcome) => {
+        if (outcome.status === 'conflict') options.onConflict?.(outcome.currentVersion);
+      })
+      .catch(fail);
+  };
   return (command) => {
     const cmd = (command ?? {}) as Record<string, unknown>;
     if (cmd.cmd === 'ROLL_DICE') {
@@ -152,15 +185,37 @@ export function createSheetCommandDispatcher(options: SheetDispatcherOptions): (
       client.rollDiceRest(campaignId, expression, { visibility, reason }).catch(fail);
       return;
     }
-    if (cmd.cmd === 'UPDATE_ACTOR_SHEET' && typeof cmd.path === 'string' && 'value' in cmd) {
-      const current = client.state.actors.value[actorId]?.data ?? {};
-      saveActorSheet(client, campaignId, actorId, setAtPath(current, cmd.path, cmd.value))
-        .then((outcome) => {
-          if (outcome.status === 'conflict') options.onConflict?.(outcome.currentVersion);
-        })
-        .catch(fail);
+    if (cmd.cmd === 'UPDATE_ACTOR_SHEET') {
+      if (typeof cmd.path === 'string' && 'value' in cmd) save({ [cmd.path]: cmd.value });
+      else if (cmd.changes && typeof cmd.changes === 'object') save(cmd.changes as Record<string, unknown>);
+      return;
+    }
+    if (cmd.cmd === 'CAST_SPELL' && typeof cmd.spellId === 'string') {
+      const slot = cmd.slot as SpentSlot | null;
+      if (slot) save({ [`spellSlots.${slot.key}`]: slot.tier });
+      castOnTable(client, actorId, cmd.spellId, cmd.onTable === true, slot?.castLevel);
+      return;
+    }
+    if (cmd.cmd === 'RESOLVE_ATTACK' && typeof cmd.attackId === 'string') {
+      startAction({ kind: 'attack', actorId, attackId: cmd.attackId });
     }
   };
+}
+
+/**
+ * Table side of a cast: a concentration spell starts concentration on the
+ * caster's token (an area also binds its persistent zone when projected);
+ * on the table an area spell opens area placement and a damaging spell opens
+ * the attack / save resolution, scaled to `castLevel` when upcast.
+ */
+function castOnTable(client: ApiClient, actorId: Uuid, spellId: string, onTable: boolean, castLevel?: number): void {
+  const data = CompendiumResolver.getDefault().get(spellId)?.data;
+  if (!data) return;
+  const caster = casterTokenId(client.state.table.value, actorId);
+  if (data.concentration === true && caster) client.submitCommand(setConcentration(caster, true));
+  if (!onTable) return;
+  if (data.area) startAction({ kind: 'area', actorId, spellId, castLevel });
+  else if (typeof data.damageDice === 'string') startAction({ kind: 'attack', actorId, attackId: spellId, castLevel });
 }
 
 /** Adapts `ApiClient.rollDiceRest` to the modal `DiceRollService` (invariant 3). */

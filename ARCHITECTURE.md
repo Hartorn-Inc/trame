@@ -82,6 +82,7 @@ graph TB
 | [0039](./docs/adr/0039-invite-only-registration-and-instance-role.md) | Invite-only registration and `InstanceRole` (amends ADR-0010 Decision 1) |
 | [0040](./docs/adr/0040-wal-recovery-with-quarantine.md) | WAL recovery with `QuarantinedWalEntry` quarantine |
 | [0041](./docs/adr/0041-s3-asset-storage-signed-downloads-and-free-hosting.md) | S3-compatible asset storage, signed direct downloads, and free hosting targets (amends ADR-0010) |
+| [0042](./docs/adr/0042-server-held-pending-resolutions.md) | Server-held `PendingResolution` for attacks, area saves, and concentration checks |
 
 **Numbering gap (0013-0033):** this repository has no ADRs numbered 0013 to 0033, and none are missing. Those numbers belong to the upstream EPURE governance framework (`Giskard-AI/epure`): references such as `ADR-0017`, `ADR-0023` or `ADR-0031` in `.github/`, `.agents/skills/`, or spec compliance lines point to EPURE ADRs, not to `docs/adr/`. Local ADRs resumed at 0034 to avoid colliding with those upstream numbers. ADR-0036 restates ADR-0012 under a non-colliding number for the same reason.
 

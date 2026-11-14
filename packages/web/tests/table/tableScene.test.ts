@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ProjectedTableState, WireTokenState, WireWallSegment } from "../../src/api/wire.ts";
 import { DARK_CANVAS_PALETTE, LIGHT_CANVAS_PALETTE } from "../../src/canvas/CanvasThemePalette.ts";
-import { computeVisibilityPolygon, previewAoeCells, type Point2D } from "../../src/engine/wasmBridge.ts";
+import { computeTokenVisionPolygon, computeVisibilityPolygon, previewAoeCells, type Point2D } from "../../src/engine/wasmBridge.ts";
 import {
   buildTableScene,
   dashPolyline,
   pingRing,
   PING_DURATION_MS,
-  sightWalls,
+  engineWalls,
   type SceneGeometry,
   type TableSceneInput,
 } from "../../src/table/scene/tableScene.ts";
@@ -31,6 +31,7 @@ const wall = (kind: WireWallSegment["kind"], a: Point2D = { x: 0, y: 300 }, b: P
 
 const engine: SceneGeometry = {
   visibilityPolygon: computeVisibilityPolygon,
+  tokenVisionPolygon: computeTokenVisionPolygon,
   aoeCells: previewAoeCells,
 };
 
@@ -194,18 +195,76 @@ describe("buildTableScene: fog of war", () => {
   });
 });
 
-describe("sightWalls: wall kinds the raycaster treats as opaque", () => {
-  const cases = [
-    { id: "normal wall blocks", kind: { kind: "NORMAL" }, truesight: false, blocks: true },
-    { id: "window lets sight through", kind: { kind: "WINDOW" }, truesight: false, blocks: false },
-    { id: "closed door blocks", kind: { kind: "DOOR", is_open: false, is_locked: false }, truesight: false, blocks: true },
-    { id: "open door lets sight through", kind: { kind: "DOOR", is_open: true, is_locked: false }, truesight: false, blocks: false },
-    { id: "illusion blocks without truesight", kind: { kind: "ILLUSION", pierced_by_truesight: true }, truesight: false, blocks: true },
-    { id: "truesight pierces a pierceable illusion", kind: { kind: "ILLUSION", pierced_by_truesight: true }, truesight: true, blocks: false },
+describe("engineWalls: every projected wall reaches the engine with its kind", () => {
+  it("keeps windows and open doors instead of pre-filtering them", () => {
+    const walls = [wall({ kind: "WINDOW" }), wall({ kind: "DOOR", is_open: true, is_locked: false })];
+    assert.deepEqual(engineWalls(walls, "vision").map((w) => w.kind?.kind), ["WINDOW", "DOOR"]);
+  });
+
+  it("the light channel reads blocks_light as the opaque flag", () => {
+    const [dto] = engineWalls([{ ...wall({ kind: "NORMAL" }), blocks_vision: true, blocks_light: false }], "light");
+    assert.equal(dto.blocksVision, false);
+  });
+});
+
+describe("buildTableScene: the engine resolves wall kinds and senses (WASM)", () => {
+  const behind = { x: 125, y: 500 };
+  const kinds = [
+    { id: "a normal wall hides the far side", kind: { kind: "NORMAL" }, truesight: 0, visible: false },
+    { id: "a window lets sight through", kind: { kind: "WINDOW" }, truesight: 0, visible: true },
+    { id: "a closed door hides the far side", kind: { kind: "DOOR", is_open: false, is_locked: false }, truesight: 0, visible: false },
+    { id: "an open door lets sight through", kind: { kind: "DOOR", is_open: true, is_locked: false }, truesight: 0, visible: true },
+    { id: "an illusion blocks without truesight", kind: { kind: "ILLUSION", pierced_by_truesight: true }, truesight: 0, visible: false },
+    { id: "truesight pierces a pierceable illusion", kind: { kind: "ILLUSION", pierced_by_truesight: true }, truesight: 120, visible: true },
   ] as const;
-  for (const c of cases) {
-    it(c.id, () => assert.equal(sightWalls([wall(c.kind)], "vision", c.truesight).length, c.blocks ? 1 : 0));
+  for (const c of kinds) {
+    it(c.id, () => {
+      const senses = { normal_range_ft: 120, darkvision_range_ft: 0, blindsight_range_ft: 0, tremorsense_range_ft: 0, truesight_range_ft: c.truesight, devils_sight: false, see_invisibility: false };
+      const state = tableState({ tokens: { [HERO]: { ...hero, senses } }, walls: [wall(c.kind)] });
+      const [polygon] = buildTableScene(input(state)).fog!.vision;
+      assert.equal(inside(polygon, behind), c.visible);
+    });
   }
+
+  const darkness = [
+    { id: "pitch darkness without darkvision sees nothing beyond the token", darkvision: 0, point: { x: 400, y: 150 }, visible: false },
+    { id: "pitch darkness with the token's own 60 ft darkvision sees nearby cells", darkvision: 60, point: { x: 400, y: 150 }, visible: true },
+  ];
+  for (const c of darkness) {
+    it(c.id, () => {
+      const senses = { normal_range_ft: 120, darkvision_range_ft: c.darkvision, blindsight_range_ft: 0, tremorsense_range_ft: 0, truesight_range_ft: 0, devils_sight: false, see_invisibility: false };
+      const state = tableState({ ambient_lighting: "PITCH_DARKNESS", tokens: { [HERO]: { ...hero, senses } } });
+      const [polygon] = buildTableScene(input(state)).fog!.vision;
+      assert.equal(inside(polygon, c.point), c.visible);
+    });
+  }
+});
+
+describe("buildTableScene: difficult terrain and redacted fields", () => {
+  it("difficult terrain cells become hatched cell rectangles", () => {
+    const scene = buildTableScene(input(tableState({ difficult_terrain: [{ col: 1, row: 2 }] })));
+    assert.deepEqual(scene.terrain.cells, [{ x: 50, y: 100, w: 50, h: 50 }]);
+  });
+
+  it("the scene carries both terrain alphas so the renderer holds no styling constants", () => {
+    const scene = buildTableScene(input(tableState({ difficult_terrain: [{ col: 1, row: 2 }] })));
+    assert.equal(scene.terrain.fillAlpha, 0.12);
+    assert.equal(scene.terrain.hatchAlpha, 0.6);
+  });
+
+  it("an AoE whose caster is hidden (concentration_caster_id: null) still renders", () => {
+    const aoe = {
+      id: WALL_ID,
+      origin: { x: 100, y: 100 },
+      origin_elevation_ft: 0,
+      shape: { shape: "SPHERE", radius_ft: 10 },
+      stops_at_walls: false,
+      discretization: "CENTER_POINT",
+      concentration_caster_id: null,
+    };
+    const scene = buildTableScene(input(tableState({ persistent_aoes: { [WALL_ID]: aoe } } as Partial<ProjectedTableState>)));
+    assert.equal(scene.aoes.length, 1);
+  });
 });
 
 describe("buildTableScene: ambient lighting and lights", () => {

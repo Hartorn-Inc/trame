@@ -32,6 +32,9 @@
  *    - Close code `1011` (the room actor timed out or stopped) is a server
  *      fault, never an access decision: it always retries with backoff and
  *      skips the access probe, so the next attempt wakes a fresh room.
+ *    - Close code `1013` (this client's outbound queue overflowed on the
+ *      server) and `1001` (heartbeat timeout, deploy) retry with backoff; the
+ *      `StateSnapshot` on reconnect is the resync.
  * 3. `Heartbeat`:
  *    - Every 20 s an open socket sends `Ping`; no `Pong` within 10 s marks
  *      the socket dead, detaches it, and schedules a reconnect without

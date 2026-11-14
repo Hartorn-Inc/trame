@@ -18,7 +18,7 @@
  *      - Per-type mitigation (`IMMUNE` -> `0`, `RESISTANT` -> `floor(x / 2)`,
  *        `VULNERABLE` -> `x * 2`) runs first, followed by Temporary HP absorption,
  *        Current HP deduction, Instant Death check (`excessDamage >= maxHp`),
- *        and Concentration DC calculation (`max(10, floor(totalMitigatedDamage / 2))`).
+ *        and Concentration DC calculation (`min(30, max(10, floor(totalMitigatedDamage / 2)))`).
  *   2. `Zero-HP & Concentration Termination`:
  *      - Damage dealt to an actor already at `0` HP inflicts `1` death save
  *        failure (`2` on a critical hit) unless it equals or exceeds `max` HP
@@ -33,6 +33,19 @@
  *        `useLegendaryResistanceIfFailed: true` with `legendary_resistance.current > 0`
  *        automatically converts the failed save into a success and decrements the
  *        resource pool before damage or conditions are applied.
+ *   5. `Critical Hits Double Dice Only` (SRD 5.2.1):
+ *      - A natural `20` doubles the dice part of the damage (`baseDamage` and
+ *        upcast dice); `damageModifier` is added once, never doubled.
+ *   6. `Action Numbers Win`:
+ *      - `ActionDefinition.attackBonus` / `saveDc` (a weapon's own bonus, a
+ *        monster ability's DC) override the actor's generic spell attack
+ *        bonus and spell save DC.
+ *   7. `Conditions Shape Rolls` (D13):
+ *      - Attacker and target conditions, after `ConditionOverride` rulings,
+ *        set advantage / disadvantage (any of each cancels), auto-fail STR
+ *        and DEX saves, make hits from within 5 ft on Paralyzed or
+ *        Unconscious targets critical, and give Petrified creatures
+ *        resistance to all damage (`conditions.ts`).
  *
  * EXECUTION LIFECYCLE:
  * --------------------
@@ -41,7 +54,7 @@
  *     ├── 2. If already at `0` HP: apply massive-damage death or `+1`/`+2` death save failures.
  *     ├── 3. If `current > 0`: absorb into `temp`, deduct from `current`, check massive excess.
  *     ├── 4. Append `CONDITION_UNCONSCIOUS` when dropping to `0` HP while alive.
- *     └── 5. Emit `ConcentrationPrompt` (`DC = max(10, floor(damage / 2))`) or drop concentration.
+ *     └── 5. Emit `ConcentrationPrompt` (`DC = min(30, max(10, floor(damage / 2)))`) or drop concentration.
  * ============================================================================
  */
 
@@ -49,13 +62,27 @@ import type {
   AbilityId,
   ActiveConditionState,
   DamageType,
+  DerivedAttack,
+  DerivedFeature,
+  DerivedSpellcasting,
   Dnd5eActorData,
+  MitigationLevel,
   ProficiencyRank,
   SkillId,
   TurnTrigger,
 } from "./types.ts";
+import type { DerivedFeatureRules, DerivedResourcePool } from "./classFeatures.ts";
 import { computeDnd5eSheetDerived, type ProficiencyRankString } from "./manifest.ts";
 import { decrementConditionDurations } from "./progression.ts";
+import {
+  keptD20,
+  resolveAttackRollMode,
+  resolveConditionEffects,
+  resolveSavingThrowMode,
+  type ConditionEffects,
+  type ConditionOverrideRuling,
+  type RollMode,
+} from "./conditions.ts";
 
 export { computeDnd5eSheetDerived, decrementConditionDurations };
 
@@ -219,6 +246,22 @@ export interface Dnd5eDerivedStats {
     /** Weight threshold in pounds (`STR * 5 lb`) for standard encumbrance (`-10 ft` speed). */
     encumbered: number;
   };
+  /** Attacks from equipped weapons and damaging spells (`[]` for `Dnd5eActorSheet`). */
+  attacks?: DerivedAttack[];
+  /** Spellcasting summary; absent for actors without class spellcasting or spell feats. */
+  spells?: DerivedSpellcasting;
+  /** Class, subclass, species, background and feat features with their level. */
+  features?: DerivedFeature[];
+  /** `ClassFeature` use counters with `current` / `max` (`Dnd5eActorData` with an SRD class only). */
+  resourcePools?: DerivedResourcePool[];
+  /** Attacks per action, critical range, roll rules and resistances of the features in force (same scope). */
+  featureRules?: DerivedFeatureRules;
+  /**
+   * Condition effects in force after the `ConditionOverride` rulings passed to
+   * `computeDnd5eSheetDerived` (`speedZero` means the creature cannot move;
+   * `speed` stays the walking speed so lifting the condition restores it).
+   */
+  conditionEffects?: ConditionEffects;
 }
 
 /**
@@ -270,6 +313,18 @@ export interface DamageInstance {
 export interface DamagePipelineOptions {
   /** When true, damage dealt to an actor already at `0` HP inflicts `2` death save failures instead of `1`. */
   isCritical?: boolean;
+  /** Game Master `ConditionOverride` rulings on the actor's token (Petrified resistance). */
+  conditionOverrides?: readonly ConditionOverrideRuling[];
+}
+
+/**
+ * Mitigation of one damage type after condition rules: resistance to all
+ * damage (Petrified) makes `NONE` resistant and cancels a vulnerability, like
+ * the engine's `damage_affinity_for`.
+ */
+function mitigationWithConditions(base: MitigationLevel, effects: ConditionEffects): MitigationLevel {
+  if (!effects.resistsAllDamage || base === "IMMUNE" || base === "RESISTANT") return base;
+  return base === "VULNERABLE" ? "NONE" : "RESISTANT";
 }
 
 /**
@@ -278,8 +333,19 @@ export interface DamagePipelineOptions {
 export interface ConcentrationPrompt {
   /** Identifier of the active concentration spell at risk of breaking. */
   spellId: string;
-  /** Constitution saving throw Difficulty Class (`max(10, floor(totalMitigatedDamage / 2))`). */
+  /** Constitution saving throw Difficulty Class (`min(30, max(10, floor(totalMitigatedDamage / 2)))`). */
   dc: number;
+}
+
+/** Highest Concentration check DC (SRD 5.2.1: "up to a maximum DC of 30"). */
+export const MAX_CONCENTRATION_DC = 30;
+
+/**
+ * Concentration check DC for `damage` points taken: half the damage rounded
+ * down, at least `10` and at most `MAX_CONCENTRATION_DC` (`30`).
+ */
+export function concentrationCheckDc(damage: number): number {
+  return Math.min(MAX_CONCENTRATION_DC, Math.max(10, Math.floor(damage / 2)));
 }
 
 /**
@@ -310,7 +376,7 @@ export interface DamageResolutionResult {
  * 2. Absorbs mitigated damage into Temporary HP (`hp.temp`) first.
  * 3. Deducts remaining damage from Current HP (`hp.current`).
  * 4. Enforces Instant Death (`excessDamage >= hp.max`), unconsciousness at `0` HP, or death save failures when hit at `0` HP.
- * 5. Computes the Concentration check DC (`max(10, floor(totalMitigatedDamage / 2))`) or breaks concentration at `0` HP.
+ * 5. Computes the Concentration check DC (`concentrationCheckDc`, 10 to 30) or breaks concentration at `0` HP.
  */
 export function resolveDamagePipeline(
   actor: Dnd5eActorData,
@@ -319,9 +385,13 @@ export function resolveDamagePipeline(
 ): DamageResolutionResult {
   const clone: Dnd5eActorData = JSON.parse(JSON.stringify(actor));
 
+  const conditionEffects = resolveConditionEffects({
+    conditions: clone.conditions.map((c) => c.id),
+    overrides: options.conditionOverrides,
+  });
   let totalMitigatedDamage = 0;
   for (const instance of damageInstances) {
-    const mitigation = clone.damageMitigations?.[instance.type] ?? "NONE";
+    const mitigation = mitigationWithConditions(clone.damageMitigations?.[instance.type] ?? "NONE", conditionEffects);
     let instanceAmount = Math.max(0, instance.amount);
     if (mitigation === "IMMUNE") {
       instanceAmount = 0;
@@ -408,10 +478,9 @@ export function resolveDamagePipeline(
     clone.attributes.hp.current > 0 &&
     totalMitigatedDamage > 0
   ) {
-    const concentrationDC = Math.max(10, Math.floor(totalMitigatedDamage / 2));
     concentrationPrompt = {
       spellId: clone.concentratingOnSpellId,
-      dc: concentrationDC,
+      dc: concentrationCheckDc(totalMitigatedDamage),
     };
   }
 
@@ -540,11 +609,29 @@ export interface ActionDefinition {
   resolutionKind: "attack_roll" | "saving_throw" | "auto_hit";
   /** Target ability score used when `resolutionKind === "saving_throw"` (defaults to `"dex"`). */
   saveAbility?: AbilityId;
-  /** Whether a successful saving throw still deals `floor(totalBaseDamage / 2)` damage. */
+  /** Whether a successful saving throw still deals `floor(totalDamage / 2)` damage. */
   halfDamageOnSave?: boolean;
-  /** Unscaled base damage dealt on a hit or failed saving throw (`>= 0`). */
+  /**
+   * Damage rolled on the action's dice (rolled total or average, `>= 0`), dealt
+   * on a hit or failed save. A critical hit doubles it.
+   */
   baseDamage: number;
-  /** Optional spell-slot upcasting scaling rule. */
+  /**
+   * Flat damage modifier (ability modifier, magic bonus; may be negative)
+   * added once after the dice, never doubled on a critical hit. Defaults to `0`.
+   */
+  damageModifier?: number;
+  /**
+   * The action's own attack roll bonus (weapon attack, monster attack). When
+   * set it replaces the actor's spell attack bonus for `"attack_roll"`.
+   */
+  attackBonus?: number;
+  /**
+   * The action's own save DC (monster ability, item). When set it replaces the
+   * actor's spell save DC for `"saving_throw"`.
+   */
+  saveDc?: number;
+  /** Optional spell-slot upcasting scaling rule (extra damage counts as dice). */
   upcastRule?: ActionUpcastRule;
   /** Optional condition name appended to `target.conditions` when the target is hit or fails its save. */
   applyConditionOnFail?: string;
@@ -562,6 +649,20 @@ export interface TargetResolutionInput {
   saveD20Roll?: number;
   /** When true, spends `1` charge of `legendary_resistance` if available to turn a failed save into a success. */
   useLegendaryResistanceIfFailed?: boolean;
+  /**
+   * Both natural d20s when the roll has advantage or disadvantage; the kept one
+   * follows the condition roll mode. Falls back to `attackD20Roll` / `saveD20Roll`.
+   */
+  attackD20Rolls?: readonly [number, number];
+  /** Both natural d20s of the saving throw (see `attackD20Rolls`). */
+  saveD20Rolls?: readonly [number, number];
+  /**
+   * Attacker-to-target 3D distance in feet (`ft`, elevation included) for Prone and automatic
+   * critical hits. Unknown when absent: no Prone modifier and never an automatic critical hit.
+   */
+  distanceFt?: number;
+  /** Game Master `ConditionOverride` rulings on the target token. */
+  overrides?: readonly ConditionOverrideRuling[];
 }
 
 /**
@@ -580,19 +681,33 @@ export interface TargetResolutionOutcome {
   remainingHp: number;
   /** Condition applied to the target on hit/failed save, if any. */
   appliedCondition?: string;
+  /** Roll mode of the attack roll or saving throw after condition rules (`"normal"` for auto-hit). */
+  rollMode: RollMode;
+  /** True when the hit was a critical hit (natural 20 or a condition's automatic critical). */
+  criticalHit: boolean;
+  /** True when the saving throw failed automatically (Paralyzed, Petrified, Stunned, Unconscious). */
+  autoFailedSave: boolean;
 }
 
 /**
  * Resolves an `ActionDefinition` (attack roll, saving throw, or auto-hit) from `actor`
  * against one or more `targets`, deducting `resourceCostId`, scaling upcast damage,
- * evaluating critical hits (`d20 === 20` doubles damage) and Legendary Resistance,
- * deducting Temporary/Current HP, and applying failure conditions.
+ * evaluating critical hits (`d20 === 20` doubles the dice, not `damageModifier`)
+ * and Legendary Resistance, deducting Temporary/Current HP, and applying failure
+ * conditions. The action's own `attackBonus` / `saveDc` take precedence over
+ * the actor's spell attack bonus / spell save DC.
+ *
+ * Conditions on the attacker and each target (after `ConditionOverride`
+ * rulings) set the roll mode with SRD cancellation, auto-fail Strength and
+ * Dexterity saves, and turn a hit from within 5 ft on a Paralyzed or
+ * Unconscious target into a critical hit (`conditions.ts`).
  */
 export function resolveActionPipeline(
   actor: Dnd5eActorSheet,
   action: ActionDefinition,
   targets: TargetResolutionInput[],
-  castSlotLevel?: number
+  castSlotLevel?: number,
+  attackerOverrides: readonly ConditionOverrideRuling[] = []
 ): TargetResolutionOutcome[] {
   if (action.resourceCostId) {
     const res = actor.resources[action.resourceCostId];
@@ -603,15 +718,19 @@ export function resolveActionPipeline(
   }
 
   const actorDerived = computeDnd5eSheetDerived(actor);
-  let totalBaseDamage = action.baseDamage;
+  const attackBonus = action.attackBonus ?? actorDerived.spellAttackBonus;
+  const saveDc = action.saveDc ?? actorDerived.spellSaveDc;
+  const damageModifier = action.damageModifier ?? 0;
+  let diceDamage = action.baseDamage;
   if (
     action.upcastRule &&
     castSlotLevel !== undefined &&
     castSlotLevel > action.upcastRule.baseSlotLevel
   ) {
     const extraLevels = castSlotLevel - action.upcastRule.baseSlotLevel;
-    totalBaseDamage += extraLevels * action.upcastRule.extraDamagePerSlot;
+    diceDamage += extraLevels * action.upcastRule.extraDamagePerSlot;
   }
+  const totalDamage = Math.max(0, diceDamage + damageModifier);
 
   const outcomes: TargetResolutionOutcome[] = [];
   for (const item of targets) {
@@ -619,18 +738,30 @@ export function resolveActionPipeline(
     let hitOrFailedSave = true;
     let usedLegendaryResistance = false;
     let isCriticalHit = false;
+    let rollMode: RollMode = "normal";
+    let autoFailedSave = false;
+    const targetState = { conditions: item.target.conditions, overrides: item.overrides };
 
     if (action.resolutionKind === "attack_roll") {
-      const d20 = item.attackD20Roll ?? 10;
-      isCriticalHit = d20 === 20;
+      const roll = resolveAttackRollMode({
+        attacker: { conditions: actor.conditions, overrides: attackerOverrides },
+        target: targetState,
+        distanceFt: item.distanceFt ?? null,
+      });
+      rollMode = roll.mode;
+      const d20 = keptD20(rollMode, item.attackD20Rolls ?? [item.attackD20Roll ?? 10]);
       const isAutoMiss = d20 === 1;
-      const totalAttack = d20 + actorDerived.spellAttackBonus;
-      hitOrFailedSave = !isAutoMiss && (isCriticalHit || totalAttack >= targetDerived.armorClass);
+      const totalAttack = d20 + attackBonus;
+      hitOrFailedSave = !isAutoMiss && (d20 === 20 || totalAttack >= targetDerived.armorClass);
+      isCriticalHit = hitOrFailedSave && (d20 === 20 || roll.autoCritical);
     } else if (action.resolutionKind === "saving_throw") {
       const saveAb = action.saveAbility ?? "dex";
-      const d20 = item.saveD20Roll ?? 10;
+      const save = resolveSavingThrowMode(targetState, saveAb);
+      rollMode = save.mode;
+      autoFailedSave = save.autoFail;
+      const d20 = keptD20(rollMode, item.saveD20Rolls ?? [item.saveD20Roll ?? 10]);
       const totalSave = d20 + targetDerived.savingThrows[saveAb];
-      hitOrFailedSave = totalSave < actorDerived.spellSaveDc;
+      hitOrFailedSave = autoFailedSave || totalSave < saveDc;
 
       if (hitOrFailedSave && item.useLegendaryResistanceIfFailed) {
         const legRes = item.target.resources.legendary_resistance;
@@ -644,9 +775,9 @@ export function resolveActionPipeline(
 
     let damageApplied = 0;
     if (hitOrFailedSave) {
-      damageApplied = isCriticalHit ? totalBaseDamage * 2 : totalBaseDamage;
+      damageApplied = isCriticalHit ? Math.max(0, diceDamage * 2 + damageModifier) : totalDamage;
     } else if (action.resolutionKind === "saving_throw" && action.halfDamageOnSave) {
-      damageApplied = Math.floor(totalBaseDamage / 2);
+      damageApplied = Math.floor(totalDamage / 2);
     }
 
     const absorbed = Math.min(item.target.tempHp, damageApplied);
@@ -669,6 +800,9 @@ export function resolveActionPipeline(
       damageApplied,
       remainingHp: item.target.hpCurrent,
       appliedCondition,
+      rollMode,
+      criticalHit: isCriticalHit,
+      autoFailedSave,
     });
   }
 

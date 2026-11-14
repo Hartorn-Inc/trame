@@ -24,6 +24,8 @@ RUN grep -qx "channel = \"$(rustc --version | cut -d' ' -f2)\"" /tmp/rust-toolch
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+# trame-server compiles the SRD monster pack in (`statblock.rs`, include_str!).
+COPY packages/game-systems/dnd5e/packs/monsters.json ./packages/game-systems/dnd5e/packs/monsters.json
 
 FROM rust-source AS wasm-builder
 ARG WASM_PACK_VERSION=0.15.1

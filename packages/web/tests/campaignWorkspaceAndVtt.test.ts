@@ -264,7 +264,7 @@ describe("[Ticket #89 - Acceptance Criterion 2] Live HandoutRevealed Broadcast &
         handout_id: "h-ws-99",
         title: "Decree of the Archmage",
         content: "All portals to the Shadowfell are sealed.",
-        revealed_by: "gm-elminster",
+        revealed_by: "gm-sage",
         revealed_at: 1716009999000,
       }),
     });
@@ -280,7 +280,7 @@ describe("[Ticket #89 - Acceptance Criterion 2] Live HandoutRevealed Broadcast &
       handout_id: "h-ws-99",
       title: "Decree of the Archmage (Updated)",
       content: "All portals to the Shadowfell are sealed.",
-      revealed_by: "gm-elminster",
+      revealed_by: "gm-sage",
     });
     assert.equal(documentsHandoutsSignal.value.length, 1);
     assert.equal(documentsHandoutsSignal.value[0].title, "Decree of the Archmage (Updated)");

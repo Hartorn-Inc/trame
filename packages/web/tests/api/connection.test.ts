@@ -126,6 +126,7 @@ describe("reconnects_after_1001_with_backoff", () => {
     { id: "reconnects_after_1001_with_backoff: deploy / shutdown Going Away", code: 1001 },
     { id: "reconnects_after_1001_with_backoff: network drop (1006)", code: 1006 },
     { id: "reconnects_after_1001_with_backoff: server error (1011)", code: 1011 },
+    { id: "reconnects_after_1001_with_backoff: slow consumer queue overflow (1013)", code: 1013 },
   ];
   for (const c of cases) {
     it(c.id, async () => {

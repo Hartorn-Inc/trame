@@ -91,7 +91,7 @@ function createCompleteTestSheet(): SheetLayoutTree {
 
 const sampleActorState = {
   sheet: {
-    name: "Valeros",
+    name: "Kael",
     class: "Fighter",
     level: 5,
     hp: { current: 35, max: 48, temp: 5 },

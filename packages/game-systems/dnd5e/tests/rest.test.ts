@@ -14,7 +14,7 @@ import {
 describe("[Ticket #83] D&D 5e ShortRest and LongRest Recovery Mechanics in rest.ts", () => {
   describe("AC1: ShortRest Hit Dice Validation", () => {
     it("WHEN applyShortRest is invoked with hitDieSpend.count greater than actor.attributes.hitDiceCurrent, applyShortRest throws an Error with message 'Insufficient hit dice'.", () => {
-      const actor = createDefaultActorData("hero-hd-1", "Valeros");
+      const actor = createDefaultActorData("hero-hd-1", "Kael");
       actor.attributes.hitDiceCurrent = 2;
       actor.attributes.hitDiceMax = 3;
 
@@ -189,39 +189,49 @@ describe("[Ticket #83] D&D 5e ShortRest and LongRest Recovery Mechanics in rest.
     });
   });
 
-  describe("AC5: LongRest Half-Max Hit Dice Recovery", () => {
-    it("WHEN applyLongRest is invoked, applyLongRest increments actor.attributes.hitDiceCurrent by Math.max(1, Math.floor(actor.attributes.hitDiceMax / 2)) without exceeding hitDiceMax.", () => {
-      // Even hitDiceMax: 6 -> recovers floor(6 / 2) = 3
-      const actorEven = createDefaultActorData("hero-lr-hd-even", "Fighter");
-      actorEven.attributes.hitDiceMax = 6;
-      actorEven.attributes.hitDiceCurrent = 1;
+  describe("AC5 (GS1): LongRest restores all Hit Dice (SRD 5.2.1)", () => {
+    const cases: [string, number, number][] = [
+      ["long_rest_restores_all_hit_dice", 6, 1],
+      ["long_rest_restores_all_hit_dice_odd_max", 7, 2],
+      ["long_rest_restores_all_hit_dice_from_zero", 1, 0],
+      ["long_rest_keeps_full_hit_dice_full", 6, 6],
+    ];
+    for (const [id, hitDiceMax, hitDiceCurrent] of cases) {
+      it(id, () => {
+        const actor = createDefaultActorData(`hero-${id}`, "Fighter");
+        actor.attributes.hitDiceMax = hitDiceMax;
+        actor.attributes.hitDiceCurrent = hitDiceCurrent;
 
-      const updatedEven = applyLongRest(actorEven);
-      assert.equal(updatedEven.attributes.hitDiceCurrent, 4); // 1 + 3 = 4
+        assert.equal(applyLongRest(actor).attributes.hitDiceCurrent, hitDiceMax);
+      });
+    }
 
-      // Odd hitDiceMax: 7 -> recovers floor(7 / 2) = 3
-      const actorOdd = createDefaultActorData("hero-lr-hd-odd", "Druid");
-      actorOdd.attributes.hitDiceMax = 7;
-      actorOdd.attributes.hitDiceCurrent = 2;
+    it("long_rest_sheet_reports_every_recovered_hit_die", () => {
+      const sheet: Dnd5eActorSheet = {
+        id: "sheet-hd",
+        name: "Sheet Hero",
+        level: 8,
+        spellcastingAbility: "int",
+        abilities: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
+        saveProficiencies: {},
+        skillProficiencies: {},
+        armorKind: "unarmored",
+        armorBaseAc: 10,
+        hasShield: false,
+        hpCurrent: 30,
+        hpMax: 30,
+        tempHp: 0,
+        hitDiceCurrent: 0,
+        hitDiceMax: 8,
+        hitDieSides: 10,
+        exhaustionLevel: 0,
+        conditions: [],
+        resources: {},
+        deathSaves: { successes: 0, failures: 0, isStable: false, isDead: false },
+      };
 
-      const updatedOdd = applyLongRest(actorOdd);
-      assert.equal(updatedOdd.attributes.hitDiceCurrent, 5); // 2 + 3 = 5
-
-      // Level 1 minimum recovery: 1 -> recovers max(1, floor(1 / 2)) = 1
-      const actorLvl1 = createDefaultActorData("hero-lr-hd-lvl1", "Sorcerer");
-      actorLvl1.attributes.hitDiceMax = 1;
-      actorLvl1.attributes.hitDiceCurrent = 0;
-
-      const updatedLvl1 = applyLongRest(actorLvl1);
-      assert.equal(updatedLvl1.attributes.hitDiceCurrent, 1); // 0 + 1 = 1
-
-      // Cap at hitDiceMax
-      const actorCap = createDefaultActorData("hero-lr-hd-cap", "Monk");
-      actorCap.attributes.hitDiceMax = 6;
-      actorCap.attributes.hitDiceCurrent = 5;
-
-      const updatedCap = applyLongRest(actorCap);
-      assert.equal(updatedCap.attributes.hitDiceCurrent, 6); // 5 + 3 = 8 capped at 6
+      assert.equal(applyLongRest(sheet).hitDiceRecovered, 8);
+      assert.equal(sheet.hitDiceCurrent, 8);
     });
   });
 
@@ -309,14 +319,17 @@ describe("[Ticket #83] D&D 5e ShortRest and LongRest Recovery Mechanics in rest.
       assert.equal(updated.concentratingOnSpellId, undefined);
     });
 
-    it("computes correct Hit Die recovery via calculateHitDieRecovery", () => {
-      assert.equal(calculateHitDieRecovery(1), 1);
-      assert.equal(calculateHitDieRecovery(2), 1);
-      assert.equal(calculateHitDieRecovery(3), 1);
-      assert.equal(calculateHitDieRecovery(4), 2);
-      assert.equal(calculateHitDieRecovery(5), 2);
-      assert.equal(calculateHitDieRecovery(20), 10);
-    });
+    const recoveryCases: [string, number, number][] = [
+      ["hit_die_recovery_level_1", 1, 1],
+      ["hit_die_recovery_level_4_restores_all", 4, 4],
+      ["hit_die_recovery_level_20_restores_all", 20, 20],
+      ["hit_die_recovery_floors_at_one", 0, 1],
+    ];
+    for (const [id, hitDiceMax, expected] of recoveryCases) {
+      it(id, () => {
+        assert.equal(calculateHitDieRecovery(hitDiceMax), expected);
+      });
+    }
 
     it("computes correct single-die HP gain via calculateShortRestHpGain", () => {
       assert.equal(calculateShortRestHpGain(8, 14), 10); // 8 + 2

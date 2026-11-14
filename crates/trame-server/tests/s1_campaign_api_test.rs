@@ -30,7 +30,6 @@ use std::io::Write as _;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tower::ServiceExt;
 use trame_engine::commands::{
     CampaignRole, CommandActor, TableMode, TableState, TokenState, TrameCommand,
@@ -233,7 +232,10 @@ fn token(name: &str, owner: Option<Uuid>, actor: Option<Uuid>, x: f64) -> TokenS
 }
 
 fn spawn_cmd(t: &TokenState) -> Value {
-    serde_json::to_value(TrameCommand::SpawnToken { token: t.clone() }).unwrap()
+    serde_json::to_value(TrameCommand::SpawnToken {
+        token: Box::new(t.clone()),
+    })
+    .unwrap()
 }
 
 async fn table(room: &TableRoomHandle) -> TableState {
@@ -373,7 +375,9 @@ async fn a02_actor_update_resyncs_only_linked_tokens() {
     for t in [&linked, &synthetic] {
         room.dispatch_direct_command(
             gm_actor(gm_id),
-            TrameCommand::SpawnToken { token: t.clone() },
+            TrameCommand::SpawnToken {
+                token: Box::new(t.clone()),
+            },
         )
         .await
         .unwrap();
@@ -731,7 +735,7 @@ async fn a03_handout_reveal_matches_block_id_and_reaches_player() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "case {case}");
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = trame_server::room::client_channel();
         h.room(campaign_id)
             .await
             .connect_client(ConnectedClient {
@@ -1240,7 +1244,9 @@ async fn a17_activate_scene_keeps_heroes_and_spawns_synthetic_goblins() {
     for t in [&hero, &old_npc] {
         room.dispatch_direct_command(
             gm_actor(gm_id),
-            TrameCommand::SpawnToken { token: t.clone() },
+            TrameCommand::SpawnToken {
+                token: Box::new(t.clone()),
+            },
         )
         .await
         .unwrap();
@@ -1339,7 +1345,9 @@ async fn a16_damage_persists_only_for_linked_tokens() {
         let room = h.room(campaign_id).await;
         room.dispatch_direct_command(
             gm_actor(gm_id),
-            TrameCommand::SpawnToken { token: t.clone() },
+            TrameCommand::SpawnToken {
+                token: Box::new(t.clone()),
+            },
         )
         .await
         .unwrap();
@@ -1370,6 +1378,210 @@ async fn a16_damage_persists_only_for_linked_tokens() {
             }
         }
         assert_eq!(hp, json!(expected_hp), "case {case}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GS11 / UA15 — threat reach and darkvision derive from the sheet
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sheet_derives_threat_reach_and_darkvision() {
+    let glaive = |equipped: bool| json!({ "id": "i1", "name": "Glaive", "quantity": 1, "compendiumId": "srd:item:glaive", "equipped": equipped });
+    let attack = |kind: &str, reach: f64| json!({ "attack": { "kind": kind, "toHit": 4, "reachFt": reach } });
+    // (case_id, sheet, expected reach_ft, expected darkvision_ft)
+    let cases = [
+        ("bare_sheet_keeps_token_values", json!({}), None, None),
+        (
+            "equipped_glaive_gives_10_ft",
+            json!({ "items": [glaive(true)] }),
+            Some(10.0),
+            None,
+        ),
+        (
+            "carried_glaive_gives_5_ft",
+            json!({ "items": [glaive(false)] }),
+            Some(5.0),
+            None,
+        ),
+        (
+            "reach_weapon_matched_by_plural_name",
+            json!({ "items": [{ "id": "i2", "name": "2 Whips", "quantity": 2, "equipped": true }] }),
+            Some(10.0),
+            None,
+        ),
+        (
+            "longsword_gives_5_ft",
+            json!({ "items": [{ "id": "i3", "name": "Longsword", "quantity": 1, "compendiumId": "srd:item:longsword", "equipped": true }] }),
+            Some(5.0),
+            None,
+        ),
+        (
+            "stat_block_takes_longest_melee_reach",
+            json!({ "actions": [attack("melee", 5.0), attack("melee", 15.0), attack("ranged", 80.0)], "senses": { "darkvision": 60, "passivePerception": 10 } }),
+            Some(15.0),
+            Some(60.0),
+        ),
+        (
+            "stat_block_without_melee_defaults_to_5_ft_and_no_darkvision",
+            json!({ "actions": [attack("ranged", 80.0)], "senses": { "passivePerception": 12 } }),
+            Some(5.0),
+            Some(0.0),
+        ),
+        (
+            "dwarf_species_sees_120_ft",
+            json!({ "speciesId": "srd:species:dwarf" }),
+            None,
+            Some(120.0),
+        ),
+        (
+            "human_species_has_no_darkvision",
+            json!({ "speciesId": "human" }),
+            None,
+            Some(0.0),
+        ),
+        (
+            "unknown_species_keeps_token_senses",
+            json!({ "speciesId": "homebrew:species:owlfolk" }),
+            None,
+            None,
+        ),
+    ];
+    for (case, sheet, reach, darkvision) in cases {
+        let sync = tactical_sync_from_sheet(None, &sheet);
+        assert_eq!(
+            (sync.reach_ft, sync.darkvision_ft),
+            (reach, darkvision),
+            "case {case}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn linked_token_reach_and_darkvision_come_from_the_stored_sheet() {
+    let h = Harness::new();
+    let app = h.app();
+    let (campaign_id, _, gm) = h.campaign(&app).await;
+    let dwarf_with_glaive = json!({
+        "speciesId": "srd:species:dwarf",
+        "items": [{ "id": "i1", "name": "Glaive", "quantity": 1, "compendiumId": "srd:item:glaive", "equipped": true }],
+    });
+    let (_, created) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/campaigns/{campaign_id}/actors"),
+        Some(&gm),
+        json!({ "name": "Thorin", "data": dwarf_with_glaive }),
+    )
+    .await;
+    let actor_id = Uuid::parse_str(created["actor"]["id"].as_str().unwrap()).unwrap();
+    let room = h.room(campaign_id).await;
+
+    let mut claimed = token("Thorin", None, Some(actor_id), 0.0);
+    claimed.reach_ft = 30.0;
+    claimed.senses.darkvision_range_ft = 999.0;
+    let body = mcp_tool(
+        &app,
+        &gm,
+        "trame.dispatch_command",
+        json!({ "campaign_id": campaign_id, "command": spawn_cmd(&claimed) }),
+    )
+    .await;
+    assert!(body["error"].is_null(), "{body}");
+    let after_spawn = table(&room).await.data.tokens[&claimed.id].clone();
+
+    let (status, _) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/campaigns/{campaign_id}/actors/{actor_id}"),
+        Some(&gm),
+        json!({ "expected_version": 1, "data": { "speciesId": "srd:species:human", "items": [] } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let after_resync = table(&room).await.data.tokens[&claimed.id].clone();
+
+    // (case_id, token, expected reach_ft, expected darkvision_range_ft)
+    let cases = [
+        (
+            "spawn_ignores_client_reach_and_sight",
+            after_spawn,
+            10.0,
+            120.0,
+        ),
+        ("sheet_save_resyncs_reach_and_sight", after_resync, 5.0, 0.0),
+    ];
+    for (case, t, reach, darkvision) in cases {
+        assert_eq!(
+            (t.reach_ft, t.senses.darkvision_range_ft),
+            (reach, darkvision),
+            "case {case}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn linked_token_conditions_persist_to_the_actor_sheet() {
+    // (case_id, conditions set at the table, expected sheet `conditions`)
+    let cases = [
+        (
+            "added_condition_keeps_sheet_metadata",
+            vec!["poisoned", "prone"],
+            json!([{ "id": "poisoned", "source": "trap" }, { "id": "prone" }]),
+        ),
+        ("cleared_conditions_empty_the_sheet", vec![], json!([])),
+    ];
+    for (case, conditions, expected) in cases {
+        let h = Harness::new();
+        let app = h.app();
+        let (campaign_id, gm_id, gm) = h.campaign(&app).await;
+        let (_, created) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/campaigns/{campaign_id}/actors"),
+            Some(&gm),
+            json!({ "name": "Sildar", "data": { "conditions": [{ "id": "poisoned", "source": "trap" }] } }),
+        )
+        .await;
+        let actor_id = Uuid::parse_str(created["actor"]["id"].as_str().unwrap()).unwrap();
+        let mut t = token("Sildar", None, Some(actor_id), 0.0);
+        t.conditions = vec!["poisoned".to_string()];
+        let room = h.room(campaign_id).await;
+        room.dispatch_direct_command(
+            gm_actor(gm_id),
+            TrameCommand::SpawnToken {
+                token: Box::new(t.clone()),
+            },
+        )
+        .await
+        .unwrap();
+        room.dispatch_direct_command(
+            gm_actor(gm_id),
+            TrameCommand::SetTokenConditions {
+                token_id: t.id,
+                conditions: conditions.iter().map(|c| c.to_string()).collect(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut sheet_conditions = Value::Null;
+        for _ in 0..25 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let (_, body) = call(
+                &app,
+                "GET",
+                &format!("/api/v1/campaigns/{campaign_id}/actors/{actor_id}"),
+                Some(&gm),
+                Value::Null,
+            )
+            .await;
+            sheet_conditions = body["actor"]["data"]["conditions"].clone();
+            if sheet_conditions == expected {
+                break;
+            }
+        }
+        assert_eq!(sheet_conditions, expected, "case {case}");
     }
 }
 
@@ -2120,7 +2332,7 @@ async fn a27_sweeper_hibernates_idle_rooms_and_logs() {
     room.dispatch_direct_command(
         gm_actor(Uuid::new_v4()),
         TrameCommand::SpawnToken {
-            token: token("Goblin", None, None, 0.0),
+            token: Box::new(token("Goblin", None, None, 0.0)),
         },
     )
     .await
@@ -2146,7 +2358,7 @@ async fn a27_ping_does_not_renew_the_lease() {
     let wal = Arc::new(InMemoryWalStorage::new());
     let mgr = RoomLeaseManager::new(wal, 25, 900_000);
     let room = mgr.get_or_wake_room(Uuid::new_v4()).await.unwrap();
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = trame_server::room::client_channel();
     let session_id = Uuid::new_v4();
     room.connect_client(ConnectedClient {
         session_id,
@@ -2169,6 +2381,7 @@ async fn a27_ping_does_not_renew_the_lease() {
             ClientEnvelope::PointerPing {
                 pos: Point2D::new(1.0, 1.0),
                 color_hex: "#ffaa00".to_string(),
+                scene_id: None,
             },
             true,
         ),
@@ -2212,9 +2425,12 @@ async fn a05_auto_rolled_initiative_fills_totals() {
         for (i, dex) in [-1, 2, 4].into_iter().enumerate() {
             let mut t = token(&format!("T{i}"), None, None, f64::from(i as u32) * 70.0);
             t.dex_mod = dex;
-            room.dispatch_direct_command(gm.clone(), TrameCommand::SpawnToken { token: t })
-                .await
-                .unwrap();
+            room.dispatch_direct_command(
+                gm.clone(),
+                TrameCommand::SpawnToken { token: Box::new(t) },
+            )
+            .await
+            .unwrap();
         }
         room.dispatch_direct_command(gm.clone(), cmd).await.unwrap();
         let state = table(&room).await;

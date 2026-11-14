@@ -148,6 +148,17 @@ export class CompendiumResolver {
   }
 
   /**
+   * Replaces the singleton returned by `getDefault()` (`null` restores the
+   * curated-only `SYSTEM_SRD` resolver on the next `getDefault()`). Sheet
+   * derivations read the default resolver synchronously, so the full SRD
+   * packs must be installed here (`installFullSystemSrd`) before a sheet that
+   * references pack-only spells or items is derived.
+   */
+  public static setDefault(resolver: CompendiumResolver | null): void {
+    CompendiumResolver.defaultInstance = resolver;
+  }
+
+  /**
    * Static helper resolving an entry by `id` or `slug` from the default `SYSTEM_SRD` compendium.
    */
   public static get(idOrSlug: string): CompendiumEntry | undefined {

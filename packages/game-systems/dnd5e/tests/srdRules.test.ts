@@ -438,6 +438,7 @@ describe("Feats (exactly the 17 SRD 5.2.1 feats)", () => {
     ["epic-boon-at-19-raises-above-20", "srd:feat:boon_of_fate", { targetLevel: 19, abilities: { ...baseCtx.abilities, cha: 20 }, abilityIncrease: "cha" }, "cha"],
     ["spell-recall-for-caster", "srd:feat:boon_of_spell_recall", { targetLevel: 19, hasSpellcasting: true, abilityIncrease: "int" }, "int"],
     ["homebrew-feat-passes-unchecked", "campaign:feat:lucky-charm", {}, undefined],
+    ["fighting-style-with-fighting-style-feature", "srd:feat:archery", { hasFightingStyle: true }, undefined],
   ];
   for (const [id, featId, ctx, expected] of accepted) {
     it(`G10-feat-accepts-${id}`, () => {
@@ -446,7 +447,7 @@ describe("Feats (exactly the 17 SRD 5.2.1 feats)", () => {
   }
 
   const rejected: [string, string, Partial<FeatSelectionContext>, RegExp][] = [
-    ["fighting-style-from-asi", "srd:feat:archery", {}, /Fighting Style feats are granted by class features/],
+    ["fighting-style-without-fighting-style-feature", "srd:feat:archery", {}, /Fighting Style feats require the Fighting Style feature/],
     ["asi-as-feat", "srd:feat:ability_score_improvement", {}, /Use the ASI selection/],
     ["epic-boon-before-19", "srd:feat:boon_of_truesight", { abilityIncrease: "wis" }, /Feat prerequisite not met/],
     ["grappler-without-str-or-dex-13", "srd:feat:grappler", { abilities: { ...baseCtx.abilities, str: 12 }, abilityIncrease: "str" }, /Feat prerequisite not met/],

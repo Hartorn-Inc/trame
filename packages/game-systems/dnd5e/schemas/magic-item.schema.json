@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trame.dev/schemas/dnd5e/magic-item.schema.json",
+  "title": "SrdMagicItemData",
+  "description": "`data` payload of a generated SRD 5.2.1 magic item compendium entry (packs/magic-items.json). Variants sharing one rules text (Weapon, +1, +2, or +3; Flame Tongue; ...) are one entry with a `variants` list; rarity is 'varies' when the variants differ.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["magic", "category", "rarity", "requiresAttunement", "description", "source"],
+  "properties": {
+    "magic": { "enum": [true] },
+    "category": { "enum": ["armor", "potion", "ring", "rod", "scroll", "staff", "wand", "weapon", "wondrous_item"] },
+    "rarity": { "enum": ["common", "uncommon", "rare", "very_rare", "legendary", "artifact", "varies"] },
+    "rarities": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/rarity" },
+      "description": "Distinct variant rarities, from common to artifact; present only when rarity is 'varies'."
+    },
+    "requiresAttunement": { "type": "boolean", "description": "True when the item (or any of its variants) requires attunement." },
+    "baseItem": { "$ref": "#/$defs/key", "description": "Base weapon or armor key of a single-variant item (e.g. longsword)." },
+    "variants": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "rarity"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "rarity": { "$ref": "#/$defs/rarity" },
+          "baseItem": { "$ref": "#/$defs/key" }
+        }
+      }
+    },
+    "healDice": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]?d(4|6|8|10|12|20|100)( [+-] [0-9]{1,3})?$",
+      "description": "Hit Points regained when the item is consumed (Potions of Healing)."
+    },
+    "description": { "type": "string", "minLength": 1, "maxLength": 20000 },
+    "source": { "enum": ["srd-5.2.1"] }
+  },
+  "$defs": {
+    "rarity": { "enum": ["common", "uncommon", "rare", "very_rare", "legendary", "artifact"] },
+    "key": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" }
+  }
+}

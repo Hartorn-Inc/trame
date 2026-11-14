@@ -245,6 +245,7 @@ export const DND5E_SHEET_LAYOUT: SheetLayoutTree = {
                         visibilityTier: "PUBLIC",
                         bindings: {
                           features: "derived.features",
+                          activeFeatureIds: "sheet.activeFeatureIds",
                         },
                       },
                     ],

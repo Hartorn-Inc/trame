@@ -21,6 +21,11 @@
 //!        tokens where `token.owner_user_id == Some(actor.user_id)`, cannot
 //!        open locked or secret doors, and cannot move when exploration is
 //!        paused or outside their active turn in `TableMode::TurnByTurn`.
+//!      - A player toggles a door only with a token they own within
+//!        `DOOR_REACH_FT` of it and in line of sight (`DoorOutOfReach`), so a
+//!        door handle cannot open a room nobody stands next to.
+//!      - Fog rulings arrive per stroke (`SetFogOverrides`, at most
+//!        `MAX_FOG_STROKE_CELLS` cells) so one drag is one undo entry.
 //!   2. `Atomic Pre-Mutation Undo Ring Buffer`:
 //!      - `push_undo` captures a full `TableSnapshotData` clone *only after*
 //!        all RBAC, BVH collision, and movement budget checks succeed, capped
@@ -31,6 +36,9 @@
 //!        caster's previous concentration zone, and dropping to `0` HP via
 //!        `ApplyDamage` immediately terminates active concentration and emits
 //!        `TrameEvent::ConcentrationBroken`.
+//!      - So does becoming Incapacitated (Incapacitated, Paralyzed, Petrified,
+//!        Stunned, Unconscious, or a `Force` ruling), checked after every
+//!        command (`end_incapacitated_concentration`).
 //!   4. `BVH Synchronization`:
 //!      - Any mutation that alters wall permeability (`ToggleDoor`,
 //!        `UndoLastAction`, `LoadScene`, `ActivateScene`) immediately rebuilds
@@ -51,6 +59,8 @@
 //!        drops, so event-driven clients stay in sync with state.
 //!      - Hostility is side-based: a `HeroToken` (`owner_user_id.is_some()`)
 //!        and a GM-controlled token (`owner_user_id.is_none()`) are hostile.
+//!      - A mover with `disengaged` set (Disengage action) opens no prompt;
+//!        every turn start and `EndTurnByTurn` clear the flag on all tokens.
 //!      - `Pass` (including a GM-forced `Pass`) resumes the remaining move,
 //!        re-checking walls, budget, and the other reactors' reach. `Trigger`
 //!        spends the reaction and leaves the token on the exit square; once the
@@ -66,6 +76,23 @@
 //!        and undo stack are restored exactly and the error carries the failing
 //!        index. On success the sub-commands' own undo entries are discarded in
 //!        favor of one composite `UndoEntry`.
+//!   8. `Conditions and Game Master Rulings`:
+//!      - `SetTokenConditions` follows token control (GM: any token; player:
+//!        owned tokens); `ConditionOverride` is GM-only. Both validate ids
+//!        (`1..=64` bytes, at most 32 per token) before pushing an `UndoEntry`.
+//!      - `TokenState::effective_conditions` applies the rulings (`Remove`
+//!        wins over the token's own conditions, `Force` adds); engine checks
+//!        read effective conditions only.
+//!      - `condition_effects` derives the effects the engine enforces:
+//!        Incapacitated (no reaction prompts) and Speed 0 (`MoveToken`
+//!        rejected with `SpeedZero` except for a GM teleport). Each is an
+//!        `"<condition>.<effect>"` id that an `Effect` ruling can force or
+//!        remove; the `dnd5e` pack resolves the same ids (parity fixtures).
+//!   9. `Shared Movement Pricing`:
+//!      - `MoveToken` budgets, `preview_move`, and the `previewMove` WASM export
+//!        all price moves with `MovementGrid::movement_cost_ft` (Chebyshev
+//!        squares, `difficult_terrain` doubled), so previews never disagree
+//!        with server validation.
 //!
 //! EXECUTION LIFECYCLE:
 //! --------------------
@@ -88,8 +115,12 @@ pub use crate::geometry::Point2D;
 use crate::geometry::{
     Bvh2D, CHANNEL_ETHEREAL, CHANNEL_GM_HIDDEN, CHANNEL_MATERIAL, SenseProfile, WallKind,
     WallSegment, can_token_see_target, segment_intersection, segment_intersects_segment,
+    segment_rect_distance_px, token_sample_points,
 };
-use crate::rules::{ActiveEffect, DamageAffinity, DamageResolution, resolve_damage_application};
+use crate::movement::MovementGrid;
+use crate::rules::{
+    ActiveEffect, DamageAffinity, DamageResolution, resolve_damage_application, resolve_death_save,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -98,6 +129,12 @@ use uuid::Uuid;
 
 /// Maximum number of compensating state snapshots retained in `TableState::undo_stack` (`50` entries).
 pub const MAX_UNDO_HISTORY: usize = 50;
+
+/// Farthest a player's token may be from a door to open or close it (`5` ft, one square).
+pub const DOOR_REACH_FT: f64 = 5.0;
+
+/// Most cells one `SetFogOverrides` brush stroke may rule (`64`, the client stroke cap).
+pub const MAX_FOG_STROKE_CELLS: usize = 64;
 
 fn default_bright_radius_ft() -> f64 {
     20.0
@@ -246,7 +283,9 @@ pub struct MovePreview {
     /// First movement-blocking wall crossing in pixels (`px`) between the token centers, or
     /// `None` when the straight path is clear.
     pub collision: Option<Point2D>,
-    /// Movement cost in feet (`ft`): 3D distance, doubled while squeezing.
+    /// Movement cost in feet (`ft`) from `MovementGrid::movement_cost_ft`: Chebyshev squares
+    /// (diagonals cost 5 ft), difficult squares doubled, elevation as a third axis, doubled
+    /// while squeezing.
     pub cost_ft: f64,
 }
 
@@ -378,12 +417,175 @@ const INCAPACITATING_CONDITIONS: [&str; 5] = [
     "unconscious",
 ];
 
-/// `true` when `token` carries a condition that includes Incapacitated (case-insensitive).
+/// SRD 5.2.1 condition IDs whose rules set the creature's Speed to 0.
+pub const SPEED_ZERO_CONDITIONS: [&str; 5] = [
+    "grappled",
+    "paralyzed",
+    "petrified",
+    "restrained",
+    "unconscious",
+];
+
+/// SRD 5.2.1 condition IDs granting resistance to all damage.
+pub const RESIST_ALL_DAMAGE_CONDITIONS: [&str; 1] = ["petrified"];
+
+/// Effect id suffix of the Incapacitated part of a condition (`"<condition>.incapacitated"`).
+pub const EFFECT_INCAPACITATED: &str = "incapacitated";
+/// Effect id suffix of the Speed 0 part of a condition (`"<condition>.speed_zero"`).
+pub const EFFECT_SPEED_ZERO: &str = "speed_zero";
+/// Effect id suffix of the all-damage resistance of a condition
+/// (`"<condition>.resistance_all_damage"`).
+pub const EFFECT_RESISTANCE_ALL_DAMAGE: &str = "resistance_all_damage";
+
+/// `true` when `token` is Incapacitated after the `ConditionOverride` rulings.
 fn is_incapacitated(token: &TokenState) -> bool {
-    token.conditions.iter().any(|c| {
-        INCAPACITATING_CONDITIONS
+    token.condition_effects().incapacitated
+}
+
+/// Condition effects the engine enforces itself, after the `ConditionOverride` rulings. The
+/// `dnd5e` game system computes the same values (`resolveConditionEffects`); the shared parity
+/// fixtures (`conditionEffects` export) keep both in agreement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConditionEffects {
+    /// Conditions in force (see `effective_condition_ids`).
+    pub effective_conditions: Vec<String>,
+    /// No actions, bonus actions or reactions (opportunity prompts are skipped).
+    pub incapacitated: bool,
+    /// Speed 0: `MoveToken` is rejected unless it is a Game Master teleport.
+    pub speed_zero: bool,
+    /// Resistance to every damage type (`damage_affinity_for`).
+    pub resists_all_damage: bool,
+}
+
+/// Conditions in force after the rulings: `conditions` (lowercased, compendium prefix
+/// `srd:condition:` dropped so sheet-synced ids match, deduplicated, in order) minus the
+/// `Remove`d ones, then the `Force`d ones not already present, in ruling order.
+pub fn effective_condition_ids(
+    conditions: &[String],
+    overrides: &[ConditionOverrideEntry],
+) -> Vec<String> {
+    let ruled = |id: &str, mode: OverrideMode| {
+        overrides
             .iter()
-            .any(|id| c.eq_ignore_ascii_case(id))
+            .any(|o| o.subject == OverrideSubject::Condition && o.mode == mode && o.id == id)
+    };
+    let own = conditions.iter().map(|c| {
+        let id = c.trim().to_ascii_lowercase();
+        id.strip_prefix("srd:condition:")
+            .map(str::to_string)
+            .unwrap_or(id)
+    });
+    let forced = overrides
+        .iter()
+        .filter(|o| o.subject == OverrideSubject::Condition && o.mode == OverrideMode::Force)
+        .map(|o| o.id.clone());
+    let mut out: Vec<String> = Vec::new();
+    for id in own.chain(forced) {
+        if !ruled(&id, OverrideMode::Remove) && !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// Resolves the engine-enforced condition effects. An effect `"<condition>.<effect>"` applies
+/// when a `Force` effect ruling names it, or when `<condition>` is in force, carries that effect,
+/// and no `Remove` effect ruling names it.
+pub fn condition_effects(
+    conditions: &[String],
+    overrides: &[ConditionOverrideEntry],
+) -> ConditionEffects {
+    let effective_conditions = effective_condition_ids(conditions, overrides);
+    let effect = |suffix: &str, sources: &[&str]| {
+        condition_effect_active(conditions, overrides, suffix, sources)
+    };
+    ConditionEffects {
+        incapacitated: effect(EFFECT_INCAPACITATED, &INCAPACITATING_CONDITIONS),
+        speed_zero: effect(EFFECT_SPEED_ZERO, &SPEED_ZERO_CONDITIONS),
+        resists_all_damage: effect(EFFECT_RESISTANCE_ALL_DAMAGE, &RESIST_ALL_DAMAGE_CONDITIONS),
+        effective_conditions,
+    }
+}
+
+/// `true` when the effect `"<condition>.<suffix>"` applies: a `Force` effect ruling names it,
+/// or a condition in force is one of `sources` and no `Remove` effect ruling names it. Shared
+/// by `condition_effects` and the server-side action resolution rules (`resolution.rs`).
+pub fn condition_effect_active(
+    conditions: &[String],
+    overrides: &[ConditionOverrideEntry],
+    suffix: &str,
+    sources: &[&str],
+) -> bool {
+    let removed = |id: &str| {
+        overrides.iter().any(|o| {
+            o.subject == OverrideSubject::Effect && o.mode == OverrideMode::Remove && o.id == id
+        })
+    };
+    let forced = overrides.iter().any(|o| {
+        o.subject == OverrideSubject::Effect
+            && o.mode == OverrideMode::Force
+            && o.id.rsplit_once('.').map(|(_, s)| s) == Some(suffix)
+    });
+    forced
+        || effective_condition_ids(conditions, overrides)
+            .iter()
+            .any(|c| sources.contains(&c.as_str()) && !removed(&format!("{c}.{suffix}")))
+}
+
+/// Maximum number of conditions on a token, and of `ConditionOverride` entries per token.
+pub const MAX_TOKEN_CONDITIONS: usize = 32;
+/// Maximum length in bytes of a condition or effect id.
+pub const MAX_CONDITION_ID_LEN: usize = 64;
+
+/// What a `ConditionOverride` rules on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OverrideSubject {
+    /// A `Condition` id (lowercase SRD id, e.g. `"prone"`).
+    Condition,
+    /// An automated condition or feature effect id (owned by the game system, e.g. the
+    /// `ActiveEffect` a condition maps to).
+    Effect,
+}
+
+/// Ruling imposed by a `ConditionOverride`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OverrideMode {
+    /// The condition or effect applies even when the token's state says otherwise.
+    Force,
+    /// The condition or effect does not apply even when the token's state says it does.
+    Remove,
+}
+
+/// One Game Master ruling stored on a token by `ConditionOverride`; it always wins over the
+/// token's own conditions and over automated effects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ConditionOverrideEntry {
+    /// Whether `id` names a condition or an effect.
+    pub subject: OverrideSubject,
+    /// Condition id (trimmed, lowercase) or effect id (trimmed), `1..=64` bytes.
+    pub id: String,
+    /// Forced on or removed.
+    pub mode: OverrideMode,
+}
+
+/// Normalizes a condition id (trim, ASCII lowercase) or an effect id (trim only) and checks its
+/// length (`1..=MAX_CONDITION_ID_LEN` bytes).
+fn normalize_override_id(subject: OverrideSubject, raw: &str) -> Result<String, CommandError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > MAX_CONDITION_ID_LEN {
+        return Err(CommandError::InvalidConfiguration(format!(
+            "condition or effect id must be 1..={MAX_CONDITION_ID_LEN} bytes"
+        )));
+    }
+    Ok(match subject {
+        OverrideSubject::Condition => trimmed.to_ascii_lowercase(),
+        OverrideSubject::Effect => trimmed.to_string(),
     })
 }
 
@@ -449,12 +651,18 @@ pub struct TokenState {
     pub concentrating_on_aoe_id: Option<Uuid>,
     /// Active bonuses, penalties, and modifiers applied to this token.
     pub active_effects: Vec<ActiveEffect>,
-    /// Active D&D 5e condition labels synchronized from the persistent actor sheet (`ADR-0037`).
+    /// Active condition ids (lowercase SRD ids), set by `SetTokenConditions` or synchronized
+    /// from the persistent actor sheet (`ADR-0037`). See `effective_conditions` for the
+    /// overrides.
     #[serde(default)]
     pub conditions: Vec<String>,
     /// Melee `ThreatReach` in feet (`ft`, default `5.0`); leaving it provokes an opportunity prompt.
     #[serde(default = "default_reach_ft")]
     pub reach_ft: f64,
+    /// `true` after the Disengage action (`SetDisengaged`): this token's movement opens no
+    /// `ReactionPrompt` until the next turn starts, which clears every token's flag.
+    #[serde(default)]
+    pub disengaged: bool,
     /// `DeathSaveCounters` successes (`0..=3`), reset when the token regains HP.
     #[serde(default)]
     pub death_save_successes: u8,
@@ -464,6 +672,17 @@ pub struct TokenState {
     /// `true` after `InstantDeath` or a third death saving throw failure; dead tokens cannot be healed.
     #[serde(default)]
     pub is_dead: bool,
+    /// `true` after a third death saving throw success: Stable at 0 HP, no more death saving throws.
+    /// Cleared when the token regains HP or takes damage at 0 HP; omitted from the wire when
+    /// `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_stable: bool,
+    /// `true` while the token concentrates on a spell that has no persistent zone (set by
+    /// `SetConcentration`); damage then opens a Concentration check like
+    /// `concentrating_on_aoe_id`. Cleared by `BreakConcentration` and at 0 HP; omitted from the
+    /// wire when `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub concentrating: bool,
     /// Damage types this token takes half damage from (lowercase SRD ids, e.g. `"fire"`).
     #[serde(default)]
     pub damage_resistances: Vec<String>,
@@ -473,6 +692,22 @@ pub struct TokenState {
     /// Damage types this token takes double damage from (lowercase SRD ids).
     #[serde(default)]
     pub damage_vulnerabilities: Vec<String>,
+    /// Game Master `ConditionOverride` rulings (at most `MAX_TOKEN_CONDITIONS`, one per
+    /// subject and id); they win over `conditions` and over automated effects.
+    #[serde(default)]
+    pub condition_overrides: Vec<ConditionOverrideEntry>,
+    /// Copy of the game-system stat block a `SyntheticToken` was staged or spawned from
+    /// (dnd5e `MonsterStatBlock` JSON), editable as homebrew. Opaque to the engine: the
+    /// server validates its bounds and derives `hp`, `ac`, speed, senses, reach and damage
+    /// affinities from it before the token reaches the table. `None` for plain and linked
+    /// tokens; omitted from the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stat_block: Option<serde_json::Value>,
+    /// Saving throw bonuses keyed by ability id (`"str"`..`"cha"`), synchronized from the
+    /// linked actor sheet so the server can roll a hidden target's save. Empty for tokens
+    /// without a linked sheet (stat block tokens read their copy); omitted when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub save_bonuses: BTreeMap<String, i32>,
 }
 
 impl TokenState {
@@ -507,13 +742,32 @@ impl TokenState {
             active_effects: Vec::new(),
             conditions: Vec::new(),
             reach_ft: default_reach_ft(),
+            disengaged: false,
             death_save_successes: 0,
             death_save_failures: 0,
             is_dead: false,
+            is_stable: false,
+            concentrating: false,
             damage_resistances: Vec::new(),
             damage_immunities: Vec::new(),
             damage_vulnerabilities: Vec::new(),
+            condition_overrides: Vec::new(),
+            stat_block: None,
+            save_bonuses: BTreeMap::new(),
         }
+    }
+
+    /// Conditions in force after the `ConditionOverride` rulings: `conditions` (lowercased,
+    /// deduplicated, in order) minus the `Remove`d ones, then the `Force`d ones not already
+    /// present, in ruling order.
+    pub fn effective_conditions(&self) -> Vec<String> {
+        effective_condition_ids(&self.conditions, &self.condition_overrides)
+    }
+
+    /// Engine-enforced condition effects (Incapacitated, Speed 0, all-damage resistance)
+    /// after the rulings.
+    pub fn condition_effects(&self) -> ConditionEffects {
+        condition_effects(&self.conditions, &self.condition_overrides)
     }
 
     /// Modifier added to the server's `1d20` initiative roll (`AuthoritativeInitiativeRoll`).
@@ -526,13 +780,14 @@ impl TokenState {
     ///
     /// Resolution order: immunity wins; resistance and vulnerability to the same type cancel
     /// out (SRD: halve, then double) to `Normal`; otherwise the single matching list applies.
+    /// A condition granting resistance to all damage (Petrified) counts as a resistance.
     pub fn damage_affinity_for(&self, damage_type: &str) -> DamageAffinity {
         let has = |list: &[String]| list.iter().any(|t| t.eq_ignore_ascii_case(damage_type));
         if has(&self.damage_immunities) {
             return DamageAffinity::Immune;
         }
         match (
-            has(&self.damage_resistances),
+            has(&self.damage_resistances) || self.condition_effects().resists_all_damage,
             has(&self.damage_vulnerabilities),
         ) {
             (true, false) => DamageAffinity::Resistant,
@@ -578,6 +833,53 @@ pub enum TrameCommand {
         to_elevation_ft: Option<f64>,
         /// When `true` and issued by a `Gm`, bypasses wall collisions, turn locks, and movement cost deduction.
         gm_teleport: bool,
+    },
+    /// Records the Disengage action on a token (GM: any token; players: owned tokens only). While
+    /// set, the token's moves open no `ReactionPrompt`; the next turn start clears it.
+    SetDisengaged {
+        /// Target token ID.
+        token_id: Uuid,
+        /// `true` to take the Disengage action, `false` to withdraw it.
+        disengaged: bool,
+    },
+    /// Starts (`true`) or ends (`false`) concentration on a spell without a persistent zone
+    /// (GM: any token; players: owned tokens only). Undoable. `BreakConcentration` also ends it.
+    SetConcentration {
+        /// Concentrating token ID.
+        token_id: Uuid,
+        /// New concentration state.
+        concentrating: bool,
+    },
+    /// Records one `DeathSavingThrow` for a token at 0 HP that is neither Stable nor dead
+    /// (GM: any token; players: owned tokens only), resolved by `resolve_death_save`. Undoable.
+    RecordDeathSave {
+        /// Dying token ID.
+        token_id: Uuid,
+        /// Natural d20 (`1..=20`). The room replaces it with a server roll for players and
+        /// when it is `None`; the engine rejects `None`.
+        #[serde(default)]
+        d20: Option<u8>,
+    },
+    /// Replaces a token's conditions (GM: any token; players: owned tokens only). Ids are
+    /// trimmed, lowercased, and deduplicated; at most `MAX_TOKEN_CONDITIONS` ids of
+    /// `1..=MAX_CONDITION_ID_LEN` bytes. Undoable.
+    SetTokenConditions {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Complete new condition list (empty clears every condition).
+        conditions: Vec<String>,
+    },
+    /// Records, replaces, or clears a Game Master ruling that forces or removes a condition or
+    /// an automated effect on any token (GM only). Undoable.
+    ConditionOverride {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Whether `id` is a condition or an effect.
+        subject: OverrideSubject,
+        /// Condition id (lowercased) or effect id, `1..=MAX_CONDITION_ID_LEN` bytes.
+        id: String,
+        /// `Force` or `Remove`; `None` clears the ruling for `(subject, id)`.
+        mode: Option<OverrideMode>,
     },
     /// Toggles the D&D 5e squeezing state for a token to fit through narrower passages at double movement cost.
     ToggleSqueeze {
@@ -723,7 +1025,8 @@ pub enum TrameCommand {
     },
     /// Activates a persisted map scene (GM only): replaces walls, lights, map, and grid; keeps
     /// `HeroToken`s (moved onto spawn points); removes every other token; spawns the scene's
-    /// `StagedToken`s; clears AoEs, fog overrides, reaction prompts; and returns to `Exploration`.
+    /// `StagedToken`s; clears AoEs, fog overrides, difficult terrain, reaction prompts; and
+    /// returns to `Exploration`.
     ActivateScene {
         /// Unique identifier of the persisted scene.
         scene_id: Uuid,
@@ -733,8 +1036,9 @@ pub enum TrameCommand {
     },
     /// Spawns or replaces a token on the tabletop (GM only).
     SpawnToken {
-        /// Complete initial state of the token to place on the map.
-        token: TokenState,
+        /// Complete initial state of the token to place on the map (boxed to keep
+        /// `TrameCommand` small; JSON shape unchanged).
+        token: Box<TokenState>,
     },
     /// Removes a token from the tabletop and combat initiative order (GM only).
     RemoveToken {
@@ -759,6 +1063,22 @@ pub enum TrameCommand {
         cell_x: i32,
         /// Discrete vertical grid row index (`cell_y`).
         cell_y: i32,
+    },
+    /// Applies one fog ruling to every cell of a brush stroke as a single undo step (GM only).
+    /// `cells` holds `1..=MAX_FOG_STROKE_CELLS` cells; duplicates are applied once.
+    SetFogOverrides {
+        /// Brush operation mode (`Reveal`, `Hide`, or `Clear`).
+        mode: FogOverrideMode,
+        /// Grid cells of the stroke.
+        cells: Vec<GridCell>,
+    },
+    /// Marks (`difficult: true`) or clears (`false`) difficult terrain on grid cells of the
+    /// active map (GM only). Every cell must lie on the map; the list must not be empty.
+    SetDifficultTerrain {
+        /// Grid cells to paint or erase.
+        cells: Vec<GridCell>,
+        /// `true` adds the cells to `difficult_terrain`, `false` removes them.
+        difficult: bool,
     },
     /// Configures the active battlemap background URL/hash and physical dimensions in feet (GM only).
     SetMapConfig {
@@ -830,6 +1150,46 @@ pub enum TrameCommand {
     },
     /// Restores the most recent pre-mutation `TableSnapshotData` from the 50-action ring buffer (GM only).
     UndoLastAction,
+    /// Rolls an attack or area action on the server and stores it as a `PendingResolution`
+    /// (players: attacker tokens they control; not spectators). Undoable.
+    ResolveAction {
+        /// What to resolve (client side).
+        request: Box<crate::resolution::ActionRequest>,
+        /// Server-rolled result filled in by the room; whatever a client sends is replaced,
+        /// and `None` is rejected by the engine.
+        #[serde(default)]
+        resolution: Option<Box<crate::resolution::PendingResolution>>,
+    },
+    /// Applies a `PendingResolution` once per target (issuer or GM; adjustments GM only).
+    /// Undoable.
+    ApplyResolution {
+        /// `PendingResolution::id`.
+        resolution_id: Uuid,
+        /// One target, or every target not yet applied when `None`.
+        #[serde(default)]
+        token_id: Option<Uuid>,
+        /// Game Master changes (amount needs `token_id`).
+        #[serde(default)]
+        adjustment: Option<crate::resolution::ResolutionAdjustment>,
+    },
+    /// Drops a `PendingResolution` without applying it (GM only). Undoable.
+    DismissResolution {
+        /// `PendingResolution::id`.
+        resolution_id: Uuid,
+    },
+    /// Rolls the oldest pending `ConcentrationCheckPrompt` of a token (GM: any token; players: owned
+    /// tokens). A failure ends concentration and its persistent zone. Undoable.
+    RollConcentrationCheck {
+        /// Concentrating token ID.
+        token_id: Uuid,
+        /// Advantage state from the controller's sheet (War Caster); the bonus is server-side.
+        #[serde(default)]
+        roll_mode: crate::resolution::RollMode,
+        /// Server roll filled in by the room; whatever a client sends is replaced, and
+        /// `None` is rejected by the engine.
+        #[serde(default)]
+        roll: Option<crate::resolution::ConcentrationRoll>,
+    },
 }
 
 /// Domain events emitted after a `TrameCommand` is accepted and applied to `TableState`.
@@ -849,6 +1209,47 @@ pub enum TrameEvent {
         elevation_ft: f64,
         /// Remaining movement budget for the current turn in feet (`ft`).
         speed_remaining_ft: f64,
+    },
+    /// Emitted when a token takes or withdraws the Disengage action.
+    TokenDisengaged {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Updated Disengage flag.
+        disengaged: bool,
+    },
+    /// Emitted when `SetConcentration` starts or ends concentration without a zone.
+    ConcentrationChanged {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Updated concentration state.
+        concentrating: bool,
+    },
+    /// Emitted when `RecordDeathSave` resolves a death saving throw.
+    DeathSaveRecorded {
+        /// Dying token ID.
+        token_id: Uuid,
+        /// Natural d20 that was resolved (`1..=20`).
+        d20: u8,
+        /// Counters, Stable, revival, and death after the roll.
+        outcome: crate::rules::DeathSaveOutcome,
+    },
+    /// Emitted when `SetTokenConditions` replaces a token's conditions.
+    TokenConditionsChanged {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Normalized condition list now on the token.
+        conditions: Vec<String>,
+        /// The token's effective conditions (`ConditionOverride` rulings applied).
+        effective_conditions: Vec<String>,
+    },
+    /// Emitted when a `ConditionOverride` ruling is recorded, replaced, or cleared.
+    ConditionOverrideChanged {
+        /// Target token ID.
+        token_id: Uuid,
+        /// Every ruling now on the token (stripped for recipients who do not control it).
+        overrides: Vec<ConditionOverrideEntry>,
+        /// The token's effective conditions after the change.
+        effective_conditions: Vec<String>,
     },
     /// Emitted when a token enters or exits squeezing mode.
     TokenSqueezeToggled {
@@ -976,6 +1377,13 @@ pub enum TrameEvent {
         /// Discrete vertical grid row index (`cell_y`).
         cell_y: i32,
     },
+    /// Emitted when the GM paints or erases difficult terrain.
+    DifficultTerrainChanged {
+        /// Cells named by the command.
+        cells: Vec<GridCell>,
+        /// `true` when the cells became difficult, `false` when they were cleared.
+        difficult: bool,
+    },
     /// Emitted when the battlemap background URL or physical dimensions are updated.
     MapConfigChanged {
         /// Updated background image URL or asset hash.
@@ -1100,6 +1508,43 @@ pub enum TrameEvent {
         /// Token ID of the combatant holding the turn.
         active_turn_token_id: Option<Uuid>,
     },
+    /// Emitted when `ResolveAction` rolled an action (stored unless nothing is left to apply).
+    ActionResolved {
+        /// Server-rolled resolution (redacted per recipient).
+        resolution: Box<crate::resolution::PendingResolution>,
+    },
+    /// Emitted when `ApplyResolution` applied some targets of a resolution.
+    ResolutionApplied {
+        /// `PendingResolution::id`.
+        resolution_id: Uuid,
+        /// Targets applied by this command.
+        token_ids: Vec<Uuid>,
+    },
+    /// Emitted when the GM dismisses a pending resolution.
+    ResolutionDismissed {
+        /// `PendingResolution::id`.
+        resolution_id: Uuid,
+    },
+    /// Emitted when damage opens a `ConcentrationCheckPrompt` on a concentrating token.
+    ConcentrationCheckRequested {
+        /// Concentrating token ID.
+        token_id: Uuid,
+        /// Constitution save DC (`max(10, floor(damage / 2))`, at most `30`).
+        dc: i32,
+    },
+    /// Emitted when `RollConcentrationCheck` resolves a check.
+    ConcentrationCheckRolled {
+        /// Concentrating token ID.
+        token_id: Uuid,
+        /// Save DC.
+        dc: i32,
+        /// Natural d20s rolled.
+        d20_rolls: Vec<u8>,
+        /// Save total.
+        total: i32,
+        /// `true` when concentration holds.
+        success: bool,
+    },
 }
 
 /// Single compensating snapshot entry stored in the `TableState::undo_stack` ring buffer.
@@ -1169,6 +1614,25 @@ pub struct TableSnapshotData {
     /// `prompt_id`. Survives undo so an undone prompt's ID is never reissued to another prompt.
     #[serde(default)]
     pub reaction_prompt_seq: u64,
+    /// Grid cells of difficult terrain on the active map (entering one costs double movement).
+    /// Painted with `SetDifficultTerrain`; cleared when another map is loaded or activated.
+    #[serde(default)]
+    pub difficult_terrain: BTreeSet<GridCell>,
+    /// Scene shown on the table, set by `LoadScene` and `ActivateScene` (`None` before the
+    /// first scene). Lets the server drop a `PointerPing` aimed at a map that is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_scene_id: Option<Uuid>,
+    /// Server-rolled actions waiting for their Apply, keyed by `PendingResolution::id`
+    /// (at most `MAX_PENDING_RESOLUTIONS`; cleared by `ActivateScene`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pending_resolutions: BTreeMap<Uuid, crate::resolution::PendingResolution>,
+    /// Count of resolutions ever created (`PendingResolution::sequence`), for oldest-first eviction.
+    #[serde(default)]
+    pub resolution_seq: u64,
+    /// Open `ConcentrationCheckPrompt` DCs per concentrating token, oldest first. Dropped as soon as
+    /// the token stops concentrating.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pending_concentration_checks: BTreeMap<Uuid, Vec<i32>>,
 }
 
 /// Authoritative in-memory tabletop state machine combining serializable `TableSnapshotData`,
@@ -1210,6 +1674,10 @@ pub enum CommandError {
         /// Remaining movement budget on the token in feet (`ft`).
         remaining_ft: f64,
     },
+    /// The token's Speed is 0 (Grappled, Paralyzed, Petrified, Restrained or Unconscious after
+    /// the `ConditionOverride` rulings); only a Game Master teleport can move it.
+    #[error("speed is 0: a condition prevents this token from moving")]
+    SpeedZero,
     /// The movement path intersected a movement-blocking `WallSegment` at `(x, y)` in pixels (`px`).
     #[error("movement blocked by wall at ({x:.1}, {y:.1})")]
     WallCollision {
@@ -1221,6 +1689,10 @@ pub enum CommandError {
     /// A non-GM actor attempted to open or close a locked door (`is_locked == true`).
     #[error("door is locked")]
     DoorLocked,
+    /// A player toggled a door none of their tokens is within `DOOR_REACH_FT` of with line of
+    /// sight to it. The `door is out of reach` prefix is matched by the client.
+    #[error("door is out of reach: none of your tokens is within 5 ft and can see it")]
+    DoorOutOfReach,
     /// A scene, map, or door configuration parameter was out of valid bounds.
     #[error("invalid configuration: {0}")]
     InvalidConfiguration(String),
@@ -1277,6 +1749,11 @@ impl TableState {
                 map_height_px: default_map_dimension_px(),
                 revealed_handout_ids: BTreeSet::new(),
                 reaction_prompt_seq: 0,
+                difficult_terrain: BTreeSet::new(),
+                active_scene_id: None,
+                pending_resolutions: BTreeMap::new(),
+                resolution_seq: 0,
+                pending_concentration_checks: BTreeMap::new(),
             },
             bvh,
             undo_stack: VecDeque::with_capacity(MAX_UNDO_HISTORY),
@@ -1309,7 +1786,7 @@ impl TableState {
             .copied()
     }
 
-    fn push_undo(&mut self, description: impl Into<String>) {
+    pub(crate) fn push_undo(&mut self, description: impl Into<String>) {
         let snapshot = self.data.clone();
         let cell_size_px = self.cell_size_px;
         self.push_undo_snapshot(description.into(), snapshot, cell_size_px);
@@ -1610,18 +2087,19 @@ impl TableState {
     }
 
     /// Movement cost in feet (`ft`) of moving `token` from its position to `to_top_left` at
-    /// `new_elev` (3D distance, doubled while squeezing).
+    /// `new_elev` on this table's grid and difficult terrain (`MovementGrid::movement_cost_ft`).
     fn movement_cost_ft(&self, token: &TokenState, to_top_left: Point2D, new_elev: f64) -> f64 {
-        let px_per_ft = self.cell_size_px / self.feet_per_cell.max(1.0);
-        let dist_ft =
-            token
-                .top_left
-                .distance_3d(token.elevation_ft, to_top_left, new_elev, px_per_ft);
-        if token.is_squeezing {
-            dist_ft * 2.0
-        } else {
-            dist_ft
+        MovementGrid {
+            cell_size_px: self.cell_size_px,
+            feet_per_cell: self.feet_per_cell,
+            difficult_terrain: &self.data.difficult_terrain,
         }
+        .movement_cost_ft(
+            &token.spatial_ref(),
+            to_top_left,
+            new_elev,
+            token.is_squeezing,
+        )
     }
 
     /// Moves `token_id` toward `to_top_left`, stopping on the first hostile `ThreatReach` exit
@@ -1637,7 +2115,7 @@ impl TableState {
         excluded_reactors: Vec<Uuid>,
     ) -> Vec<TrameEvent> {
         let token = self.data.tokens[&token_id].clone();
-        let threat = if check_threats {
+        let threat = if check_threats && !token.disengaged {
             self.find_threat_exit(&token, to_top_left, new_elev, &excluded_reactors)
         } else {
             None
@@ -1738,13 +2216,21 @@ impl TableState {
         uuid::Builder::from_custom_bytes(bytes).into_uuid()
     }
 
-    /// Gives `token_id` a fresh turn: full speed, action, bonus action, and reaction.
+    /// Starts `token_id`'s turn: full speed, action, bonus action, and reaction. Also ends every
+    /// Disengage, which lasts only until the end of the turn it was taken in.
     fn reset_turn_resources(&mut self, token_id: Uuid) {
+        self.clear_disengaged();
         if let Some(tok) = self.data.tokens.get_mut(&token_id) {
             tok.speed_remaining_ft = tok.speed_max_ft;
             tok.has_action = true;
             tok.has_bonus_action = true;
             tok.has_reaction = true;
+        }
+    }
+
+    fn clear_disengaged(&mut self) {
+        for tok in self.data.tokens.values_mut() {
+            tok.disengaged = false;
         }
     }
 
@@ -1816,7 +2302,7 @@ impl TableState {
         }
     }
 
-    fn require_gm(actor: &CommandActor) -> Result<(), CommandError> {
+    pub(crate) fn require_gm(actor: &CommandActor) -> Result<(), CommandError> {
         if actor.role == CampaignRole::Gm {
             Ok(())
         } else {
@@ -1826,7 +2312,52 @@ impl TableState {
         }
     }
 
-    fn require_token_control(
+    /// `true` when a token owned by `user_id` is within `DOOR_REACH_FT` of `door` (grid
+    /// distance: footprint-to-segment horizontally, elevation gap to the door's span
+    /// vertically, the larger of the two) and has line of sight to a point of the door
+    /// (25 %, 50 % or 75 % along it; the door itself never blocks the ray, it ends on it).
+    fn player_reaches_door(&self, user_id: Uuid, door: &WallSegment) -> bool {
+        let cell_px = self.cell_size_px.max(1e-9);
+        let ft_per_px = self.feet_per_cell / cell_px;
+        let door_points = [0.25, 0.5, 0.75].map(|t| {
+            Point2D::new(
+                door.a.x + t * (door.b.x - door.a.x),
+                door.a.y + t * (door.b.y - door.a.y),
+            )
+        });
+        self.data
+            .tokens
+            .values()
+            .filter(|token| token.owner_user_id == Some(user_id))
+            .any(|token| {
+                let max = Point2D::new(
+                    token.top_left.x + f64::from(token.grid_w.max(1)) * cell_px,
+                    token.top_left.y + f64::from(token.grid_h.max(1)) * cell_px,
+                );
+                let horizontal_ft =
+                    segment_rect_distance_px(door.a, door.b, token.top_left, max) * ft_per_px;
+                let vertical_ft = (door.bottom_elevation_ft - token.elevation_ft)
+                    .max(token.elevation_ft - door.top_elevation_ft)
+                    .max(0.0);
+                if horizontal_ft.max(vertical_ft) > DOOR_REACH_FT + 1e-6 {
+                    return false;
+                }
+                let eyes = token_sample_points(token.top_left, token.grid_w, token.grid_h, cell_px);
+                eyes.iter().any(|eye| {
+                    door_points.iter().any(|point| {
+                        self.bvh.has_line_of_sight(
+                            *eye,
+                            token.elevation_ft,
+                            *point,
+                            token.elevation_ft,
+                            false,
+                        )
+                    })
+                })
+            })
+    }
+
+    pub(crate) fn require_token_control(
         &self,
         actor: &CommandActor,
         token_id: Uuid,
@@ -1849,7 +2380,131 @@ impl TableState {
     /// turn-order movement budgets, and pushing a compensating `UndoEntry` onto `undo_stack`.
     ///
     /// Fails closed without mutating `self.data` or `self.undo_stack` whenever any precondition fails.
+    /// After every accepted command, `ConcentrationCheckPrompt`s of tokens that stopped concentrating
+    /// are dropped.
     pub fn apply_command(
+        &mut self,
+        actor: &CommandActor,
+        cmd: TrameCommand,
+    ) -> Result<Vec<TrameEvent>, CommandError> {
+        let mut events = self.apply_command_unpruned(actor, cmd)?;
+        events.extend(self.end_incapacitated_concentration());
+        self.prune_concentration_checks();
+        Ok(events)
+    }
+
+    /// Ends the concentration of every concentrating token that is Incapacitated (SRD 5.2.1:
+    /// concentration ends when the caster has the Incapacitated condition, which Paralyzed,
+    /// Petrified, Stunned and Unconscious include). Evaluated after the rulings
+    /// (`condition_effects`), so a `Force` condition or effect override counts and a `Remove`
+    /// ruling spares the caster. Removes the persistent AoE like the 0 HP path and emits one
+    /// `ConcentrationBroken` per caster, in token id order. Runs after every command (so
+    /// `SetTokenConditions`, `ConditionOverride` and batches are covered) and from the
+    /// server's sheet resync, which changes conditions outside the command stream.
+    pub fn end_incapacitated_concentration(&mut self) -> Vec<TrameEvent> {
+        let mut casters: Vec<Uuid> = self
+            .data
+            .tokens
+            .values()
+            .filter(|t| t.concentrating || t.concentrating_on_aoe_id.is_some())
+            .filter(|t| is_incapacitated(t))
+            .map(|t| t.id)
+            .collect();
+        casters.sort();
+        casters
+            .into_iter()
+            .map(|caster_token_id| {
+                let tok = self
+                    .data
+                    .tokens
+                    .get_mut(&caster_token_id)
+                    .expect("token exists");
+                tok.concentrating = false;
+                let removed_aoe_id = tok.concentrating_on_aoe_id.take();
+                if let Some(aoe_id) = removed_aoe_id {
+                    self.data.persistent_aoes.remove(&aoe_id);
+                }
+                TrameEvent::ConcentrationBroken {
+                    caster_token_id,
+                    removed_aoe_id,
+                }
+            })
+            .collect()
+    }
+
+    /// Applies `damage` to `token_id` (which must exist) without an undo entry: typed damage
+    /// derives the affinity from the token (`damage_affinity_for`), otherwise `affinity` is
+    /// used. Shared by `ApplyDamage` and `ApplyResolution`; queues a `ConcentrationCheckPrompt` when a
+    /// concentrating token keeps HP, and ends concentration at 0 HP.
+    pub(crate) fn apply_damage_to_token(
+        &mut self,
+        token_id: Uuid,
+        raw_damage: i32,
+        affinity: DamageAffinity,
+        is_critical: bool,
+        damage_type: Option<&str>,
+    ) -> Vec<TrameEvent> {
+        let token = self.data.tokens[&token_id].clone();
+        let affinity = damage_type.map_or(affinity, |t| token.damage_affinity_for(t));
+        let is_concentrating = token.concentrating_on_aoe_id.is_some() || token.concentrating;
+        let mut resolution = resolve_damage_application(
+            raw_damage,
+            affinity,
+            token.hp,
+            token.max_hp,
+            token.temp_hp,
+            is_concentrating,
+            is_critical,
+            token.death_save_failures,
+        );
+        // 5e: monsters die at 0 HP instead of making death saves. Synthetic GM tokens
+        // (no player owner, no linked actor) follow that default; the GM can revive one
+        // with `GmOverrideTokenResources`.
+        if resolution.new_hp == 0 && token.owner_user_id.is_none() && token.actor_id.is_none() {
+            resolution.dead = true;
+            resolution.unconscious = false;
+        }
+
+        let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
+        tok_mut.hp = resolution.new_hp;
+        tok_mut.temp_hp = resolution.new_temp_hp;
+        tok_mut.death_save_failures = resolution.new_death_save_failures;
+        tok_mut.is_dead |= resolution.dead;
+        if resolution.death_save_failures_added > 0 {
+            tok_mut.is_stable = false;
+        }
+
+        let concentration_dc = resolution.concentration_check_dc;
+        let mut events = vec![TrameEvent::DamageApplied {
+            token_id,
+            resolution: resolution.clone(),
+        }];
+
+        // If the caster dropped to 0 HP, concentration breaks automatically
+        if resolution.new_hp == 0
+            && (tok_mut.concentrating || tok_mut.concentrating_on_aoe_id.is_some())
+        {
+            tok_mut.concentrating = false;
+            let removed_aoe_id = tok_mut.concentrating_on_aoe_id.take();
+            if let Some(aoe_id) = removed_aoe_id {
+                self.data.persistent_aoes.remove(&aoe_id);
+            }
+            events.push(TrameEvent::ConcentrationBroken {
+                caster_token_id: token_id,
+                removed_aoe_id,
+            });
+        } else if let Some(dc) = concentration_dc {
+            self.data
+                .pending_concentration_checks
+                .entry(token_id)
+                .or_default()
+                .push(dc);
+            events.push(TrameEvent::ConcentrationCheckRequested { token_id, dc });
+        }
+        events
+    }
+
+    fn apply_command_unpruned(
         &mut self,
         actor: &CommandActor,
         cmd: TrameCommand,
@@ -1891,6 +2546,9 @@ impl TableState {
                 let new_elev = to_elevation_ft.unwrap_or(token.elevation_ft);
                 let in_combat = self.data.mode == TableMode::TurnByTurn;
                 if !is_gm_teleport {
+                    if token.condition_effects().speed_zero {
+                        return Err(CommandError::SpeedZero);
+                    }
                     self.check_wall_collision(&token, to_top_left, new_elev)?;
                     let cost_ft = self.movement_cost_ft(&token, to_top_left, new_elev);
                     if in_combat && cost_ft > token.speed_remaining_ft + 1e-6 {
@@ -1913,6 +2571,143 @@ impl TableState {
                     Vec::new(),
                 ));
                 Ok(events)
+            }
+
+            TrameCommand::SetDisengaged {
+                token_id,
+                disengaged,
+            } => {
+                let token = self.require_token_control(actor, token_id)?.clone();
+                self.push_undo(format!("Set Disengage for {}", token.name));
+                let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
+                tok_mut.disengaged = disengaged;
+                Ok(vec![TrameEvent::TokenDisengaged {
+                    token_id,
+                    disengaged,
+                }])
+            }
+
+            TrameCommand::SetConcentration {
+                token_id,
+                concentrating,
+            } => {
+                let token = self.require_token_control(actor, token_id)?.clone();
+                if concentrating && (token.is_dead || token.hp <= 0) {
+                    return Err(CommandError::InvalidConfiguration(
+                        "a token at 0 HP cannot concentrate".to_string(),
+                    ));
+                }
+                self.push_undo(format!("Set concentration for {}", token.name));
+                let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
+                tok_mut.concentrating = concentrating;
+                Ok(vec![TrameEvent::ConcentrationChanged {
+                    token_id,
+                    concentrating,
+                }])
+            }
+
+            TrameCommand::RecordDeathSave { token_id, d20 } => {
+                let token = self.require_token_control(actor, token_id)?.clone();
+                let Some(d20) = d20.filter(|d| (1..=20).contains(d)) else {
+                    return Err(CommandError::InvalidConfiguration(
+                        "death saving throw d20 must be within 1..=20".to_string(),
+                    ));
+                };
+                if token.hp > 0 || token.is_dead || token.is_stable {
+                    return Err(CommandError::InvalidConfiguration(
+                        "only a dying token (0 HP, not Stable, not dead) makes death saving throws"
+                            .to_string(),
+                    ));
+                }
+                let outcome =
+                    resolve_death_save(token.death_save_successes, token.death_save_failures, d20);
+                self.push_undo(format!("Death saving throw for {}", token.name));
+                let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
+                tok_mut.death_save_successes = outcome.successes;
+                tok_mut.death_save_failures = outcome.failures;
+                tok_mut.is_stable = outcome.stable;
+                tok_mut.is_dead |= outcome.dead;
+                if outcome.regains_hp {
+                    tok_mut.hp = 1;
+                }
+                Ok(vec![TrameEvent::DeathSaveRecorded {
+                    token_id,
+                    d20,
+                    outcome,
+                }])
+            }
+
+            TrameCommand::SetTokenConditions {
+                token_id,
+                conditions,
+            } => {
+                let name = self.require_token_control(actor, token_id)?.name.clone();
+                if conditions.len() > MAX_TOKEN_CONDITIONS {
+                    return Err(CommandError::InvalidConfiguration(format!(
+                        "at most {MAX_TOKEN_CONDITIONS} conditions per token"
+                    )));
+                }
+                let mut normalized: Vec<String> = Vec::with_capacity(conditions.len());
+                for raw in &conditions {
+                    let id = normalize_override_id(OverrideSubject::Condition, raw)?;
+                    if !normalized.contains(&id) {
+                        normalized.push(id);
+                    }
+                }
+                self.push_undo(format!("Set conditions for {name}"));
+                let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
+                tok.conditions = normalized.clone();
+                Ok(vec![TrameEvent::TokenConditionsChanged {
+                    token_id,
+                    conditions: normalized,
+                    effective_conditions: tok.effective_conditions(),
+                }])
+            }
+
+            TrameCommand::ConditionOverride {
+                token_id,
+                subject,
+                id,
+                mode,
+            } => {
+                Self::require_gm(actor)?;
+                let token = self
+                    .data
+                    .tokens
+                    .get(&token_id)
+                    .ok_or_else(|| CommandError::NotFound(format!("token {token_id}")))?;
+                let id = normalize_override_id(subject, &id)?;
+                let existing = token
+                    .condition_overrides
+                    .iter()
+                    .position(|o| o.subject == subject && o.id == id);
+                if mode.is_some()
+                    && existing.is_none()
+                    && token.condition_overrides.len() >= MAX_TOKEN_CONDITIONS
+                {
+                    return Err(CommandError::InvalidConfiguration(format!(
+                        "at most {MAX_TOKEN_CONDITIONS} overrides per token"
+                    )));
+                }
+                let description = format!("Override {id} on {}", token.name);
+                self.push_undo(description);
+                let tok = self.data.tokens.get_mut(&token_id).expect("token exists");
+                match (mode, existing) {
+                    (Some(mode), Some(idx)) => tok.condition_overrides[idx].mode = mode,
+                    (Some(mode), None) => {
+                        tok.condition_overrides
+                            .push(ConditionOverrideEntry { subject, id, mode })
+                    }
+                    (None, Some(idx)) => {
+                        tok.condition_overrides.remove(idx);
+                    }
+                    (None, None) => {}
+                }
+                Ok(vec![TrameEvent::ConditionOverrideChanged {
+                    token_id,
+                    overrides: tok.condition_overrides.clone(),
+                    effective_conditions: tok.effective_conditions(),
+                }])
             }
 
             TrameCommand::ToggleSqueeze {
@@ -1947,6 +2742,11 @@ impl TableState {
                     WallKind::Door { is_locked, .. } => {
                         if *is_locked && actor.role != CampaignRole::Gm {
                             return Err(CommandError::DoorLocked);
+                        }
+                        if actor.role != CampaignRole::Gm
+                            && !self.player_reaches_door(actor.user_id, &self.data.walls[idx])
+                        {
+                            return Err(CommandError::DoorOutOfReach);
                         }
                     }
                     WallKind::SecretDoor { .. } => {
@@ -1989,13 +2789,8 @@ impl TableState {
                 self.data.initiative_order = initiative_order;
                 self.data.active_turn_index = 0;
                 self.data.round = 1;
-                if let Some(first_id) = self.active_turn_token_id()
-                    && let Some(tok) = self.data.tokens.get_mut(&first_id)
-                {
-                    tok.speed_remaining_ft = tok.speed_max_ft;
-                    tok.has_action = true;
-                    tok.has_bonus_action = true;
-                    tok.has_reaction = true;
+                if let Some(first_id) = self.active_turn_token_id() {
+                    self.reset_turn_resources(first_id);
                 }
                 let mut events = vec![TrameEvent::TableModeChanged {
                     mode,
@@ -2022,13 +2817,8 @@ impl TableState {
                 self.data.initiative_order = initiative_order;
                 self.data.active_turn_index = 0;
                 self.data.round = 1;
-                if let Some(first_id) = self.active_turn_token_id()
-                    && let Some(tok) = self.data.tokens.get_mut(&first_id)
-                {
-                    tok.speed_remaining_ft = tok.speed_max_ft;
-                    tok.has_action = true;
-                    tok.has_bonus_action = true;
-                    tok.has_reaction = true;
+                if let Some(first_id) = self.active_turn_token_id() {
+                    self.reset_turn_resources(first_id);
                 }
                 Ok(vec![TrameEvent::TableModeChanged {
                     mode: TableMode::TurnByTurn,
@@ -2041,6 +2831,7 @@ impl TableState {
             TrameCommand::EndTurnByTurn => {
                 Self::require_gm(actor)?;
                 self.push_undo("End Turn-by-Turn mode");
+                self.clear_disengaged();
                 self.data.mode = TableMode::Exploration;
                 self.data.exploration_paused = false;
                 self.data.initiative_order.clear();
@@ -2111,57 +2902,15 @@ impl TableState {
                 is_critical,
                 damage_type,
             } => {
-                let token = self.require_token_control(actor, token_id)?.clone();
-                let affinity = damage_type
-                    .as_deref()
-                    .map_or(affinity, |t| token.damage_affinity_for(t));
-
-                self.push_undo(format!("Apply {raw_damage} damage to {}", token.name));
-                let is_concentrating = token.concentrating_on_aoe_id.is_some();
-                let mut resolution = resolve_damage_application(
+                let token_name = self.require_token_control(actor, token_id)?.name.clone();
+                self.push_undo(format!("Apply {raw_damage} damage to {token_name}"));
+                Ok(self.apply_damage_to_token(
+                    token_id,
                     raw_damage,
                     affinity,
-                    token.hp,
-                    token.max_hp,
-                    token.temp_hp,
-                    is_concentrating,
                     is_critical,
-                    token.death_save_failures,
-                );
-                // 5e: monsters die at 0 HP instead of making death saves. Synthetic GM tokens
-                // (no player owner, no linked actor) follow that default; the GM can revive one
-                // with `GmOverrideTokenResources`.
-                if resolution.new_hp == 0
-                    && token.owner_user_id.is_none()
-                    && token.actor_id.is_none()
-                {
-                    resolution.dead = true;
-                    resolution.unconscious = false;
-                }
-
-                let tok_mut = self.data.tokens.get_mut(&token_id).expect("token exists");
-                tok_mut.hp = resolution.new_hp;
-                tok_mut.temp_hp = resolution.new_temp_hp;
-                tok_mut.death_save_failures = resolution.new_death_save_failures;
-                tok_mut.is_dead |= resolution.dead;
-
-                let mut events = vec![TrameEvent::DamageApplied {
-                    token_id,
-                    resolution: resolution.clone(),
-                }];
-
-                // If the caster dropped to 0 HP, concentration breaks automatically
-                if resolution.new_hp == 0
-                    && let Some(aoe_id) = tok_mut.concentrating_on_aoe_id.take()
-                {
-                    self.data.persistent_aoes.remove(&aoe_id);
-                    events.push(TrameEvent::ConcentrationBroken {
-                        caster_token_id: token_id,
-                        removed_aoe_id: Some(aoe_id),
-                    });
-                }
-
-                Ok(events)
+                    damage_type.as_deref(),
+                ))
             }
 
             TrameCommand::HealActor { token_id, amount } => {
@@ -2184,6 +2933,7 @@ impl TableState {
                     tok.hp = new_hp;
                     tok.death_save_successes = 0;
                     tok.death_save_failures = 0;
+                    tok.is_stable = false;
                 }
                 Ok(vec![TrameEvent::TokenHealed {
                     token_id,
@@ -2260,6 +3010,7 @@ impl TableState {
                     tok.hp = v.clamp(0, tok.max_hp);
                     if tok.hp > 0 {
                         tok.is_dead = false;
+                        tok.is_stable = false;
                         tok.death_save_successes = 0;
                         tok.death_save_failures = 0;
                     }
@@ -2349,6 +3100,7 @@ impl TableState {
                     .tokens
                     .get_mut(&caster_token_id)
                     .expect("token exists");
+                tok.concentrating = false;
                 let removed_aoe_id = tok.concentrating_on_aoe_id.take();
                 if let Some(aoe_id) = removed_aoe_id {
                     self.data.persistent_aoes.remove(&aoe_id);
@@ -2382,11 +3134,13 @@ impl TableState {
                 }
                 self.push_undo("Load scene");
                 self.cell_size_px = pixels_per_grid;
+                self.data.active_scene_id = Some(scene_id);
                 self.data.background_asset_hash = Some(map_asset_id.clone());
                 self.data.map_width_px = width_px;
                 self.data.map_height_px = height_px;
                 self.data.walls = walls;
                 self.data.persistent_aoes.clear();
+                self.data.difficult_terrain.clear();
                 self.bvh = Bvh2D::build(self.data.walls.clone());
 
                 Ok(vec![TrameEvent::SceneLoaded {
@@ -2444,14 +3198,18 @@ impl TableState {
                 }
 
                 self.cell_size_px = scene.pixels_per_grid;
+                self.data.active_scene_id = Some(scene_id);
                 self.data.background_asset_hash = scene.map_asset_id.clone();
                 self.data.map_width_px = scene.width_px;
                 self.data.map_height_px = scene.height_px;
                 self.data.walls = scene.walls;
                 self.data.lights = scene.lights;
                 self.data.fog_overrides.clear();
+                self.data.difficult_terrain.clear();
                 self.data.persistent_aoes.clear();
                 self.data.active_reaction_prompts.clear();
+                self.data.pending_resolutions.clear();
+                self.data.pending_concentration_checks.clear();
                 self.data.mode = TableMode::Exploration;
                 self.data.exploration_paused = false;
                 self.data.initiative_order.clear();
@@ -2474,10 +3232,8 @@ impl TableState {
             TrameCommand::SpawnToken { token } => {
                 Self::require_gm(actor)?;
                 self.push_undo(format!("Spawn token {}", token.name));
-                self.data.tokens.insert(token.id, token.clone());
-                Ok(vec![TrameEvent::TokenSpawned {
-                    token: Box::new(token),
-                }])
+                self.data.tokens.insert(token.id, (*token).clone());
+                Ok(vec![TrameEvent::TokenSpawned { token }])
             }
 
             TrameCommand::RemoveToken { token_id } => {
@@ -2566,6 +3322,78 @@ impl TableState {
                     mode,
                     cell_x,
                     cell_y,
+                }])
+            }
+
+            TrameCommand::SetFogOverrides { mode, mut cells } => {
+                Self::require_gm(actor)?;
+                if cells.is_empty() || cells.len() > MAX_FOG_STROKE_CELLS {
+                    return Err(CommandError::InvalidConfiguration(format!(
+                        "a fog stroke covers 1..={MAX_FOG_STROKE_CELLS} cells"
+                    )));
+                }
+                let mut seen = std::collections::HashSet::new();
+                cells.retain(|cell| seen.insert(*cell));
+                self.push_undo(format!("Fog brush ({} cells)", cells.len()));
+                self.data.fog_overrides.retain(|o| {
+                    !seen.contains(&GridCell {
+                        col: o.cell_x,
+                        row: o.cell_y,
+                    })
+                });
+                if mode != FogOverrideMode::Clear {
+                    self.data
+                        .fog_overrides
+                        .extend(cells.iter().map(|cell| FogOverrideCell {
+                            cell_x: cell.col,
+                            cell_y: cell.row,
+                            mode,
+                        }));
+                }
+                Ok(cells
+                    .into_iter()
+                    .map(|cell| TrameEvent::FogOverrideChanged {
+                        mode,
+                        cell_x: cell.col,
+                        cell_y: cell.row,
+                    })
+                    .collect())
+            }
+
+            TrameCommand::SetDifficultTerrain { cells, difficult } => {
+                Self::require_gm(actor)?;
+                if cells.is_empty() {
+                    return Err(CommandError::InvalidConfiguration(
+                        "difficult terrain cells must not be empty".to_string(),
+                    ));
+                }
+                let cell_px = self.cell_size_px.max(1e-9);
+                let cols = (f64::from(self.data.map_width_px) / cell_px).ceil() as i32;
+                let rows = (f64::from(self.data.map_height_px) / cell_px).ceil() as i32;
+                if let Some(off_map) = cells
+                    .iter()
+                    .find(|c| !(0..cols).contains(&c.col) || !(0..rows).contains(&c.row))
+                {
+                    return Err(CommandError::InvalidConfiguration(format!(
+                        "cell ({}, {}) is outside the {cols}x{rows} map grid",
+                        off_map.col, off_map.row
+                    )));
+                }
+                self.push_undo(if difficult {
+                    "Paint difficult terrain"
+                } else {
+                    "Erase difficult terrain"
+                });
+                for cell in &cells {
+                    if difficult {
+                        self.data.difficult_terrain.insert(*cell);
+                    } else {
+                        self.data.difficult_terrain.remove(cell);
+                    }
+                }
+                Ok(vec![TrameEvent::DifficultTerrainChanged {
+                    cells,
+                    difficult,
                 }])
             }
 
@@ -2854,6 +3682,25 @@ impl TableState {
                     &self.data.active_reaction_prompts,
                 ));
                 Ok(events)
+            }
+
+            TrameCommand::ResolveAction {
+                request,
+                resolution,
+            } => self.resolve_action_command(actor, &request, resolution.map(|r| *r)),
+
+            TrameCommand::ApplyResolution {
+                resolution_id,
+                token_id,
+                adjustment,
+            } => self.apply_resolution_command(actor, resolution_id, token_id, adjustment),
+
+            TrameCommand::DismissResolution { resolution_id } => {
+                self.dismiss_resolution_command(actor, resolution_id)
+            }
+
+            TrameCommand::RollConcentrationCheck { token_id, roll, .. } => {
+                self.roll_concentration_check_command(actor, token_id, roll)
             }
         }
     }

@@ -882,16 +882,106 @@ button.ds-prof-pip {
 }
 
 .ds-table-canvas {
-  overflow: auto;
-  max-height: 70vh;
   border: 1px solid var(--atlas-border);
   border-radius: var(--atlas-radius-md);
   background-color: var(--atlas-bg);
 }
 
+.ds-board-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--atlas-space-sm);
+  padding: var(--atlas-space-sm);
+  border-bottom: 1px solid var(--atlas-border);
+  background-color: var(--atlas-surface);
+}
+
+/* Pan surface: native scrolling (wheel, scrollbars, touch drag) over the zoomed board. */
+.ds-board-scroller {
+  overflow: auto;
+  max-height: 70vh;
+  touch-action: pan-x pan-y;
+}
+
+.ds-board-viewport {
+  position: relative;
+}
+
 .ds-board {
   position: relative;
   cursor: crosshair;
+  transform-origin: 0 0;
+}
+
+.ds-board.is-brushing {
+  cursor: cell;
+  touch-action: none;
+}
+
+/* Door state is carried by border style (solid closed, dashed open, double locked) and the label. */
+.ds-door-handle {
+  position: absolute;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--atlas-hit-desktop);
+  height: var(--atlas-hit-desktop);
+  margin: 0;
+  padding: 0;
+  border: 2px solid var(--atlas-border-control);
+  border-radius: var(--atlas-radius-sm);
+  background-color: var(--atlas-surface-raised);
+  color: var(--atlas-text);
+  font: inherit;
+  font-size: var(--atlas-font-size-sm);
+  cursor: pointer;
+}
+
+.ds-door-handle.is-open {
+  border-style: dashed;
+}
+
+.ds-door-handle.is-locked {
+  border-width: 4px;
+  border-style: double;
+}
+
+.ds-door-handle:disabled,
+.ds-door-handle[aria-disabled="true"] {
+  cursor: not-allowed;
+  color: var(--atlas-text-muted);
+}
+
+.ds-door-handle:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+/* Keyboard cell cursor of the GM brushes and teleport; the rectangle marks Shift+arrow selections. */
+.ds-board-cursor,
+.ds-board-cursor-rect {
+  position: absolute;
+  z-index: 2;
+  margin: 0;
+  padding: 0;
+  background-color: transparent;
+}
+
+.ds-board-cursor {
+  border: 2px dashed var(--atlas-action);
+  cursor: cell;
+}
+
+.ds-board-cursor:focus-visible {
+  outline: 2px solid var(--atlas-focus);
+  outline-offset: 2px;
+}
+
+.ds-board-cursor-rect {
+  border: 2px dotted var(--atlas-action);
+  pointer-events: none;
 }
 
 .ds-board-map {
@@ -934,6 +1024,13 @@ button.ds-prof-pip {
   border-style: dashed;
 }
 
+/* GM-hidden tokens (GM view only): dotted ring, distinct from public (dashed) tokens. */
+.ds-token.is-hidden,
+.ds-board.is-pixi .ds-token.is-hidden {
+  border-style: dotted;
+  border-color: var(--atlas-text-muted);
+}
+
 .ds-token.is-selected {
   border-width: 3px;
   border-color: var(--atlas-action);
@@ -971,8 +1068,11 @@ button.ds-prof-pip {
   outline-offset: 2px;
 }
 
-.ds-board-preview {
-  margin-block-end: var(--atlas-space-sm);
+/* Targets of a pending attack: a dashed ring (shape, not colour alone) on both renderers. */
+.ds-board .ds-token.is-targeted,
+.ds-board.is-pixi .ds-token.is-targeted {
+  outline: 3px dashed var(--atlas-danger);
+  outline-offset: 3px;
 }
 
 .ds-tracker,

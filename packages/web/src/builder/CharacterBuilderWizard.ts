@@ -29,6 +29,15 @@
  * 5. `Starting Equipment`:
  *    - `equipmentIds` holds either the background's equipment option A or
  *      `["50 GP"]` (option B); `confirm()` writes them to the sheet `items`.
+ *      The class equipment option is a class pick (invariant 6); its armor
+ *      and weapons are equipped, so they feed Armor Class and attacks.
+ * 6. `Class Picks From The System Pack`:
+ *    - Skills, tools, the class equipment option, cantrips and level-1
+ *      spells are the `getClassChoices` descriptors (SRD 5.2.1 counts and
+ *      lists); a step validates only when each of its choices has exactly
+ *      `count` distinct allowed picks, and `applyClassChoices` applies them.
+ *      Skills the background already grants are not offered. A Fighter also
+ *      picks its Fighting Style feat on the skills step.
  *
  * EXECUTION LIFECYCLE:
  * -----
@@ -36,16 +45,20 @@
  * ├── 1. Validate every step (review).
  * ├── 2. Default actor + class hit die, saves, HP = die + CON mod (+ species bonus).
  * ├── 3. Species speed; `applyBackground(actor, background, choice)`.
- * └── 4. Return the finalized `Dnd5eActorData` (draft kept until persisted).
+ * ├── 4. `applyClassChoices` (skills, tools, gear, cantrips, spells, slots).
+ * └── 5. Return the finalized `Dnd5eActorData` (draft kept until persisted).
  * ============================================================================
  */
 import {
   applyBackground,
+  applyClassChoices,
   backgroundAbilityIncreases,
   createDefaultActorData,
   getBackgroundRules,
+  getClassChoices,
   getClassProgression,
   getSpeciesRules,
+  type BuilderChoice,
   type Dnd5eActorData,
 } from "../../../game-systems/dnd5e/src/index.ts";
 import { BuilderDraftStore } from "./builderDraftStore.ts";
@@ -75,6 +88,30 @@ interface SheetInventoryItem {
 
 function abilityMod(score: number): number {
   return Math.floor((score - 10) / 2);
+}
+
+/** `getClassChoices` ids picked on each class step (invariant 6). */
+const STEP_CHOICES: Partial<Record<BuilderStep, readonly string[]>> = {
+  skills: ["skills", "tools", "fighting_style"],
+  equipment: ["equipment"],
+  spells: ["cantrips", "spells"],
+};
+
+/** Validation error of each class step. */
+const STEP_CHOICE_ERROR: Partial<Record<BuilderStep, string>> = {
+  skills: "builder.error.skills",
+  equipment: "builder.error.classEquipment",
+  spells: "builder.error.spells",
+};
+
+/** Validation error of a class choice that needs its own message (instead of the step's). */
+const CHOICE_ERROR: Readonly<Record<string, string>> = {
+  fighting_style: "builder.error.fightingStyle",
+};
+
+function isChoiceComplete(choice: BuilderChoice, picked: readonly string[]): boolean {
+  const allowed = new Set(choice.options.map((option) => option.id));
+  return picked.length === choice.count && new Set(picked).size === picked.length && picked.every((id) => allowed.has(id));
 }
 
 function newActorId(): string {
@@ -108,13 +145,57 @@ export class CharacterBuilderWizard {
     this.draftStore.updateDraft({ speciesId });
   }
 
+  /** Selecting another class clears its picks (they come from the class lists). */
   public setClass(classId: string | null): void {
-    this.draftStore.updateDraft({ classId });
+    const draft = this.draftStore.getDraft();
+    this.draftStore.updateDraft({ classId, ...(draft?.classId === classId ? {} : { classSelections: {} }) });
   }
 
-  /** Selecting another background resets the ability split to `+1/+1/+1`. */
+  /**
+   * Selecting another background resets the ability split to `+1/+1/+1` and
+   * the class skill picks (the background's skills are no longer offered).
+   */
   public setBackground(backgroundId: string | null): void {
-    this.draftStore.updateDraft({ backgroundId, backgroundChoice: backgroundId ? { mode: "plus1_each" } : null });
+    const { skills: _skills, ...rest } = this.draftStore.getDraft()?.classSelections ?? {};
+    this.draftStore.updateDraft({ backgroundId, backgroundChoice: backgroundId ? { mode: "plus1_each" } : null, classSelections: rest });
+  }
+
+  /** Class choices of the drafted class, without the skills its background grants (`[]` before a class). */
+  public getClassChoices(): BuilderChoice[] {
+    const draft = this.draftStore.getDraft();
+    if (!draft || !getClassProgression(draft.classId ?? undefined)) return [];
+    return getClassChoices(draft.classId!, { actor: this.originActor(draft) ?? undefined });
+  }
+
+  /** Class choices picked on `step` (`skills`, `equipment`, `spells`; `[]` elsewhere). */
+  public choicesForStep(step: BuilderStep): BuilderChoice[] {
+    const ids = STEP_CHOICES[step] ?? [];
+    return this.getClassChoices().filter((choice) => ids.includes(choice.id));
+  }
+
+  /** Current picks of class choice `choiceId`. */
+  public getClassSelection(choiceId: string): string[] {
+    return this.draftStore.getDraft()?.classSelections?.[choiceId] ?? [];
+  }
+
+  /**
+   * Toggles one option of class choice `choiceId`: a single-pick choice
+   * replaces its pick; otherwise a pick is added only while fewer than
+   * `count` are chosen, and removed when picked again.
+   */
+  public toggleClassOption(choiceId: string, optionId: string): void {
+    const choice = this.getClassChoices().find((c) => c.id === choiceId);
+    if (!choice) return;
+    const picked = this.getClassSelection(choiceId);
+    const next = picked.includes(optionId)
+      ? picked.filter((id) => id !== optionId)
+      : choice.count === 1
+        ? [optionId]
+        : picked.length < choice.count
+          ? [...picked, optionId]
+          : picked;
+    const selections = this.draftStore.getDraft()?.classSelections ?? {};
+    this.draftStore.updateDraft({ classSelections: { ...selections, [choiceId]: next } });
   }
 
   public setBackgroundChoice(choice: CharacterDraft["backgroundChoice"]): void {
@@ -188,6 +269,11 @@ export class CharacterBuilderWizard {
         break;
       case "equipment":
         if (draft.equipmentIds.length === 0) errors.push("builder.error.equipment");
+        errors.push(...this.classChoiceErrors(step));
+        break;
+      case "skills":
+      case "spells":
+        errors.push(...this.classChoiceErrors(step));
         break;
       case "review":
         if (!draft.name.trim()) errors.push("builder.error.name");
@@ -195,6 +281,13 @@ export class CharacterBuilderWizard {
         break;
     }
     return { valid: errors.length === 0, errors };
+  }
+
+  private classChoiceErrors(step: BuilderStep): string[] {
+    const errors = this.choicesForStep(step)
+      .filter((choice) => !isChoiceComplete(choice, this.getClassSelection(choice.id)))
+      .map((choice) => CHOICE_ERROR[choice.id] ?? STEP_CHOICE_ERROR[step]!);
+    return [...new Set(errors)];
   }
 
   public canAdvance(): boolean {
@@ -249,6 +342,16 @@ export class CharacterBuilderWizard {
   }
 
   private buildActor(draft: CharacterDraft): Dnd5eActorData {
+    return applyClassChoices(this.originActor(draft)!, draft.classId!, draft.classSelections ?? {});
+  }
+
+  /**
+   * The draft as an actor before its class picks (species, class basics,
+   * background, background equipment); `null` until species, class and
+   * background are valid.
+   */
+  private originActor(draft: CharacterDraft): Dnd5eActorData | null {
+    if (!["species", "class", "background"].every((s) => this.validateStep(s as BuilderStep).valid)) return null;
     const progression = getClassProgression(draft.classId!)!;
     const species = getSpeciesRules(draft.speciesId!)!;
     const actor = createDefaultActorData(draft.id ?? newActorId(), draft.name.trim());
@@ -265,12 +368,12 @@ export class CharacterBuilderWizard {
     actor.attributes.casterType = progression.casterType;
     if (progression.spellcastingAbility) actor.attributes.spellcastingAbility = progression.spellcastingAbility;
     actor.features = [...species.traits];
-    const finalized: Dnd5eActorData & { items?: SheetInventoryItem[] } = applyBackground(
+    const finalized: Dnd5eActorData = applyBackground(
       actor,
       draft.backgroundId!,
       draft.backgroundChoice!,
     );
-    finalized.items = draft.equipmentIds.map((name, i) => ({
+    finalized.items = draft.equipmentIds.map((name, i): SheetInventoryItem => ({
       id: `item-${i + 1}`,
       name,
       quantity: 1,

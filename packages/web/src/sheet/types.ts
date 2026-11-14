@@ -130,12 +130,46 @@ export interface CreateActorCommand {
   [key: string]: unknown;
 }
 
+/** Spell slot a cast spends: `key` in `spellSlots` and the tier written back. */
+export interface SpentSlot {
+  /** `"level1"`..`"level9"` or `"pact"`. */
+  key: string;
+  /** Tier after the cast (`current` already decremented). */
+  tier: { current: number; max: number; slotLevel?: number };
+  /** Level the spell is cast at (1..9): the slot's level, or the Pact Magic slot level. */
+  castLevel: number;
+}
+
+/**
+ * Sheet cast of a known spell: spends `slot` (none for cantrips), then, when
+ * `onTable`, opens the table resolution (attack, save or area) for it.
+ */
+export interface CastSpellCommand {
+  cmd: "CAST_SPELL";
+  type: "CAST_SPELL";
+  spellId: string;
+  slot: SpentSlot | null;
+  /** The live table is mounted, so targets can be picked on it. */
+  onTable: boolean;
+  [key: string]: unknown;
+}
+
+/** Opens the table resolution card for `derived.attacks[attackId]` of the sheet's actor. */
+export interface ResolveAttackCommand {
+  cmd: "RESOLVE_ATTACK";
+  type: "RESOLVE_ATTACK";
+  attackId: string;
+  [key: string]: unknown;
+}
+
 export type TrameCommandPayload =
   | RollDiceCommand
   | UpdateActorSheetCommand
   | ProjectAoECommand
   | DropCompendiumEntryCommand
-  | CreateActorCommand;
+  | CreateActorCommand
+  | CastSpellCommand
+  | ResolveAttackCommand;
 
 export const TrameCommand = {
   RollDice(payload: { formula: string; expression?: string; reason?: string; visibility?: string; [key: string]: unknown }): RollDiceCommand {
@@ -180,6 +214,12 @@ export const TrameCommand = {
       type: "CREATE_ACTOR",
       ...payload,
     };
+  },
+  CastSpell(payload: { spellId: string; slot: SpentSlot | null; onTable: boolean }): CastSpellCommand {
+    return { cmd: "CAST_SPELL", type: "CAST_SPELL", ...payload };
+  },
+  ResolveAttack(payload: { attackId: string }): ResolveAttackCommand {
+    return { cmd: "RESOLVE_ATTACK", type: "RESOLVE_ATTACK", ...payload };
   },
 };
 

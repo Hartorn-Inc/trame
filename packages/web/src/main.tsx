@@ -20,6 +20,12 @@
  *        before the first render, so character sheets compute with the same
  *        Rust code as the server. If the WASM fails to load, the app still
  *        renders and derived-stat evaluation fails closed.
+ *   3. `SRD Packs In The Background`:
+ *      - The generated SRD packs (lazy chunks) start loading in parallel with
+ *        the WASM but never delay the first render. Until they are installed
+ *        in `CompendiumResolver.getDefault()`, sheets derive from the curated
+ *        catalog and skip pack-only spells; `srdLoading.ts` shows a notice and
+ *        re-renders the app (sheets derive again) when they arrive.
  * ============================================================================
  */
 
@@ -28,11 +34,14 @@ import './styles/tokens.css';
 import { App } from './App.tsx';
 import { evaluateDerivedDag, initEngine } from './engine/wasmBridge.ts';
 import { setDerivedDagEvaluator } from '../../game-systems/dnd5e/src/formulaEvaluator.ts';
+import { loadSrdInBackground } from './srdLoading.ts';
 
 const container = document.getElementById('app');
+void loadSrdInBackground();
 void initEngine()
   .then(() => setDerivedDagEvaluator(evaluateDerivedDag))
-  .finally(() => {
+  .catch(() => undefined)
+  .then(() => {
     if (container) {
       render(<App />, container);
     }

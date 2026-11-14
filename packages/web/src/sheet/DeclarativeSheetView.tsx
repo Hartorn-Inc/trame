@@ -361,12 +361,6 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
     return null;
   };
 
-  const lockLabel = t(isGmLocked
-    ? 'sheet.lock.gmLocked'
-    : effectiveLocked
-    ? 'sheet.lock.playMode'
-    : 'sheet.lock.editMode');
-
   return h(
     'div',
     { class: 'ds-declarative-sheet-view', 'data-testid': 'declarative-sheet-view' },
@@ -380,18 +374,17 @@ export function DeclarativeSheetView(props: DeclarativeSheetViewProps): VNode<an
           class: `ds-lock-toggle ${effectiveLocked ? 'is-locked' : 'is-unlocked'}`,
           'data-testid': 'sheet-padlock-toggle',
           'aria-pressed': effectiveLocked ? 'false' : 'true',
-          'aria-label': t(isGmLocked
-            ? 'sheet.lock.gmLockedAria'
-            : effectiveLocked
-            ? 'sheet.lock.playModeAria'
-            : 'sheet.lock.editModeAria'),
+          'aria-describedby': isGmLocked ? 'sheet-gm-locked-hint' : undefined,
           disabled: isGmLocked,
           title: t(isGmLocked ? 'sheet.lock.gmLockedTitle' : (effectiveLocked ? 'sheet.lock.unlockTitle' : 'sheet.lock.lockTitle')),
           onClick: toggleLock,
         },
         effectiveLocked ? h(PadlockLockedIcon, { size: 20 }) : h(PadlockUnlockedIcon, { size: 20 }),
-        h('span', { class: 'ds-lock-toggle-label' }, lockLabel),
+        h('span', { class: 'ds-lock-toggle-label' }, t('sheet.lock.editMode')),
       ),
+      isGmLocked
+        ? h('span', { id: 'sheet-gm-locked-hint', class: 'ds-meta', 'data-testid': 'sheet-gm-locked' }, t('sheet.lock.gmLocked'))
+        : null,
     ),
     layout && layout.root ? renderNode(layout.root) : null,
   );

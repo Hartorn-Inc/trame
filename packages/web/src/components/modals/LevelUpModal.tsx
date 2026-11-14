@@ -6,7 +6,9 @@ import {
   applyLevelUp,
   calculateProficiencyBonus,
   getCasterTypeForClass,
+  getFightingStyleFeatOptions,
   getSubclassUnlockLevel,
+  grantsFightingStyleFeat,
   isAsiLevel,
   reconcileSlots,
   getSubclasses,
@@ -97,6 +99,11 @@ function formatSlotLabel(slotKey: string): string {
   return slotKey.toUpperCase();
 }
 
+/** Localized name of a Fighting Style feat id (`"srd:feat:archery"`). */
+function fightingStyleLabel(featId: string): string {
+  return t(`builder.feat.${featId.replace(/^srd:feat:/, "")}` as MessageKey);
+}
+
 function formatModifier(mod: number): string {
   return mod >= 0 ? `+${mod}` : `${mod}`;
 }
@@ -158,6 +165,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
   const [asiFirstAbility, setAsiFirstAbility] = useState<AbilityId>("str");
   const [asiSecondAbility, setAsiSecondAbility] = useState<AbilityId>("dex");
   const [selectedFeatId, setSelectedFeatId] = useState<string>("");
+  const [fightingStyleFeatId, setFightingStyleFeatId] = useState<string>("");
 
   // Step 4: Spells State
   const [selectedSpellIds, setSelectedSpellIds] = useState<string[]>([]);
@@ -179,11 +187,17 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
         .filter((sp) => !(actor.spellIds || []).includes(sp.id))
     : [];
 
+  // Fighting Style feat gained at this level (Paladin/Ranger 2, Champion 7)
+  const fightingStyleOptions = grantsFightingStyleFeat(classId, subclassId || undefined, targetLevel)
+    ? getFightingStyleFeatOptions(actor.features ?? [])
+    : [];
+  const needsFightingStyle = fightingStyleOptions.length > 0;
+
   // Step Validations
   const isStep1Valid = !needsSubclass || Boolean(subclassId.trim());
   const isStep2Valid = hpMode === "fixed" || (hpMode === "rolled" && rolledValue !== null && rolledValue >= 1 && rolledValue <= hitDieSize);
   
-  let isStep3Valid = true;
+  let isStep3Valid = !needsFightingStyle || Boolean(fightingStyleFeatId);
   let asiErrorMessage: string | null = null;
   if (isAsi) {
     if (asiOrFeatMode === "feat") {
@@ -311,6 +325,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
         newSpellIds: selectedSpellIds,
         casterType,
         classId,
+        fightingStyleFeatId: needsFightingStyle ? fightingStyleFeatId : undefined,
       };
 
       const updatedActor = applyLevelUp(actor, options);
@@ -691,6 +706,25 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
                 "div",
                 { class: "ds-stack" },
                 stepHeading(t("levelUp.step3.featuresHeading")),
+                needsFightingStyle &&
+                  h(
+                    "div",
+                    { class: "ds-field" },
+                    h("label", { for: "fighting-style-select", class: "ds-field-label" }, t("levelUp.fightingStyle.label")),
+                    h(
+                      "select",
+                      {
+                        id: "fighting-style-select",
+                        class: "ds-input",
+                        value: fightingStyleFeatId,
+                        onChange: (e: any) => setFightingStyleFeatId(e.target.value),
+                        ...validationProps(!fightingStyleFeatId),
+                      },
+                      h("option", { value: "" }, t("levelUp.fightingStyle.placeholder")),
+                      fightingStyleOptions.map((id) => h("option", { key: id, value: id }, fightingStyleLabel(id)))
+                    ),
+                    validationHint(fightingStyleFeatId ? null : t("levelUp.fightingStyle.required"))
+                  ),
                 h(
                   "div",
                   { class: "ds-inset ds-hint" },
@@ -791,6 +825,7 @@ function LevelUpDialog(props: LevelUpModalProps): VNode<any> {
               isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusTwo" && h("div", null, t("levelUp.summary.asiTwo", { ability: asiSingleAbility.toUpperCase() })),
               isAsi && asiOrFeatMode === "asi" && asiSubMode === "plusOneOne" && h("div", null, t("levelUp.summary.asiOneOne", { first: asiFirstAbility.toUpperCase(), second: asiSecondAbility.toUpperCase() })),
               isAsi && asiOrFeatMode === "feat" && h("div", null, t("levelUp.summary.feat", { feat: selectedFeatId })),
+              needsFightingStyle && fightingStyleFeatId && h("div", null, t("levelUp.summary.fightingStyle", { feat: fightingStyleLabel(fightingStyleFeatId) })),
               selectedSpellIds.length > 0 && h("div", null, t("levelUp.summary.spells", { count: selectedSpellIds.length }))
             ),
             saveError && h("p", { role: "alert", class: "ds-field-error" }, saveError)

@@ -22,7 +22,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::Mutex;
 use trame_engine::commands::{CampaignRole, TokenState, TrameCommand};
 use trame_engine::geometry::Point2D;
 use trame_server::room::{
@@ -99,8 +99,8 @@ async fn test_graceful_shutdown_room_hibernation() {
         .expect("room woke");
 
     // 3. Connect GM and Player clients
-    let (gm_tx, mut gm_rx) = mpsc::unbounded_channel();
-    let (player_tx, mut player_rx) = mpsc::unbounded_channel();
+    let (gm_tx, mut gm_rx) = trame_server::room::client_channel();
+    let (player_tx, mut player_rx) = trame_server::room::client_channel();
     let gm_session_id = Uuid::new_v4();
     let player_session_id = Uuid::new_v4();
 
@@ -219,7 +219,7 @@ async fn test_shutdown_sets_flag_and_rejects_new_connections() {
         .expect_err("must reject new room wake when shutting down");
     assert!(matches!(wake_err, RoomError::ShuttingDown));
 
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = trame_server::room::client_channel();
     let client = ConnectedClient {
         session_id: Uuid::new_v4(),
         user_id: Uuid::new_v4(),
@@ -264,8 +264,8 @@ async fn test_hibernate_broadcasts_ws_close_1001_and_flushes_state() {
         .await
         .expect("room woke");
 
-    let (client1_tx, mut client1_rx) = mpsc::unbounded_channel();
-    let (client2_tx, mut client2_rx) = mpsc::unbounded_channel();
+    let (client1_tx, mut client1_rx) = trame_server::room::client_channel();
+    let (client2_tx, mut client2_rx) = trame_server::room::client_channel();
 
     let client1_session_id = Uuid::new_v4();
     let client1 = ConnectedClient {
@@ -366,7 +366,7 @@ async fn test_room_lease_manager_hibernate_all_lifecycle() {
 
     assert_eq!(lease_manager.active_room_count().await, 3);
 
-    let (c1_tx, mut c1_rx) = mpsc::unbounded_channel();
+    let (c1_tx, mut c1_rx) = trame_server::room::client_channel();
     r1.connect_client(ConnectedClient {
         session_id: Uuid::new_v4(),
         user_id: Uuid::new_v4(),
@@ -377,7 +377,7 @@ async fn test_room_lease_manager_hibernate_all_lifecycle() {
     .unwrap();
     let _ = c1_rx.recv().await;
 
-    let (c2_tx, mut c2_rx) = mpsc::unbounded_channel();
+    let (c2_tx, mut c2_rx) = trame_server::room::client_channel();
     r2.connect_client(ConnectedClient {
         session_id: Uuid::new_v4(),
         user_id: Uuid::new_v4(),

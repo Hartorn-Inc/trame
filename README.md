@@ -30,6 +30,7 @@ make up          # Start isolated dev stack (PostgreSQL 18, Silo S3, Rust server
 make test        # Run Rust, WASM parity, game-system, and Web tests in Docker
 make lint        # Run glossary/ADR and design checks, cargo fmt, cargo clippy, ESLint, and tsc in Docker
 make wasm        # Compile trame-engine to WebAssembly (browser + Node targets) via wasm-pack in Docker
+make srd-content # Regenerate the dnd5e SRD 5.2.1 packs from the pinned Open5e snapshot (ARGS="--check" verifies them)
 make down        # Stop the local development stack
 ```
 

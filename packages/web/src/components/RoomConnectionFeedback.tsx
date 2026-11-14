@@ -46,7 +46,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { ApiClient } from '../api/client.ts';
 import type { CommandFeedback, ConnectionStatus } from '../api/session.ts';
-import { hasMessage, t, tn } from '../i18n/index.ts';
+import { hasMessage, t, tn, type MessageKey } from '../i18n/index.ts';
 
 export interface RoomConnectionFeedbackProps {
   client: ApiClient;
@@ -191,11 +191,27 @@ function actionLabel(action: string | null): string {
   return hasMessage(key) ? t(key) : t('command.action.generic');
 }
 
+/**
+ * Engine rejections (`CommandError` display strings) that get a plain-language,
+ * localized explanation instead of the raw English reason.
+ */
+const KNOWN_REASONS: readonly [RegExp, MessageKey][] = [
+  [/^speed is 0\b/, 'feedback.reason.speedZero'],
+  [/^door is locked\b/, 'feedback.reason.doorLocked'],
+  [/^door is out of reach\b/, 'feedback.reason.doorOutOfReach'],
+];
+
+/** Localized explanation of a rejection reason, or the server text when unknown. */
+export function rejectionReason(reason: string | null): string {
+  const known = KNOWN_REASONS.find(([pattern]) => pattern.test(reason ?? ''));
+  return known ? t(known[1]) : reason ?? '';
+}
+
 function feedbackMessage(item: CommandFeedback): string {
   const action = actionLabel(item.action);
   switch (item.kind) {
     case 'rejected':
-      return t('feedback.rejected', { action, reason: item.reason ?? '' });
+      return t('feedback.rejected', { action, reason: rejectionReason(item.reason) });
     case 'maybeLost':
       return t('feedback.maybeLost', { action });
     default:

@@ -8,9 +8,10 @@
 //! monster attributes: Kahn's topological sort over `derivedDAG` formulas, a
 //! safe recursive-descent arithmetic expression evaluator (`eval_formula_expr`),
 //! the deterministic 5-phase `ActiveEffect` modifier pipeline
-//! (`BASE -> ADD -> MULTIPLY -> OVERRIDE -> CLAMP`), and the D&D 5e damage,
+//! (`BASE -> ADD -> MULTIPLY -> OVERRIDE -> CLAMP`), the D&D 5e damage,
 //! Temporary HP, Instant Death, and Concentration DC calculator
-//! (`resolve_damage_application`).
+//! (`resolve_damage_application`), and the death saving throw state machine
+//! (`resolve_death_save`).
 //!
 //! INVARIANTS & SAFETY BOUNDARIES:
 //! -------------------------------
@@ -695,7 +696,8 @@ pub struct DamageResolution {
     /// `true` when `new_hp == 0` and the target is not dead (`dead == false`).
     pub unconscious: bool,
     /// If the target is concentrating on a spell, survived (`new_hp > 0`), and took damage
-    /// (`final_damage > 0`), equals `Some(max(10, floor(final_damage / 2)))`.
+    /// (`final_damage > 0`), equals `Some(min(30, max(10, floor(final_damage / 2))))`
+    /// (SRD 5.2.1 caps the DC at `MAX_CONCENTRATION_DC`).
     pub concentration_check_dc: Option<i32>,
     /// `DeathSavingThrow` failures added by this hit (`0`, `1`, or `2` on a critical hit). Only a
     /// target already at 0 HP that loses HP-bound damage (after Temp HP) gains failures.
@@ -708,6 +710,82 @@ pub struct DamageResolution {
 
 /// Number of failed `DeathSavingThrow`s at which a creature dies.
 pub const DEATH_SAVE_FAILURES_TO_DIE: u8 = 3;
+
+/// Number of successful `DeathSavingThrow`s at which a creature becomes Stable.
+pub const DEATH_SAVE_SUCCESSES_TO_STABILIZE: u8 = 3;
+
+/// Result of one `DeathSavingThrow` d20 (`resolve_death_save`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct DeathSaveOutcome {
+    /// Success counter after the roll (`0..=3`; reset to `0` on Stable or a natural 20).
+    pub successes: u8,
+    /// Failure counter after the roll (`0..=3`; reset to `0` on Stable or a natural 20).
+    pub failures: u8,
+    /// Natural 20: the creature regains 1 Hit Point and wakes up.
+    pub regains_hp: bool,
+    /// Third success: the creature is Stable at 0 HP and stops rolling.
+    pub stable: bool,
+    /// Third failure: the creature dies.
+    pub dead: bool,
+}
+
+/// Resolves one `DeathSavingThrow` d20 (SRD 5.2.1) from the current counters.
+///
+/// Resolution order: natural 20 regains 1 HP and resets both counters; natural 1 adds two
+/// failures; `2..=9` adds one failure; `10..=19` adds one success. Counters cap at 3. Three
+/// failures kill; three successes make the creature Stable, and becoming Stable resets both
+/// counters to `0` (SRD: "reset to zero when you regain any Hit Points or become Stable").
+/// `d20` outside `1..=20` is clamped, so a malformed value can never skip the rules.
+pub fn resolve_death_save(successes: u8, failures: u8, d20: u8) -> DeathSaveOutcome {
+    let d20 = d20.clamp(1, 20);
+    if d20 == 20 {
+        return DeathSaveOutcome {
+            successes: 0,
+            failures: 0,
+            regains_hp: true,
+            stable: false,
+            dead: false,
+        };
+    }
+    let (added_successes, added_failures) = match d20 {
+        1 => (0, 2),
+        2..=9 => (0, 1),
+        _ => (1, 0),
+    };
+    let failures = failures
+        .saturating_add(added_failures)
+        .min(DEATH_SAVE_FAILURES_TO_DIE);
+    let successes = successes
+        .saturating_add(added_successes)
+        .min(DEATH_SAVE_SUCCESSES_TO_STABILIZE);
+    let dead = failures >= DEATH_SAVE_FAILURES_TO_DIE;
+    let stable = !dead && successes >= DEATH_SAVE_SUCCESSES_TO_STABILIZE;
+    DeathSaveOutcome {
+        successes: if stable { 0 } else { successes },
+        failures: if stable { 0 } else { failures },
+        regains_hp: false,
+        stable,
+        dead,
+    }
+}
+
+/// Lowest `ConcentrationCheckPrompt` DC (`10`), used when half the damage is smaller.
+pub const MIN_CONCENTRATION_DC: i32 = 10;
+
+/// Highest `ConcentrationCheckPrompt` DC (`30`, SRD 5.2.1), reached at 60+ damage.
+pub const MAX_CONCENTRATION_DC: i32 = 30;
+
+/// Damage left after one affinity, from a raw amount floored at `0` (`Resistant` rounds down).
+pub fn mitigate_damage(raw_damage: i32, affinity: DamageAffinity) -> i32 {
+    let raw = raw_damage.max(0);
+    match affinity {
+        DamageAffinity::Immune => 0,
+        DamageAffinity::Resistant => raw / 2,
+        DamageAffinity::Vulnerable => raw.saturating_mul(2),
+        DamageAffinity::Normal => raw,
+    }
+}
 
 /// Resolves D&D 5e / generic damage mitigation (`IMMUNE -> RESISTANT -> VULNERABLE`),
 /// Temporary HP absorption, `InstantDeath`, death saving throw failures at 0 HP, and
@@ -725,13 +803,7 @@ pub fn resolve_damage_application(
     is_critical: bool,
     current_death_save_failures: u8,
 ) -> DamageResolution {
-    let raw = raw_damage.max(0);
-    let final_damage = match affinity {
-        DamageAffinity::Immune => 0,
-        DamageAffinity::Resistant => raw / 2,
-        DamageAffinity::Vulnerable => raw.saturating_mul(2),
-        DamageAffinity::Normal => raw,
-    };
+    let final_damage = mitigate_damage(raw_damage, affinity);
 
     let temp_hp_absorbed = final_damage.min(current_temp_hp.max(0));
     let new_temp_hp = (current_temp_hp - temp_hp_absorbed).max(0);
@@ -756,7 +828,7 @@ pub fn resolve_damage_application(
     let unconscious = new_hp == 0 && !dead;
 
     let concentration_check_dc = if is_concentrating && final_damage > 0 && new_hp > 0 {
-        Some(10.max(final_damage / 2))
+        Some((final_damage / 2).clamp(MIN_CONCENTRATION_DC, MAX_CONCENTRATION_DC))
     } else {
         None
     };

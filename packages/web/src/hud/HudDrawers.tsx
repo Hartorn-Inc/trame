@@ -53,6 +53,8 @@ export interface HudDrawersProps {
   systemId?: string;
   isTableCanvasMounted?: boolean;
   targetContainerId?: string | null;
+  /** GM monster spawn forwarded to the compendium drawer; absent for players. */
+  onSpawnMonster?: (entry: CompendiumEntry) => void;
 }
 
 export function HudDrawers(props: HudDrawersProps): VNode<any> {
@@ -123,6 +125,7 @@ export function HudDrawers(props: HudDrawersProps): VNode<any> {
       dispatchCommand,
       actorId: actorId ?? undefined,
       targetContainerId: props.targetContainerId,
+      onSpawnMonster: props.onSpawnMonster,
     }),
   );
 }

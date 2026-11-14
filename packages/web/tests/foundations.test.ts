@@ -111,7 +111,7 @@ describe("[F3] @trame/game-system-dnd5e canonical rules & pipeline", () => {
 
     const longRes = applyLongRest(fighter);
     assert.equal(fighter.hpCurrent, 100);
-    assert.equal(longRes.hitDiceRecovered, 4); // half of 8
+    assert.equal(longRes.hitDiceRecovered, 8); // SRD 5.2.1: all spent Hit Dice
     assert.equal(fighter.exhaustionLevel, 1);
 
     // Death save parameterized checks: nat 1 -> 2 failures, nat 20 -> 1 HP conscious

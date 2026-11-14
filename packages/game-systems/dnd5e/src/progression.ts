@@ -23,6 +23,9 @@
  *      - A Constitution increase (ASI or feat) that changes the modifier adds
  *        the difference for every earlier level; Dwarven Toughness adds `+1`
  *        per level. No SRD 5.2.1 feat grants HP per level.
+ *      - Class features with `hpMaxPerLevel` (Draconic Resilience) add the
+ *        difference of `classFeatureHpMaxBonus` before and after the level:
+ *        `+3` when the Draconic subclass arrives at level 3, `+1` per level after.
  *   3. `Incremental Spell Slot Preservation`:
  *      - Advancing a caster increases `current` available slots only by the delta
  *        `max(0, newMax - existing.max)` so previously expended spell slots are
@@ -35,6 +38,10 @@
  *   5. `SRD-Only Feats`:
  *      - Feats taken at an ASI level are validated by `validateFeatSelection`
  *        (prerequisites, repeatability, `+1` increases up to 20 or 30).
+ *      - The Fighting Style feature (Fighter 1, Paladin/Ranger 2) and the
+ *        Champion's Additional Fighting Style (7) grant one Fighting Style
+ *        feat (`grantsFightingStyleFeat`), recorded by `recordFightingStyleFeat`
+ *        only at those levels and never twice.
  *   6. `Turn-Scoped Condition Expiry`:
  *      - `decrementConditionDurations` only decrements `"TURNS_START"` and
  *        `"TURNS_END"` conditions when `appliedTurnActorId === currentTurnActorId`,
@@ -48,7 +55,8 @@
  *     ├── 3. Apply the ASI or feat (and its `+1` increase).
  *     ├── 4. Compute `hpGain = max(1, baseGain + conMod)` plus retroactive CON and
  *     │      species bonuses, and add it to `hp.max` & `hp.current`.
- *     └── 5. Reconcile `spellSlots` against the target level's `casterType` progression row.
+ *     ├── 5. Record class/subclass; add the class feature HP bonus delta.
+ *     └── 6. Reconcile `spellSlots` against the target level's `casterType` progression row.
  * ============================================================================
  */
 
@@ -66,8 +74,17 @@ import type {
   SpellSlotsState,
   TurnTrigger,
 } from "./types.ts";
+import { classFeatureHpMaxBonus, srdClassFeatures } from "./classFeatures.ts";
 import { calculateProficiencyBonus, computeDnd5eSheetDerived } from "./manifest.ts";
-import { getSpeciesRules, validateFeatSelection } from "./origins.ts";
+import {
+  getFeatSlotOptions,
+  getSpeciesRules,
+  SRD_FEATS,
+  srdFeatKey,
+  validateFeatSelection,
+  type FeatSelectionContext,
+  type SrdFeatId,
+} from "./origins.ts";
 
 export type {
   AsiOrFeatSelection,
@@ -647,6 +664,117 @@ export const PACT_MAGIC_SPELL_SLOTS: Record<number, PactMagicProgression> = {
 };
 
 /**
+ * Whether `classId` has gained the class feature named `featureName`
+ * (canonical English name, e.g. `"Fighting Style"`) by `characterLevel`.
+ */
+export function hasClassFeature(classId: string | undefined, characterLevel: number, featureName: string): boolean {
+  const features = getClassProgression(classId)?.features ?? {};
+  return Object.entries(features).some(
+    ([level, names]) => Number(level) <= characterLevel && names.includes(featureName)
+  );
+}
+
+function actorClassId(actor: Dnd5eActorData): string | undefined {
+  return (actor.classId ?? actor.class ?? actor.attributes.classId ?? actor.attributes.class)?.toString();
+}
+
+function featSelectionContext(
+  actor: Dnd5eActorData,
+  classId: string | undefined,
+  targetLevel: number
+): FeatSelectionContext {
+  return {
+    targetLevel,
+    abilities: Object.fromEntries(
+      Object.entries(actor.abilities).map(([ab, { score }]) => [ab, score])
+    ) as Record<AbilityId, number>,
+    heldFeatIds: actor.features ?? [],
+    hasSpellcasting: getCasterTypeForClass(classId) !== "none",
+    hasFightingStyle: hasClassFeature(classId, targetLevel, "Fighting Style"),
+  };
+}
+
+/**
+ * SRD feats `actor` may take at the feat slot of `targetLevel` (defaults to
+ * the next level), including Fighting Style feats for classes with the
+ * Fighting Style feature. Returns `[]` when that level has no feat slot.
+ */
+export function getLevelUpFeatOptions(actor: Dnd5eActorData, targetLevel = actor.attributes.level + 1): SrdFeatId[] {
+  const classId = actorClassId(actor);
+  if (!isAsiLevel(targetLevel, classId)) return [];
+  return getFeatSlotOptions(featSelectionContext(actor, classId, targetLevel));
+}
+
+/** Class and subclass features whose gain grants one Fighting Style feat. */
+const FIGHTING_STYLE_FEATURES: ReadonlySet<string> = new Set(["Fighting Style", "Additional Fighting Style"]);
+
+/**
+ * Whether reaching `level` grants a Fighting Style feat: the Fighting Style
+ * class feature (Fighter 1, Paladin 2, Ranger 2) or the Champion's Additional
+ * Fighting Style (Fighter 7). Accepts bare or `srd:` prefixed ids.
+ */
+export function grantsFightingStyleFeat(classId: string | undefined, subclassId: string | undefined, level: number): boolean {
+  const cls = classId?.replace(/^srd:class:/, "").toLowerCase();
+  const sub = subclassId && (subclassId.startsWith("srd:subclass:") ? subclassId : `srd:subclass:${subclassId}`);
+  return srdClassFeatures().some(
+    (spec) =>
+      spec.classId === cls &&
+      spec.level === level &&
+      FIGHTING_STYLE_FEATURES.has(spec.name) &&
+      (!spec.subclassId || spec.subclassId === sub)
+  );
+}
+
+/** Fighting Style feats (`srd:feat:<key>`) not already in `heldFeatIds`, in `SRD_FEATS` order. */
+export function getFightingStyleFeatOptions(heldFeatIds: readonly string[]): string[] {
+  const held = new Set(heldFeatIds.map(srdFeatKey));
+  return (Object.keys(SRD_FEATS) as SrdFeatId[])
+    .filter((key) => SRD_FEATS[key].category === "fighting_style" && !held.has(key))
+    .map((key) => `srd:feat:${key}`);
+}
+
+/**
+ * Validates a Fighting Style feat granted at `level` and returns its canonical
+ * `srd:feat:<key>` id. Throws when the level grants none, the feat is not a
+ * Fighting Style feat, or it is already held.
+ */
+function validateFightingStyleFeat(
+  featId: string,
+  heldFeatIds: readonly string[],
+  classId: string | undefined,
+  subclassId: string | undefined,
+  level: number
+): string {
+  if (!grantsFightingStyleFeat(classId, subclassId, level)) {
+    throw new Error("No Fighting Style feat at this level");
+  }
+  const canonical = `srd:feat:${srdFeatKey(featId) ?? ""}`;
+  if (!getFightingStyleFeatOptions([]).includes(canonical)) {
+    throw new Error("Invalid Fighting Style feat");
+  }
+  if (!getFightingStyleFeatOptions(heldFeatIds).includes(canonical)) {
+    throw new Error("Feat already taken");
+  }
+  return canonical;
+}
+
+/**
+ * Records a Fighting Style feat on `actor` (mutated): `features` and
+ * `featsTaken` at `level`. Shared by `applyLevelUp` and `applyClassChoices`.
+ */
+export function recordFightingStyleFeat(
+  actor: Dnd5eActorData,
+  featId: string,
+  classId: string | undefined,
+  subclassId: string | undefined,
+  level: number
+): void {
+  const canonical = validateFightingStyleFeat(featId, actor.features ?? [], classId, subclassId, level);
+  actor.features = [...(actor.features ?? []), canonical];
+  actor.featsTaken = [...(actor.featsTaken ?? []), { featId: canonical, level }];
+}
+
+/**
  * Advances `actor` by one character level (up to level 20), validating level increment,
  * subclass tiers, HP progression mode, ASI/Feat selection, and reconciling spell slots.
  */
@@ -740,12 +868,7 @@ export function applyLevelUp(
         throw new Error("Invalid featId value");
       }
       featIncrease = validateFeatSelection(options.asiOrFeat.featId, {
-        targetLevel,
-        abilities: Object.fromEntries(
-          Object.entries(actor.abilities).map(([ab, { score }]) => [ab, score])
-        ) as Record<AbilityId, number>,
-        heldFeatIds: actor.features ?? [],
-        hasSpellcasting: getCasterTypeForClass(classId) !== "none",
+        ...featSelectionContext(actor, classId, targetLevel),
         abilityIncrease: options.asiOrFeat.abilityIncrease,
       });
     }
@@ -773,6 +896,7 @@ export function applyLevelUp(
         clone.features = [];
       }
       clone.features.push(options.asiOrFeat.featId);
+      clone.featsTaken = [...(clone.featsTaken ?? []), { featId: options.asiOrFeat.featId, level: targetLevel }];
       if (featIncrease) {
         clone.abilities[featIncrease].score += 1;
       }
@@ -805,6 +929,22 @@ export function applyLevelUp(
     clone.classId = options.classId;
     clone.attributes.classId = options.classId;
   }
+
+  // 10b. Fighting Style feat (Paladin/Ranger 2, Champion 7), once class and subclass are known
+  if (options.fightingStyleFeatId !== undefined) {
+    recordFightingStyleFeat(
+      clone,
+      options.fightingStyleFeatId,
+      classId,
+      clone.subclassId ?? clone.attributes.subclassId,
+      targetLevel
+    );
+  }
+
+  // 10c. Feature Hit Point maximum bonuses (Draconic Resilience)
+  const featureHpGain = classFeatureHpMaxBonus(clone) - classFeatureHpMaxBonus(actor);
+  clone.attributes.hp.max += featureHpGain;
+  clone.attributes.hp.current += featureHpGain;
 
   // 11. Register new spell identifiers
   if (options.newSpellIds && Array.isArray(options.newSpellIds)) {

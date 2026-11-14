@@ -729,7 +729,7 @@
     "expected": {
       "ok": {
         "collision": null,
-        "costFt": 26.92582403567252
+        "costFt": 20.0
       }
     },
     "export": "previewMove",
@@ -833,7 +833,7 @@
     "expected": {
       "ok": {
         "collision": null,
-        "costFt": 22.360679774997898
+        "costFt": 20.0
       }
     },
     "export": "previewMove",
@@ -850,6 +850,66 @@
         "gridW": 2,
         "heightFt": 10,
         "isSqueezing": true,
+        "topLeft": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      "walls": []
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "collision": null,
+        "costFt": 15.0
+      }
+    },
+    "export": "previewMove",
+    "id": "move_diagonal_costs_5ft_per_square",
+    "request": {
+      "cellSizePx": 100,
+      "feetPerCell": 5,
+      "toTopLeft": {
+        "x": 300,
+        "y": 300
+      },
+      "token": {
+        "topLeft": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      "walls": []
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "collision": null,
+        "costFt": 25.0
+      }
+    },
+    "export": "previewMove",
+    "id": "move_difficult_terrain_doubles_cost",
+    "request": {
+      "cellSizePx": 100,
+      "difficultTerrain": [
+        {
+          "col": 1,
+          "row": 0
+        },
+        {
+          "col": 2,
+          "row": 0
+        }
+      ],
+      "feetPerCell": 5,
+      "toTopLeft": {
+        "x": 300,
+        "y": 0
+      },
+      "token": {
         "topLeft": {
           "x": 0,
           "y": 0
@@ -1038,6 +1098,1010 @@
     "id": "malformed_request_fails_closed",
     "request": {
       "walls": []
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "bonus": 2,
+        "cover": "HALF"
+      }
+    },
+    "export": "suggestCover",
+    "id": "cover_half_from_partial_wall",
+    "request": {
+      "attacker": {
+        "topLeft": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      "cellSizePx": 100,
+      "target": {
+        "topLeft": {
+          "x": 300,
+          "y": 0
+        }
+      },
+      "walls": [
+        {
+          "a": {
+            "x": 200,
+            "y": 50
+          },
+          "b": {
+            "x": 200,
+            "y": 500
+          },
+          "id": "00000000-0000-0000-0000-000000000001",
+          "wallType": "Normal"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "bonus": 5,
+        "cover": "THREE_QUARTERS"
+      }
+    },
+    "export": "suggestCover",
+    "id": "cover_three_quarters_through_arrow_slit_large_target",
+    "request": {
+      "attacker": {
+        "topLeft": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      "cellSizePx": 100,
+      "target": {
+        "gridH": 2,
+        "gridW": 2,
+        "topLeft": {
+          "x": 300,
+          "y": -50
+        }
+      },
+      "walls": [
+        {
+          "a": {
+            "x": 200,
+            "y": -500
+          },
+          "b": {
+            "x": 200,
+            "y": 40
+          },
+          "id": "00000000-0000-0000-0000-000000000001"
+        },
+        {
+          "a": {
+            "x": 200,
+            "y": 60
+          },
+          "b": {
+            "x": 200,
+            "y": 500
+          },
+          "id": "00000000-0000-0000-0000-000000000002"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "bonus": 0,
+        "cover": "NONE"
+      }
+    },
+    "export": "suggestCover",
+    "id": "cover_open_door_is_no_cover",
+    "request": {
+      "attacker": {
+        "topLeft": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      "cellSizePx": 100,
+      "target": {
+        "topLeft": {
+          "x": 300,
+          "y": 0
+        }
+      },
+      "walls": [
+        {
+          "a": {
+            "x": 200,
+            "y": -500
+          },
+          "b": {
+            "x": 200,
+            "y": 500
+          },
+          "doorState": "Open",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "wallType": "Door"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": [
+        {
+          "x": -150.0,
+          "y": 99.99999999999997
+        },
+        {
+          "x": -146.201938253052,
+          "y": 56.58795558326743
+        },
+        {
+          "x": -134.92315519647707,
+          "y": 14.494964168582783
+        },
+        {
+          "x": -116.50635094610968,
+          "y": -24.999999999999986
+        },
+        {
+          "x": -91.51111077974448,
+          "y": -60.69690242163486
+        },
+        {
+          "x": -60.69690242163483,
+          "y": -91.51111077974451
+        },
+        {
+          "x": -25.000000000000057,
+          "y": -116.50635094610965
+        },
+        {
+          "x": 14.494964168582825,
+          "y": -134.9231551964771
+        },
+        {
+          "x": 56.58795558326742,
+          "y": -146.201938253052
+        },
+        {
+          "x": 100.00000000000001,
+          "y": -150.0
+        },
+        {
+          "x": 143.4120444167326,
+          "y": -146.201938253052
+        },
+        {
+          "x": 185.50503583141722,
+          "y": -134.92315519647707
+        },
+        {
+          "x": 224.99999999999997,
+          "y": -116.50635094610968
+        },
+        {
+          "x": 260.69690242163483,
+          "y": -91.51111077974448
+        },
+        {
+          "x": 276.7590167432532,
+          "y": -76.7943720822536
+        },
+        {
+          "x": 276.7766952966369,
+          "y": -76.77669529663686
+        },
+        {
+          "x": 276.79437208225363,
+          "y": -76.7590167432532
+        },
+        {
+          "x": 291.5111107797445,
+          "y": -60.69690242163483
+        },
+        {
+          "x": 316.5063509461097,
+          "y": -24.999999999999957
+        },
+        {
+          "x": 334.92315519647707,
+          "y": 14.494964168582811
+        },
+        {
+          "x": 346.201938253052,
+          "y": 56.58795558326735
+        },
+        {
+          "x": 350.0,
+          "y": 100.0
+        },
+        {
+          "x": 346.20193825305205,
+          "y": 143.41204441673253
+        },
+        {
+          "x": 334.92315519647707,
+          "y": 185.5050358314172
+        },
+        {
+          "x": 323.61797697181385,
+          "y": 211.78103763623477
+        },
+        {
+          "x": 300.0,
+          "y": 200.0
+        },
+        {
+          "x": 299.95000999783383,
+          "y": 200.0
+        },
+        {
+          "x": 273.2050807568878,
+          "y": 200.0
+        },
+        {
+          "x": 219.175359259421,
+          "y": 200.0
+        },
+        {
+          "x": 183.909963117728,
+          "y": 200.0
+        },
+        {
+          "x": 157.73502691896263,
+          "y": 200.0
+        },
+        {
+          "x": 150.01250062507293,
+          "y": 200.0
+        },
+        {
+          "x": 150.0,
+          "y": 200.0
+        },
+        {
+          "x": 149.9875006249271,
+          "y": 200.0
+        },
+        {
+          "x": 136.3970234266203,
+          "y": 200.0
+        },
+        {
+          "x": 117.63269807084649,
+          "y": 200.0
+        },
+        {
+          "x": 100.0,
+          "y": 200.0
+        },
+        {
+          "x": 82.36730192915354,
+          "y": 200.0
+        },
+        {
+          "x": 63.60297657337982,
+          "y": 200.0
+        },
+        {
+          "x": 42.26497308103739,
+          "y": 200.0
+        },
+        {
+          "x": 16.090036882272003,
+          "y": 200.0
+        },
+        {
+          "x": 0.01999800026668197,
+          "y": 200.0
+        },
+        {
+          "x": 1.4210854715202004e-14,
+          "y": 200.0
+        },
+        {
+          "x": -76.79437208225363,
+          "y": 276.75901674325314
+        },
+        {
+          "x": -91.51111077974448,
+          "y": 260.69690242163483
+        },
+        {
+          "x": -116.50635094610962,
+          "y": 225.00000000000009
+        },
+        {
+          "x": -134.92315519647704,
+          "y": 185.50503583141733
+        },
+        {
+          "x": -146.201938253052,
+          "y": 143.41204441673256
+        }
+      ]
+    },
+    "export": "computeVisibilityPolygon",
+    "id": "visibility_window_passes_closed_door_blocks",
+    "request": {
+      "maxRangePx": 250,
+      "observerEyeFt": 5,
+      "origin": {
+        "x": 100,
+        "y": 100
+      },
+      "walls": [
+        {
+          "a": {
+            "x": 200,
+            "y": 0
+          },
+          "b": {
+            "x": 200,
+            "y": 300
+          },
+          "id": "00000000-0000-0000-0000-000000000001",
+          "kind": {
+            "kind": "WINDOW"
+          }
+        },
+        {
+          "a": {
+            "x": 0,
+            "y": 200
+          },
+          "b": {
+            "x": 300,
+            "y": 200
+          },
+          "id": "00000000-0000-0000-0000-000000000002",
+          "kind": {
+            "is_locked": false,
+            "is_open": false,
+            "kind": "DOOR"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": [
+        {
+          "x": -140.0,
+          "y": 99.99999999999997
+        },
+        {
+          "x": -136.35386072292994,
+          "y": 58.32443735993673
+        },
+        {
+          "x": -125.52622898861799,
+          "y": 17.915165601839476
+        },
+        {
+          "x": -107.84609690826528,
+          "y": -19.999999999999986
+        },
+        {
+          "x": -83.85066634855468,
+          "y": -54.26902632476947
+        },
+        {
+          "x": -54.26902632476944,
+          "y": -83.85066634855471
+        },
+        {
+          "x": -20.000000000000057,
+          "y": -107.84609690826525
+        },
+        {
+          "x": 17.915165601839504,
+          "y": -125.52622898861802
+        },
+        {
+          "x": 58.324437359936724,
+          "y": -136.35386072292994
+        },
+        {
+          "x": 100.00000000000001,
+          "y": -140.0
+        },
+        {
+          "x": 141.6755626400633,
+          "y": -136.35386072292994
+        },
+        {
+          "x": 182.08483439816052,
+          "y": -125.52622898861799
+        },
+        {
+          "x": 219.99999999999997,
+          "y": -107.84609690826528
+        },
+        {
+          "x": 254.26902632476947,
+          "y": -83.85066634855468
+        },
+        {
+          "x": 269.6886560735231,
+          "y": -69.72259719896346
+        },
+        {
+          "x": 269.7056274847714,
+          "y": -69.70562748477138
+        },
+        {
+          "x": 269.72259719896346,
+          "y": -69.68865607352308
+        },
+        {
+          "x": 283.8506663485547,
+          "y": -54.26902632476944
+        },
+        {
+          "x": 307.8460969082653,
+          "y": -19.999999999999957
+        },
+        {
+          "x": 325.52622898861796,
+          "y": 17.91516560183949
+        },
+        {
+          "x": 336.35386072292994,
+          "y": 58.32443735993666
+        },
+        {
+          "x": 340.0,
+          "y": 100.0
+        },
+        {
+          "x": 336.35386072292994,
+          "y": 141.67556264006322
+        },
+        {
+          "x": 325.52622898861796,
+          "y": 182.08483439816052
+        },
+        {
+          "x": 314.6732578929413,
+          "y": 207.30979613078537
+        },
+        {
+          "x": 300.0,
+          "y": 200.0
+        },
+        {
+          "x": 299.95000999783383,
+          "y": 200.0
+        },
+        {
+          "x": 273.2050807568878,
+          "y": 200.0
+        },
+        {
+          "x": 219.17535925942096,
+          "y": 200.0
+        },
+        {
+          "x": 183.90996311772804,
+          "y": 200.0
+        },
+        {
+          "x": 157.73502691896263,
+          "y": 200.0
+        },
+        {
+          "x": 150.0125006250729,
+          "y": 200.0
+        },
+        {
+          "x": 150.0,
+          "y": 200.0
+        },
+        {
+          "x": 149.9875006249271,
+          "y": 200.0
+        },
+        {
+          "x": 136.3970234266203,
+          "y": 200.0
+        },
+        {
+          "x": 117.63269807084649,
+          "y": 200.0
+        },
+        {
+          "x": 100.0,
+          "y": 200.0
+        },
+        {
+          "x": 82.36730192915353,
+          "y": 200.0
+        },
+        {
+          "x": 63.60297657337983,
+          "y": 200.0
+        },
+        {
+          "x": 42.2649730810374,
+          "y": 200.0
+        },
+        {
+          "x": 16.090036882271974,
+          "y": 200.0
+        },
+        {
+          "x": 0.01999800026669618,
+          "y": 200.0
+        },
+        {
+          "x": 2.842170943040401e-14,
+          "y": 200.0
+        },
+        {
+          "x": -69.72259719896348,
+          "y": 269.688656073523
+        },
+        {
+          "x": -83.85066634855468,
+          "y": 254.26902632476947
+        },
+        {
+          "x": -107.84609690826522,
+          "y": 220.00000000000009
+        },
+        {
+          "x": -125.52622898861796,
+          "y": 182.08483439816064
+        },
+        {
+          "x": -136.35386072292994,
+          "y": 141.67556264006328
+        }
+      ]
+    },
+    "export": "computeVisibilityPolygon",
+    "id": "visibility_darkvision_sight_through_open_door",
+    "request": {
+      "observerEyeFt": 5,
+      "origin": {
+        "x": 100,
+        "y": 100
+      },
+      "sight": {
+        "ambientLighting": "PITCH_DARKNESS",
+        "pxPerFt": 2,
+        "senses": {
+          "blindsight_range_ft": 0,
+          "darkvision_range_ft": 120,
+          "devils_sight": false,
+          "normal_range_ft": 120,
+          "perceives_channels": 1,
+          "see_invisibility": false,
+          "tremorsense_range_ft": 0,
+          "truesight_range_ft": 0
+        }
+      },
+      "walls": [
+        {
+          "a": {
+            "x": 200,
+            "y": 0
+          },
+          "b": {
+            "x": 200,
+            "y": 300
+          },
+          "id": "00000000-0000-0000-0000-000000000001",
+          "kind": {
+            "is_locked": false,
+            "is_open": true,
+            "kind": "DOOR"
+          }
+        },
+        {
+          "a": {
+            "x": 0,
+            "y": 200
+          },
+          "b": {
+            "x": 300,
+            "y": 200
+          },
+          "id": "00000000-0000-0000-0000-000000000002",
+          "kind": {
+            "kind": "NORMAL"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": [
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        },
+        {
+          "x": 100.0,
+          "y": 100.0
+        }
+      ]
+    },
+    "export": "computeVisibilityPolygon",
+    "id": "visibility_no_darkvision_sees_nothing_in_darkness",
+    "request": {
+      "observerEyeFt": 5,
+      "origin": {
+        "x": 100,
+        "y": 100
+      },
+      "sight": {
+        "ambientLighting": "PITCH_DARKNESS",
+        "pxPerFt": 2,
+        "senses": {
+          "blindsight_range_ft": 0,
+          "darkvision_range_ft": 0,
+          "devils_sight": false,
+          "normal_range_ft": 120,
+          "perceives_channels": 1,
+          "see_invisibility": false,
+          "tremorsense_range_ft": 0,
+          "truesight_range_ft": 0
+        }
+      },
+      "walls": []
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "grappled"
+        ],
+        "incapacitated": false,
+        "resistsAllDamage": false,
+        "speedZero": true
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_grappled_sets_speed_zero",
+    "request": {
+      "conditions": [
+        "Grappled"
+      ],
+      "overrides": []
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "stunned"
+        ],
+        "incapacitated": true,
+        "resistsAllDamage": false,
+        "speedZero": false
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_stunned_is_incapacitated_but_can_move",
+    "request": {
+      "conditions": [
+        "stunned"
+      ],
+      "overrides": []
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "unconscious",
+          "prone"
+        ],
+        "incapacitated": true,
+        "resistsAllDamage": false,
+        "speedZero": true
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_unconscious_is_incapacitated_with_speed_zero",
+    "request": {
+      "conditions": [
+        "unconscious",
+        "prone"
+      ],
+      "overrides": []
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [],
+        "incapacitated": false,
+        "resistsAllDamage": false,
+        "speedZero": false
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_removed_condition_lifts_its_effects",
+    "request": {
+      "conditions": [
+        "restrained"
+      ],
+      "overrides": [
+        {
+          "id": "restrained",
+          "mode": "REMOVE",
+          "subject": "CONDITION"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "grappled"
+        ],
+        "incapacitated": false,
+        "resistsAllDamage": false,
+        "speedZero": false
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_removed_effect_keeps_the_condition",
+    "request": {
+      "conditions": [
+        "grappled"
+      ],
+      "overrides": [
+        {
+          "id": "grappled.speed_zero",
+          "mode": "REMOVE",
+          "subject": "EFFECT"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "paralyzed",
+          "grappled"
+        ],
+        "incapacitated": true,
+        "resistsAllDamage": false,
+        "speedZero": true
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_removed_effect_keeps_other_sources",
+    "request": {
+      "conditions": [
+        "paralyzed",
+        "grappled"
+      ],
+      "overrides": [
+        {
+          "id": "grappled.speed_zero",
+          "mode": "REMOVE",
+          "subject": "EFFECT"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [],
+        "incapacitated": false,
+        "resistsAllDamage": false,
+        "speedZero": true
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_forced_effect_applies_without_condition",
+    "request": {
+      "conditions": [],
+      "overrides": [
+        {
+          "id": "paralyzed.speed_zero",
+          "mode": "FORCE",
+          "subject": "EFFECT"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "petrified"
+        ],
+        "incapacitated": true,
+        "resistsAllDamage": true,
+        "speedZero": true
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_forced_condition_brings_its_effects",
+    "request": {
+      "conditions": [],
+      "overrides": [
+        {
+          "id": "petrified",
+          "mode": "FORCE",
+          "subject": "CONDITION"
+        }
+      ]
+    }
+  },
+  {
+    "expected": {
+      "ok": {
+        "effectiveConditions": [
+          "unconscious"
+        ],
+        "incapacitated": true,
+        "resistsAllDamage": false,
+        "speedZero": true
+      }
+    },
+    "export": "conditionEffects",
+    "id": "condition_effects_compendium_condition_id_is_normalized",
+    "request": {
+      "conditions": [
+        "srd:condition:unconscious",
+        "Unconscious"
+      ],
+      "overrides": []
     }
   }
 ]

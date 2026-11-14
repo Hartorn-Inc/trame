@@ -40,6 +40,12 @@
 //!        import restores every entity that parses as a `CampaignMapScene`
 //!        (`restorable_scene`) into scene storage. Import always targets a fresh campaign,
 //!        so the restored set keeps version `0`.
+//!   7. `Staged Stat Block Copies (D7)`:
+//!      - `PUT` gives every staged token a validated copy of its stat block
+//!        (`resolve_staged_stat_blocks`: SRD reference or actor template copied, homebrew
+//!        bounds-checked; `400 INVALID_STAT_BLOCK` otherwise). Activation hands the copy
+//!        to the room, which derives the token's HP, AC, speed, senses, reach and damage
+//!        affinities from it. Player responses never carry stat blocks.
 //! ============================================================================
 
 use crate::archive::ExportEntity;
@@ -111,12 +117,21 @@ pub struct SpatialAudioEmitter {
     pub audio_clip_url: String,
 }
 
+/// Monster or NPC token placed on a scene in the map studio; it becomes a `SyntheticToken`
+/// when the scene is activated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StagedToken {
     pub id: Uuid,
     pub name: String,
+    /// Where the stat block was copied from: an SRD reference (`srd:monster:<slug>`) or an
+    /// actor template UUID. When `stat_block` is absent, `PUT .../maps` copies it from here.
     #[serde(default, alias = "monsterTemplateId", alias = "templateKey")]
     pub monster_template_id: Option<String>,
+    /// Copy of the dnd5e `MonsterStatBlock` taken when the token was staged (D7), editable
+    /// as homebrew. `PUT .../maps` resolves references and validates bounds
+    /// (`statblock::resolve_stat_block`); players never receive it.
+    #[serde(default, alias = "statBlock", skip_serializing_if = "Option::is_none")]
+    pub stat_block: Option<serde_json::Value>,
     pub x: f32,
     pub y: f32,
     #[serde(default, alias = "elevationFt")]
@@ -385,8 +400,44 @@ pub fn sanitize_scene_for_player(mut scene: CampaignMapScene) -> CampaignMapScen
     scene
         .staged_tokens
         .retain(|t| t.visibility != VisibilityChannel::GmHidden);
+    for token in &mut scene.staged_tokens {
+        token.stat_block = None;
+    }
     scene.spatial_audio_emitters.retain(|e| !e.gm_only);
     scene
+}
+
+/// Gives every staged token of `scenes` a validated stat block copy (D7): an existing
+/// `stat_block` is resolved and bounds-checked; otherwise `monster_template_id` (SRD
+/// reference or actor template UUID) is copied when it names one. Tokens with neither stay
+/// plain. Errors name the offending token.
+pub async fn resolve_staged_stat_blocks(
+    state: &AppState,
+    campaign_id: Uuid,
+    scenes: &mut [CampaignMapScene],
+) -> Result<(), String> {
+    for token in scenes.iter_mut().flat_map(|s| s.staged_tokens.iter_mut()) {
+        let source = match (&token.stat_block, token.monster_template_id.as_deref()) {
+            (Some(block), _) => block.clone(),
+            (None, Some(template))
+                if template.starts_with(crate::statblock::SRD_MONSTER_PREFIX)
+                    || Uuid::parse_str(template).is_ok() =>
+            {
+                serde_json::Value::String(template.to_string())
+            }
+            // Legacy free-form template keys stay plain tokens rather than failing the save.
+            _ => continue,
+        };
+        let block = match source.as_str().and_then(|s| Uuid::parse_str(s).ok()) {
+            Some(id) => crate::campaigns::actor_template_stat_block(state, campaign_id, id).await,
+            None => Ok(source),
+        };
+        let resolved = block
+            .and_then(|block| crate::statblock::resolve_stat_block(&block))
+            .map_err(|err| format!("staged token {}: {err}", token.id))?;
+        token.stat_block = Some(resolved);
+    }
+    Ok(())
 }
 
 /// Loads the scenes of `campaign_id` from PostgreSQL when configured, otherwise from memory.
@@ -467,6 +518,9 @@ pub fn scene_activation(scene: &CampaignMapScene) -> SceneActivation {
             if t.visibility == VisibilityChannel::GmHidden {
                 token.visibility_channel |= CHANNEL_GM_HIDDEN;
             }
+            // The room applies the copy (`statblock::normalize_command`), which also sets the
+            // footprint from the creature size.
+            token.stat_block = t.stat_block.clone();
             token
         })
         .collect();
@@ -617,6 +671,16 @@ pub async fn put_campaign_maps_handler(
     };
 
     let mut scenes = payload.scenes;
+    if let Err(err) = resolve_staged_stat_blocks(&state, campaign_id, &mut scenes).await {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                code: Some("INVALID_STAT_BLOCK".to_string()),
+                error: err,
+            }),
+        )
+            .into_response();
+    }
     for scene in &mut scenes {
         scene.campaign_id = campaign_id;
         for light in &mut scene.light_sources {

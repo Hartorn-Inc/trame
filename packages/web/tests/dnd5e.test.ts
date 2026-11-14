@@ -29,7 +29,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.2.1) Specification Suite", () => {
   it("T-DND-01: computes derived attributes, ability modifiers, and passive perception correctly", () => {
-    const actor = createDefaultActorData("hero-1", "Valeros");
+    const actor = createDefaultActorData("hero-1", "Kael");
     actor.attributes.level = 1;
     actor.abilities.wis = { score: 16, saveProficiency: false };
     actor.skills.perception = { ability: "wis", proficiencyRank: 1 };
@@ -314,7 +314,7 @@ describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.2.1) Specification Suite", () => 
     assert.throws(() => applyShortRest(actor, { hitDiceSpent: 2, diceRolls: [6] }));
   });
 
-  it("T-DND-13: applies Long Rest restoring full HP, half hit dice, and resetting exhaustion and all pools", () => {
+  it("T-DND-13: applies Long Rest restoring full HP, all hit dice, and resetting exhaustion and all pools", () => {
     const actor = createDefaultActorData("rest-2", "Paladin");
     actor.attributes.hp.current = 4;
     actor.attributes.hp.max = 40;
@@ -335,7 +335,7 @@ describe("[E1-T1] D&D 5e GameSystemPack (SRD 5.2.1) Specification Suite", () => 
     const afterLongRest = applyLongRest(actor);
     assert.equal(afterLongRest.attributes.hp.current, 40);
     assert.equal(afterLongRest.attributes.hp.temp, 0);
-    assert.equal(afterLongRest.attributes.hitDiceCurrent, 4); // 1 + floor(6 / 2) = 4
+    assert.equal(afterLongRest.attributes.hitDiceCurrent, 6); // SRD 5.2.1: all spent Hit Dice
     assert.equal(afterLongRest.attributes.exhaustion, 1);
     assert.equal(afterLongRest.attributes.deathSaves.successes, 0);
     assert.equal(afterLongRest.attributes.deathSaves.failures, 0);

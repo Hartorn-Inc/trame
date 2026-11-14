@@ -476,8 +476,8 @@ describe("RestModal Component", () => {
       assert.ok(findByText("12 → 34 / 34 (+22 HP)"));
       // Temp HP wiped to 0
       assert.ok(findByText("8 → 0"));
-      // Hit dice recovery: max(1, floor(4/2)) = +2 (1 -> 3 / 4)
-      assert.ok(findByText("+2 hit dice (1 → 3 / 4)"));
+      // SRD 5.2.1: every spent Hit Die is recovered (1 -> 4 / 4)
+      assert.ok(findByText("+3 hit dice (1 → 4 / 4)"));
       // Exhaustion reduced by 1: 2 -> 1
       assert.ok(findByText("2 → 1 (-1 level)"));
       // Death saves reset
@@ -526,8 +526,8 @@ describe("RestModal Component", () => {
       assert.equal((savedActor as Dnd5eActorData).attributes.hp.current, 34);
       // Temp HP cleared
       assert.equal((savedActor as Dnd5eActorData).attributes.hp.temp, 0);
-      // Hit dice recovered: 1 + 2 = 3
-      assert.equal((savedActor as Dnd5eActorData).attributes.hitDiceCurrent, 3);
+      // Every spent Hit Die recovered
+      assert.equal((savedActor as Dnd5eActorData).attributes.hitDiceCurrent, 4);
       // Exhaustion decremented by 1: 2 -> 1
       assert.equal((savedActor as Dnd5eActorData).attributes.exhaustion, 1);
       // Death saves reset

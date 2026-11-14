@@ -23,7 +23,6 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tower::ServiceExt;
 use trame_engine::commands::CampaignRole;
 use trame_server::archive::InMemoryCampaignStore;
@@ -1311,7 +1310,7 @@ async fn sec13_removing_member_closes_their_sockets() {
             .get_or_wake_room(campaign_id)
             .await
             .unwrap();
-        let (gm_tx, mut gm_rx) = mpsc::unbounded_channel();
+        let (gm_tx, mut gm_rx) = trame_server::room::client_channel();
         room.connect_client(ConnectedClient {
             session_id: Uuid::new_v4(),
             user_id: gm_id,
@@ -1323,7 +1322,7 @@ async fn sec13_removing_member_closes_their_sockets() {
         let mut player_rxs = Vec::new();
         if matches!(target, Target::ConnectedPlayer) {
             for _ in 0..2 {
-                let (tx, mut rx) = mpsc::unbounded_channel();
+                let (tx, mut rx) = trame_server::room::client_channel();
                 room.connect_client(ConnectedClient {
                     session_id: Uuid::new_v4(),
                     user_id: player_id,
