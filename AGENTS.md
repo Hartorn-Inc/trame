@@ -4,7 +4,7 @@
 
 **TRAME** (*Tabletop Rules, Actors, Maps & Encounters*) is a Rust + WebAssembly + PixiJS v8 Virtual Tabletop with native MCP integration, governed by EPURE (`Giskard-AI/epure`).
 
-- **Architecture & Specs**: root `ARCHITECTURE.md` (spec and ADR index) and `docs/specs/01-TABLE-SPEC.md` through `04-RUNTIME-AND-DEDICATED-HOSTING.md`; the current whole-application spec is `docs/specs/spec-playable-dnd5e-campaign-convergence.md`.
+- **Architecture & Specs**: root `ARCHITECTURE.md` (spec and ADR index) and `docs/specs/01-TABLE-SPEC.md` through `04-RUNTIME-AND-DEDICATED-HOSTING.md`; the current whole-application spec is `docs/specs/spec-internet-ready-playable-trame.md`, built on the delivered baseline `docs/specs/spec-playable-dnd5e-campaign-convergence.md`.
 - **Domain Vocabulary**: `GLOSSARY.md`.
 
 ## Local Development Workflow (Docker Compose + Makefile First)
